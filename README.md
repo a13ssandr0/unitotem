@@ -19,7 +19,7 @@ The idea is to build a simple system that does only what you want, minding both 
 ##### 1) Download Etcher
 Download Etcher from [this page](https://www.balena.io/etcher/), clicking on the big button with caption `Download for...`
 ##### 2) Download the image
-Click the green `Clone or download` button over the list with the files, then select `Download ZIP`.
+Go to the ["Releases" page of this repository](https://github.com/a13ssandr0/unitotem/releases), and download the zip file of the latest version.
 ##### 3) Wait
 The download may take some time depending on your Internet Speed, so go and enjoy some good music.
 ##### 4) Prepare the SD card
