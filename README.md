@@ -38,6 +38,8 @@ In a bunch of seconds you should see the splash image and then the web browser s
 If everything worked, the website should appear on the screen.
 
 ### Final thoughts
+  ##### Space Management
+    In order to save space and boot time, i decided to remove all the unnecessary packages, such as all the Python packages and modules, along with some utilities that were useless on a UniTotem system. 
   ##### Network
   - As I said before, the system has neither wifi nor bluetooth support (I uninstalled and disabled the services and drivers) because the wireless service would have taken about 4-5 seconds to start, slowing down the boot process, while the bluetooth could have led also to security problems (you can search on the Internet for the problems related to bluetooth)
   - The default network settings are:
@@ -55,18 +57,20 @@ If everything worked, the website should appear on the screen.
   As you may have noticed, the Raspberry Pi has no power button; there would be no problem for power up as soon as the Raspebrry Pi automatically powers on when the usb cable is connected, but for power down you would need to open the ssh terminal and send the command `sudo poweroff` every time, and unplugging the power cord when the Raspberry Pi is running is **strongly advised against**.<br/>
   However, there are two solutions:<br/>
   1) Connecting a pushbutton between the pins 5 and 6 of the header<br/>
-  UniTotem is already configured to accept a pushbutton connected directly to pins 5-6 like in the image below.<br/>
+    UniTotem is already configured to accept a pushbutton connected directly to pins 5-6 like in the image below.<br/>
     ![Raspberry shutdown button connection](https://github.com/a13ssandr0/unitotem/blob/master/Raspberry%20shutdown%20button.png)
-  2) Programming a shutdown scheduler with _cron_, adding this line to `/etc/crontab`:<br/>
+    You will now be able to trigger the shutdown with a simple button.
+  2) Programming a shutdown schedule with _cron_, adding a line to `/etc/crontab`:<br/>
     Login with ssh on the Raspberry Pi<br/>
-    Type
-    ```bash
-    sudo nano /etc/crontab
+    Type<br/>
     ```
-    and enter the password when/if asked.
-    Go to the end of the file and add this line
+    sudo nano /etc/crontab
+    ```<br/>
+    and enter the password when/if asked.<br/>
+    Go to the end of the file and add this line<br/>
     ```
     30 23 * * * root poweroff
-    ```
+    ```<br/>
     changing the nubers 30 and 23 with respectively the minute and hour of the desidered shutdown.
+    This way you can tell the Raspberry Pi to shutdown automatically and then you can set an automatic switch to cut the power to the Raspberry Pi and to the screen just a minute after the time you set above (this way you let it power itself off before you cut completely the power)
     
