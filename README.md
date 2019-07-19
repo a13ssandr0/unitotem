@@ -13,7 +13,7 @@ The idea is to build a simple system that does only what you want, minding both 
   - An HDMI display (You can obviously use quite any type of display, but keep in mind that a display that does not support HDMI would mean that you have to use an adapter, since Raspberry Pi uses HDMI for video output)
   - A video cable (Depends on the choice above, however, one side of the cable must be HDMI, otherwise you can't connect it to the Raspberry Pi)
   - An Ethernet cable (This image has no Wireless networking support, the reason will be explained later)
-  - A case (optional, _but suggested_) (If you mind protection, you shuold protect the Raspberry Pi, at least, from touching metal parts: you know, electricity and metal aren't such good friends:stuck_out_tongue_winking_eye:)
+  - A case (optional, _but suggested_) (If you mind protection, you should protect the Raspberry Pi, at least, from touching metal parts: you know, electricity and metal aren't such good friends:stuck_out_tongue_winking_eye:)
 
 ### Let's install it
 ##### 1) Download Etcher
