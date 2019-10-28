@@ -39,7 +39,7 @@ If everything worked, the website should appear on the screen.
 
 ### Final thoughts
   ##### Space Management
-    In order to save space and boot time, i decided to remove all the unnecessary packages, such as all the Python packages and modules, along with some utilities that were useless on a UniTotem system. 
+    In order to save space and boot time, I decided to remove all the unnecessary packages, such as all the Python packages and modules, along with some utilities that were useless on a UniTotem system. 
   ##### Network
   - As I said before, the system has neither wifi nor bluetooth support (I uninstalled and disabled the services and drivers) because the wireless service would have taken about 4-5 seconds to start, slowing down the boot process, while the bluetooth could have led also to security problems (you can search on the Internet for the problems related to bluetooth)
   - The default network settings are:
