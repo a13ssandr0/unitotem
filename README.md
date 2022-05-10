@@ -1,6 +1,9 @@
 # UniTotem
 #### The definitve Raspberry Pi image for kiosk mode
 
+### This project version is currently outdated (still works, but non on Rpi4), a new version is coming...
+
+
 Imagine you want to display the content of a website on a public screen, using a normal computer would certainly be oversized and expensive, so why not to turn to a Raspberry Pi?<br/>
 The idea is to build a simple system that does only what you want, minding both the price and the functionality, so here comes out UniTotem: a simple and lightweight Raspberry Pi image that boots up and shows the web page in about 12 seconds.
 
