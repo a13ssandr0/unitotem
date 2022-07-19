@@ -1,0 +1,16 @@
+[Unit]
+Description=UniTotem Manager
+
+[Service]
+WorkingDirectory=/opt/unitotem
+ExecStart=/opt/unitotem/env/bin/python3 /opt/unitotem/uniman.py
+Environment=PYTHONUNBUFFERED=1
+
+Restart=on-failure
+RestartSec=90
+
+KillMode=process
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

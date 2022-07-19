@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>UniTotem Manager</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/bootstrap-5.2.0-beta1/css/bootstrap.min.css" integrity="sha384-0evHe/X+R7YkIZDRvuzKMRqM+OrBnVFBL6DOitfPri4tjfHxaWutUpFmBp4vmVor" crossorigin="anonymous">
+    <link rel="stylesheet" href="/static/bootstrap-icons-1.8.3/bootstrap-icons.css">
+    <style>
+        .hdr {
+            background-color: #7431F9;
+            color: white;
+        }
+    </style>
+</head>
+
+<body>
+    <header class="page-header hdr container-fluid">
+        <div class="container-fluid col-lg-10 p-2 hstack gap-2">
+            <a class="navbar-brand" href="/">
+                <h1 class="my-auto"><b>U</b></h1>
+            </a>
+            <div class="ms-auto"></div>
+            <!--spacer-->
+            <div class="btn-group" role="group">
+                <a class="btn btn-light" type="button" href="/">
+                    <i class="bi bi-list-task"></i><span class="d-none d-sm-inline"> Scheduler</span>
+                </a>
+                <a class="btn btn-outline-light" type="button" href="/settings">
+                    <i class="bi bi-sliders"></i><span class="d-none d-sm-inline"> Settings</span>
+                </a>
+            </div>
+            <button class="ms-5 ms-sm-4 ms-md-5 btn btn-outline-light" type="button" data-bs-toggle="modal" data-bs-target="#rebootConfirmModal">
+                <i class="bi bi-bootstrap-reboot"></i><span class="d-none d-sm-inline"> Reboot</span>
+            </button>
+            <button class="btn btn-outline-light" type="button" data-bs-toggle="modal" data-bs-target="#shutdownConfirmModal">
+                <i class="bi bi-power"></i><span class="d-none d-sm-inline"> Shutdown</span>
+            </button>
+        </div>
+    </header>
+
+    <div class="modal fade" id="newAssetModal" tabindex="-1" aria-labelledby="newAssetModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h4 class="modal-title" id="newAssetModalLabel">New asset</h4>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="url" class="col-form-label"><h5>URL:</h5></label>
+                        <input type="text" class="form-control" id="modal_input_url" placeholder="https://github.com/a13ssandr0/unitotem" data-bs-container="body" data-bs-placement="bottom" data-bs-content="Invalid URL">
+                    </div>
+                    <div class="mb-3">
+                        <label for="duration" class="col-form-label"><h5>Duration (seconds):</h5></label>
+                        <p>Set this to 0 to display indefinitely</p>
+                        <input type="number" class="form-control" id="modal_input_duration" min="0" value="{{ default_duration }}">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" id="add_asset_btn" class="btn btn-primary" data-bs-dismiss="modal">Add asset</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="filesModal" tabindex="-1" aria-labelledby="filesModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h4 class="modal-title" id="filesModalLabel">File manager</h4>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form method=post enctype=multipart/form-data>
+                        <div class="mb-3 row">
+                            <div class="my-auto input-group mb-3">
+                                <input class="form-control" type="file" id="formFileMultiple" multiple>
+                                <button type="button" class="btn btn-sm btn-success ms-auto" id="upload_file_btn"><i class="bi bi-file-earmark-arrow-up"></i> Upload file</button>
+                            </div>
+                        </div>
+                    </form>
+                    <div class="mb-3 row">
+                        <h5>Files</h5>
+                        <table class="mx-2">
+                            <thead class="border-bottom">
+                                <tr>
+                                    <th scope="col">Filename</th>
+                                    <th scope="col">Duration</th>
+                                    <th scope="col">Size</th>
+                                    <th scope="col">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for item in files_list %}
+                                <tr>
+                                    <td class="my-auto">{{ item.filename }}</td>
+                                    <td class="my-auto">{{ item.duration }}</td>
+                                    <td class="my-auto">{{ item.size }}</td>
+                                    <td>
+                                        <div class="btn-group my-2" role="group" aria-label="Basic outlined example">
+                                            <button type="button" title="Delete file" onclick="sendCommand({'delete_file': '{{ item.filename }}'}, true);" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                                            <a type="button" title="Download file" class="btn btn-sm btn-outline-secondary" href="/static/uploaded/{{ item.filename }}" download="{{ item.filename }}"><i class="bi bi-download"></i></a>
+                                            <button type="button" title="Add to list" onclick="sendCommand({'add_asset': '{{ item.filename }}', 'duration': '{{ item.duration_s if item.duration_s else default_duration}}'}, true);" class="btn btn-sm btn-outline-secondary"><i class="bi bi-box-arrow-in-right"></i></button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="rebootConfirmModal" tabindex="-1" aria-labelledby="rebootConfirmModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Do you want to reboot UniTotem?</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">No</button>
+                    <button type="button" id="reboot_btn" class="btn btn-danger" data-bs-dismiss="modal">Reboot</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="shutdownConfirmModal" tabindex="-1" aria-labelledby="shutdownConfirmModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Do you want to shutdown UniTotem?</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">No</button>
+                    <button type="button" id="shutdown_btn" class="btn btn-danger" data-bs-dismiss="modal">Shutdown</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="urlErrorModal" tabindex="-1" aria-labelledby="urlErrorModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="urlErrorModalLabel">Invalid URL</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <h6>Entered URL is not valid or complete</h6>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+            </div>
+        </div>
+    </div>
+
+    <main class="container-fluid col-lg-10 mt-md-3 mt-1">
+        <div class="hstack gap-2">
+            <h3>Assets</h3>
+            <div class="ms-auto">
+                <div class="btn-group" role="group" aria-label="Basic outlined example">
+                    <button type="button" title="Previous asset" class="btn btn-sm btn-outline-primary" id="back_btn"><i class="bi bi-arrow-left"></i></button>
+                    <button type="button" title="Reload asset" class="btn btn-sm btn-outline-primary" id="refresh_btn"><i class="bi bi-arrow-clockwise"></i></button>
+                    <button type="button" title="Next asset" class="btn btn-sm btn-outline-primary" id="next_btn"><i class="bi bi-arrow-right"></i></button>
+                </div>
+            </div>
+            <button class="btn btn-sm btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#newAssetModal"><i class="bi bi-plus-circle"></i> Add asset</button>
+            <button class="btn btn-sm btn-success type="button" data-bs-toggle="modal" data-bs-target="#filesModal"><i class="bi bi-file-earmark-plus"></i> Files</button>
+        </div>
+        <div class="row container-fluid justify-content-center">
+            <table>
+                <thead class="border-bottom">
+                    <tr>
+                        <th scope="col"></th>
+                        <th scope="col">URL</th>
+                        <th scope="col">Duration</th>
+                        <th scope="col">Enabled</th>
+                        <th scope="col">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="asset_table">
+                    {% for item in urls_list %}
+                    <tr>
+                        <td class="my-auto"><i class="bi bi-chevron-bar-expand" style="color: grey;"></i></td>
+                        <td class="my-auto">{{ item.url }}</td>
+                        <td class="my-auto" onclick="duration_editor(this, '{{ item.url }}');">{{ item.duration }}</td>
+                        <td class="my-auto">
+                            <div class="form-check form-switch">
+                                <input title="{{ 'Disable' if item.enabled else 'Enable' }} asset" onChange="sendCommand({'url': '{{ item.url }}', 'set-state': '{{ 'disabled' if item.enabled else 'enabled' }}'}, true);" class="form-check-input" type="checkbox" role="switch" {{ 'checked' if item.enabled else ''}}>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="btn-group my-2" role="group" aria-label="Basic outlined example">
+                                <button type="button" title="Delete asset" onclick="sendCommand({'delete': '{{ item.url }}'}, true);" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                                <button type="button" title="Show asset" onclick="sendCommand({'goto': '{{ loop.index - 1 }}'}, true);" class="btn btn-sm btn-outline-secondary"><i class="bi bi-box-arrow-in-right"></i></button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </main>
+
+    <footer class="fixed-bottom text-center border-top bg-white" style="width:100vw; z-index:1000;">
+        <h6 class="my-1" width="100%"><small class="text-muted"><a href="https://github.com/a13ssandr0/unitotem"><i class="bi bi-github"></i> Unitotem</a> {{ ut_vers }} by a13ssandro | Logged in as {{ logged_user }} | Display size {{ disp_size }} | Used {{disk_used}} of {{disk_total}}</small></h6>
+    </footer>
+
+    <script src="/static/bootstrap-5.2.0-beta1/js/bootstrap.bundle.min.js" integrity="sha384-pprn3073KE6tl6bjs2QrFaJGz5/SUsLqktiwsUTF55Jfv3qYSDhgCecCxMW52nD2" crossorigin="anonymous"></script>
+    <script src="/static/Sortable.min.js"></script>
+    <script>
+        sortable_list = Sortable.create(document.getElementById('asset_table'), {
+            onUpdate: (event) => {
+                console.log('Moved from:', event.oldIndex, 'to:', event.newIndex);
+                sendCommand({
+                    'from': event.oldIndex,
+                    "to": event.newIndex
+                }, true);
+            }
+        });
+
+        function isValidUrl(urlString){try{return Boolean(new URL(urlString));} catch(e){return false;}}
+
+        function uploadFiles(files) {
+            let xhttp = new XMLHttpRequest();
+            xhttp.onreadystatechange = () => {
+                if (xhttp.readyState == 4 && xhttp.status == 200) location.reload();
+            };
+            let formData = new FormData();
+            for (let i = 0; i<files.length; i++){
+                formData.append("file" + i, files[i]);
+            }
+            xhttp.open("POST", "./api", true);
+            xhttp.send(formData);
+        }
+
+        function sendCommand(cmd, on_success, on_error) {
+            let xhttp = new XMLHttpRequest();
+            if (on_success || on_error)
+                xhttp.onreadystatechange = () => {
+                    if (xhttp.readyState == 4){
+                        if (xhttp.status == 200) {
+                            if (on_success == true) location.reload();
+                            else if (on_success instanceof Function) on_success(xhttp.response);
+                        } else if (on_error) {
+                            on_error(xhttp.response, xhttp.status);
+                        }
+                    }
+                };
+            xhttp.open("POST", "./api", true);
+            xhttp.setRequestHeader("Content-type", "application/json");
+            xhttp.send(JSON.stringify(cmd));
+        }
+
+        function duration_editor(parent, url) {
+            let cur_dur = parent.innerHTML;
+            parent.removeAttribute('onclick');
+            parent.innerHTML = `
+                <div class="input-group mb-3" style="width: 18ch; max-width: 18ch;" >
+                    <input type="number" class="form-control" id="update-duration" min="0" value="${cur_dur}" aria-describedby="button-addon2">
+                    <button title="Save" class="btn btn-outline-success" type="button" onclick="sendCommand({'url': '${url}', 'update-duration': document.getElementById('update-duration').value}, true);" id="button-addon2"><i class="bi bi-check-lg"></i></button>
+                    <button title="Cancel" class="btn btn-outline-danger" type="button" onclick="duration_display(this, '${cur_dur.trim()}', '${url}');"><i class="bi bi-x-lg"></i></button>
+                </div>
+            `;
+        };
+
+        function duration_display(close_btn, cur_dur, url) {
+            close_btn.parentElement.parentElement.parentElement.outerHTML = `<td onclick="duration_editor(this, '${url}');">${cur_dur}</td>`;
+        };
+
+        document.getElementById('reboot_btn').onclick      = () => {sendCommand({'reboot': ''});}
+        document.getElementById('shutdown_btn').onclick    = () => {sendCommand({'shutdown': ''});}
+        document.getElementById('modal_input_url').oninput = (event) => {
+            if (document.getElementById('modal_input_url').value.length && !isValidUrl(document.getElementById('modal_input_url').value)){
+                bootstrap.Popover.getOrCreateInstance(document.getElementById('modal_input_url'), {container: 'body', content: 'Invalid url', placement: 'bottom'}).show();
+                document.getElementById('modal_input_url').className = "border border-danger border-2 form-control";
+            } else {
+                bootstrap.Popover.getOrCreateInstance(document.getElementById('modal_input_url')).hide();
+                document.getElementById('modal_input_url').className = "form-control";
+            }
+        }
+        document.getElementById('add_asset_btn').onclick   = () => {sendCommand({'add_asset': document.getElementById('modal_input_url').value, 'duration': document.getElementById('modal_input_duration').value}, true, (response, status)=>{
+            if (status == 406) new bootstrap.Modal('#urlErrorModal').show();
+        });}
+        document.getElementById('upload_file_btn').onclick = () => {uploadFiles(document.getElementById('formFileMultiple').files);}
+        document.getElementById('back_btn').onclick        = () => {sendCommand({'back': ''});}
+        document.getElementById('refresh_btn').onclick     = () => {sendCommand({'refresh': ''});}
+        document.getElementById('next_btn').onclick        = () => {sendCommand({'next': ''});}
+    </script>
+</body>
+
+</html>
