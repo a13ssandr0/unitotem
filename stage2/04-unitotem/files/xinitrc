@@ -1,0 +1,24 @@
+#!/bin/bash
+xdpyinfo | grep dimensions | sed -r -e 's/^[^0-9]*([0-9]+x[0-9]+).*$/\1/' > /tmp/screen_size.txt
+xset dpms 0 0 0
+xset s off
+xset s noblank
+rm -rf ~/.config/chromium/Singleton*
+exec chromium-browser /opt/unitotem/templates/boot-screen.html \
+	--remote-debugging-port=9222 \
+	--incognito \
+	--noerrdialogs \
+	--disable-translate \
+	--no-first-run \
+	--fast \
+	--fast-start \
+	--disable-infobars \
+	--disable-restore-session-state \
+	--disable-features=TranslateUI \
+	--enable-features=OverlayScrollbar \
+	--disk-cache-dir=/dev/null \
+	--ignore-certificate-errors \
+	--kiosk \
+	--start-fullscreen \
+	--window-position=0,0 \
+	--window-size=$(xdpyinfo | grep dimensions | sed -r -e 's/^[^0-9]*([0-9]+x[0-9]+).*$/\1/' -e 's/x/,/')

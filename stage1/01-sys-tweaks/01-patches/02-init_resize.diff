@@ -1,0 +1,14 @@
+--- a/rootfs/usr/lib/raspi-config/init_resize.sh
++++ b/rootfs/usr/lib/raspi-config/init_resize.sh
+@@ -183,7 +183,11 @@ mount -t tmpfs tmp /run
+ mkdir -p /run/systemd
+ 
+ mount /boot
++
++mount / -o remount,rw
++raspi-config nonint do_hostname unitotem-$(head -c 50 /dev/random | md5sum | head -c 5)
+ mount / -o remount,ro
++sync
+ 
+ sed -i 's| init=/usr/lib/raspi-config/init_resize\.sh||' /boot/cmdline.txt
+ sed -i 's| sdhci\.debug_quirks2=4||' /boot/cmdline.txt
