@@ -73,7 +73,7 @@ For further information about the building process refer to the pi-gen repositor
 
 #
 #
-If you like UniTotem, consider giving me a tip.
 
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/a13ssandr0)
 
+[<img src="https://raw.githubusercontent.com/aha999/DonateButtons/master/Paypal.png" width="200">](https://www.paypal.com/donate/?hosted_button_id=9RHPMJAS26TJN)
