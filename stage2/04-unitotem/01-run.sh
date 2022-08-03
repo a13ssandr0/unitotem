@@ -19,7 +19,7 @@ chmod 0600 "${ROOTFS_DIR}/etc/ssl/unitotem.pem"
 
 install -v -m 644 files/{start-xorg,unitotem-manager}.service "${ROOTFS_DIR}/etc/systemd/system/"
 on_chroot << EOF
-adduser unitotem
+adduser unitotem || true     # if rerunning the script, it attempts to create the user and finds out it already exists, fails safely
 EOF
 on_chroot << EOF
 systemctl enable start-xorg.service
@@ -28,3 +28,21 @@ EOF
 
 install -v files/haproxy.cfg "${ROOTFS_DIR}/etc/haproxy"
 install -v -m 755 files/xinitrc "${ROOTFS_DIR}/etc/X11/xinit/"
+
+
+# Enable iptables firewall and allow ports 22, 80, 443 (disable because not working inside chroot)
+
+# on_chroot << EOF
+# iptables-nft -L -v                                                          # List rules (for debug)
+# iptables-nft -F                                                             # Flush all current rules from iptables
+# iptables-nft -P INPUT DROP                                                  # Set default policies for INPUT, FORWARD and OUTPUT chains
+# iptables-nft -P FORWARD DROP
+# iptables-nft -P OUTPUT ACCEPT
+# iptables-nft -A INPUT -p tcp --dport 22 -j ACCEPT                           # Allow SSH connections on tcp port 22
+# iptables-nft -A INPUT -p tcp --dport 80 -j ACCEPT                           # Allow SSH connections on tcp port 80
+# iptables-nft -A INPUT -p tcp --dport 443 -j ACCEPT                          # Allow SSH connections on tcp port 443
+# iptables-nft -A INPUT -i lo -j ACCEPT                                       # Set access for localhost
+# iptables-nft -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT        # Accept packets belonging to established and related connections
+# iptables-nft -L -v                                                          # List rules (for debug)
+# /sbin/service iptables-nft save                                             # Save settings
+# EOF
