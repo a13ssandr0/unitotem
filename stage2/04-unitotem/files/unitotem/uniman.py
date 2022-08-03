@@ -5,7 +5,7 @@ from threading import Thread
 from time import sleep, time
 from uuid import uuid4
 from sys import exit
-
+from requests import get as requests_get
 from crontab import CronTab
 from flask import Flask, render_template, request
 from flask_httpauth import HTTPBasicAuth
@@ -382,7 +382,16 @@ if __name__ == "__main__":
         global NEXT_CHANGE_TIME, CURRENT_ASSET, CONFIG, CHROME
         for i in range(5):
             try:
-                CHROME.connect()
+                CHROME.get_tabs()
+                # on first boot (or after clearing Chromium cache and config folders) Chromium opens two tabs:
+                # - a "background_page" named "CryptoTokenExtension"
+                # - UniTotem boot screen
+                # UniTotem manager should connect to the second one (as it does from the second boot, being it the only one)
+                # to achieve this we'll activate the first tab of type "page"
+                for n, t in enumerate(CHROME.tabs):
+                    if t['type']=='page':
+                        CHROME.connect(tab=n)
+                        CHROME.Page.bringToFront(id=t['id'])
                 while(True):
                     if time()>=NEXT_CHANGE_TIME:
                         if IS_FIRST_BOOT:
