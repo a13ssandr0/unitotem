@@ -4,9 +4,7 @@ Managed Raspberry Pi kiosk mode image.
 ## Installation
 1. Download the latest image from the Releases page and install it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on a micro SD card (class 10 is strongly suggested for speed).
 2. Insert the micro SD in a Raspberry, connect it to a screen and boot it, during first boot the filesystem will be expanded and hostname will be set to `unitotem-xxxxx` where x is a random alphanumeric character (useful if you have more than one in the network).
-3. After first boot is completed, UniTotem loading screen will appear, but the manager still cannot control it (I still haven't find the cause of this bug), so you have to reboot the Pi (unplugging and replpugging is ok at this stage).
-![Unitotem loading screen](images/boot_screen.png)
-4. After the second boot completes, you should firstly see the loading screen and then the welcome screen with the hostname and IP address in the bottom left corner.
+3. After boot completes, you should firstly see the loading screen and then the welcome screen with the hostname and IP address in the bottom left corner.
 ![Unitotem welcome screen](images/first_boot_screen.png)
 If the Raspberry is not connected to a network, it will create a fallback hostspot and its SSID and password will be displayed together with a QR code for fast connection.
 
@@ -61,15 +59,8 @@ UniTotem system image creation is based on [pi-gen](https://github.com/RPi-Distr
 
 For further information about the building process refer to the pi-gen repository page.
 
-## Known bugs
-- On first boot the manager connects to Chromium but doesn't control the page displayed, so it's required to reboot the Pi in order to make it work
-
-## TODO
-- Add configuration Backup/Restore functionality
-- Add insufficient space warning when uploading files
-- Provide the manager as a separate package that can be updated separately from the whole system image
-
-
+## Bugs and TODO
+These sections have been moved to [UniTotem-manger #Known-bugs](https://github.com/a13ssandr0/unitotem-manager#known-bugs)
 
 #
 #
