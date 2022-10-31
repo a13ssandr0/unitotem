@@ -1,8 +1,1 @@
-python3-pip python3-apt python3-venv python3-distutils-extra
-libopenjp2-7-dev 
-openssl
-mediainfo
-haproxy
-rfkill
-alsa-utils
-chromium-browser
+python3-pip python3-apt python3-venv python3-distutils-extra libopenjp2-7-dev openssl mediainfo haproxy rfkill alsa-utils chromium-browser
