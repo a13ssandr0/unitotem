@@ -1,6 +1,12 @@
 # UniTotem
 Managed Raspberry Pi kiosk mode image.
 
+## IMPORTANT
+Versions before 2022-11-01 had a previous version of the unitotem-manager repository key, you need to reimport the gpg key with:
+```sh
+sudo curl -s --compressed -o /etc/apt/trusted.gpg.d/unitotem-manager.asc "https://a13ssandr0.github.io/unitotem-manager/KEY.gpg"
+```
+
 ## Installation
 1. Download the latest image from the Releases page and install it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on a micro SD card (class 10 is strongly suggested for speed).
 2. Insert the micro SD in a Raspberry, connect it to a screen and boot it, during first boot the filesystem will be expanded and hostname will be set to `unitotem-xxxxx` where x is a random alphanumeric character (useful if you have more than one in the network).
