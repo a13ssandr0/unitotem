@@ -1,0 +1,27 @@
+FROM debian:bookworm
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        debootstrap \
+        qemu-user-static \
+        dosfstools \
+        e2fsprogs \
+        gdisk \
+        parted \
+        kpartx \
+        util-linux \
+        xz-utils \
+        pigz \
+        curl \
+        ca-certificates \
+        wget \
+        gnupg2 \
+        rsync \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY kiosk/ /kiosk/
+RUN chmod +x /kiosk/*.sh
+
+VOLUME ["/work", "/deploy"]

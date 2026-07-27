@@ -1,0 +1,18 @@
+Port 22
+Protocol 2
+
+PermitRootLogin yes
+PasswordAuthentication yes
+ChallengeResponseAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+
+PermitEmptyPasswords no
+MaxAuthTries 5
+LoginGraceTime 30
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+X11Forwarding no
+AllowTcpForwarding no
+PrintMotd no

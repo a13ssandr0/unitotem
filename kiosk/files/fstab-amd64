@@ -1,0 +1,7 @@
+LABEL=EFI   /boot/efi  vfat  defaults,noatime                           0 2
+LABEL=BOOT  /boot      ext4  defaults,noatime                           0 2
+LABEL=ROOT  /          ext4  defaults,noatime,ro                        0 1
+tmpfs       /tmp       tmpfs defaults,noatime,nosuid,nodev,size=256M    0 0
+tmpfs       /run       tmpfs defaults,noatime,nosuid,nodev,mode=0755    0 0
+tmpfs       /var/cache tmpfs defaults,noatime,nosuid,nodev,size=512M    0 0
+tmpfs       /var/tmp   tmpfs defaults,noatime,nosuid,nodev,size=64M     0 0

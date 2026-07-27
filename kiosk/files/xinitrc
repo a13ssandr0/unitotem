@@ -1,0 +1,20 @@
+#!/bin/sh
+# X session for the unitotem kiosk. No window manager: unitotem-manager's own
+# Qt6+CEF viewer (started independently as a systemd service, see
+# start-xorg.service + unitotem-manager.service's Environment=DISPLAY=:0)
+# already sets its own window to exact fullscreen geometry with no
+# decorations, so nothing here needs to manage windows - just tune the X
+# server (cursor hiding is handled by Xorg's own -nocursor flag) and keep
+# the session alive.
+
+xset -dpms
+xset s off
+xset s noblank
+xsetroot -solid black
+
+# $XAUTHORITY is already the fixed /run/unitotem-x11.auth path here (see
+# start-xorg.service's Environment=) - both this X session and unitotem-
+# manager.service (a separate systemd unit) point at the same file, so no
+# handoff/copy step is needed.
+
+exec sleep infinity
