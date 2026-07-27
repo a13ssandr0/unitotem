@@ -1406,10 +1406,10 @@ transitoria.
 notificare il cambiamento al server via WebSocket (`WebviewInfo`), che
 ribroadcasta `Viewers/list` a tutti i client connessi - la pagina Viewers e la
 pagina Settings/Display della webui devono aggiornarsi da sole, senza reload.
-Verificato via analisi del codice + test con un solo schermo; la verifica
-end-to-end con un vero hot-plug in VM resta **bloccata**, vedi sotto.
+**Verificato end-to-end**, hot-plug e hot-unplug entrambi, senza mai
+riavviare `unitotem-manager` (vedi metodo sotto).
 
-**Config QEMU per due schermi:**
+**Config QEMU per due schermi** (basta `max_outputs=2`, non serve SPICE):
 ```bash
 qemu-system-x86_64 \
   -machine q35,accel=kvm -cpu host -smp 4 -m 4096 \
@@ -1419,71 +1419,78 @@ qemu-system-x86_64 \
   -drive file=overlay.qcow2,if=virtio,format=qcow2 \
   -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::8443-:443 \
   -device virtio-net-pci,netdev=net0 \
-  -spice port=5900,addr=127.0.0.1,disable-ticketing=on,image-compression=off \
-  -chardev spicevmc,id=vdagent,name=vdagent \
-  -device virtio-serial-pci \
-  -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 \
-  -monitor unix:monitor.sock,server,nowait -daemonize -pidfile qemu.pid
+  -vnc :1 -monitor unix:monitor.sock,server,nowait -daemonize -pidfile qemu.pid
 ```
-`max_outputs=2` dà al guest un secondo output virtio-gpu (`Virtual-2` in
-`xrandr`), ma **disconnesso** finché nessun consumer SPICE lo reclama - serve
-SPICE (non VNC: VNC non seleziona head, mostra sempre e solo il primo) più un
-client reale. Consumer headless per test automatizzati (screenshot via
-QEMU `screendump`/`virsh screenshot`, non serve un display reale sull'host):
+
+`max_outputs=2` dà al guest un secondo connettore virtio-gpu (`Virtual-2` in
+`xrandr`, `card0-Virtual-2` in `/sys/class/drm`), ma parte **disconnected**
+finché nessuno lo "pluggia". Un primo tentativo con SPICE + un client
+SPICE reale (headless via Docker+Xvfb+`remote-viewer`) si è rivelato un
+vicolo cieco: il client apre davvero entrambi i canali display, ma il flip
+dello stato connesso nel guest passa per forza per la negoziazione
+"monitors config" di `spice-vdagent`, e `spice-vdagentd` rifiuta di attivare
+l'agent senza una sessione logind valida - cosa che questa immagine, per
+design (X avviato da `start-xorg.service` senza alcun display manager), non
+ha. Tentato anche di creare una sessione logind fittizia
+(`systemd-run -p PAMName=login -p User=root ...` - la sessione VIENE creata,
+confermata via `loginctl list-sessions`) ma `spice-vdagentd` continua a
+rifiutarsi con errori diversi a seconda dei flag. Anche `xrandr --auto`
+(rifiutato, nessun EDID), `xrandr --setmonitor` (raggruppamento RandR 1.5,
+Qt non lo enumera comunque - filtra rigorosamente sul bit `Connected` di un
+Output, non su CRTC/mode attivi o su un "Monitor" logico), il backend
+`-display dbus,p2p=on`, e i comandi QMP (nessuno esiste per lo stato di un
+output virtio-gpu: `query-qmp-schema` non ne ha; `display-update`/
+`display-reload` sono VNC-only) - tutti vicoli ciechi, nessuno flippa il
+bit `Connected`.
+
+**La soluzione reale: il connettore DRM del kernel è la fonte di verità, e
+da root la si controlla direttamente via debugfs** - non serve affatto
+passare per SPICE/X11/vdagent. Il connettore di ogni output virtio-gpu
+espone un file `force` standard di debugfs (feature generica del DRM core,
+non specifica di virtio-gpu):
+
 ```bash
-docker run -d --network host --name spice-consumer debian:bookworm sleep 3600
-docker exec spice-consumer bash -c \
-  "apt-get update -qq && apt-get install -y -qq virt-viewer xvfb"
-docker exec -d spice-consumer bash -c "Xvfb :99 -screen 0 2600x850x24"
-docker exec -d spice-consumer bash -c \
-  "DISPLAY=:99 remote-viewer -f spice://127.0.0.1:5900"
+mount | grep debugfs                       # deve essere montato (di solito lo è)
+ls /sys/kernel/debug/dri/0/                 # Virtual-1  Virtual-2  crtc-0  crtc-1  ...
+
+# "Plug" - forza il connettore a connected, scatena un evento hotplug DRM/udev
+echo on > /sys/kernel/debug/dri/0/Virtual-2/force
+
+# Xorg riceve l'evento e aggiorna RandR - basta assegnargli un mode
+DISPLAY=:0 XAUTHORITY=/run/unitotem-x11.auth xrandr --query   # elenca i mode disponibili
+DISPLAY=:0 XAUTHORITY=/run/unitotem-x11.auth \
+  xrandr --output Virtual-2 --mode 3840x2160 --right-of Virtual-1
+
+# "Unplug" - serve ANCHE spegnere il CRTC, altrimenti resta attivo anche se
+# il connettore risulta "disconnected" (proprio come su hardware vero, un
+# semplice sensore di presenza non basta a interrompere l'output video)
+echo off > /sys/kernel/debug/dri/0/Virtual-2/force
+DISPLAY=:0 XAUTHORITY=/run/unitotem-x11.auth xrandr --output Virtual-2 --off
 ```
 
-**Tentativi che NON bastano a far comparire un secondo schermo** (verificato
-empiricamente, in ordine):
-- `xrandr --output Virtual-2 --auto` - rifiutato, nessun EDID su un output
-  "disconnected".
-- Forzare un CRTC/mode a mano (`xrandr --newmode` + `--addmode` +
-  `--output ... --mode ...`) - accettato da Xorg (compare in `xrandr --query`
-  con un mode attivo!) ma **Qt6/XCB lo ignora comunque**: `QApplication.
-  screens()` filtra rigorosamente sul bit RandR `Connected`, non su CRTC/mode
-  attivi. Confermato controllando `Viewers/list` lato webui dopo ogni
-  tentativo - nessun nuovo screen mai comparso.
-- RandR 1.5 `xrandr --setmonitor NOME WxH+X+Y sorgente` (raggruppamento
-  logico "Monitor", indipendente dal Connected di un Output) - stesso esito,
-  Qt non lo enumera.
-- Backend display QEMU `-display dbus,p2p=on` (pensato per essere
-  headless-friendly) invece di SPICE - stesso esito: senza un consumer che
-  *renderizzi attivamente* quel canale, l'output resta disconnected.
-- Comandi QMP diretti - **non esistono**: `query-qmp-schema` non ha nessun
-  comando per lo stato connesso/dimensione di un output virtio-gpu.
-  `display-update`/`display-reload` esistono ma sono VNC-only (cambiano solo
-  le opzioni di listen). Il meccanismo reale (`dpy_set_ui_info()`) è una API
-  C interna, mai esposta via QMP - invocata solo dal backend display in
-  risposta al messaggio "monitors config" del protocollo SPICE.
+Nota: `/sys/class/drm/card0-Virtual-2/status` (il file sysfs "informativo",
+diverso dal debugfs `force`) può continuare a mostrare `disconnected` anche
+a forzatura riuscita - è il probe EDID grezzo, non quello che Xorg/RandR
+usano davvero (che è l'ioctl KMS `drm_mode_getconnector`, che il debugfs
+override sovrascrive correttamente). Il segnale affidabile è `xrandr
+--query`, non quel file.
 
-**Blocco reale, non risolto:** un client SPICE reale (`remote-viewer`) si
-connette e apre entrambi i canali (`SpiceDisplayChannel 0` e `1` nei log),
-ma la negoziazione "monitors config" che flippa `Connected` nel guest passa
-SOLO per `spice-vdagent` (guest) + `spice-vdagentd`, e `spice-vdagentd`
-rifiuta di attivare l'agent senza una sessione logind valida - cosa che
-questa immagine, per design, non ha (X avviato da `start-xorg.service`
-direttamente, niente display manager, niente sessione PAM/logind legata a
-un seat). Tentato un workaround con una sessione logind fittizia
-(`systemd-run -p PAMName=login -p User=root ...`, la sessione VIENE creata
-- confermata via `loginctl list-sessions` - ma `spice-vdagentd` continua a
-fallire con errori diversi a seconda dei flag: "no session info, max 1
-session agent allowed" / "Error getting active session: No data available").
-Non approfondito oltre: richiederebbe o patchare/ricompilare spice-vdagentd,
-o investire in un setup libvirt+SPICE più maturo (con un vero desktop
-manager sul lato client, es. GNOME Boxes/virt-manager, che gestisce
-l'autoconf in un modo che questo setup manuale non replica).
+**Verifica end-to-end** (nessun riavvio di `unitotem-manager` in tutta la
+sequenza):
+1. Boot con `max_outputs=2`: `unitotem-manager` all'avvio vede solo
+   `Virtual-1` (1 screen, 1 window) - `Virtual-2` non è ancora forzato.
+2. `echo on > .../Virtual-2/force` + `xrandr --output Virtual-2 --mode ...`:
+   entro ~1s `Viewers/list` (via WebSocket) mostra 2 screens e 2 windows,
+   con la geometria del nuovo screen esattamente corrispondente al mode
+   appena assegnato - `screenAdded` è scattato per davvero.
+3. `xrandr --output Virtual-2 --off` (dopo `force off`): entro ~1s
+   `Viewers/list` torna a 1 screen/1 window - `screenRemoved` è scattato.
+4. Ripetuto il "plug" con un mode diverso (es. `1024x768` poi `3840x2160`):
+   il nuovo `window_id` è sempre incrementale (mai riusato), la geometria
+   riportata combacia sempre con l'ultimo mode assegnato.
 
-**Cosa resta da fare per completare la verifica hot-plug/hot-unplug**, se
-serve in futuro: risolvere il blocco spice-vdagent sopra (o sostituirlo con
-un approccio diverso, es. patch minima a spice-vdagentd per bypassare il
-controllo sessione quando non c'è logind, dato che è comunque uno scenario
-legittimo per un guest headless/kiosk), poi verificare che
-`screenAdded`/`screenRemoved` scattino davvero e che la pagina Viewers/
-Settings/Display della webui si aggiorni senza reload sia in hot-plug sia in
-hot-unplug.
+Metodo di verifica usato: query dirette del WebSocket `/ws` (login via
+`/auth/token`, poi ascolto dei frame `Viewers/list`) con un browser headless
+(Playwright in Docker, dato che né Playwright né un browser erano installati
+sull'host) - non serve controllare la webui visivamente, il payload JSON è
+già la prova diretta che `unitotem-manager` ha rilevato il cambiamento.
