@@ -1,0 +1,50 @@
+#!/bin/bash
+set -e
+
+_enter() {
+    echo "[kiosk-update] Fermo il kiosk..."
+    pkill -x sway 2>/dev/null || true
+    sleep 1
+
+    echo "[kiosk-update] Rimonto rootfs in rw..."
+    mount -o remount,rw /
+    mount -o remount,size=1G /var/cache
+
+    echo "[kiosk-update] Pronti."
+    echo "  /etc  /root       → overlay su DATA (sempre persistente)"
+    echo "  /usr  /lib  /bin  → rootfs (ora scrivibile)"
+    echo ""
+    echo "Eseguire: apt-get update && apt-get upgrade"
+    echo "Al termine: kiosk-update exit [--initramfs]"
+}
+
+_exit() {
+    local regen_initramfs=0
+    [ "$1" = "--initramfs" ] && regen_initramfs=1
+
+    if [ $regen_initramfs -eq 1 ]; then
+        echo "[kiosk-update] Rigenero initramfs..."
+        update-initramfs -u -k all
+    fi
+
+    if command -v update-grub &>/dev/null; then
+        update-grub 2>/dev/null || true
+    fi
+
+    echo "[kiosk-update] Rimonto rootfs in ro..."
+    sync
+    mount -o remount,ro / 2>/dev/null || true
+
+    echo "[kiosk-update] Riavvio in 5 secondi..."
+    sleep 5
+    systemctl reboot
+}
+
+case "$1" in
+    enter) _enter ;;
+    exit)  _exit "${2:-}" ;;
+    *)
+        echo "Uso: $0 enter | exit [--initramfs]"
+        exit 1
+        ;;
+esac
