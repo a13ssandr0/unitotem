@@ -46,6 +46,7 @@ if [ "$ARCH" = "amd64" ]; then
         firmware-linux-nonfree \
         firmware-misc-nonfree \
         grub-efi-amd64 \
+        grub-pc-bin \
         efibootmgr
 
 elif [ "$ARCH" = "arm64" ]; then

@@ -24,6 +24,12 @@ if [ "$ARCH" = "amd64" ]; then
     sgdisk -n "2:0:+${BOOT_SIZE}" -t 2:8300 -c 2:BOOT "${IMG_FILE}"
     sgdisk -n "3:0:+${ROOT_SIZE}" -t 3:8300 -c 3:ROOT "${IMG_FILE}"
     sgdisk -n "4:0:0"             -t 4:8300 -c 4:DATA "${IMG_FILE}"
+    # BIOS boot partition: sits in the (otherwise unused) gap between the
+    # GPT header/table and partition 1's start at sector 2048, so it doesn't
+    # shift any of the partitions above. Holds GRUB's core.img on legacy
+    # BIOS targets - grub-install --target=i386-pc below embeds into it.
+    # No filesystem, never mounted, harmless on UEFI-only machines.
+    sgdisk -n "5:34:2047" -t 5:ef02 -c 5:BIOS "${IMG_FILE}"
 
 elif [ "$ARCH" = "arm64" ]; then
     parted -s "${IMG_FILE}" mklabel gpt
@@ -102,6 +108,16 @@ if [ "$ARCH" = "amd64" ]; then
         --bootloader-id=debian \
         --no-nvram \
         --removable
+
+    # BIOS: embeds core.img into the ef02 partition carved out above and
+    # writes the MBR boot code, so the same disk boots on both UEFI and
+    # legacy BIOS firmware - matters for deploy/remote-deploy.sh, which
+    # can't make a BIOS target bootable on its own if the image itself
+    # never shipped BIOS support.
+    chroot /mnt grub-install \
+        --target=i386-pc \
+        --boot-directory=/boot \
+        "${LOOP}"
 
     chroot /mnt update-grub
 

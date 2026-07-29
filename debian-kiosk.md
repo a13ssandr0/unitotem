@@ -1494,3 +1494,120 @@ Metodo di verifica usato: query dirette del WebSocket `/ws` (login via
 (Playwright in Docker, dato che né Playwright né un browser erano installati
 sull'host) - non serve controllare la webui visivamente, il payload JSON è
 già la prova diretta che `unitotem-manager` ha rilevato il cambiamento.
+
+## 28. Deploy remoto — flash via SSH
+
+Fino a qui il deploy dell'immagine (`kiosk-<data>-<arch>.img.xz`, vedi §8 e
+`kiosk/stage3-image.sh`) era manuale: `dd` locale o Raspberry Pi Imager con
+la SD/il disco estratti dalla macchina. `deploy/remote-deploy.sh` copre il
+caso di un totem già installato e raggiungibile solo via SSH (tipicamente
+una vecchia versione di UniTotem, pi-gen), da reinstallare da zero senza
+smontare l'hardware.
+
+**Vincolo di sicurezza**: la root del sistema in esecuzione (quello da
+sovrascrivere) non deve mai essere montata mentre si scrive sul disco intero
+- da kernel 6.5 in poi `dd` su un device con una partizione montata torna
+`EBUSY`, e comunque scrivere sotto un filesystem live è distruttivo a
+prescindere. La soluzione: un secondo kernel+initrd dedicato
+(`deploy/build-flasher.sh` + `deploy/flasher/`), avviato una volta sola
+tramite una entry di boot one-shot, la cui *unica* azione (script
+`init-premount`, gira **prima** che qualunque root venga montata) è scrivere
+il disco e riavviare. Se qualcosa va storto prima di iniziare a scrivere,
+lo script ripristina la configurazione di boot originale e riavvia sul
+sistema vecchio invece di lasciare la macchina in uno stato non raggiungibile
+(vedi `fail()` in `deploy/flasher/unitotem-flash`).
+
+### 28.1 Le due modalità richieste
+
+1. **Staging sul disco stesso** (`ram` / `part`): l'immagine compressa viene
+   copiata sul target via `scp` (nella root del filesystem in esecuzione),
+   poi al boot del flasher:
+   - **`ram`**: se c'è abbastanza `MemAvailable`, l'immagine compressa viene
+     copiata in un tmpfs e decompressa in streaming dentro `dd`.
+   - **`part`**: se la RAM non basta, la root sorgente (deve essere
+     l'ultima partizione del disco - vero per il layout pi-gen legacy,
+     boot+rootfs) viene ridotta con `resize2fs` offline, la sua voce nella
+     tabella delle partizioni accorciata di conseguenza, e nello spazio
+     liberato in coda (oltre il confine che `dd` sovrascriverà) viene creata
+     una partizione di staging in cui copiare l'immagine. Le altre
+     partizioni vengono smontate prima di procedere esattamente come in
+     modalità `ram`.
+2. **Streaming di rete** (`net`): quando anche lo spazio su disco non
+   basta, niente viene copiato sul target in anticipo. Al boot del flasher,
+   un `nc` (in ascolto o a connessione inversa, `--connect-back`) riceve il
+   flusso mentre l'host lo invia; i byte vengono decompressi (xz o zstd) e
+   scritti su `dd` mano a mano che arrivano, senza mai toccare il disco del
+   target per lo staging.
+
+La scelta fra le tre è automatica (`--mode auto`, il default: guarda RAM
+disponibile, spazio libero su `/` e se root sta sullo stesso disco da
+sovrascrivere) ma sempre mostrata e confermabile prima di procedere; puoi
+forzarla con `--mode ram|part|net`.
+
+### 28.2 Selezione del disco
+
+Non si assume mai che il disco da cui il sistema sta avviando sia il disco
+da scrivere (un Raspberry Pi 4 può avviare da USB senza SD inserita, un PC
+può avere più dischi). `remote-deploy.sh probe` elenca tutti i dischi non
+rimovibili rilevati (`lsblk`, esclusi `loop/sr/ram/zram/fd`) con il relativo
+path stabile `/dev/disk/by-id/...` (o `/dev/disk/by-path/...` quando il
+disco non ha un by-id - comune sui dischi virtio senza numero di serie,
+tipico nelle VM di test); se ce n'è più di uno, o se non è stato passato
+`--disk`, la scelta è sempre interattiva - mai un default silenzioso. Il
+disco scelto è sempre referenziato per questo path stabile nell'intero
+flusso (mai `/dev/sda`), proprio perché l'enumerazione `/dev/sdX` non è
+garantita stabile fra un boot e l'altro.
+
+### 28.3 UEFI, BIOS, Raspberry Pi
+
+`probe` rileva il firmware del target (`/sys/firmware/efi`, e
+`/proc/device-tree/model` per riconoscere un Raspberry Pi) e sceglie di
+conseguenza l'immagine (amd64 o arm64) e il modo di rendere avviabile il
+disco appena scritto:
+
+- **UEFI**: monta l'ESP appena scritta, verifica `EFI/BOOT/BOOTX64.EFI`,
+  quindi `efibootmgr -c ... -L UniTotem` e la mette in cima a `BootOrder`
+  (richiesto: avvio automatico sulla nuova immagine). Se `efibootmgr`
+  fallisce (NVRAM piena/read-only) il sistema resta comunque avviabile come
+  dispositivo removable - l'immagine è installata con `grub-install
+  --removable --no-nvram` (vedi §8), quindi l'assenza della entry NVRAM non
+  è fatale, solo non automatica.
+- **BIOS**: `grub-install --target=i386-pc` in chroot sul sistema appena
+  scritto. Richiede che l'immagine sia stata costruita con la partizione
+  `ef02` (bios_grub) e il pacchetto `grub-pc-bin` - aggiunti in
+  `kiosk/stage1-packages.sh`/`kiosk/stage3-image.sh` proprio per questo (il
+  gap fra la GPT e il settore 2048 era già libero, nessuna partizione
+  esistente cambia offset). Un'immagine costruita prima di questa modifica
+  viene rifiutata su target BIOS con un errore esplicito invece di produrre
+  un disco che non si avvia.
+- **Raspberry Pi**: nessuna voce di boot da installare, il firmware legge
+  `config.txt`/`cmdline.txt` dalla partizione FIRMWARE appena scritta.
+
+### 28.4 Uso
+
+```bash
+# build una volta per architettura, dopo build-kiosk.sh
+./deploy/build-flasher.sh
+
+./deploy/remote-deploy.sh probe  root@totem-01
+./deploy/remote-deploy.sh deploy root@totem-01
+./deploy/remote-deploy.sh deploy root@totem-01 --disk /dev/disk/by-id/... --mode net --connect-back
+./deploy/remote-deploy.sh disarm root@totem-01   # annulla un arming non ancora avviato
+```
+
+### 28.5 Limiti noti
+
+- **`part`** richiede che la root sorgente sia l'ultima partizione del
+  disco (vero per il layout pi-gen a 2 partizioni; con più partizioni dopo
+  la root, o tabella MBR piena, si passa a `net`).
+- L'immagine è a dimensione fissa (12 GiB, vedi §1); dopo la scrittura lo
+  script ripara l'header di backup GPT (`sgdisk -e`, altrimenti resterebbe a
+  12 GiB sul disco reale) ed espande DATA fino a riempire il disco -
+  disattivabile con `--no-expand`.
+- `blkid -L ROOT/DATA` per la verifica post-scrittura è per etichetta, non
+  per disco: con più dischi UniTotem collegati alla stessa macchina il
+  risultato è ambiguo (stesso limite del resto del design, vedi §10).
+- Su Raspberry Pi con più dischi (es. SD + USB), rendere il disco appena
+  scritto quello *primario* quando è diverso dal disco di avvio corrente può
+  richiedere di rimuovere fisicamente l'altro supporto o riconfigurare il
+  `BOOT_ORDER` dell'EEPROM (Pi 4/5) - non automatizzato.
