@@ -1,4 +1,6 @@
 deploy/*
+!deploy/*.sh
+!deploy/flasher/
 work/*
 config
 postrun.sh

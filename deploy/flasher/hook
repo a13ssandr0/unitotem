@@ -1,0 +1,70 @@
+#!/bin/sh
+# initramfs-tools hook: pull the extra binaries, shared libs and kernel
+# modules that deploy/flasher/unitotem-flash needs into the flasher initrd.
+# Installed by deploy/build-flasher.sh as
+# /etc/initramfs-tools/hooks/unitotem-flash, run against a throwaway chroot
+# extracted from work/$ARCH/stage2.tar.gz with a few extra build-only
+# packages installed (see build-flasher.sh) - none of this ships in the
+# actual kiosk image.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+# unitotem-flash is a bash script (needs `set -o pipefail` and `read -u`,
+# see its header comment for why) - copy_exec resolves bash's shared libs
+# too, so this is enough to make "#!/bin/bash" work inside the initrd.
+copy_exec /bin/bash /bin
+
+for bin in \
+    dd sgdisk parted partprobe partx blockdev blkid \
+    e2fsck mke2fs resize2fs dumpe2fs mkfs.ext4 \
+    efibootmgr grub-install \
+    xz unxz zstd unzstd \
+    nc ip udhcpc chroot mkfifo readlink cut paste awk \
+; do
+    p=$(command -v "$bin" 2>/dev/null) && copy_exec "$p" || echo "unitotem-flash hook: '$bin' non trovato, salto" >&2
+done
+
+# mkfs.ext4 is a symlink to mke2fs (standard e2fsprogs layout). Confirmed
+# in testing: zz-busybox (shipped by the busybox package, always runs
+# *after* every other hook - see
+# /usr/share/initramfs-tools/hooks/zz-busybox) hardlinks busybox onto
+# every name "busybox --list-long" claims, including "mke2fs" - which
+# busybox lists as a known applet but doesn't actually implement
+# ("mke2fs: applet not found" at runtime, despite the file existing).
+# zz-busybox only fills in names that don't already exist at the time it
+# runs, so the real binary has to unmistakably be there *before* that -
+# copy_exec's dedup ("skip if the target already exists") isn't a
+# reliable guarantee of that once symlink-chasing is involved, so force a
+# direct copy rather than trust it.
+real_mke2fs=$(command -v mke2fs 2>/dev/null)
+if [ -n "$real_mke2fs" ]; then
+    dest_mke2fs="${DESTDIR}${real_mke2fs}"
+    rm -f "$dest_mke2fs"
+    mkdir -p "$(dirname "$dest_mke2fs")"
+    cp -a "$real_mke2fs" "$dest_mke2fs"
+fi
+
+# udhcpc's packaged /etc/udhcpc/default.script shells out to "busybox
+# ifconfig/ip/awk", none of which this initrd carries (MODULES=most doesn't
+# pull busybox in when real coreutils are already present via the copy_exec
+# above) - install our own minimal one instead. This hook runs chrooted
+# into the rootfs being turned into the initrd (see flasher-image.sh), so
+# "/etc/udhcpc/unitotem.script" here is that chroot's own copy - staged
+# there by flasher-image.sh, since /kiosk/flasher/* on the outer builder
+# container isn't reachable from in here.
+copy_file file /etc/udhcpc/unitotem.script /etc/udhcpc/unitotem.script
+
+# efivarfs for reading/writing the ESP boot entry; vfat+codepages for
+# mounting EFI/FIRMWARE partitions directly (no mtools involved).
+manual_add_modules efivarfs vfat nls_iso8859-1 nls_cp437
+
+# GRUB's on-disk module trees (both targets - only the one matching the
+# machine's firmware is ever used, but we don't know that until flash time).
+for d in /usr/lib/grub/i386-pc /usr/lib/grub/x86_64-efi; do
+    [ -d "$d" ] && copy_file directory "$d" "$d"
+done
+
+exit 0
