@@ -525,7 +525,23 @@ EOF
 # one-shot, tryboot on Pi4/5, or a verified config.txt swap on legacy
 # firmware) with the fallback staying default until unitotem-boot-ok.service
 # confirms; only then does promote-default flip the permanent default.
-# ---------------------------------------------------------------------------
+#
+# Both rpi branches below write a hardcoded, minimal config.txt/tryboot.txt
+# (just the kernel=/initramfs= boot-selection lines they themselves own) -
+# on purpose, since these functions must never depend on a full untrusted
+# copy of the real image's config.txt to keep the fallback guarantee simple.
+# kiosk/files/config.txt itself never actually reaches a real device's boot
+# partition through this pipeline for that same reason. Any OTHER boot
+# config (dtoverlay=, dtparam=, framebuffer/splash tuning - anything that
+# isn't boot-selection) has to be spliced back in explicitly: this appends
+# kiosk/files/config-extra.txt, installed onto ROOT at build time
+# (kiosk/stage2-configure.sh), after the hardcoded lines. Best-effort - a
+# missing file (e.g. amd64, which has no config.txt at all) is not an error.
+append_config_extra() {
+    local extra_file="$1" dest="$2"
+    [ -f "$extra_file" ] && cat "$extra_file" >> "$dest"
+}
+
 cmd_set_trial_boot() {
     parse_args "$@"
     need firmware
@@ -574,6 +590,7 @@ kernel=kernel8.img
 initramfs initramfs8 followkernel
 cmdline=cmdline-trial.txt
 EOF
+            append_config_extra /mnt/newroot/etc/unitotem/config-extra.txt "$mnt/tryboot.txt"
             echo "console=tty1 console=ttyS1,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet unitotem.ota.bootcount=1" \
                 > "$mnt/cmdline-trial.txt"
             sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
@@ -592,6 +609,7 @@ enable_uart=1
 kernel=kernel8.img
 initramfs initramfs8 followkernel
 EOF
+            append_config_extra /mnt/newroot/etc/unitotem/config-extra.txt "$mnt/config.txt"
             echo "console=tty1 console=ttyS1,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet unitotem.ota.bootcount=1" \
                 > "$mnt/cmdline.txt"
             sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
@@ -623,6 +641,11 @@ enable_uart=1
 kernel=kernel8.img
 initramfs initramfs8 followkernel
 EOF
+            # promote-default runs post-boot, via unitotem-boot-ok on the
+            # real system itself (not from within the fallback against a
+            # /mnt/newroot that isn't booted yet) - so the extra-config file
+            # is this system's own local /etc/unitotem, not /mnt/newroot's.
+            append_config_extra /etc/unitotem/config-extra.txt "$mnt/config.txt"
             echo "console=tty1 console=ttyS1,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet" > "$mnt/cmdline.txt"
             rm -f "$mnt/tryboot.txt" "$mnt/cmdline-trial.txt" \
                   "$mnt/config.txt.unitotem-bak" "$mnt/cmdline.txt.unitotem-bak"
