@@ -174,6 +174,10 @@ install -m 755 /kiosk/files/unitotem-boot-ok "${ROOTFS}/usr/sbin/unitotem-boot-o
 install -m 644 /kiosk/files/unitotem-boot-ok.service \
     "${ROOTFS}/etc/systemd/system/unitotem-boot-ok.service"
 
+install -m 755 /kiosk/files/unitotem-ssh-hostkey "${ROOTFS}/usr/sbin/unitotem-ssh-hostkey"
+install -m 644 /kiosk/files/unitotem-ssh-hostkey.service \
+    "${ROOTFS}/etc/systemd/system/unitotem-ssh-hostkey.service"
+
 mkdir -p "${ROOTFS}/etc/unitotem"
 install -m 644 /kiosk/files/ota-preserve.list "${ROOTFS}/etc/unitotem/ota-preserve.list"
 
@@ -223,7 +227,8 @@ chroot "${ROOTFS}" systemctl enable \
     iptables-firewall \
     kiosk-update-mode \
     start-xorg \
-    unitotem-boot-ok
+    unitotem-boot-ok \
+    unitotem-ssh-hostkey
 
 # ---------- Regenerate initramfs ----------
 
