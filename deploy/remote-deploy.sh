@@ -440,15 +440,26 @@ run_ota_sequence() {
     [ -n "$hostip" ] && [ "$hostip" != none ] || hostip=$(ip -o route get "${host}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
     [ -n "$hostip" ] || die "impossibile determinare l'IP dell'host verso il target"
 
-    if [ "$recreate_table" = 1 ]; then
-        log "Popolo il contenuto file-level della partizione di boot..."
-        local bootfs_tar; bootfs_tar=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
-        if [ -n "$bootfs_tar" ]; then
-            local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
-            wait_port_bound "$OPT_PORT" 10 || die "listener dati non pronto (bootfs)"
-            ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
-            wait "$pid" 2>/dev/null || true
-        fi
+    # Always populate the boot partition's file-level content (overlays/,
+    # bootcode.bin, README etc.) - not just on recreate_table (first
+    # provisioning). Found the hard way: real hardware kept an empty
+    # /boot/firmware/overlays/ across every OTA update it had ever received,
+    # since this whole block used to be recreate_table-gated - vc4/v3d
+    # loaded as kernel modules regardless, but with no .dtbo to apply, no
+    # DRM device was ever created (dtoverlay=vc4-kms-v3d in config.txt alone
+    # is not enough - see the config-extra.txt fix above for why config.txt
+    # itself needed a separate splice; this is the same class of gap for a
+    # different file). Safe on an already-provisioned target: cmd_populate_bootfs
+    # has its own exclude list protecting config.txt/cmdline.txt, the
+    # recovery kernel/initrd Stage 1 just wrote, and every unitotem-ota.*
+    # runtime state file.
+    log "Popolo il contenuto file-level della partizione di boot..."
+    local bootfs_tar; bootfs_tar=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
+    if [ -n "$bootfs_tar" ]; then
+        local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
+        wait_port_bound "$OPT_PORT" 10 || die "listener dati non pronto (bootfs)"
+        ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
+        wait "$pid" 2>/dev/null || true
     fi
 
     local -A block
