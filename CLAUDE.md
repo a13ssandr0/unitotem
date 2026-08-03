@@ -1,0 +1,49 @@
+# Istruzioni per Claude in questo repository
+
+## SSH/SCP verso i target UniTotem: sempre e solo non interattivo
+
+Ogni invocazione di `ssh`/`scp` verso un Raspberry Pi/target UniTotem (sistema reale o fallback OTA) **deve**
+passare per gli helper già pronti in `deploy/lib.sh` (`ssh_t`, `ota_ssh`, `scp_t`, `ota_ssh_send`, o la
+funzione `_sshpass` direttamente per casi ad-hoc) — mai una chiamata diretta a `ssh`/`scp`. Questi helper
+garantiscono `SSH_ASKPASS_REQUIRE=never` + `env -u DISPLAY -u SSH_ASKPASS` attorno a `sshpass -p
+"$OTA_PASSWORD"`, che è l'unico modo verificato per impedire che un helper grafico di askpass provi ad
+aprirsi quando l'autenticazione a password non trova credenziali pronte.
+
+**Perché questa regola esiste**: `deploy/remote-deploy.sh`'s `do_probe()` e la coda di attesa finale di
+`cmd_deploy()` (fino al 2026-08-02) invocavano `ssh`/`scp` grezzi, bypassando `_sshpass`. Risultato reale
+osservato su hardware vero: OpenSSH, senza una password pronta, prova a lanciare un askpass grafico (fallito
+per mancanza di display, log pieno di `libEGL warning: ... failed to create dri2 screen`), poi
+`Permission denied, please try again` ripetuto, poi fallimento — bloccando l'intera sequenza di deploy senza
+un errore chiaro all'inizio. Fissato wrappando tutte e tre le chiamate con `_sshpass`.
+
+**Prima di aggiungere una nuova chiamata SSH/SCP in questo codebase**: verificare che passi per uno di
+questi helper. Un buon modo per controllarlo rapidamente:
+```
+grep -n '\bssh \|\bscp \b' deploy/*.sh | grep -v '_sshpass\|ssh_t\|ota_ssh\|scp_t\|command -v\|ssh-keyscan'
+```
+Se questo comando produce righe (a parte commenti/`require_cmd`), c'è una chiamata non protetta da sistemare.
+
+## Build arm64: preferire l'hardware Raspberry reale, quando disponibile
+
+`build-kiosk.sh`'s pipeline arm64 gira sotto emulazione `qemu-aarch64` via Docker su questo host x86_64.
+Questo è **strutturalmente lento**, non un bug: `mkinitramfs` (via `copy_exec`'s uso di `ldd`, che esegue
+davvero il linker dinamico del binario target) e gli script postinst/trigger di `apt-get install` (che
+invocano binari reali come `ldconfig`, `depmod`, `systemctl`) eseguono codice arm64 vero, che deve passare
+per l'emulazione binfmt_misc — non è "solo copiare file". Confermato empiricamente in questa sessione
+confrontando con pi-gen vendorizzato in questo stesso repo: quella build usa **armhf**, non arm64
+(`scripts/common:12`, `BOOTSTRAP_ARGS+=(--arch armhf)`) — l'emulazione a 32 bit (`qemu-arm-static`) è
+storicamente più matura/veloce di quella a 64 bit (`qemu-aarch64-static`), quindi il ricordo di build pi-gen
+più veloci su questo stesso host non contraddice la spiegazione, la conferma (confronto non a parità di
+architettura).
+
+**Politica per ogni build arm64 d'ora in poi**: prima di lanciare la pipeline Docker+qemu, sondare se il
+Raspberry Pi di test (`root@<pi-host>`, via SSH — vedi [[no-ssh-password-prompts]] nella memoria per le
+credenziali) è raggiungibile. Se sì, preferire l'esecuzione nativa sul Pi per gli step effettivamente lenti
+sotto emulazione (in particolare `mkinitramfs`/stage1b) — già dimostrato più veloce e più completo in questo
+stesso progetto (~10 min contro 12+ min e incompleto sotto qemu, vedi memoria `ota-redesign-project`). Se il
+Pi non è raggiungibile, procedere con la build Docker+qemu-aarch64 attuale come fallback.
+
+**Nota di implementazione (2026-08-02)**: `build-kiosk.sh` non implementa ancora questo probe automaticamente
+— è ancora un passo manuale/procedurale da seguire quando si avvia una build arm64, non (ancora) codificato
+nello script. Prima di rifarlo un'ennesima volta a mano, vale la pena implementarlo come parte dello script
+stesso.

@@ -1,0 +1,12 @@
+#!/bin/sh
+# initramfs-tools init-premount script: entry point for the whole OTA
+# mechanism. Runs before mountroot, so it can freely inspect ROOT/DATA
+# without anything being mounted yet, and - if it decides to enter OTA mode
+# - never lets mountroot/local-bottom/switch_root happen at all (see
+# deploy/ota-engine.sh's serve-fallback, which blocks in the foreground on
+# dropbear rather than returning).
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+
+exec /usr/sbin/unitotem-ota-engine init-premount

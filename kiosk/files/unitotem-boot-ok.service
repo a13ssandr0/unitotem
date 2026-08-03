@@ -1,0 +1,11 @@
+[Unit]
+Description=UniTotem OTA - conferma avvio riuscito
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-boot-ok
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

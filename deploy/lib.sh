@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared host-side helpers for deploy/remote-deploy.sh and deploy/build-flasher.sh.
+# Shared host-side helpers for deploy/remote-deploy.sh and deploy/make-parts.sh.
 # Not meant to be executed directly.
 
 log()  { echo ">>> $*"; }
@@ -55,63 +55,114 @@ bytes_human() {
     }'
 }
 
-# Per-arch on-disk layout produced by kiosk/stage3-image.sh. Kept here as the
-# single source of truth for the host-side tooling (the target-side flasher
-# gets the same facts through the pushed manifest, see build_deploy_manifest).
-layout_data_partnum() { [ "$1" = "arm64" ] && echo 3 || echo 4; }
-layout_has_esp()      { [ "$1" = "arm64" ] && echo 0 || echo 1; }
-layout_esp_partnum()  { echo 1; }
+# ssh/scp wrappers for the ORIGINAL system and for the OTA session (dropbear
+# inside the fallback/recovery initramfs, port 2222, host key generated
+# fresh every boot - TOFU/accept-new is the deliberate trust model there,
+# not a baked-in shared key). Both authenticate with a fixed, known
+# password rather than SSH keys.
+#
+# An earlier version of this authenticated with BatchMode=yes (keys only),
+# on the assumption that trust already established elsewhere (the real
+# system's own authorized_keys, or the operator's local identity) could
+# just be propagated to wherever it was needed next. In practice that meant
+# a whole chain of propagation steps - unitotem-ota-arm copying the real
+# system's authorized_keys into unitotem-ota.conf, a separate path for
+# never-deployed targets that have no such file to copy - that keeps having
+# a moving part something else hasn't provisioned yet, without buying any
+# real security margin for this project's threat model: physical access to
+# the device already exposes as much or more (same reasoning already
+# applied to not deleting the WiFi PSK after use). A single password,
+# already used for interactive access to every device in this project, is
+# simpler and was already proven working before any of the key machinery
+# was added.
+OTA_PASSWORD="${OTA_PASSWORD:-unitotem}"
 
-# ssh/scp wrappers: consistent options, and always operate on $TARGET_USERHOST.
-SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-
-ssh_t() {
-    ssh "${SSH_OPTS[@]}" "${TARGET_USERHOST}" "$@"
+# NON_INTERACTIVE_SSH_ASKPASS_REQUIRE=never + `env -u DISPLAY -u SSH_ASKPASS`
+# is load-bearing, not decoration: without it, ssh can fall back to a
+# graphical ssh-askpass popup on the user's own desktop even with sshpass -p
+# given explicitly (confirmed happening for real earlier this project).
+_sshpass() {
+    SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS \
+        sshpass -p "$OTA_PASSWORD" "$@"
 }
 
-# Run a shell snippet on the target, feeding it on stdin (avoids quoting hell
-# for anything longer than a one-liner).
-ssh_script() {
-    ssh "${SSH_OPTS[@]}" "${TARGET_USERHOST}" "sh -s"
+SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
+          -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+
+ssh_t() {
+    _sshpass ssh "${SSH_OPTS[@]}" "${TARGET_USERHOST}" "$@"
 }
 
 scp_t() {
-    scp -o BatchMode=yes -o ConnectTimeout=10 "$@"
+    _sshpass scp -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+        -o ConnectTimeout=10 "$@"
 }
 
-# Build the small KEY=VALUE manifest describing one .img.xz|.img.zst artifact.
-# Pushed to the target next to the image (ram/part modes) and streamed as a
-# text header in front of the image bytes (net mode) - see
-# deploy/flasher/unitotem-flash for the parser.
-build_deploy_manifest() {
-    local image="$1" arch="$2"
-    local comp raw_size comp_size comp_sha256
+# $1 = host, rest = command.
+OTA_SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p 2222)
 
-    case "$image" in
-        *.img.xz)  comp=xz ;;
-        *.img.zst) comp=zstd ;;
-        *) die "Formato immagine non riconosciuto (atteso .img.xz o .img.zst): $image" ;;
-    esac
+ota_ssh() {
+    local host="$1"; shift
+    _sshpass ssh "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
+}
 
-    comp_size=$(stat -c%s "$image")
-    comp_sha256=$(sha256sum "$image" | cut -d' ' -f1)
+ota_ssh_send() {
+    # Pipe stdin to a remote command over the OTA session - used to push
+    # the recovery kernel/initrd and the boot-fs filecopy tarball onto the
+    # control channel (small, one-shot files; bulk partition data always
+    # goes over the plain-netcat DATA channel instead, see restore-part).
+    local host="$1"; shift
+    _sshpass ssh "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
+}
 
-    if [ "$comp" = xz ]; then
-        raw_size=$(xz -l --robot "$image" | awk -F'\t' '$1=="totals"{print $5}')
-    else
-        raw_size=$(zstd -l "$image" 2>/dev/null | awk 'NR==2{printf "%d", $3*1024*1024}')
-    fi
-    [ -n "$raw_size" ] && [ "$raw_size" -gt 0 ] 2>/dev/null \
-        || die "Impossibile determinare la dimensione decompressa di $image"
+# Wait until something is listening on $2/tcp on this host, up to $3
+# seconds (default 10). Used before telling a target to pull from the DATA
+# channel - never via a throwaway probe connection (see the plan/history:
+# a -z probe consuming the target's one-shot listener was a real bug in the
+# previous design).
+wait_port_bound() {
+    local port="$1" timeout="${2:-10}" waited=0
+    while ! ss -ltnH "sport = :${port}" 2>/dev/null | grep -q .; do
+        sleep 0.2
+        waited=$((waited + 1))
+        [ "$waited" -lt $((timeout * 5)) ] || return 1
+    done
+}
 
-    cat <<EOF
-UNITOTEM_ARCH=${arch}
-UNITOTEM_COMP=${comp}
-UNITOTEM_RAW_SIZE=${raw_size}
-UNITOTEM_COMP_SIZE=${comp_size}
-UNITOTEM_COMP_SHA256=${comp_sha256}
-UNITOTEM_IMAGE_NAME=$(basename "$image")
-UNITOTEM_DATA_PART=$(layout_data_partnum "$arch")
-UNITOTEM_HAS_ESP=$(layout_has_esp "$arch")
-EOF
+# Serve one file over plain TCP on $2/tcp, backgrounded, for the target to
+# pull via /dev/tcp - the DATA channel side of every restore-part/populate-
+# bootfs call. Prints the socat PID.
+#
+# socat's stdout/stderr MUST be redirected away from the function's own -
+# confirmed as a real hang on hardware, not theoretical: every caller uses
+# `pid=$(serve_file_once ...)`, and command substitution doesn't return
+# until EOF on the pipe it captures, i.e. until *every* process holding that
+# pipe's write end closes it. Without the redirect, the backgrounded socat
+# inherits a copy of that same write end and keeps it open for its entire
+# (long) listening lifetime, so `$(serve_file_once ...)` never returns at
+# all - restore-part's own ota_ssh call is never even reached, which is
+# exactly what made this look like a stuck transfer instead of a shell
+# scripting bug: nothing on the target side ever started.
+serve_file_once() {
+    local file="$1" port="$2"
+    socat -u "FILE:${file}" "TCP-LISTEN:${port},reuseaddr" >/dev/null 2>&1 &
+    echo $!
+}
+
+# Read a KEY=VALUE manifest (parts.manifest, recovery.manifest, or an
+# ota-engine.sh subcommand's own KEY=VALUE stdout) into the associative
+# array named by $1, one blank-line-terminated block per call (rewinds to
+# the next block on each invocation so a multi-block file - the parts
+# manifest's header + per-partition blocks - can be walked block by block).
+read_kv_block() {
+    local -n _out="$1"
+    _out=()
+    local line key val
+    while IFS= read -r line; do
+        [ -z "$line" ] && return 0
+        key=${line%%=*}; val=${line#*=}
+        _out["$key"]="$val"
+    done
+    [ ${#_out[@]} -gt 0 ]
 }

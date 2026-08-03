@@ -19,9 +19,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gnupg2 \
         rsync \
         git \
+        partclone \
+        device-tree-compiler \
+        initramfs-tools-core \
+        cpio \
     && rm -rf /var/lib/apt/lists/*
 
 COPY kiosk/ /kiosk/
-RUN chmod +x /kiosk/*.sh
+COPY deploy/ota-engine.sh /kiosk/files/ota-engine.sh
+COPY deploy/parts-lib.sh /kiosk/deploy-parts-lib.sh
+RUN chmod +x /kiosk/*.sh /kiosk/files/ota-engine.sh /kiosk/deploy-parts-lib.sh
 
 VOLUME ["/work", "/deploy"]

@@ -1,0 +1,29 @@
+FROM debian:bookworm
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Deliberately no qemu-user-static here (unlike Dockerfile.kiosk): partclone
+# reads/writes filesystem content, not code for a particular CPU, so the
+# same bookworm-native container generates parts sets for both amd64 and
+# arm64 images - see the OTA redesign plan's parts-set section. bookworm
+# specifically (not this host's own partclone) because the version that
+# matters is "matches what deploy/ota-engine.sh restores with on the
+# target", not any host-installed one - see kiosk/stage1-packages.sh, which
+# installs the same bookworm partclone package into the image itself.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        partclone \
+        xz-utils \
+        util-linux \
+        fdisk \
+        parted \
+        e2fsprogs \
+        dosfstools \
+        coreutils \
+        gdisk \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY deploy/parts-lib.sh /parts/parts-lib.sh
+COPY deploy/make-parts-image.sh /parts/make-parts-image.sh
+RUN chmod +x /parts/*.sh
+
+VOLUME ["/scratch", "/deploy"]

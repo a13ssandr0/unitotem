@@ -1,0 +1,19 @@
+#!/bin/sh
+exec tail -n +3 "$0"
+# UniTotem: permanent (not one-shot) manual recovery entry - installed by
+# kiosk/stage2-configure.sh at /etc/grub.d/45_unitotem_ota so update-grub
+# always regenerates it. Boots the CURRENT system's own kernel/initrd (via
+# the stable /vmlinuz, /initrd.img symlinks every Debian kernel package
+# maintains) with unitotem.ota=recover appended - the real system's own
+# initramfs (already OTA-capable, see kiosk/files/ota-init-premount) handles
+# the rest. Needs GRUB_TIMEOUT>0 (see kiosk/files/grub-default) to actually
+# be reachable - the previous GRUB_TIMEOUT=0 hid every menu entry, this one
+# included.
+menuentry 'UniTotem OTA recovery' {
+    insmod part_gpt
+    insmod part_msdos
+    insmod ext2
+    search --no-floppy --set=root --label ROOT
+    linux /vmlinuz root=LABEL=ROOT ro quiet unitotem.ota=recover
+    initrd /initrd.img
+}
