@@ -35,12 +35,12 @@ curl -fsSL https://a13ssandr0.github.io/unitotem-manager/KEY.gpg \
 curl -fsSL https://a13ssandr0.github.io/unitotem-manager/unitotem-manager.list \
     > "${ROOTFS}/etc/apt/sources.list.d/unitotem-manager.list"
 
-chroot "${ROOTFS}" apt-get update
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get update
 
 # ---------- Kernel + firmware + bootloader ----------
 
 if [ "$ARCH" = "amd64" ]; then
-    chroot "${ROOTFS}" apt-get install -y --no-install-recommends \
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         linux-image-amd64 \
         firmware-linux \
         firmware-linux-nonfree \
@@ -50,7 +50,7 @@ if [ "$ARCH" = "amd64" ]; then
         efibootmgr
 
 elif [ "$ARCH" = "arm64" ]; then
-    chroot "${ROOTFS}" apt-get install -y --no-install-recommends \
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         linux-image-arm64 \
         firmware-brcm80211 \
         firmware-linux \
@@ -59,15 +59,34 @@ elif [ "$ARCH" = "arm64" ]; then
         raspi-firmware
 fi
 
+# ---------- OTA payload (deploy/ota-engine.sh, kiosk/files/ota-hook) ----------
+# Installed in stage1 (not stage2) deliberately: kiosk/stage1-recovery-initrd.sh
+# builds the resident fallback kernel+initrd straight from this rootfs right
+# after this stage finishes, and stage2 builds the real system's own
+# initramfs from the same base later - one package list covers both, so the
+# fallback and the real system's initramfs are never out of sync with each
+# other. gdisk/parted are not on the automated OTA restore path (sfdisk
+# covers that) but are kept anyway for manual disaster recovery - see the
+# OTA redesign plan, decisions table.
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    partclone gdisk parted fdisk pv netcat-traditional dropbear-bin wpasupplicant whiptail dosfstools xz-utils
+
+mkdir -p "${ROOTFS}/usr/lib/unitotem"
+install -m 755 /kiosk/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
+ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
+
+install -m 755 /kiosk/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
+mkdir -p "${ROOTFS}/etc/unitotem"
+
 # ---------- Base system ----------
 
-chroot "${ROOTFS}" apt-get install -y \
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     locales \
     sudo curl wget ca-certificates gnupg2 \
     openssh-server \
     iproute2 iputils-ping net-tools \
     htop nano less \
-    util-linux e2fsprogs \
+    util-linux udev e2fsprogs \
     lsb-release initramfs-tools apt-utils \
     dbus dbus-user-session libpam-systemd \
     systemd-timesyncd \
@@ -78,19 +97,19 @@ chroot "${ROOTFS}" apt-get install -y \
 
 # ---------- Plymouth ----------
 
-chroot "${ROOTFS}" apt-get install -y \
-    plymouth plymouth-themes libplymouth5 imagemagick
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    plymouth plymouth-themes plymouth-label libplymouth5
 
 # ---------- GPU libraries (common) ----------
 
-chroot "${ROOTFS}" apt-get install -y \
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libglvnd0 libglx0 libgles2 libvulkan1 \
     mesa-utils libgl1-mesa-dri
 
 # ---------- GPU drivers (arch-specific) ----------
 
 if [ "$ARCH" = "amd64" ]; then
-    chroot "${ROOTFS}" apt-get install -y \
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
         intel-media-va-driver-non-free \
         i965-va-driver-shaders \
         libva2 libva-drm2 libva-wayland2 vainfo \
@@ -100,7 +119,7 @@ if [ "$ARCH" = "amd64" ]; then
         libdrm-amdgpu1
 
 elif [ "$ARCH" = "arm64" ]; then
-    chroot "${ROOTFS}" apt-get install -y \
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
         libva2 libva-drm2 vainfo \
         v4l-utils libv4l-dev
 fi
@@ -112,7 +131,7 @@ fi
 # Xorg session (no WM) is both sufficient and simpler than a Wayland
 # compositor, which would still need XWayland underneath for CEF regardless.
 
-chroot "${ROOTFS}" apt-get install -y \
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     xserver-xorg xserver-xorg-video-all xserver-xorg-input-all \
     xinit x11-xserver-utils kbd \
     pipewire pipewire-audio pipewire-pulse pipewire-jack pipewire-alsa \
@@ -123,15 +142,15 @@ chroot "${ROOTFS}" apt-get install -y \
 
 # ---------- UniTotem packages ----------
 
-chroot "${ROOTFS}" apt-get install -y \
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     python3-pip python3-apt python3-venv \
     libopenjp2-7-dev openssl mediainfo haproxy rfkill alsa-utils
 
-chroot "${ROOTFS}" apt-get install -y unitotem-manager
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y unitotem-manager
 
 # ---------- Clean up ----------
 
-chroot "${ROOTFS}" apt-get clean
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get clean
 rm -rf "${ROOTFS}/var/lib/apt/lists/"*
 
 remove_policy_rc

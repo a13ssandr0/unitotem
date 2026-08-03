@@ -1,0 +1,13 @@
+#!/bin/sh
+# initramfs-tools local-bottom script, real system only (installed by
+# kiosk/stage2-configure.sh). Runs right after mountroot, before
+# init-bottom/setup-overlays stacks the DATA overlay - catches "filesystem
+# mounts and passes fsck, but this isn't a working UniTotem system" (e.g. a
+# restore that wrote the wrong bytes but left a structurally valid ext4).
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+
+. /scripts/functions
+
+exec /usr/sbin/unitotem-ota-engine local-bottom-verify --rootmnt "${rootmnt}"

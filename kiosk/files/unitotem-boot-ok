@@ -1,0 +1,43 @@
+#!/bin/bash
+# Runs once per boot, After=multi-user.target (see unitotem-boot-ok.service):
+# reaching this point means the freshly-restored system came all the way up,
+# not just that its kernel/initrd booted. Two independent jobs:
+#   1. always clear the boot counter on the boot FAT partition (the
+#      "boots but userspace dies" fallback layer resets on every good boot,
+#      trial or not - see the OTA plan, fallback guarantee section);
+#   2. if this specific boot was a trial one (unitotem.ota.bootcount=1 on
+#      the cmdline, set by ota-engine.sh's set-trial-boot), also promote it
+#      to the permanent default - past this point a reboot no longer lands
+#      back on the resident fallback.
+set -euo pipefail
+
+BOOTFS_LABEL=FIRMWARE
+[ -d /sys/firmware/efi ] && BOOTFS_LABEL=EFI
+
+BOOTFS_DEV=$(blkid -L "$BOOTFS_LABEL" -o device 2>/dev/null || true)
+if [ -n "$BOOTFS_DEV" ]; then
+    mnt=/run/unitotem-bootfs
+    mkdir -p "$mnt"
+    if mount -t vfat "$BOOTFS_DEV" "$mnt" 2>/dev/null; then
+        rm -f "$mnt/unitotem-ota.bootcount"
+        sync
+        umount "$mnt" 2>/dev/null || true
+    fi
+fi
+
+if grep -qw "unitotem.ota.bootcount=1" /proc/cmdline; then
+    FIRMWARE=bios
+    if [ -d /sys/firmware/efi ]; then
+        FIRMWARE=uefi
+    elif [ -r /proc/device-tree/model ] && grep -qi "raspberry pi" /proc/device-tree/model; then
+        FIRMWARE=rpi
+    fi
+
+    if [ "$FIRMWARE" = rpi ]; then
+        ROOTSRC=$(findmnt -no SOURCE / 2>/dev/null || true)
+        PK=$(lsblk -no PKNAME "$ROOTSRC" 2>/dev/null || true)
+        [ -n "$PK" ] && unitotem-ota-engine promote-default --firmware rpi --disk "/dev/$PK" --bootfs-part 1
+    else
+        unitotem-ota-engine promote-default --firmware "$FIRMWARE"
+    fi
+fi

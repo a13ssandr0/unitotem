@@ -1,0 +1,74 @@
+#!/bin/bash
+# Arms OTA mode from a running, already-deployed UniTotem system and
+# reboots into it: writes the self-clearing flag file the real system's own
+# initramfs (kiosk/files/ota-init-premount) checks for, plus the network
+# hints the fallback needs to reach back out. remote-deploy.sh's whole
+# "prepared target" deploy path is one `ssh_t unitotem-ota-arm ...` call -
+# no scp, no heredoc, no base64 cmdline juggling (that machinery is still
+# needed only for the *unprepared legacy* target path - see arm_grub/arm_rpi
+# in deploy/remote-deploy.sh).
+set -euo pipefail
+
+HOST="" PORT="9700" WIPE_DATA=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --host) HOST="$2"; shift 2 ;;
+        --port) PORT="$2"; shift 2 ;;
+        --wipe-data) WIPE_DATA=1; shift ;;
+        *) echo "opzione sconosciuta: $1" >&2; exit 1 ;;
+    esac
+done
+
+BOOTFS_LABEL=FIRMWARE
+[ -d /sys/firmware/efi ] && BOOTFS_LABEL=EFI
+BOOTFS_DEV=$(blkid -L "$BOOTFS_LABEL" -o device 2>/dev/null) \
+    || { echo "partizione di boot ($BOOTFS_LABEL) non trovata" >&2; exit 1; }
+
+mnt=/run/unitotem-bootfs
+mkdir -p "$mnt"
+# Reuse whatever mount of $BOOTFS_DEV already exists (normally /boot/firmware
+# via fstab) instead of trying an independent second mount at $mnt - Linux
+# won't hand out an independent read-write superblock for a device that
+# already has an active mount, so a plain second `mount -t vfat` here
+# silently degrades to read-only whenever /boot/firmware itself isn't
+# currently mounted rw (confirmed on hardware: `errors=remount-ro`, the
+# default vfat mount option this fstab entry gets, had left it stuck ro from
+# an earlier hiccup - the same class of bug already fixed for the OTA
+# engine's own bootfs mounts, see ota_mount_bootfs_rw in deploy/ota-engine.sh).
+if mountpoint -q "$mnt"; then
+    mount -o remount,rw "$mnt" 2>/dev/null || true
+else
+    existing=$(awk -v d="$BOOTFS_DEV" '$1==d{print $2; exit}' /proc/mounts)
+    if [ -n "$existing" ]; then
+        mount -o remount,rw "$existing" || { echo "remount rw di $existing fallito" >&2; exit 1; }
+        mount --bind "$existing" "$mnt" || { echo "bind-mount di $existing su $mnt fallito" >&2; exit 1; }
+    else
+        mount -t vfat "$BOOTFS_DEV" "$mnt" || { echo "mount di $BOOTFS_DEV fallito" >&2; exit 1; }
+    fi
+fi
+
+{
+    [ -n "$HOST" ] && echo "OTA_HOST=${HOST}"
+    echo "OTA_CTRL_PORT=${PORT}"
+} > "$mnt/unitotem-ota.conf"
+
+echo "UNITOTEM_OTA_WIPE_DATA=${WIPE_DATA}" > "$mnt/unitotem-ota.request"
+
+sync
+umount "$mnt" 2>/dev/null || true
+
+echo "Armato. Riavvio..."
+sync
+# setsid, not just nohup: this runs over a backgrounded SSH command
+# (remote-deploy.sh's ssh_t call needs to see a clean exit before whatever
+# tears sshd down as part of the reboot happens) - nohup alone only ignores
+# SIGHUP, it does not detach from the login session's systemd-logind scope,
+# which can still reap everything in that scope in a cgroup-level kill when
+# the session closes. setsid moves reboot into a genuinely new session so it
+# survives that. Confirmed live on real hardware: without setsid and without
+# a grace period, "reboot" never even reached the journal (killed before it
+# could act); the brief sleep gives it room to actually start before this
+# script - and the SSH session with it - exits.
+setsid nohup reboot >/dev/null 2>&1 < /dev/null &
+sleep 2

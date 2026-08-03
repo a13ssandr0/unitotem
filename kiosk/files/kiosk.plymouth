@@ -1,8 +1,0 @@
-[Plymouth Theme]
-Name=Kiosk
-Description=Kiosk boot splash
-ModuleName=script
-
-[script]
-ImageDir=/usr/share/plymouth/themes/kiosk
-ScriptFile=/usr/share/plymouth/themes/kiosk/kiosk.script

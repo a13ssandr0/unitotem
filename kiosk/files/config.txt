@@ -3,13 +3,19 @@ arm_64bit=1
 max_framebuffers=2
 disable_splash=1
 boot_delay=0
+enable_uart=1
+kernel=kernel8.img
+initramfs initramfs8 followkernel
 
 [pi4]
-dtoverlay=vc4-kms-v3d
+# dtoverlay=vc4-kms-v3d disabled: the Debian generic kernel package
+# (linux-image-arm64) ships no overlays/ directory, so this can't be
+# applied yet - see the OTA redesign plan's arm64 follow-up (switch to
+# linux-image-rpi-v8 to restore KMS).
 dtparam=audio=on
 
 [pi5]
-dtoverlay=vc4-kms-v3d-pi5
+# dtoverlay=vc4-kms-v3d-pi5 disabled, same reason as above
 dtparam=audio=on
 
 [all]

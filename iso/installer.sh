@@ -428,7 +428,7 @@ chroot "$TARGET" apt-get install -y \
     python3 python3-dbus python3-gi python3-pyudev \
     gir1.2-glib-2.0 \
     iptables \
-    plymouth plymouth-themes libplymouth5 imagemagick
+    plymouth plymouth-themes plymouth-label libplymouth5
 
 chroot "$TARGET" apt-get install -y \
     libglvnd0 libglx0 libgles2 libvulkan1 mesa-utils libgl1-mesa-dri
@@ -541,19 +541,15 @@ network:
 EOF
 chmod 600 "$TARGET/etc/netplan/00-default.yaml"
 
-# Plymouth theme
-mkdir -p "$TARGET/usr/share/plymouth/themes/kiosk"
-install -m 644 "$KIOSK_FILES/kiosk.plymouth" "$TARGET/usr/share/plymouth/themes/kiosk/"
-install -m 644 "$KIOSK_FILES/kiosk.script"   "$TARGET/usr/share/plymouth/themes/kiosk/"
-chroot "$TARGET" convert -size 256x256 xc:none \
-    -fill 'rgba(34,130,242,0.9)' \
-    -draw 'roundrectangle 20,20,235,235,30,30' \
-    /usr/share/plymouth/themes/kiosk/logo.png 2>/dev/null || true
-chroot "$TARGET" update-alternatives --install \
-    /usr/share/plymouth/themes/default.plymouth \
-    default.plymouth \
-    /usr/share/plymouth/themes/kiosk/kiosk.plymouth 100
-chroot "$TARGET" plymouth-set-default-theme kiosk 2>/dev/null || true
+# Plymouth
+# No theme is installed/pinned here: the unitotem-manager package installs
+# and selects the real "unitotem" theme (via update-alternatives AND
+# plymouth-set-default-theme, since plymouthd.conf's Theme= key takes
+# priority over the default.plymouth alternative - see
+# src/main.c:load_settings()/show_default_splash() upstream) when it's
+# installed on top of this image. Pinning a placeholder theme here would
+# leave plymouthd.conf's Theme= key pointing at it, which the manager's
+# update-alternatives call alone cannot override.
 mkdir -p "$TARGET/etc/plymouth"
 install -m 644 "$KIOSK_FILES/plymouthd.conf" "$TARGET/etc/plymouth/plymouthd.conf"
 
