@@ -2,6 +2,9 @@ deploy/*
 !deploy/*.sh
 !deploy/flasher/
 work/*
+!work/loopback-test/
+work/loopback-test/*
+!work/loopback-test/*.sh
 config
 postrun.sh
 SKIP
