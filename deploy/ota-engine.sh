@@ -896,6 +896,18 @@ cmd_serve_fallback() {
     local reason="${ARG[reason]:-richiesta esplicita}"
     log "Modalita' OTA: $reason"
 
+    # Power LED blinks 50/50 for the whole OTA session (fallback and the
+    # real system's own initramfs alike, both call this same function) as a
+    # visual "this device is in maintenance/receiving mode" signal - the
+    # disk-activity LED (ACT/mmc0/mmc1) is deliberately left untouched, its
+    # trigger stays whatever the board's normal default already is.
+    # Best-effort and silent: amd64 hardware has no such sysfs path at all.
+    if [ -w /sys/class/leds/PWR/trigger ]; then
+        echo timer > /sys/class/leds/PWR/trigger 2>/dev/null || true
+        echo 500 > /sys/class/leds/PWR/delay_on 2>/dev/null || true
+        echo 500 > /sys/class/leds/PWR/delay_off 2>/dev/null || true
+    fi
+
     local myip; myip=$(configure_networking_ota || true)
 
     mkdir -p /run/dropbear
