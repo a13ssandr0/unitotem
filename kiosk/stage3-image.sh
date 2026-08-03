@@ -208,8 +208,20 @@ if [ "$ARCH" = "arm64" ]; then
     FWDIR=/mnt/boot/firmware
 
     [ -f "$FWDIR/kernel8.img" ] || boot_assert_fail "$FWDIR/kernel8.img assente"
-    magic=$(dd if="$FWDIR/kernel8.img" bs=1 skip=56 count=4 2>/dev/null)
-    [ "$magic" = "ARMd" ] || boot_assert_fail "kernel8.img non e' un Image arm64 valido (magic letto: '${magic}', atteso 'ARMd' a offset 0x38)"
+    # Two valid formats here, not one: a raw uncompressed arm64 Image
+    # ("ARMd" magic at offset 0x38 - what the generic Debian kernel this
+    # project used to ship produced), or a gzip-compressed one (magic
+    # 1f8b at offset 0) - the Pi firmware bootloader (start4.elf etc.)
+    # decompresses gzip kernel8.img on the fly at boot, and that is
+    # exactly the format linux-image-rpi-v8's own vmlinuz ships in
+    # (confirmed directly against the real package, not assumed). Accept
+    # either; only reject a file that is neither.
+    magic_gzip=$(dd if="$FWDIR/kernel8.img" bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    if [ "$magic_gzip" != "1f8b" ]; then
+        magic=$(dd if="$FWDIR/kernel8.img" bs=1 skip=56 count=4 2>/dev/null)
+        [ "$magic" = "ARMd" ] \
+            || boot_assert_fail "kernel8.img non e' ne' un Image arm64 grezzo valido (magic letto: '${magic}', atteso 'ARMd' a offset 0x38) ne' gzip-compresso (magic: '${magic_gzip}', atteso '1f8b')"
+    fi
 
     dtb_count=$(find "$FWDIR" -maxdepth 1 -iname "bcm27*.dtb" | wc -l)
     [ "$dtb_count" -gt 0 ] || boot_assert_fail "nessun bcm27*.dtb su $FWDIR"
