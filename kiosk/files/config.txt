@@ -1,3 +1,14 @@
+# NOTE: this file's real-world reach is narrower than it looks. Every device
+# deployed through deploy/remote-deploy.sh (the only supported path - the
+# old whole-disk dd flasher is gone) gets its actual boot-partition
+# config.txt written at runtime by deploy/ota-engine.sh's
+# cmd_set_default_recovery/cmd_set_trial_boot/cmd_promote_default, not by
+# this file - it only ships as-is if someone dd's the built .img directly,
+# bypassing remote-deploy.sh entirely (not a documented/supported path).
+# kiosk/files/config-extra.txt is the actual live source of truth for the
+# [pi4]/[pi5] dtoverlay/dtparam content below (ota-engine.sh appends it onto
+# the boot-selection lines it owns) - keep the two in sync by hand, there is
+# no templating between them.
 [all]
 arm_64bit=1
 max_framebuffers=2

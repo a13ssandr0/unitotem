@@ -180,6 +180,9 @@ install -m 644 /kiosk/files/unitotem-ssh-hostkey.service \
 
 mkdir -p "${ROOTFS}/etc/unitotem"
 install -m 644 /kiosk/files/ota-preserve.list "${ROOTFS}/etc/unitotem/ota-preserve.list"
+if [ "$ARCH" = "arm64" ]; then
+    install -m 644 /kiosk/files/config-extra.txt "${ROOTFS}/etc/unitotem/config-extra.txt"
+fi
 
 # ---------- System tuning ----------
 
