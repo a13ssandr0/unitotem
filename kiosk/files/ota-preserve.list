@@ -5,12 +5,16 @@
 # here gets pulled back in from the previous install. Never list structural
 # files here (fstab, systemd units, initramfs-tools config, PAM) - those
 # must always come from the new image.
+#
+# ssh/ssh_host_* deliberately NOT listed here: the real system's host key
+# is now handled by its own dedicated mechanism (unitotem-ssh-hostkey.service,
+# backed by /mnt/data/unitotem/ssh-host-keys/, restored on every boot before
+# ssh.service starts) rather than this once-per-OTA overlay migration.
 OTA_PRESERVE_LIST_VERSION=1
 
 hostname
 hosts
 machine-id
-ssh/ssh_host_*
 NetworkManager/system-connections/*
 netplan/*
 localtime

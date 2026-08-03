@@ -1,0 +1,13 @@
+[Unit]
+Description=UniTotem - host key SSH persistente su DATA
+After=local-fs.target
+Before=ssh.service
+RequiresMountsFor=/mnt/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-ssh-hostkey
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
