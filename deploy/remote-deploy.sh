@@ -189,13 +189,18 @@ REMOTE_EOF
         # raspberrypi/rpi-eeprom#716: "reboot '0 tryboot' on a mainline
         # kernel does not cause the tryboot behavior") that this logic lives
         # only in the raspberrypi/linux kernel fork, not in Debian's generic
-        # arm64 kernel that this image currently ships (kiosk/stage1-packages.sh).
-        # Model/systemd alone can't distinguish that, so until the image
-        # switches to linux-image-rpi-v8 (tracked as a separate follow-up,
-        # already needed for KMS), tryboot is never actually usable here -
-        # rpi-legacy (direct config.txt swap, protected by the initramfs
-        # integrity checks + boot counter instead of firmware-level
-        # protection) is what actually works on this kernel.
+        # arm64 kernel this image used to ship. kiosk/stage1-packages.sh has
+        # since switched to linux-image-rpi-v8 (the real raspberrypi/linux
+        # kernel, needed for KMS too), which in principle carries the tryboot
+        # PM_RSTS logic - but that has NOT been verified on real hardware
+        # yet, deliberately: re-enabling this needs its own careful
+        # hardware pass (does this Pi's EEPROM/bootloader version actually
+        # support tryboot at all? does "0 tryboot" reach PM_RSTS on this
+        # exact kernel build?), not bundled into the kernel-switch change
+        # that unlocked it. Still forced off for now - rpi-legacy (direct
+        # config.txt swap, protected by the initramfs integrity checks +
+        # boot counter instead of firmware-level protection) remains the
+        # tested, working path. See PLAN.md's arm64 follow-up section.
         TRYBOOT_CAPABLE=0
     elif [ "${P[EFI]}" = 1 ]; then
         ARCH=amd64; FIRMWARE=uefi; TRYBOOT_CAPABLE=0

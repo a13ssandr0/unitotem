@@ -50,8 +50,19 @@ if [ "$ARCH" = "amd64" ]; then
         efibootmgr
 
 elif [ "$ARCH" = "arm64" ]; then
+    # linux-image-rpi-v8, not the generic Debian linux-image-arm64: the
+    # generic kernel's version string never matches raspi-firmware's own
+    # z50-raspi-firmware postinst hook (flavour "${kver#*-rpi-}" only
+    # recognises v8|v8-rt|2712|v6|v7|v7l), so that hook silently skipped
+    # copying kernel8.img/initramfs8/dtbs, and it ships no overlays/ at all
+    # (no KMS). The real rpi kernel fixes both: the hook now matches
+    # natively (verified against the actual package - flavour resolves to
+    # "v8", producing exactly kernel8.img/initramfs8, the filenames this
+    # project already expects) and ships overlays/ including
+    # vc4-kms-v3d(-pi5).dtbo, which kiosk/files/config.txt now enables. See
+    # PLAN.md's arm64 follow-up section for the full history.
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        linux-image-arm64 \
+        linux-image-rpi-v8 \
         firmware-brcm80211 \
         firmware-linux \
         firmware-linux-nonfree \

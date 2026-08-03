@@ -177,12 +177,6 @@ install -m 644 /kiosk/files/unitotem-boot-ok.service \
 mkdir -p "${ROOTFS}/etc/unitotem"
 install -m 644 /kiosk/files/ota-preserve.list "${ROOTFS}/etc/unitotem/ota-preserve.list"
 
-if [ "$ARCH" = "arm64" ]; then
-    mkdir -p "${ROOTFS}/etc/kernel/postinst.d"
-    install -m 755 /kiosk/files/rpi-firmware-sync \
-        "${ROOTFS}/etc/kernel/postinst.d/zz-unitotem-rpi-firmware"
-fi
-
 # ---------- System tuning ----------
 
 cat >> "${ROOTFS}/etc/sysctl.conf" << 'EOF'
@@ -236,14 +230,18 @@ chroot "${ROOTFS}" systemctl enable \
 chroot "${ROOTFS}" update-initramfs -u -k all
 
 # ---------- arm64: populate FIRMWARE with the real system's boot files ----------
-# Same fix applied by hand to the real Pi during this session's Step 0 -
-# raspi-firmware's own kernel postinst hook (z50-raspi-firmware) only
-# recognises Raspberry Pi Foundation kernel version strings (*-rpi-v8 etc),
-# not the generic Debian linux-image-arm64 this project installs, so it
-# never copies kernel8.img/initramfs8/the dtbs on its own. Do it here at
-# build time (kiosk/files/rpi-firmware-sync, installed above, keeps this in
-# sync on every later kernel upgrade) - kiosk/stage3-image.sh's boot-ability
-# assertions catch it immediately if this ever regresses.
+# Now that stage1 installs the real linux-image-rpi-v8 (not generic Debian
+# linux-image-arm64), raspi-firmware's own kernel/initramfs postinst hooks
+# (z50-raspi-firmware, which this project no longer needs to work around -
+# see PLAN.md's arm64 follow-up) *should* already have copied
+# kernel8.img/initramfs8/the dtbs during stage1's apt-get install. This
+# manual copy stays anyway as a defensive safety net: linux-image-rpi-v8 and
+# raspi-firmware are installed in the same apt-get transaction with no
+# explicit Depends between them, so dpkg's configure order across the two
+# isn't guaranteed - if the kernel's postinst happens to run before
+# raspi-firmware's hook file exists, this catches it. Idempotent either way,
+# and kiosk/stage3-image.sh's boot-ability assertions catch it immediately
+# if it ever regresses.
 if [ "$ARCH" = "arm64" ]; then
     KVER=$(cd "${ROOTFS}/lib/modules" && ls -1 | head -1)
     [ -n "${KVER}" ] || { echo "No kernel found under ${ROOTFS}/lib/modules" >&2; exit 1; }
