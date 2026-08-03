@@ -1334,3 +1334,45 @@ implementate in questa sessione:
    da qualche parte (backup) per poter essere **ripristinata** su una nuova installazione dello stesso
    dispositivo, non solo propagata in avanti — dettaglio da chiarire con l'utente quando si affronta questo
    punto (dove va il backup: solo su DATA, o anche esportato altrove).
+
+## 18. Le 3 richieste di §16 implementate e verificate via loopback (2026-08-03)
+
+Tutte e tre implementate nella stessa sessione, su richiesta esplicita dell'utente ("Fallo ora insieme agli
+altri" per il kernel switch, "Solo su DATA" per il backup della host key) — non trattate come sessioni
+separate come inizialmente raccomandato.
+
+1. **Kernel switch a `linux-image-rpi-v8`.** `kiosk/stage1-packages.sh` installa ora il kernel reale
+   Raspberry Pi invece del generico Debian; `kiosk/files/config.txt` abilita `dtoverlay=vc4-kms-v3d`(-pi5);
+   `kiosk/files/rpi-firmware-sync` (l'hook custom che aggirava il mismatch del vecchio kernel) è stato
+   rimosso, ora ridondante. **Bug reale trovato e fissato**: il kernel reale ships `vmlinuz` **compresso
+   gzip** (magic `1f8b`), non come Image arm64 grezzo (magic `ARMd` a 0x38) come il vecchio kernel Debian —
+   il gate di avviabilità in `kiosk/stage3-image.sh` (aggiunto in una sessione precedente) lo ha beccato
+   correttamente al primo giro, fissato per accettare entrambi i formati. **Stesso identico controllo
+   duplicato in `work/loopback-test/inside-arm64.sh` e `inside-real-sd.sh`** (script gitignored, non
+   tracciati) — mancato nel primo giro di fix, la loopback verification l'ha ribeccato al secondo giro,
+   sistemato allo stesso modo in entrambi.
+2. **LED di accensione lampeggiante 50/50 in modalità OTA.** Aggiunto in `cmd_serve_fallback()` in
+   `deploy/ota-engine.sh` — un solo punto di modifica copre sia il fallback residente sia l'initramfs OTA-
+   capable del sistema reale, dato che entrambi chiamano la stessa funzione. Solo il LED PWR è toccato, il
+   LED di attività disco resta al default. Best-effort e silenzioso (niente sysfs su amd64).
+3. **Host key SSH persistente su DATA.** Nuovo `kiosk/files/unitotem-ssh-hostkey` (script) +
+   `.service` (`Before=ssh.service`, `RequiresMountsFor=/mnt/data`): al primo boot genera la chiave e la
+   salva in `/mnt/data/unitotem/ssh-host-keys/`, ai boot successivi la ripristina da lì invece di
+   rigenerarla. `ota-preserve.list`'s `ssh/ssh_host_*` rimosso (ridondante, la persistenza ora passa da
+   questo meccanismo dedicato, non dalla migrazione overlay `/etc`).
+
+**Bug indipendente trovato e fissato nello stesso giro** (non una delle 3 richieste): `kiosk/files/unitotem-
+boot-ok` aveva lo stesso bug EBUSY (doppio mount dello stesso device di boot) già fissato altrove in
+`unitotem-ota-arm` e `deploy/ota-engine.sh`'s `ota_mount_bootfs_rw` — trovato rivedendo il file per il lavoro
+sulla host key, sistemato con lo stesso pattern reuse-and-remount.
+
+**Verifica**: rebuild completo arm64 (`build-kiosk.sh`, stage1/1b/2 cachati + stage3 rifatto dopo il fix del
+gate), parts set rigenerato, loopback test (`work/loopback-test/run-arm64.sh`) **50/50 controlli passati,
+zero regressioni** dopo i due fix (gate + duplicato nel driver di test). 4 commit separati, uno per
+feature/fix (kernel switch, LED, host key, bugfix EBUSY indipendente).
+
+**Non ancora verificato**: nessuna delle 3 feature è stata confermata su hardware reale in questa sessione
+— KMS attivo (`vc4-kms-v3d` effettivamente in uso, non solo dtoverlay presente), lampeggio LED visibile
+durante OTA, ciclo genera-al-primo-boot/ripristina-ai-successivi della host key attraverso un deploy reale
+che preserva DATA. Prossimo passo naturale, con lo stesso rigore già usato per gli altri fix di questa
+sessione (loopback prima, poi hardware — mai saltare uno strato).
