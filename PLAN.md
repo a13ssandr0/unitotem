@@ -1474,3 +1474,48 @@ parta da un disco già UniTotem-provisionato e riesegua `run_ota_sequence` una s
 copertura di regressione a questa intera classe di bug invece di scoprirli solo su hardware reale come
 successo due volte in questa sessione. Non implementato in questa sessione per limiti di tempo — sessione
 dedicata futura.
+
+## 21. Gap chiuso: "Round 2" nel loopback test per il percorso già-provisionato, più un bug di `.gitignore` trovato lungo il percorso (2026-08-03)
+
+Chiude il follow-up del §20, su richiesta esplicita dell'utente ("verifica tutto il processo ota su device
+già provisioned").
+
+**Bug trovato lungo il percorso, indipendente dal resto**: `work/loopback-test/*.sh` (l'intero harness di
+test — `inside.sh`, `inside-arm64.sh`, `inside-real-sd.sh`, `run*.sh`) **non è mai stato tracciato in git**,
+per tutta la storia del progetto — `.gitignore`'s `work/*` è un ignore totale senza eccezioni, a differenza
+di `deploy/*` che ha già `!deploy/*.sh` per lo stesso motivo. Fissato applicando la stessa convenzione
+(`!work/loopback-test/` + `work/loopback-test/*` + `!work/loopback-test/*.sh`) e committando gli script
+esistenti — altrimenti il lavoro di questa sessione (compreso il Round 2 sotto) sarebbe rimasto solo sulla
+macchina locale, mai condiviso né backuppato.
+
+**Round 2**: `inside-arm64.sh` riusa lo stesso loop device già provisionato e promosso dal Round 1 (sopra),
+ma invece di richiamare a mano i sottocomandi di `ota-engine.sh` (come fa il Round 1, e come non avrebbe
+mai potuto intercettare i bug del §19/§20) **estrae ed esegue la vera `run_ota_sequence()` da
+`deploy/remote-deploy.sh`** — sempre fresca ad ogni esecuzione (`sed` dal file corrente, mai una copia
+statica: una copia scratchpad di questa stessa funzione era andata stale in questa sessione e aveva causato
+un fallimento reale e confuso). `ota_ssh`/`ota_ssh_send` sono ridefinite localmente per eseguire il comando
+con `eval` invece che via SSH (il "target" è il container stesso); `unitotem-ota-engine` è risolta come
+funzione bash con lo stesso nome invece che un symlink in PATH (`/usr/local/bin` si è rivelato read-only
+nell'immagine `debian:bookworm` del test). Il `reboot -f` finale della funzione viene intercettato, non
+eseguito per davvero — un container `--privileged` può davvero riavviare l'host Docker via un vero
+`reboot(2)`, e il test deve solo verificare cosa è stato scritto su disco.
+
+**Tre bug dell'harness trovati e fissati durante lo sviluppo del Round 2** (nessuno nel codice di
+produzione — tutti nel test appena scritto): nome di funzione fra virgolette non valido per bash
+(`"unitotem-ota-engine"()` → `unitotem-ota-engine()`, verificato prima localmente con un test minimo prima
+di rilanciare), `chmod`/`ln` su `/usr/local/bin` read-only (risolto passando a funzione bash, non serve più
+scrivere sul filesystem), e `iproute2` (fornisce `ss`) mancante dalla lista `apt-get install` del container
+— `deploy/lib.sh`'s `wait_port_bound()` non era mai stato esercitato prima da questo harness (il Round 1
+usa un proprio pattern `sleep 0.5` fisso, non `wait_port_bound`).
+
+**Risultato finale**: **74/74 controlli passati, zero fallimenti**, inclusi tutti i controlli nuovi del
+Round 2 (`overlays/` ripopolata, `dtoverlay=vc4-kms-v3d` presente sia nel config.txt di prova sia in quello
+promosso, DATA preservata — non riformattata — confermato via `unitotem-ota: DATA preservata` nel log).
+Commit unico (harness + gitignore + Round 2, dato che sono la stessa unità di lavoro). Il gap del §20 è
+ora chiuso: un futuro regresso in questa classe di bug (logica di `remote-deploy.sh` su quali sottocomandi
+chiamare/saltare per un target già provisionato) verrà intercettato dal loopback test, non solo scoperto su
+hardware reale come successo due volte in questa sessione.
+
+**Non esteso in questa sessione**: `inside-real-sd.sh` (il controparte per SD card reale, non loopback) non
+ha ricevuto lo stesso scenario Round 2 — richiede hardware fisico per essere eseguito, non verificabile in
+questa sessione.
