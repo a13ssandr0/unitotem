@@ -18,7 +18,23 @@ BOOTFS_DEV=$(blkid -L "$BOOTFS_LABEL" -o device 2>/dev/null || true)
 if [ -n "$BOOTFS_DEV" ]; then
     mnt=/run/unitotem-bootfs
     mkdir -p "$mnt"
-    if mount -t vfat "$BOOTFS_DEV" "$mnt" 2>/dev/null; then
+    # Reuse whatever mount of $BOOTFS_DEV already exists (normally
+    # /boot/firmware via fstab) instead of an independent second mount -
+    # same EBUSY/errors=remount-ro class of bug already fixed in
+    # unitotem-ota-arm and deploy/ota-engine.sh's ota_mount_bootfs_rw.
+    mounted=0
+    if mountpoint -q "$mnt"; then
+        mount -o remount,rw "$mnt" 2>/dev/null && mounted=1
+    else
+        existing=$(awk -v d="$BOOTFS_DEV" '$1==d{print $2; exit}' /proc/mounts)
+        if [ -n "$existing" ]; then
+            mount -o remount,rw "$existing" 2>/dev/null \
+                && mount --bind "$existing" "$mnt" 2>/dev/null && mounted=1
+        else
+            mount -t vfat "$BOOTFS_DEV" "$mnt" 2>/dev/null && mounted=1
+        fi
+    fi
+    if [ "$mounted" = 1 ]; then
         rm -f "$mnt/unitotem-ota.bootcount"
         sync
         umount "$mnt" 2>/dev/null || true
