@@ -1376,3 +1376,63 @@ feature/fix (kernel switch, LED, host key, bugfix EBUSY indipendente).
 durante OTA, ciclo genera-al-primo-boot/ripristina-ai-successivi della host key attraverso un deploy reale
 che preserva DATA. Prossimo passo naturale, con lo stesso rigore già usato per gli altri fix di questa
 sessione (loopback prima, poi hardware — mai saltare uno strato).
+
+## 19. Verifica hardware del kernel switch: bug reale trovato, `config.txt` non arrivava mai a un device reale (2026-08-03)
+
+Primo deploy reale della sessione (`deploy/remote-deploy.sh deploy`) verso il Pi di test: l'arm iniziale
+(`unitotem-ota-arm`) è riuscito (Pi rebootato in fallback, confermato via porta 2222 raggiungibile) ma
+`remote-deploy.sh` ha letto un falso negativo sull'exit code della sessione SSH che lo invoca (la stessa
+classe di race già documentata nei commenti di `unitotem-ota-arm`: il reboot, per quanto disaccoppiato via
+`setsid`, può comunque abbattere la sessione SSH prima che il suo exit 0 sia visto dal chiamante) — non
+un vero fallimento del comando remoto. Recuperato con lo script scratchpad già collaudato in questa sessione
+(`run_ota_sequence()` invocata direttamente, bypassando il probe su porta 22 di `cmd_deploy`).
+
+**Bug reale trovato lungo il percorso, indipendente dal falso negativo sopra**: lo scratchpad aveva un
+`/dev/mmcblk1` hardcoded da una probe precedente — il disco fisico sotto il **sistema reale** (porta 22) e
+sotto l'**ambiente di fallback** (porta 2222, initramfs minimale) enumera con numeri diversi
+(`mmcblk1` vs `mmcblk0` per lo stesso disco). `remote-deploy.sh`'s `do_probe()` è già protetto da questo
+(richiede un path stabile `/dev/disk/by-id/...`/`by-path/...`, rifiuta di procedere su un nome grezzo) — lo
+scratchpad l'aveva bypassato. Corretto usando `/dev/disk/by-id/mmc-00000_0x10105de5`, nessuna modifica al
+codice di produzione necessaria per questo punto.
+
+**Bug reale trovato *nel* codice di produzione, molto più significativo**: dopo un trial-boot riuscito
+(kernel `6.12.96+rpt-rpi-v8` confermato via `uname -r`, `/etc/kiosk` presente, `unitotem-boot-ok.service`
+uscito 0/SUCCESS), **nessun `dtoverlay=` KMS sul dispositivo reale** — `grep dtoverlay=vc4
+/boot/firmware/config.txt` non trovava nulla, `/sys/class/drm/` non mostrava alcuna card vc4. Causa
+radice, non quella inizialmente ipotizzata (il gate di `populate-bootfs` legato a `recreate_table` — quello
+esiste ma è irrilevante qui, dato che `cmd_populate_bootfs` esclude esplicitamente `config.txt`/
+`cmdline.txt` dall'estrazione): **`cmd_set_default_recovery`, `cmd_set_trial_boot` e `cmd_promote_default`
+in `deploy/ota-engine.sh` scrivono ciascuno un `config.txt`/`tryboot.txt` con un template minimo
+hardcoded direttamente nello script** (solo `arm_64bit=1`, `enable_uart=1`, `kernel=`, `initramfs=...
+followkernel`) — **mai** il contenuto reale di `kiosk/files/config.txt` costruito nell'immagine. Dato che
+`deploy/remote-deploy.sh` è l'**unico** percorso di deploy supportato (il vecchio flasher whole-disk `dd` è
+stato rimosso, §17 step 3), questo significa che `dtoverlay=vc4-kms-v3d`/`-pi5` in `kiosk/files/config.txt`
+non ha mai raggiunto **nessun** dispositivo reale attraverso la pipeline — non solo un gap degli
+aggiornamenti OTA, un gap fin dal primo provisioning.
+
+**Fix**: introdotto `kiosk/files/config-extra.txt` — solo il contenuto che non è selezione-del-kernel
+(`max_framebuffers`, `disable_splash`, `boot_delay`, le sezioni `[pi4]`/`[pi5]` con `dtoverlay=`/
+`dtparam=audio=on`). Installato su ROOT in `kiosk/stage2-configure.sh`
+(`/etc/unitotem/config-extra.txt`). Nuovo helper `append_config_extra()` in `deploy/ota-engine.sh`,
+chiamato da `cmd_set_trial_boot`'s `rpi-tryboot`/`rpi-legacy` (che leggono da
+`/mnt/newroot/etc/unitotem/config-extra.txt`, girano nel fallback contro la ROOT appena ripristinata) e da
+`cmd_promote_default`'s `rpi` (che legge da `/etc/unitotem/config-extra.txt`, gira **dopo** il boot, sul
+sistema reale stesso, via `unitotem-boot-ok`). `cmd_set_default_recovery` (config.txt del **fallback**)
+deliberatamente **non** tocca questo helper: il fallback non fa grafica, non serve KMS lì.
+`kiosk/files/config.txt` resta nel repo come riferimento/per un eventuale flash diretto fuori pipeline, con
+un commento che spiega la sua portata reale ora limitata; nessun templating fra i due file, vanno tenuti
+sincronizzati a mano.
+
+**Verifica loopback aggiornata di conseguenza**: `work/loopback-test/inside-arm64.sh` e `inside-real-sd.sh`
+avevano un gap corrispondente — nessun controllo verificava mai che `dtoverlay=` arrivasse in
+`tryboot.txt`/`config.txt` promosso, quindi questo bug sarebbe potuto ripassare inosservato anche dopo il
+fix di oggi. Aggiunti controlli espliciti in entrambi; per `promote-default` (che nel test gira senza
+chroot, sulla root del container) `config-extra.txt` va copiato a mano in `/etc/unitotem/` prima della
+chiamata, altrimenti il controllo passerebbe per assenza-di-file invece che per verifica reale.
+
+**Stato**: fix applicato, rebuild arm64 completo, parts rigenerato, loopback riverificato — **54/54
+controlli passati, zero fallimenti**, inclusi i due nuovi controlli aggiunti apposta
+(`tryboot.txt include il dtoverlay KMS`, `config.txt promosso include il dtoverlay KMS`, entrambi PASS).
+Commit separato dalle 3 feature precedenti. Prossimo passo: un nuovo deploy sullo stesso Pi di test per
+confermare che KMS arrivi finalmente su hardware reale, più riverifica delle altre 2 feature (LED, host
+key) rimaste da confermare su hardware dopo il primo deploy interrotto dal bug qui sopra.
