@@ -1433,6 +1433,44 @@ chiamata, altrimenti il controllo passerebbe per assenza-di-file invece che per 
 **Stato**: fix applicato, rebuild arm64 completo, parts rigenerato, loopback riverificato — **54/54
 controlli passati, zero fallimenti**, inclusi i due nuovi controlli aggiunti apposta
 (`tryboot.txt include il dtoverlay KMS`, `config.txt promosso include il dtoverlay KMS`, entrambi PASS).
-Commit separato dalle 3 feature precedenti. Prossimo passo: un nuovo deploy sullo stesso Pi di test per
-confermare che KMS arrivi finalmente su hardware reale, più riverifica delle altre 2 feature (LED, host
-key) rimaste da confermare su hardware dopo il primo deploy interrotto dal bug qui sopra.
+
+## 20. Secondo bug trovato ridistribuendo il fix del §19: `overlays/` mai popolata su un target già provisionato (2026-08-03)
+
+Il redeploy sullo stesso Pi di test (con il fix del §19) ha confermato `dtoverlay=vc4-kms-v3d` finalmente
+presente in `config.txt` — ma **ancora nessuna card DRM** (`/sys/class/drm/` mostrava solo `version`, i
+moduli kernel `vc4`/`v3d` caricati ma senza nulla a cui agganciarsi). Causa: `/boot/firmware/overlays/`
+**completamente vuota** sul dispositivo reale. Stessa classe di bug del §19, file diverso:
+`cmd_populate_bootfs` (l'unico percorso che copia `overlays/`, `bootcode.bin` e il resto del contenuto
+file-level della FIRMWARE dal parts set) in `run_ota_sequence()` (`deploy/remote-deploy.sh`) girava **solo
+se `recreate_table=1`** — cioè solo per un target non ancora UniTotem o con `--wipe-data`. Un normale
+aggiornamento OTA (`recreate_table=0`, il caso comune) non ha **mai** popolato `overlays/` su nessun
+dispositivo reale, da quando la funzione esiste.
+
+**Fix**: rimosso il gate `if [ "$recreate_table" = 1 ]` attorno alla chiamata a `populate-bootfs` in
+`run_ota_sequence()` — gira sempre. Sicuro perché `cmd_populate_bootfs` ha già una propria exclude-list
+(`config.txt`, `cmdline.txt`, i file di recovery appena scritti dallo Stage 1, tutti i file di stato
+`unitotem-ota.*`) pensata apposta per essere richiamabile ripetutamente senza clobbering.
+
+**Verificato end-to-end su hardware reale** (stesso Pi, secondo redeploy consecutivo di questa sessione):
+- `/boot/firmware/overlays/vc4-kms-v3d.dtbo` presente (366 file overlay totali).
+- `/sys/class/drm/` mostra `card0`/`card1` con due connettori HDMI reali (`card1-HDMI-A-1`,
+  `card1-HDMI-A-2`) + `renderD128` — **KMS realmente attivo**, non solo dichiarato in config.txt.
+- Riconfermato di rimbalzo su questo secondo deploy reale: la host key SSH è stata **ripristinata da
+  DATA** (sha256 identico fra `/etc/ssh` e la copia salvata), non rigenerata — il vero test della
+  feature §16.3 (non solo generazione al primo boot, ma persistenza attraverso un aggiornamento vero).
+- `unitotem-boot-ok` ha promosso correttamente il trial (`tryboot.txt`/`cmdline-trial.txt` rimossi,
+  servizio attivo).
+
+**Non verificabile in questa sessione**: il lampeggio del LED PWR durante la finestra OTA — osservabile
+solo dal vivo (video/seriale) durante una sessione OTA in corso, non retroattivamente via SSH dopo che il
+sistema è tornato al funzionamento normale.
+
+**Gap strutturale trovato, non ancora chiuso**: il loopback test (`work/loopback-test/inside-arm64.sh`)
+parte sempre da un loop device vuoto, quindi esercita **solo** il percorso `recreate_table=1`
+(primo provisioning) — non avrebbe **mai potuto** intercettare né il bug del §19 né questo, entrambi
+specifici al percorso "target già provisionato" (`recreate_table=0`), che è anche il caso più comune in
+produzione (ogni OTA successivo al primo deploy). Da considerare: un secondo scenario nel loopback test che
+parta da un disco già UniTotem-provisionato e riesegua `run_ota_sequence` una seconda volta, per dare
+copertura di regressione a questa intera classe di bug invece di scoprirli solo su hardware reale come
+successo due volte in questa sessione. Non implementato in questa sessione per limiti di tempo — sessione
+dedicata futura.
