@@ -206,8 +206,17 @@ scp_root() {
 }
 
 # $1 = host, rest = command.
+# ServerAlive* mirrors SSH_OPTS and is not cosmetic symmetry: the very last
+# thing run_ota_sequence does over this channel is tell the target to reboot
+# into the trial system. The machine then disappears mid-session, and with
+# no keepalive ssh waits on a TCP connection that will never answer - seen
+# for real, a deploy sat wedged for over eleven minutes AFTER the target had
+# already rebooted and come up healthy, until the outer timeout killed it.
+# With these, the dead peer is noticed in ~15s and the deploy moves on to
+# waiting for the real system.
 OTA_SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
-              -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p 2222)
+              -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+              -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p 2222)
 
 # -n (stdin from /dev/null) is load-bearing here, not tidiness. ssh without
 # it forwards its own stdin to the remote command, and run_ota_sequence
