@@ -257,6 +257,14 @@ mkdir -p /mnt/ota-promote-check
 mount -t vfat -o ro "${LOOP}p${BOOTFS_PART}" /mnt/ota-promote-check
 check "config.txt promosso punta al kernel reale (non piu' recovery)" grep -q "^kernel=kernel8.img" /mnt/ota-promote-check/config.txt
 check "config.txt promosso include il dtoverlay KMS (config-extra.txt)" grep -q "dtoverlay=vc4-kms-v3d" /mnt/ota-promote-check/config.txt
+# Both present in Raspberry Pi OS's own config.txt and previously missing
+# here, which showed as a picture inset by black bands where Raspberry Pi OS
+# fills the screen on the same hardware. They ride in through config-extra.txt,
+# so this also proves that splice carries more than just the dtoverlay line.
+check "config.txt promosso disabilita il setup KMS del firmware" \
+    grep -q "^disable_fw_kms_setup=1" /mnt/ota-promote-check/config.txt
+check "config.txt promosso disabilita l'overscan" \
+    grep -q "^disable_overscan=1" /mnt/ota-promote-check/config.txt
 check "tryboot.txt rimosso dopo promote-default" bash -c '[ ! -f /mnt/ota-promote-check/tryboot.txt ]'
 check "cmdline-trial.txt rimosso dopo promote-default" bash -c '[ ! -f /mnt/ota-promote-check/cmdline-trial.txt ]'
 check "recovery8.img ancora presente dopo promote (mai cancellato)" test -f /mnt/ota-promote-check/recovery8.img

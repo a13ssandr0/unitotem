@@ -14,6 +14,10 @@ arm_64bit=1
 max_framebuffers=2
 disable_splash=1
 boot_delay=0
+# Kept in sync with config-extra.txt by hand - see that file for why these
+# two matter and why a full-size framebuffer does not prove overscan is off.
+disable_fw_kms_setup=1
+disable_overscan=1
 enable_uart=1
 kernel=kernel8.img
 initramfs initramfs8 followkernel
