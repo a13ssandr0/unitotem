@@ -19,9 +19,30 @@ boot_delay=0
 disable_fw_kms_setup=1
 disable_overscan=1
 
+# A [pi3] section is not optional padding: deploy/remote-deploy.sh accepts
+# Raspberry Pi 3 as a target, and without this it matched no section at all,
+# so KMS was never enabled there and the board fell back to the firmware
+# framebuffer with software rendering - no acceleration of any kind. The same
+# vc4-kms-v3d overlay drives VideoCore IV as well; the name is historical.
+# Raspberry Pi OS in fact places this overlay in its general section for every
+# model, so the per-model split here is the unusual choice, kept only because
+# Pi 5 needs its own variant.
+#
+# What a Pi 3 still cannot do, regardless of configuration: HEVC/H.265
+# hardware decode (the rpivid block only exists from BCM2711 onwards, so H.265
+# falls back to software and 1080p is not realistically viewable), Vulkan, and
+# anything above OpenGL ES 2.0. H.264 decode does work, through the same
+# bcm2835-codec V4L2 device as on Pi 4.
+[pi3]
+dtoverlay=vc4-kms-v3d
+dtparam=audio=on
+
 [pi4]
 dtoverlay=vc4-kms-v3d
 dtparam=audio=on
+# Pi 4 only - raises the SoC clock to 1.8GHz. Ignored on other models, but
+# kept scoped since it means nothing to them. Present in Raspberry Pi OS.
+arm_boost=1
 
 [pi5]
 dtoverlay=vc4-kms-v3d-pi5
