@@ -956,20 +956,58 @@ ota_ui_feed() {
         fi
         [ -n "$pct" ] || pct=0
         [ "$pct" -le 100 ] 2>/dev/null || pct=100
-        printf 'XXX\n%s\n%s\n\n%s\nXXX\n' "$pct" "${OTA_UI_HEADER:-}" "${phase:-In attesa di comandi via SSH...}"
+        # No blank line inside the text block: whiptail stops rendering the
+        # update at the first empty line, so a header/phase separator silently
+        # swallowed the phase - verified on screen, the header appeared and the
+        # phase did not.
+        printf 'XXX\n%s\n%s\n%s\nXXX\n' "$pct" "${OTA_UI_HEADER:-}" "${phase:-In attesa di comandi via SSH...}"
         sleep 1
     done
 }
 
 # Best-effort throughout: a board with no /dev/tty1 (amd64 serial-only, or a
 # headless unit) simply gets no UI, and that must never hold up an OTA.
+#
+# Two details here are not stylistic, both learned by watching it fail on real
+# hardware:
+#
+#   setsid + opening /dev/tty1 as fd 0 is what gives the process a CONTROLLING
+#   terminal. Redirecting whiptail's stdout to /dev/tty1 is not enough: newt
+#   opens /dev/tty rather than using stdout, so without a controlling terminal
+#   it exits immediately with "Failed to open terminal" - which is exactly what
+#   happened, silently, while the status files underneath were updating
+#   correctly the whole time. A process only acquires a controlling terminal by
+#   opening one as a session leader, hence setsid.
+#
+#   The gauge is fed through a FIFO rather than a pipe because stdin is spoken
+#   for: fd 0 has to be the tty to establish it as controlling, so the
+#   percentage stream needs its own channel. PLAN.md's original sketch already
+#   said the gauge would be fed by a FIFO; that detail turned out to be
+#   load-bearing rather than incidental.
+OTA_UI_FIFO=/run/unitotem-ota.gauge
+
 ota_ui_start() {
     OTA_UI_HEADER="$1"
     [ -w /dev/tty1 ] || return 0
     command -v whiptail >/dev/null 2>&1 || return 0
+    command -v setsid  >/dev/null 2>&1 || return 0
+    command -v mkfifo  >/dev/null 2>&1 || return 0
     ota_status_set ""
-    ( ota_ui_feed | TERM=linux TERMINFO=/lib/terminfo whiptail \
-        --backtitle "UniTotem OTA" --gauge "" 14 72 0 > /dev/tty1 2>/dev/null ) &
+    rm -f "$OTA_UI_FIFO" 2>/dev/null
+    mkfifo "$OTA_UI_FIFO" 2>/dev/null || return 0
+    # The redirections belong to setsid, NOT to the inner shell. setsid -c
+    # applies TIOCSCTTY to its OWN stdin, so the tty has to be there; with the
+    # redirection inside the child it failed with "Inappropriate ioctl for
+    # device". Letting the child open the tty instead does not work either -
+    # shells open with O_NOCTTY, so newt still died on "open /dev/tty: No such
+    # device or address". Both were seen on hardware before this form worked.
+    #
+    # The initial gauge text is non-empty on purpose: starting it empty left
+    # the text area unrendered and later updates never appeared.
+    setsid -c sh -c "TERM=linux TERMINFO=/lib/terminfo exec whiptail \
+            --backtitle 'UniTotem OTA' --gauge 'Avvio...' 14 72 0 < '$OTA_UI_FIFO'" \
+        < /dev/tty1 > /dev/tty1 2>/dev/null &
+    ( ota_ui_feed > "$OTA_UI_FIFO" ) &
     OTA_UI_PID=$!
 }
 
