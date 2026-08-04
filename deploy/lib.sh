@@ -102,9 +102,21 @@ scp_t() {
 OTA_SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
               -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p 2222)
 
+# -n (stdin from /dev/null) is load-bearing here, not tidiness. ssh without
+# it forwards its own stdin to the remote command, and run_ota_sequence
+# calls this from inside a loop that reads parts.manifest - so the first
+# restore-part would swallow the rest of the manifest and every partition
+# block after it silently disappeared. Real consequence, seen on hardware:
+# on a from-scratch deploy the DATA block was never reached, data-op never
+# ran, DATA was left with a GPT name but NO filesystem, and everything
+# downstream that keys off `blkid -L DATA` (the /etc overlay, and through it
+# a writable /etc and unitotem-ssh-hostkey) failed. It was invisible on an
+# already-provisioned target, where DATA already had a filesystem.
+# ota_ssh_send below is the deliberate counterpart: it MUST keep stdin to
+# pipe payloads, which is exactly why the two are separate functions.
 ota_ssh() {
     local host="$1"; shift
-    _sshpass ssh "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
+    _sshpass ssh -n "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
 }
 
 ota_ssh_send() {

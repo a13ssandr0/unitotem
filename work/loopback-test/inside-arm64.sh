@@ -331,6 +331,25 @@ umount /mnt/round2-bootfs-check
 
 check "round2: fsck.ext4 pulito su DATA (preservata, non riformattata)" e2fsck -fn "${LOOP}p${DATA_PART}"
 
+# Regression guards for a bug this harness actively HID. On a real
+# from-scratch deploy the entire DATA block of parts.manifest was silently
+# skipped - data-op never ran, DATA ended up with a GPT name but no
+# filesystem, so `blkid -L DATA` found nothing, the /etc overlay was skipped,
+# /etc stayed read-only and unitotem-ssh-hostkey failed. Cause: ota_ssh runs
+# inside `while read_kv_block ... done < parts.manifest`, and ssh without -n
+# forwards the caller's stdin to the remote end, eating the rest of the
+# manifest after the first restore-part. This test never caught it because
+# round 2 mocks ota_ssh with a plain eval, which leaves stdin alone.
+# Behavioural coverage is impossible here for that reason, so assert the two
+# protections directly instead of pretending the mock proves anything.
+# grep -F, not plain grep: the pattern contains ${...} and a BRE reading of
+# it silently matches nothing, which would make this guard quietly vacuous -
+# the exact failure mode it exists to prevent.
+check "guard: run_ota_sequence legge il manifest su fd 9, non su stdin" \
+    grep -qF 'done 9< "${OPT_PARTS}/parts.manifest"' /tmp/run_ota_sequence.sh
+check "guard: ota_ssh passa -n (non divora lo stdin del chiamante)" \
+    grep -qF '_sshpass ssh -n ' "$REPO/deploy/lib.sh"
+
 log "=== round2: promote-default (secondo boot confermato) ==="
 cp "$REPO/kiosk/files/config-extra.txt" /etc/unitotem/config-extra.txt
 "${ENGINE[@]}" promote-default --firmware rpi --disk "$LOOP" --bootfs-part "$BOOTFS_PART"
