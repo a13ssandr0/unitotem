@@ -80,6 +80,30 @@ echo "UNAME_M: $(uname -m)"
 MODEL=""
 [ -r /proc/device-tree/model ] && MODEL=$(tr -d '\0' < /proc/device-tree/model)
 echo "MODEL: ${MODEL:-none}"
+# Tryboot capability, straight from the device tree the Raspberry Pi
+# firmware injects into /proc/device-tree/chosen/bootloader - readable with
+# no vcgencmd and no rpi-eeprom package on the target (neither is installed
+# by this project). That node is published only by the EEPROM bootloader,
+# and only when it understands tryboot, so its mere presence IS the
+# capability signal; the SoC check then excludes the boards that have no
+# EEPROM bootloader at all (Pi 3 / Zero 2 boot bootcode.bin off the SD).
+# Note this describes hardware+firmware, not the running OS, so the answer
+# is the same whether we probe a stock Raspberry Pi OS or a deployed
+# UniTotem.
+SOC=""
+[ -r /proc/device-tree/compatible ] && SOC=$(tr -d '\0' < /proc/device-tree/compatible)
+echo "SOC: ${SOC:-none}"
+TRYBOOT=0
+if [ -e /proc/device-tree/chosen/bootloader/tryboot ]; then
+    case "$SOC" in
+        *bcm2711*|*bcm2712*) TRYBOOT=1 ;;
+    esac
+fi
+echo "TRYBOOT: $TRYBOOT"
+BLTS=0
+[ -r /proc/device-tree/chosen/bootloader/build-timestamp ] \
+    && BLTS=$(od -An -tu4 --endian=big /proc/device-tree/chosen/bootloader/build-timestamp 2>/dev/null | tr -d ' ')
+echo "BOOTLOADER_TS: ${BLTS:-0}"
 command -v grub-reboot >/dev/null 2>&1 && echo "GRUB_REBOOT: 1" || echo "GRUB_REBOOT: 0"
 command -v update-grub >/dev/null 2>&1 && echo "UPDATE_GRUB: 1" || echo "UPDATE_GRUB: 0"
 command -v systemctl >/dev/null 2>&1 && echo "SYSTEMD: 1" || echo "SYSTEMD: 0"
@@ -183,25 +207,27 @@ REMOTE_EOF
         echo "${P[MODEL]}" | grep -qiE "raspberry pi (3|4|5|.*zero 2)" \
             || die "modello rilevato (${P[MODEL]}) non risulta a 64-bit: l'immagine deployata e' sempre arm64, non installabile qui"
         ARCH=arm64; FIRMWARE=rpi
-        # Tryboot needs the "0 tryboot" reboot(2) argument to actually set the
-        # firmware's PM_RSTS flag on next reset - confirmed on real Pi4
-        # hardware (and matching multiple independent reports, e.g.
-        # raspberrypi/rpi-eeprom#716: "reboot '0 tryboot' on a mainline
-        # kernel does not cause the tryboot behavior") that this logic lives
-        # only in the raspberrypi/linux kernel fork, not in Debian's generic
-        # arm64 kernel this image used to ship. kiosk/stage1-packages.sh has
-        # since switched to linux-image-rpi-v8 (the real raspberrypi/linux
-        # kernel, needed for KMS too), which in principle carries the tryboot
-        # PM_RSTS logic - but that has NOT been verified on real hardware
-        # yet, deliberately: re-enabling this needs its own careful
-        # hardware pass (does this Pi's EEPROM/bootloader version actually
-        # support tryboot at all? does "0 tryboot" reach PM_RSTS on this
-        # exact kernel build?), not bundled into the kernel-switch change
-        # that unlocked it. Still forced off for now - rpi-legacy (direct
-        # config.txt swap, protected by the initramfs integrity checks +
-        # boot counter instead of firmware-level protection) remains the
-        # tested, working path. See PLAN.md's arm64 follow-up section.
-        TRYBOOT_CAPABLE=0
+        # Tryboot needs two independent things, so both are checked rather
+        # than assumed:
+        #  1. the FIRMWARE side - an EEPROM bootloader that understands
+        #     tryboot. Detected above from /proc/device-tree/chosen/bootloader,
+        #     which the firmware itself publishes (no vcgencmd/rpi-eeprom
+        #     needed on the target).
+        #  2. the KERNEL side - the "0 tryboot" reboot(2) argument only
+        #     reaches the firmware's PM_RSTS flag on the raspberrypi/linux
+        #     fork; it is silently ignored on a mainline/Debian generic
+        #     kernel (confirmed on this very hardware, and matching
+        #     raspberrypi/rpi-eeprom#716). That was the original blocker and
+        #     is now satisfied: kiosk/stage1-packages.sh installs
+        #     linux-image-rpi-v8, and - the part that actually matters here -
+        #     the reboot is issued from the RESIDENT FALLBACK initrd, which
+        #     kiosk/stage1-recovery-initrd.sh builds from that same rpi
+        #     kernel. So the kernel doing the tryboot reboot is always ours,
+        #     never whatever the probed system happens to run.
+        # Falls back to rpi-legacy (direct config.txt swap, protected by the
+        # initramfs integrity checks + boot counter) on any board that fails
+        # check 1 - Pi 3 / Zero 2, which have no EEPROM bootloader at all.
+        TRYBOOT_CAPABLE="${P[TRYBOOT]:-0}"
     elif [ "${P[EFI]}" = 1 ]; then
         ARCH=amd64; FIRMWARE=uefi; TRYBOOT_CAPABLE=0
     else
@@ -211,7 +237,14 @@ REMOTE_EOF
 
 print_probe() {
     echo "Architettura target immagine : ${ARCH}  (${P[UNAME_M]}, modello: ${P[MODEL]})"
-    echo "Firmware                     : ${FIRMWARE}  (tryboot: ${TRYBOOT_CAPABLE})"
+    if [ "${FIRMWARE}" = rpi ]; then
+        local tb_why="EEPROM bootloader senza supporto tryboot (o assente: Pi 3/Zero 2)"
+        [ "${TRYBOOT_CAPABLE}" = 1 ] && tb_why="rilevato via device-tree, SoC ${P[SOC]:-n/d}"
+        echo "Firmware                     : ${FIRMWARE}  (tryboot: ${TRYBOOT_CAPABLE} - ${tb_why})"
+        echo "Modalita' boot di prova      : $([ "${TRYBOOT_CAPABLE}" = 1 ] && echo 'rpi-tryboot (protezione a livello firmware)' || echo 'rpi-legacy (swap config.txt + boot counter)')"
+    else
+        echo "Firmware                     : ${FIRMWARE}  (tryboot: ${TRYBOOT_CAPABLE})"
+    fi
     echo "Gia' UniTotem                : ${P[HAVE_UNITOTEM]}"
     echo "DATA presente                : ${P[HAVE_DATA]}  (UUID: ${P[DATA_UUID]:-n/d})"
     echo "RAM disponibile               : $(bytes_human "${P[MEMAVAIL]}")"
