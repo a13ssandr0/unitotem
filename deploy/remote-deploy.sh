@@ -382,8 +382,19 @@ BOOTMNT="$2"
 cd "$BOOTMNT"
 [ -f config.txt.unitotem-bak ]  || cp -a config.txt  config.txt.unitotem-bak
 [ -f cmdline.txt.unitotem-bak ] || cp -a cmdline.txt cmdline.txt.unitotem-bak
+# enable_uart=1 is not optional here even though nothing in this file reads
+# it: build_legacy_cmdline() pairs this config with console=ttyS1,115200,
+# and on a Pi the mini-UART derives its baud from the VPU core clock, which
+# only enable_uart=1 pins. Without it the serial console is silently dead -
+# and this config.txt replaces the target's own wholesale, so whatever the
+# previous OS had is gone. That matters precisely here: this is the legacy
+# arming path onto a foreign OS, where the very next boot is into the
+# fallback, and serial is the only diagnostic left if that boot misbehaves.
+# Every config.txt writer in deploy/ota-engine.sh already sets it; this one
+# was the outlier.
 cat > config.txt << EOF
 arm_64bit=1
+enable_uart=1
 kernel=unitotem-recovery-vmlinuz
 initramfs unitotem-recovery-initrd.img followkernel
 EOF
