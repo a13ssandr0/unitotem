@@ -29,9 +29,13 @@ segue è stato confermato sul sistema realmente avviato, non dedotto:
   già stato reale (`machine-id`, `resolv.conf`, `ssh`, `X11`).
 - **Host key SSH persistita su DATA**, servizio attivo.
 - **KMS attivo**: `card0`/`card1` con due uscite HDMI.
-- **Deploy su target non-root**, con `sudo` e root SSH disabilitato (il caso realistico di
-  adozione di un dispositivo esistente): probe, comandi composti privilegiati, copia file su
-  percorsi solo-root, pulizia dell'helper. Verificato nel caso ostile — sudo *con* password.
+- **Adozione completa di un dispositivo estraneo, da utente non-root.** Partendo da una Raspberry Pi OS
+  Lite (Debian 13) con root SSH rifiutato e `sudo` con password, il deploy è andato a fondo come utente
+  `pi`: probe, `scp_root` verso `/boot/firmware`, `arm_rpi`, riavvio, sequenza OTA, trial boot, promozione.
+  È il percorso che non era mai stato esercitato.
+- **Flash di Raspberry Pi OS attraverso il fallback OTA.** Il fallback gira in RAM e ha `dd`/`unxz`, quindi
+  può riscrivere l'intero disco via rete (~3 GB, 20 MB/s). Usato per rimettere il Pi in stato "vergine" e
+  poterlo poi adottare. L'immagine va preconfigurata prima (`ssh`, `userconf.txt`, `enable_uart=1`).
 
 ## Due bug reali trovati in questa sessione
 
@@ -58,12 +62,13 @@ filesystem DATA da cui fare overlay. Il commento fuorviante è stato sostituito 
 | `unitotem-ota-arm` falso negativo | Il reboot chiude la sessione SSH prima che l'exit 0 sia letto, quindi `remote-deploy.sh deploy` riporta un fallimento benché l'arming sia riuscito. Aggirato a mano ogni volta; andrebbe reso robusto. |
 | Build nativa sul Pi | Implementata, mai eseguita per una build reale completa. |
 | `inside-real-sd.sh` | Harness su SD fisica, non ha lo scenario "Round 2". Obsoleto da quando l'OTA via rete funziona. |
+| Flash di OS estranei: solo via `dd`, non via parts set | `parts-lib.sh` classifica le partizioni per label (`FIRMWARE`/`ROOT`/`DATA`) e i passi di boot scrivono `config.txt` in formato UniTotem, con la promozione affidata a `unitotem-boot-ok`. Per un'immagine estranea si usa il fallback + `dd` dell'immagine intera. |
 | Round 2 del loopback maschera i bug di stdin | Sostituisce `ota_ssh` con un `eval` che non tocca stdin. Ora coperto da due guard espliciti, ma resta una limitazione strutturale del mock. |
 
 ## Prossimi passi consigliati
 
 1. **Rebuild e verifica amd64** — allineare l'architettura rimasta indietro.
 2. Rendere robusto `unitotem-ota-arm` (o il suo chiamante) rispetto alla chiusura della sessione SSH.
-3. Il percorso di arming "legacy" (`push_recovery_kernel` + `arm_rpi`, per target non-UniTotem) non è
-   ancora stato esercitato *da utente non-root*: il target è UniTotem da quando sudo è stato implementato,
-   quindi passa per `unitotem-ota-arm`. `scp_root` è stato verificato in isolamento su percorso solo-root.
+3. Ricostruire l'immagine per portarci le ultime correzioni non ancora compilate (probe dell'overlay con
+   `: >` invece di `touch`): l'immagine attualmente deployata è precedente, quindi il marker riporta
+   `initramfs-etc-writable=no` pur essendo `/etc` scrivibile davvero.
