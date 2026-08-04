@@ -25,6 +25,11 @@ source "${DIR}/deploy/lib.sh"
 
 require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip base64
 
+# The sudo askpass helper holds the target password, so it must not outlive
+# the run - including on failure or Ctrl-C. No-op when we were already root
+# or when sudo turned out to be passwordless.
+trap clear_target_privilege EXIT
+
 # ---------------------------------------------------------------------------
 SUBCMD="${1:-}"; shift || true
 
@@ -73,7 +78,12 @@ DISKS=()
 do_probe() {
     log "Interrogo ${TARGET_USERHOST}..."
     local out
-    out=$(_sshpass ssh "${SSH_OPTS[@]}" "${TARGET_USERHOST}" bash -s <<'REMOTE_EOF'
+    # ssh_t, not a raw ssh: the probe reads block devices (blkid, dumpe2fs,
+    # lsblk) to decide whether DATA exists and what the layout is, and an
+    # unprivileged reader gets permission denied on /dev/mmcblk*. That would
+    # not fail loudly - it would just report HAVE_DATA: 0 on a device that
+    # does have DATA, and the deploy would reformat it.
+    out=$(ssh_t bash -s <<'REMOTE_EOF'
 set -u
 echo "UNAME_M: $(uname -m)"
 [ -d /sys/firmware/efi ] && echo "EFI: 1" || echo "EFI: 0"
@@ -150,7 +160,14 @@ echo "BOOTFREE: $(df -B1 --output=avail "$BOOTMNT" 2>/dev/null | tail -1 | tr -d
 # not deleted after use (see deploy/ota-engine.sh's serve-fallback and the
 # plan's reasoning: it is already in cleartext in NetworkManager/wpa_supplicant
 # config either way, so removing it from unitotem-ota.conf buys nothing).
-SSHCLIENT_IP="${SSH_CONNECTION%% *}"
+# SSH_CONNECTION is absent whenever this runs under sudo (env_reset strips
+# it), and this script runs with `set -u`, so it must be defaulted or the
+# whole probe dies with "unbound variable" the moment the target is reached
+# as a non-root user. Losing the value is harmless: run_ota_sequence already
+# falls back to `ip -o route get <target>` on the host side, which arguably
+# beats trusting the target to echo our own address back at us.
+SSHCLIENT_IP="${SSH_CONNECTION:-}"
+SSHCLIENT_IP="${SSHCLIENT_IP%% *}"
 echo "SSHCLIENT: ${SSHCLIENT_IP:-none}"
 NETIF=""
 if [ -n "$SSHCLIENT_IP" ]; then
@@ -322,8 +339,10 @@ push_recovery_kernel() {
 
     log "Copio kernel/initrd di fallback in ${P[BOOTMNT]}..."
     ssh_t "mount -o remount,rw '${P[BOOTMNT]}' 2>/dev/null; true"
-    scp_t "$vmlinuz" "${TARGET_USERHOST}:${P[BOOTMNT]}/unitotem-recovery-vmlinuz"
-    scp_t "$initrd"  "${TARGET_USERHOST}:${P[BOOTMNT]}/unitotem-recovery-initrd.img"
+    scp_root "$vmlinuz" "${P[BOOTMNT]}/unitotem-recovery-vmlinuz" \
+        || die "copia del kernel di fallback fallita"
+    scp_root "$initrd"  "${P[BOOTMNT]}/unitotem-recovery-initrd.img" \
+        || die "copia dell'initrd di fallback fallita"
 }
 
 build_legacy_cmdline() {
@@ -644,18 +663,27 @@ cmd_deploy() {
     wait_ota_reachable "$target_ip"
     run_ota_sequence "$target_ip" "$TARGET_DISK_BYID"
 
-    log "Sequenza OTA inviata. Attendo che ${TARGET_USERHOST} torni raggiungibile sul sistema reale (fino a 10 minuti)..."
+    # The account to check afterwards is root@, NOT whatever we logged in as:
+    # the machine that comes back is the freshly deployed UniTotem, whose only
+    # known account is root. The user we armed from (a stock "pi", say) exists
+    # on the OS that was just replaced and is gone. The askpass helper written
+    # for that old user is gone with it, so escalation state is dropped too.
+    local post="root@${target_ip}"
+    clear_target_privilege
+    TARGET_USERHOST="$post"; TARGET_SUDO=""; TARGET_PRIV_READY=1
+
+    log "Sequenza OTA inviata. Attendo che ${post} torni raggiungibile sul sistema reale (fino a 10 minuti)..."
     local waited=0
     sleep 30
-    while ! _sshpass ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${TARGET_USERHOST}" true 2>/dev/null; do
+    while ! _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" true 2>/dev/null; do
         sleep 10; waited=$((waited + 10))
         [ "$waited" -lt 600 ] || { warn "il target non e' tornato raggiungibile entro 10 minuti - verificare manualmente (potrebbe essere ancora in stage 2, o nel fallback in attesa)"; return 0; }
     done
 
-    if _sshpass ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${TARGET_USERHOST}" "[ -d /etc/kiosk ]" 2>/dev/null; then
-        log "Deploy completato: ${TARGET_USERHOST} e' raggiungibile sul nuovo sistema."
+    if _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" "[ -d /etc/kiosk ]" 2>/dev/null; then
+        log "Deploy completato: ${post} e' raggiungibile sul nuovo sistema."
     else
-        warn "${TARGET_USERHOST} e' raggiungibile ma non sembra il sistema nuovo - potrebbe essere ancora il fallback in attesa di comandi."
+        warn "${post} e' raggiungibile ma non sembra il sistema nuovo - potrebbe essere ancora il fallback in attesa di comandi."
         return 1
     fi
 }
