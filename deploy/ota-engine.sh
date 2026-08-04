@@ -866,7 +866,13 @@ configure_networking_ota() {
             # of the one stdout stream this function's caller actually reads.
             local cn_rc=0 cn_pid cn_waited=0 cn_budget=30
             set +u
-            ( IP=dhcp DEVICE="$iface" configure_networking > /dev/kmsg 2>&1 ) &
+            # Labelled the same way as dropbear's output above: raw
+            # ipconfig/configure_networking chatter on the console is
+            # indistinguishable from every other source writing there.
+            ( IP=dhcp DEVICE="$iface" configure_networking 2>&1 \
+                | while IFS= read -r cn_line; do
+                      printf 'unitotem-ota/rete: %s\n' "$cn_line" > /dev/kmsg 2>/dev/null || true
+                  done ) &
             cn_pid=$!
             while kill -0 "$cn_pid" 2>/dev/null && [ "$cn_waited" -lt "$cn_budget" ]; do
                 sleep 1
@@ -1015,7 +1021,27 @@ cmd_serve_fallback() {
         fi
     fi
 
-    exec dropbear -F -E -p 2222 -r /run/dropbear_ed25519_host_key
+    # dropbear -E logs to stderr as "[pid] date time message". On a screen
+    # where several things write to the same console that pid identifies
+    # nothing - you cannot tell which program produced a line, which is
+    # exactly the complaint this addresses. Relabel every line with the
+    # program name instead, dropping the pid.
+    #
+    # A bash read loop rather than sed/awk: this runs in the resident
+    # fallback, where the binary set is deliberately minimal and neither is
+    # guaranteed (the same reasoning that removed basename/dirname/tr/date
+    # from this file). Read loops are builtins and always available.
+    #
+    # No `exec` any more, so the pipeline has to be the thing that blocks.
+    # dropbear is started with -F and is never meant to return; if it ever
+    # does, park here instead of letting the caller fall through into a
+    # normal boot - not falling through is the entire point of the fallback.
+    dropbear -F -E -p 2222 -r /run/dropbear_ed25519_host_key 2>&1 \
+        | while IFS= read -r line; do
+              printf 'dropbear: %s\n' "${line#\[*\] }"
+          done
+    warn "dropbear e' terminato inaspettatamente: resto in modalita' OTA"
+    while :; do sleep 3600; done
 }
 
 # ---------------------------------------------------------------------------
