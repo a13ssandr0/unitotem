@@ -5,7 +5,13 @@ ARCH="${ARCH:-amd64}"
 RELEASE="${RELEASE:-bookworm}"
 MIRROR="${MIRROR:-https://deb.debian.org/debian}"
 WORK_DIR="/work/${ARCH}"
-ROOTFS="/tmp/rootfs"
+# Overridable because /tmp is only a sane place to build under Docker. On the
+# real Pi (build nativa, see build-kiosk.sh) /tmp is a hardened tmpfs and
+# stage0 died there immediately: debootstrap refuses a target mounted nodev
+# ("Cannot install into target '/tmp/rootfs' mounted with noexec or nodev"),
+# and at 256 MB it could not have held a multi-GB rootfs anyway. The native
+# path points this at the build tree on DATA instead.
+ROOTFS="${ROOTFS:-/tmp/rootfs}"
 
 KIOSK_HOSTNAME="${KIOSK_HOSTNAME:-unitotem}"
 ROOT_PASSWORD="${ROOT_PASSWORD:-unitotem}"
