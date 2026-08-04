@@ -170,6 +170,25 @@ check "ROOT montata ha /sbin/init o systemd" bash -c '[ -x /mnt/newroot/sbin/ini
 check "ROOT montata ha /etc/kiosk (marker UniTotem)" test -d /mnt/newroot/etc/kiosk
 check "firmware montata sotto /boot/firmware" test -d /mnt/newroot/boot/firmware
 
+# Rescue-path content, all of which only exists inside the built image and so
+# can only be checked here. Each corresponds to a failure seen on hardware: a
+# device up but unreachable because NetworkManager had disabled IPv6 on an
+# interface with no active connection, IPv6 left entirely unfiltered while
+# IPv4 defaulted to DROP, and a serial console pointed at ttyS1 after the
+# kernel switch moved the header UART to ttyS0.
+check "profilo NM di ultima istanza presente" \
+    test -f /mnt/newroot/etc/NetworkManager/system-connections/unitotem-fallback.nmconnection
+check "profilo NM ha modo 600 (NetworkManager rifiuta gli altri)" \
+    bash -c '[ "$(stat -c %a /mnt/newroot/etc/NetworkManager/system-connections/unitotem-fallback.nmconnection)" = 600 ]'
+check "profilo NM fa anche DHCP (non solo link-local, altrimenti niente rete)" \
+    grep -q "^method=auto" /mnt/newroot/etc/NetworkManager/system-connections/unitotem-fallback.nmconnection
+check "watchdog di rete installato" test -x /mnt/newroot/usr/sbin/unitotem-net-watchdog
+check "timer del watchdog abilitato" \
+    bash -c 'ls /mnt/newroot/etc/systemd/system/timers.target.wants/unitotem-net-watchdog.timer >/dev/null 2>&1'
+check "firewall copre anche IPv6" grep -q "ip6tables -P INPUT   DROP" /mnt/newroot/sbin/iptables-firewall.sh
+check "firewall accetta ICMPv6 (senza, IPv6 non funziona affatto)" \
+    grep -q "ip6tables -A INPUT -p ipv6-icmp -j ACCEPT" /mnt/newroot/sbin/iptables-firewall.sh
+
 log "=== populate-real-kernel (arm64 only) ==="
 "${ENGINE[@]}" populate-real-kernel
 check "kernel8.img (sistema reale) scritto su firmware" test -f /mnt/newroot/boot/firmware/kernel8.img
@@ -198,6 +217,13 @@ check "recovery-initrd.img sha256 corretto (riletto dal disco)" bash -c "[ '$got
 check "config.txt di default-recovery ancora presente e punta al fallback" grep -q "recovery8.img" "$BOOTFS_MNT/config.txt"
 check "tryboot.txt scritto e punta al kernel reale" grep -q "kernel8.img" "$BOOTFS_MNT/tryboot.txt"
 check "cmdline-trial.txt scritto" test -f "$BOOTFS_MNT/cmdline-trial.txt"
+# ttyS0, not ttyS1: linux-image-rpi-v8 brings Raspberry Pi's own DTBs, which
+# alias serial0 to the mini-UART on the GPIO header. Getting this wrong is
+# silent - the system boots fine and simply never says anything on serial,
+# which is how it went unnoticed until a failure left serial as the only
+# channel and it produced nothing.
+check "cmdline di prova usa ttyS0 (DTB Raspberry), non ttyS1" \
+    grep -q "console=ttyS0,115200" "$BOOTFS_MNT/cmdline-trial.txt"
 # Regression check for the config-extra.txt splice (deploy/ota-engine.sh's
 # append_config_extra): set-trial-boot's rpi-tryboot branch reads
 # /mnt/newroot/etc/unitotem/config-extra.txt, which is real content on this
