@@ -508,7 +508,15 @@ run_ota_sequence() {
 
     local -A block
     local partnum label cloner action used stream comp
-    while read_kv_block block; do
+    # The manifest is fed on fd 9, not stdin, and read_kv_block is pointed at
+    # it explicitly. Belt and braces with ota_ssh's -n: this loop runs ssh on
+    # every iteration, and an ssh that inherits the loop's stdin eats the rest
+    # of the manifest, silently dropping every partition after the first
+    # restore. That exact failure shipped - a from-scratch deploy never
+    # reached the DATA block, so DATA got a GPT name but no filesystem. Fixing
+    # only ota_ssh would leave the same trap armed for the next command added
+    # here; decoupling the manifest from stdin removes the whole class.
+    while read_kv_block block <&9; do
         partnum="${block[UNITOTEM_PART]:-}"
         [ -n "$partnum" ] || continue
         label="${block[UNITOTEM_PART_LABEL]:-}"
@@ -533,7 +541,7 @@ run_ota_sequence() {
                 fi
                 ;;
         esac
-    done < "${OPT_PARTS}/parts.manifest"
+    done 9< "${OPT_PARTS}/parts.manifest"
 
     log "Monto il sistema appena ripristinato..."
     local mount_args="--disk '${disk}' --arch '${ARCH}' --root-part '${P_ROOT_PART}' --bootfs-part '${bootfs_part}' --data-part '${data_part}'"
