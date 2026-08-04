@@ -774,6 +774,92 @@ cmd_migrate_etc_overlay() {
 }
 
 # ---------------------------------------------------------------------------
+# apply-network: carry the target's existing network settings onto the system
+# being installed.
+#
+# migrate-etc-overlay only rescues what is already on DATA, which covers a
+# UniTotem being updated but does nothing when ADOPTING a foreign device: its
+# configuration lives in the root filesystem we are about to overwrite, and
+# no DATA overlay ever held it. Without this the machine comes back on
+# NetworkManager's defaults - fine for wired DHCP, but it silently strands
+# any device on a static address, and takes a WiFi-only device off the
+# network entirely with no way back short of physical access.
+#
+# The values come from remote-deploy.sh's probe, which already collects them
+# for the fallback's own dial-home; this just stops throwing them away
+# afterwards. Written into DATA's upper/etc, not the new root's /etc, so the
+# profile survives later OTAs through the ota-preserve.list whitelist rather
+# than being replaced by the next image.
+#
+# interface-name is deliberately NOT pinned: predictable names differ between
+# distributions (Raspberry Pi OS calls the built-in NIC eth0, this image
+# calls it end0), so a pinned name from the OS being replaced would match
+# nothing here. Leaving it out lets NetworkManager bind the profile to
+# whatever device of that type exists.
+# ---------------------------------------------------------------------------
+cmd_apply_network() {
+    parse_args "$@"
+    need data-mnt
+    local data="${ARG[data-mnt]}"
+    local link="${ARG[link]:-wired}" mode="${ARG[mode]:-dhcp}"
+    local addr="${ARG[addr]:-}" gw="${ARG[gw]:-}" dns="${ARG[dns]:-}"
+    local ssid_b64="${ARG[ssid-b64]:-}" psk_b64="${ARG[psk-b64]:-}"
+    local dir="$data/upper/etc/NetworkManager/system-connections"
+
+    # Never clobber a profile that migrate-etc-overlay just restored: that one
+    # is the device's own established configuration and outranks anything
+    # inferred from a probe.
+    if ls "$dir"/*.nmconnection >/dev/null 2>&1; then
+        echo "UNITOTEM_NET_APPLIED=skip-esistente"
+        return 0
+    fi
+    # Wired DHCP needs no profile at all - NetworkManager brings such a link
+    # up on its own, and an explicit profile would only be one more thing to
+    # disagree with it.
+    if [ "$link" = wired ] && [ "$mode" = dhcp ]; then
+        echo "UNITOTEM_NET_APPLIED=non-necessario"
+        return 0
+    fi
+
+    mkdir -p "$dir"
+    local f="$dir/unitotem-adottata.nmconnection"
+    {
+        echo "[connection]"
+        echo "id=unitotem-adottata"
+        [ "$link" = wifi ] && echo "type=wifi" || echo "type=ethernet"
+        echo "autoconnect=true"
+        echo ""
+        if [ "$link" = wifi ]; then
+            echo "[wifi]"
+            echo "mode=infrastructure"
+            [ -n "$ssid_b64" ] && echo "ssid=$(printf '%s' "$ssid_b64" | base64 -d 2>/dev/null)"
+            echo ""
+            if [ -n "$psk_b64" ]; then
+                echo "[wifi-security]"
+                echo "key-mgmt=wpa-psk"
+                echo "psk=$(printf '%s' "$psk_b64" | base64 -d 2>/dev/null)"
+                echo ""
+            fi
+        fi
+        echo "[ipv4]"
+        if [ "$mode" = static ] && [ -n "$addr" ]; then
+            echo "method=manual"
+            echo "address1=${addr}${gw:+,${gw}}"
+            [ -n "$dns" ] && echo "dns=${dns};"
+        else
+            echo "method=auto"
+        fi
+        echo ""
+        echo "[ipv6]"
+        echo "method=auto"
+    } > "$f"
+    # NetworkManager refuses to load a keyfile that others can read, and it
+    # holds the WiFi passphrase in cleartext.
+    chmod 600 "$f"
+    echo "UNITOTEM_NET_APPLIED=1"
+}
+
+# ---------------------------------------------------------------------------
 # serve-fallback: the automatic-recovery / manual-arm entry point. Brings up
 # networking, starts dropbear (ephemeral host key, generated fresh every
 # time - see the plan for why a build-time-baked key would be a shared
@@ -1227,6 +1313,7 @@ main() {
         umount-target)          cmd_umount_target "$@" ;;
         populate-real-kernel)   cmd_populate_real_kernel "$@" ;;
         migrate-etc-overlay)    cmd_migrate_etc_overlay "$@" ;;
+        apply-network)          cmd_apply_network "$@" ;;
         serve-fallback)         cmd_serve_fallback "$@" ;;
         init-premount)          cmd_init_premount "$@" ;;
         local-bottom-verify)    cmd_local_bottom_verify "$@" ;;

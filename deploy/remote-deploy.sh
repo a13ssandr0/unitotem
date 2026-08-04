@@ -185,6 +185,11 @@ if [ -n "$NETIF" ]; then
         echo "NETMODE: static"
         echo "NETADDR: $(ip -o -4 addr show "$NETIF" 2>/dev/null | awk '{print $4; exit}')"
         echo "NETGW: $(ip -o route show default dev "$NETIF" 2>/dev/null | awk '{print $3; exit}')"
+        # Without this a statically-addressed device gets carried over with an
+        # address and a gateway but no resolver, which looks like a working
+        # network right up until the first name lookup. Semicolon-separated,
+        # which is the form NetworkManager keyfiles want.
+        echo "NETDNS: $(awk '/^nameserver/{printf "%s%s", sep, $2; sep=";"}' /etc/resolv.conf 2>/dev/null)"
     fi
     if [ -e "/sys/class/net/${NETIF}/wireless" ]; then
         CONN=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | awk -F: -v d="$NETIF" '$2==d{print $1; exit}')
@@ -574,6 +579,23 @@ run_ota_sequence() {
     fi
 
     ota_ssh "$host" "unitotem-ota-engine migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data" || warn "migrazione /etc fallita (non fatale, il sistema nuovo usa comunque il proprio /etc)"
+
+    # Carry the probed network settings onto the installed system. This is
+    # what makes ADOPTION keep working: a foreign device's configuration
+    # lives in the root filesystem being overwritten, so migrate-etc-overlay
+    # (which only rescues what DATA already held) has nothing to restore for
+    # it. Skips itself when a profile was migrated, and when the link is
+    # wired DHCP and therefore needs no profile at all. Non-fatal: a target
+    # that cannot be reconfigured is still better off booting.
+    local net_args="--data-mnt /mnt/newroot/mnt/data --link '${P[NETLINK]:-wired}' --mode '${P[NETMODE]:-dhcp}'"
+    [ -n "${P[NETADDR]:-}" ]        && net_args="${net_args} --addr '${P[NETADDR]}'"
+    [ -n "${P[NETGW]:-}" ]          && net_args="${net_args} --gw '${P[NETGW]}'"
+    [ -n "${P[NETDNS]:-}" ]         && net_args="${net_args} --dns '${P[NETDNS]}'"
+    [ -n "${P[WIFI_SSID_B64]:-}" ]  && net_args="${net_args} --ssid-b64 '${P[WIFI_SSID_B64]}'"
+    [ -n "${P[WIFI_PSK_B64]:-}" ]   && net_args="${net_args} --psk-b64 '${P[WIFI_PSK_B64]}'"
+    # shellcheck disable=SC2086
+    ota_ssh "$host" "unitotem-ota-engine apply-network ${net_args}" \
+        || warn "applicazione dei parametri di rete fallita (non fatale)"
 
     local trial_mode="$FIRMWARE"
     [ "$FIRMWARE" = rpi ] && trial_mode=$([ "$TRYBOOT_CAPABLE" = 1 ] && echo rpi-tryboot || echo rpi-legacy)
