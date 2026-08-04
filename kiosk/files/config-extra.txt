@@ -2,6 +2,23 @@ max_framebuffers=2
 disable_splash=1
 boot_delay=0
 
+# Both of these are in Raspberry Pi OS's own config.txt and were missing
+# here, which showed up as a picture inset by black bands on a display that
+# renders Raspberry Pi OS edge to edge on the same hardware.
+#
+# disable_fw_kms_setup=1 is the more consequential of the two: without it the
+# FIRMWARE performs the display setup and the kernel inherits whatever it
+# chose, overscan included. With it, mode setting is left to the kernel from
+# the EDID, which is the intended arrangement when running full KMS
+# (dtoverlay=vc4-kms-v3d, enabled below).
+#
+# disable_overscan=1 then turns off the firmware's overscan compensation
+# itself. Note this is NOT contradicted by a framebuffer that measures a full
+# 1920x1080: with KMS the overscan is not applied by shrinking the
+# framebuffer, so the size alone proves nothing either way.
+disable_fw_kms_setup=1
+disable_overscan=1
+
 [pi4]
 dtoverlay=vc4-kms-v3d
 dtparam=audio=on
