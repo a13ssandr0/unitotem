@@ -265,6 +265,11 @@ check "config.txt promosso disabilita il setup KMS del firmware" \
     grep -q "^disable_fw_kms_setup=1" /mnt/ota-promote-check/config.txt
 check "config.txt promosso disabilita l'overscan" \
     grep -q "^disable_overscan=1" /mnt/ota-promote-check/config.txt
+# Pi 3 is an accepted deploy target (see remote-deploy.sh's model check), but
+# matched no config.txt section, so KMS was never enabled there and the board
+# ran on the firmware framebuffer with software rendering.
+check "config.txt promosso abilita KMS anche su Pi 3" \
+    grep -q "^\[pi3\]" /mnt/ota-promote-check/config.txt
 check "tryboot.txt rimosso dopo promote-default" bash -c '[ ! -f /mnt/ota-promote-check/tryboot.txt ]'
 check "cmdline-trial.txt rimosso dopo promote-default" bash -c '[ ! -f /mnt/ota-promote-check/cmdline-trial.txt ]'
 check "recovery8.img ancora presente dopo promote (mai cancellato)" test -f /mnt/ota-promote-check/recovery8.img

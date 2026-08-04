@@ -22,9 +22,14 @@ enable_uart=1
 kernel=kernel8.img
 initramfs initramfs8 followkernel
 
+[pi3]
+dtoverlay=vc4-kms-v3d
+dtparam=audio=on
+
 [pi4]
 dtoverlay=vc4-kms-v3d
 dtparam=audio=on
+arm_boost=1
 
 [pi5]
 dtoverlay=vc4-kms-v3d-pi5
