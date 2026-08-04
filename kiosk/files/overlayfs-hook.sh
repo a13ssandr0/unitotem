@@ -61,22 +61,33 @@ fi
 # added as an attempted fix, did not resolve anything on their own, and are
 # kept only because the current arrangement is known-good on hardware;
 # removing them is a separate change that needs its own boot test.
-mkdir -p "${rootmnt}/mnt/data/upper/etc" \
-         "${rootmnt}/mnt/data/work/etc"
-mount --make-rshared "${rootmnt}" 2>/dev/null || true
-mount -t overlay overlay \
-    -o lowerdir="${rootmnt}/etc",upperdir="${rootmnt}/mnt/data/upper/etc",workdir="${rootmnt}/mnt/data/work/etc" \
-    "${rootmnt}/etc" \
-    || log_warning_msg "overlay: /etc fallito"
-mount --make-shared "${rootmnt}/etc" 2>/dev/null || true
-
-mkdir -p "${rootmnt}/mnt/data/upper/root" \
-         "${rootmnt}/mnt/data/work/root"
-mount -t overlay overlay \
-    -o lowerdir="${rootmnt}/root",upperdir="${rootmnt}/mnt/data/upper/root",workdir="${rootmnt}/mnt/data/work/root" \
-    "${rootmnt}/root" \
-    || log_warning_msg "overlay: /root fallito"
-mount --make-shared "${rootmnt}/root" 2>/dev/null || true
+#
+# /var is overlaid for the same reason /etc is, and its absence was doing real
+# damage. With a read-only root and no overlay, everything under /var that is
+# not on fstab's hand-maintained tmpfs allowlist stays read-only, and the list
+# could only ever cover what someone had already noticed. What it did not
+# cover, observed on a running unit: journald could not open
+# /var/log/journal, so it fell back to /run and EVERY REBOOT DISCARDED ALL
+# LOGS - on an appliance that is the one diagnostic that matters after a field
+# failure, and journald.conf has been asking for Storage=persistent the whole
+# time. Also logrotate (/var/lib/logrotate/status), dpkg-db-backup
+# (/var/backups) and 11 wtmp writes per boot.
+#
+# An overlay is the right tool here where a tmpfs is not: fstab's comment
+# rightly warns that a blanket tmpfs over /var/lib would hide dpkg's
+# build-time database, and the same would be true of /var/unitotem-venv, the
+# manager's Python environment. An overlay keeps the lower layer visible and
+# only diverts writes, so that objection does not apply to it.
+for d in etc root var; do
+    mkdir -p "${rootmnt}/mnt/data/upper/${d}" \
+             "${rootmnt}/mnt/data/work/${d}"
+    mount --make-rshared "${rootmnt}" 2>/dev/null || true
+    mount -t overlay overlay \
+        -o lowerdir="${rootmnt}/${d}",upperdir="${rootmnt}/mnt/data/upper/${d}",workdir="${rootmnt}/mnt/data/work/${d}" \
+        "${rootmnt}/${d}" \
+        || log_warning_msg "overlay: /${d} fallito"
+    mount --make-shared "${rootmnt}/${d}" 2>/dev/null || true
+done
 
 # Record the outcome on DATA itself, which survives into the booted system
 # at /mnt/data - so "is /etc actually overlaid?" is answerable after the
@@ -87,7 +98,7 @@ mount --make-shared "${rootmnt}/root" 2>/dev/null || true
 # throughout: never allowed to fail the boot.
 {
     echo "boot-marker=1"
-    for d in etc root; do
+    for d in etc root var; do
         if grep -q " ${rootmnt}/${d} overlay " /proc/mounts 2>/dev/null; then
             echo "initramfs-${d}=overlay-mounted"
         else
@@ -98,9 +109,11 @@ mount --make-shared "${rootmnt}/root" 2>/dev/null || true
     # based with no busybox, and touch is simply absent - using it made the
     # probe report "not writable" on a system whose /etc demonstrably was,
     # i.e. a false negative from the diagnostic itself.
-    if : > "${rootmnt}/etc/.unitotem-overlay-writetest" 2>/dev/null; then
-        echo "initramfs-etc-writable=yes"
-    else
-        echo "initramfs-etc-writable=no"
-    fi
+    for d in etc root var; do
+        if : > "${rootmnt}/${d}/.unitotem-overlay-writetest" 2>/dev/null; then
+            echo "initramfs-${d}-writable=yes"
+        else
+            echo "initramfs-${d}-writable=no"
+        fi
+    done
 } > "${rootmnt}/mnt/data/.unitotem-overlay-status" 2>/dev/null || true

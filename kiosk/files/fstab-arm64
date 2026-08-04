@@ -11,12 +11,15 @@ LABEL=FIRMWARE /boot/firmware vfat  defaults,noatime,iocharset=iso8859-1 0 2
 LABEL=ROOT     /              ext4  defaults,noatime,ro                 0 1
 tmpfs          /tmp           tmpfs defaults,noatime,nosuid,nodev,size=256M  0 0
 tmpfs          /run           tmpfs defaults,noatime,nosuid,nodev,mode=0755  0 0
+# /var/cache and /var/tmp stay tmpfs even though /var is overlaid now: they
+# are pure churn (apt archives, scratch files) with nothing worth keeping
+# across a reboot, and routing them to the SD card would buy wear and no
+# benefit. Everything else under /var is writable via the DATA overlay - see
+# kiosk/files/overlayfs-hook.sh.
 tmpfs          /var/cache     tmpfs defaults,noatime,nosuid,nodev,size=512M  0 0
 tmpfs          /var/tmp       tmpfs defaults,noatime,nosuid,nodev,size=64M   0 0
-# See fstab-amd64 for why this is NOT a blanket /var/lib tmpfs (dpkg's
-# database would come up empty every boot) - only the runtime state
-# directories confirmed broken by the read-only root in a real boot test.
-tmpfs          /var/lib/NetworkManager tmpfs defaults,noatime,nosuid,nodev,size=16M  0 0
-tmpfs          /var/lib/dhcp           tmpfs defaults,noatime,nosuid,nodev,size=8M   0 0
-tmpfs          /var/lib/systemd        tmpfs defaults,noatime,nosuid,nodev,size=16M  0 0
-tmpfs          /var/lib/haproxy        tmpfs defaults,noatime,nosuid,nodev,size=8M   0 0
+# The per-directory tmpfs allowlist that used to sit here (NetworkManager,
+# dhcp, systemd, haproxy) is gone: it was a workaround for /var not being
+# writable, it could only ever cover directories someone had already caught
+# failing, and with the overlay in place it would actively HIDE the
+# persistence those directories are supposed to have on a normal system.

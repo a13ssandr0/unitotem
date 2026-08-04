@@ -8,17 +8,18 @@ LABEL=BOOT  /boot      ext4  defaults,noatime                           0 2
 LABEL=ROOT  /          ext4  defaults,noatime,ro                        0 1
 tmpfs       /tmp       tmpfs defaults,noatime,nosuid,nodev,size=256M    0 0
 tmpfs       /run       tmpfs defaults,noatime,nosuid,nodev,mode=0755    0 0
+# Pure churn, nothing worth keeping across a reboot: these stay tmpfs even
+# though /var is overlaid now, so apt archives and scratch files never reach
+# the SD card.
 tmpfs       /var/cache tmpfs defaults,noatime,nosuid,nodev,size=512M    0 0
 tmpfs       /var/tmp   tmpfs defaults,noatime,nosuid,nodev,size=64M     0 0
-# NOT a blanket /var/lib tmpfs: /var/lib/dpkg's database is populated at
-# build time and must reflect the real installed-package set (OTA updates
-# replace whole partitions, never `apt install` at runtime, so dpkg's state
-# never needs to be *written* here - but it does need to still be *readable*,
-# which a blank tmpfs would break). Only the specific runtime state
-# directories that were confirmed broken by the read-only root (real boot
-# test: NetworkManager couldn't persist its secret key or DHCP lease,
-# staying network-unreachable every boot) get their own tmpfs.
-tmpfs       /var/lib/NetworkManager tmpfs defaults,noatime,nosuid,nodev,size=16M  0 0
-tmpfs       /var/lib/dhcp           tmpfs defaults,noatime,nosuid,nodev,size=8M   0 0
-tmpfs       /var/lib/systemd        tmpfs defaults,noatime,nosuid,nodev,size=16M  0 0
-tmpfs       /var/lib/haproxy        tmpfs defaults,noatime,nosuid,nodev,size=8M   0 0
+# The per-directory tmpfs allowlist that used to sit here (NetworkManager,
+# dhcp, systemd, haproxy) is gone, and the reasoning that produced it is worth
+# keeping because it is still correct - about tmpfs. A blanket tmpfs over
+# /var/lib WOULD hide dpkg's build-time database, which has to stay readable
+# even though OTA never writes it; the same goes for /var/unitotem-venv. That
+# is an argument against tmpfs, not against writability, and it led to an
+# allowlist that could only ever cover directories someone had already caught
+# failing. The DATA overlay (kiosk/files/overlayfs-hook.sh) keeps the lower
+# layer visible and diverts only writes, so it satisfies both requirements at
+# once - and covers what the allowlist had missed, notably /var/log/journal.

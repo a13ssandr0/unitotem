@@ -787,12 +787,27 @@ cmd_migrate_etc_overlay() {
     # bash's own printf %()T builtin (bash 4.2+, confirmed present as 5.2 on
     # this initrd) needs no external process at all.
     local ts; TZ=UTC0 printf -v ts '%(%Y%m%dT%H%M%SZ)T' -1
-    if [ -d "$data/upper/etc" ]; then
-        mkdir -p "$data/history/$ts"
-        mv "$data/upper/etc" "$data/history/$ts/etc" 2>/dev/null || true
-        mv "$data/work/etc"  "$data/history/$ts/etc.work" 2>/dev/null || true
-        mkdir -p "$data/upper/etc" "$data/work/etc"
-    fi
+    # /var is archived and reset alongside /etc, and for this one it is not a
+    # nicety but a correctness requirement. /var is overlaid too now (see
+    # kiosk/files/overlayfs-hook.sh), and an OTA replaces the whole ROOT
+    # partition: left in place, the previous image's upper would shadow the
+    # new image's /var - its dpkg database, and /var/unitotem-venv, the
+    # manager's Python environment. The new system would be running with the
+    # old one's idea of what is installed.
+    #
+    # No whitelist for /var, unlike /etc: everything under it is either
+    # image-derived state that the new image supplies itself, or logs, and the
+    # logs are not lost - the whole upper is moved into history/ where it can
+    # still be read after the fact.
+    local d
+    for d in etc var; do
+        if [ -d "$data/upper/$d" ]; then
+            mkdir -p "$data/history/$ts"
+            mv "$data/upper/$d" "$data/history/$ts/$d" 2>/dev/null || true
+            mv "$data/work/$d"  "$data/history/$ts/$d.work" 2>/dev/null || true
+            mkdir -p "$data/upper/$d" "$data/work/$d"
+        fi
+    done
     local list="$root/etc/unitotem/ota-preserve.list"
     if [ -f "$list" ] && [ -d "$data/history/$ts/etc" ]; then
         while IFS= read -r pattern; do
