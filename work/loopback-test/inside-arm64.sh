@@ -16,7 +16,7 @@ log "Installo i pacchetti necessari nel container..."
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
     partclone xz-utils util-linux fdisk e2fsprogs dosfstools coreutils gdisk parted \
-    socat procps dctrl-tools file device-tree-compiler iproute2 >/dev/null
+    socat procps dctrl-tools file device-tree-compiler iproute2 pv >/dev/null
 
 REPO=/repo
 PARTS=/work/parts

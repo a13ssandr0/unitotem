@@ -350,10 +350,32 @@ cmd_restore_part() {
     # per update, which ota_ui_feed reads back. Its stderr goes to a file
     # rather than a pipe on purpose: the UI runs in a different process, and a
     # pipe would couple the transfer's fate to the reader's.
+    # pv is inserted ONLY when it exists, and the no-pv branch is the exact
+    # original pipeline. This is not defensive padding: adding pv
+    # unconditionally broke the restore outright where pv was absent - the
+    # missing binary took the middle of the pipe out, partclone saw immediate
+    # EOF and reported "Device size: 0 Byte" with a bitmap CRC error, so a
+    # progress indicator destroyed the data path it was meant to report on.
+    # Progress is a nicety; the restore is not, and it must never depend on
+    # something optional being present.
     ota_status_set "Ripristino partizione ${ARG[part]} (${ARG[cloner]})"
+    local have_pv=0
+    command -v pv >/dev/null 2>&1 && have_pv=1
     case "${ARG[comp]:-xz}" in
-        xz)   unxz -dc <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | partclone.restore "${restore_flags[@]}" -F -B ;;
-        zstd) unzstd -dc <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | partclone.restore "${restore_flags[@]}" -F -B ;;
+        xz)
+            if [ "$have_pv" = 1 ]; then
+                unxz -dc <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | partclone.restore "${restore_flags[@]}" -F -B
+            else
+                unxz -dc <&4 | partclone.restore "${restore_flags[@]}" -F -B
+            fi
+            ;;
+        zstd)
+            if [ "$have_pv" = 1 ]; then
+                unzstd -dc <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | partclone.restore "${restore_flags[@]}" -F -B
+            else
+                unzstd -dc <&4 | partclone.restore "${restore_flags[@]}" -F -B
+            fi
+            ;;
         *)    fail "compressione sconosciuta: ${ARG[comp]:-}" ;;
     esac || fail "restore fallito su $part_dev"
     ota_status_set "Verifica filesystem partizione ${ARG[part]}..."
