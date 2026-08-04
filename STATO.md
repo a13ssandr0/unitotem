@@ -75,6 +75,7 @@ filesystem DATA da cui fare overlay. Il commento fuorviante è stato sostituito 
 | Build nativa sul Pi | Implementata, mai eseguita per una build reale completa. |
 | `inside-real-sd.sh` | Harness su SD fisica, non ha lo scenario "Round 2". Obsoleto da quando l'OTA via rete funziona. |
 | Flash di OS estranei: solo via `dd`, non via parts set | `parts-lib.sh` classifica le partizioni per label (`FIRMWARE`/`ROOT`/`DATA`) e i passi di boot scrivono `config.txt` in formato UniTotem, con la promozione affidata a `unitotem-boot-ok`. Per un'immagine estranea si usa il fallback + `dd` dell'immagine intera. |
+| **Un nuovo sottocomando del motore è utilizzabile solo un OTA dopo** | Il fallback che esegue un OTA è quello installato in precedenza, caricato in RAM all'avvio; lo Stage 1 riscrive la copia su disco, che entra in gioco al giro successivo. Osservato dal vivo: `apply-network`, aggiunto oggi, ha risposto `Sottocomando sconosciuto` durante il deploy odierno (fallimento non fatale, deploy completato). Conseguenza pratica: `apply-network` è verificato solo in loopback, non ancora su hardware. |
 | Round 2 del loopback maschera i bug di stdin | Sostituisce `ota_ssh` con un `eval` che non tocca stdin. Ora coperto da due guard espliciti, ma resta una limitazione strutturale del mock. |
 
 ## Da fare subito
