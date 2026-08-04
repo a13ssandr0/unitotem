@@ -94,8 +94,11 @@ mount --make-shared "${rootmnt}/root" 2>/dev/null || true
             echo "initramfs-${d}=NOT-MOUNTED"
         fi
     done
-    if touch "${rootmnt}/etc/.unitotem-overlay-writetest" 2>/dev/null; then
-        rm -f "${rootmnt}/etc/.unitotem-overlay-writetest" 2>/dev/null
+    # `: >` (a shell redirect) rather than touch/rm: this initramfs is klibc
+    # based with no busybox, and touch is simply absent - using it made the
+    # probe report "not writable" on a system whose /etc demonstrably was,
+    # i.e. a false negative from the diagnostic itself.
+    if : > "${rootmnt}/etc/.unitotem-overlay-writetest" 2>/dev/null; then
         echo "initramfs-etc-writable=yes"
     else
         echo "initramfs-etc-writable=no"
