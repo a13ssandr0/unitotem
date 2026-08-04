@@ -670,7 +670,19 @@ cmd_deploy() {
         log "Armo l'OTA dal sistema in esecuzione..."
         local wipe_arg=""; [ "$OPT_WIPE_DATA" = 1 ] && wipe_arg="--wipe-data"
         # shellcheck disable=SC2086
-        ssh_t "unitotem-ota-arm --port 2222 ${wipe_arg}" || die "unitotem-ota-arm fallito sul target"
+        # Not `|| die`: this command's job is to reboot the target, so ssh's
+        # exit status is a race, not a result. The reboot tears sshd down and
+        # the session dies with it ("Connection closed by remote host"), which
+        # ssh reports as failure even though the arming succeeded - observed
+        # every single time on real hardware, and worked around by hand each
+        # time. The actual verdict is wait_ota_reachable below: if arming
+        # really failed, the target simply stays up and the fallback never
+        # appears, which that call reports clearly. The target-side script
+        # also defers its reboot now (see kiosk/files/unitotem-ota-arm), but
+        # this stays tolerant regardless - a target still running an older
+        # image has the old script, and the race is timing-dependent anyway.
+        ssh_t "unitotem-ota-arm --port 2222 ${wipe_arg}" \
+            || warn "sessione SSH chiusa durante l'arming (atteso: il target si sta riavviando) - verifico la comparsa del fallback"
     else
         push_recovery_kernel
         if [ "$FIRMWARE" = rpi ]; then

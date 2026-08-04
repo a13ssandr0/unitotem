@@ -1238,9 +1238,16 @@ cmd_serve_fallback() {
     # even on the right device it would have been overwritten by the next
     # message. The gauge below stays up for the whole session and reports what
     # each step is doing.
+    # `|| true` is not decoration. The first version of this UI raised an
+    # unexpected error inside serve-fallback on real hardware - "ERRORE: errore
+    # inatteso alla riga 949", straight into the ERR trap and the rollback
+    # handler - so the comment above about the UI never holding up an OTA was
+    # an intention with nothing enforcing it. A `||` context suppresses errexit
+    # and the ERR trap for the whole function body, which makes it true: the
+    # worst a broken UI can now do is not draw.
     ota_ui_start "Modalita' di recupero OTA
 Motivo: ${reason}
-Indirizzo: ${myip:-<nessuno>}   Porta: 2222"
+Indirizzo: ${myip:-<nessuno>}   Porta: 2222" || true
 
     if [ -f /boot-ota/unitotem-ota.conf ]; then
         read_kv_lines < /boot-ota/unitotem-ota.conf
