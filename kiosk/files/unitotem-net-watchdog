@@ -1,0 +1,86 @@
+#!/bin/bash
+# Reboots into OTA mode when the machine is cabled but has no usable address,
+# so a device that is up yet unreachable can still be recovered remotely
+# instead of needing someone to walk to it.
+#
+# The discriminator is deliberate and is the whole design: it fires only when
+# a link has CARRIER but no global address. A totem that is simply not
+# plugged in - running offline on local content, which is a legitimate way to
+# use it - has no carrier, so it is never touched. Without that distinction
+# this watchdog would reboot perfectly healthy offline devices into recovery,
+# which would be far worse than the problem it solves.
+#
+# Link-local-only counts as "no usable address" on purpose. It means the
+# rescue channel is up but the device is still misconfigured, and arming OTA
+# gives the operator the full recovery toolset rather than a bare shell. The
+# threshold is long enough that somebody already fixing things over
+# link-local will not be rebooted out from under themselves.
+set -euo pipefail
+
+CONF=/etc/unitotem/net-watchdog.conf
+THRESHOLD_MIN=15
+ENABLED=1
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+[ "${ENABLED}" = 1 ] || exit 0
+
+STATE=/run/unitotem-net-watchdog.count   # /run: the count resets every boot
+
+CARRIER_IFACES=()
+for c in /sys/class/net/*/carrier; do
+    [ -r "$c" ] || continue
+    iface=${c%/carrier}; iface=${iface##*/}
+    [ "$iface" = lo ] && continue
+    if [ "$(cat "$c" 2>/dev/null || echo 0)" = 1 ]; then CARRIER_IFACES+=("$iface"); fi
+done
+
+if [ "${#CARRIER_IFACES[@]}" -eq 0 ]; then
+    rm -f "$STATE"
+    exit 0
+fi
+
+# scope global is the right test: a link-local-only interface reports scope
+# link, and loopback reports scope host, so neither masks a broken config.
+if [ -n "$(ip -o addr show scope global 2>/dev/null)" ]; then
+    rm -f "$STATE"
+    exit 0
+fi
+
+# Cabled but with no usable address. Before counting towards a reboot, make
+# sure the RESCUE channel at least exists, because the most likely reason we
+# are here also destroys it: NetworkManager sets disable_ipv6=1 on an
+# interface that has no active connection, and an interface with IPv6
+# administratively off has no link-local address either - so the device is
+# unreachable by every remote channel at once, which is exactly the state
+# observed on real hardware.
+#
+# Re-enabling is cheap, idempotent and non-destructive, and it can restore
+# reachability immediately, without waiting out the threshold and without a
+# reboot. NetworkManager may well turn it off again; that is fine, this runs
+# every minute. It is the belt to the NM fallback profile's braces: that
+# profile prevents the state, this recovers from it if something still
+# manages to reach it.
+for iface in "${CARRIER_IFACES[@]}"; do
+    d="/proc/sys/net/ipv6/conf/${iface}/disable_ipv6"
+    if [ -w "$d" ] && [ "$(cat "$d" 2>/dev/null || echo 0)" = 1 ]; then
+        if echo 0 > "$d" 2>/dev/null; then
+            logger -t unitotem-net-watchdog "IPv6 era disabilitato su ${iface}: riabilitato per ripristinare il link-local di soccorso"
+        fi
+    fi
+    # An interface can also be simply down, which likewise means no
+    # link-local. Harmless when it is already up.
+    ip link set "$iface" up 2>/dev/null || true
+done
+
+n=$(( $(cat "$STATE" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$STATE"
+
+if [ "$n" -lt "$THRESHOLD_MIN" ]; then
+    logger -t unitotem-net-watchdog "cavo collegato ma nessun indirizzo utilizzabile (${n}/${THRESHOLD_MIN})"
+    exit 0
+fi
+
+logger -t unitotem-net-watchdog "nessun indirizzo utilizzabile da ${THRESHOLD_MIN} minuti con cavo collegato: riavvio in modalita' OTA"
+rm -f "$STATE"
+exec unitotem-ota-arm --port 2222

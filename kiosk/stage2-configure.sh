@@ -178,8 +178,24 @@ install -m 755 /kiosk/files/unitotem-ssh-hostkey "${ROOTFS}/usr/sbin/unitotem-ss
 install -m 644 /kiosk/files/unitotem-ssh-hostkey.service \
     "${ROOTFS}/etc/systemd/system/unitotem-ssh-hostkey.service"
 
+install -m 755 /kiosk/files/unitotem-net-watchdog "${ROOTFS}/usr/sbin/unitotem-net-watchdog"
+install -m 644 /kiosk/files/unitotem-net-watchdog.service \
+    "${ROOTFS}/etc/systemd/system/unitotem-net-watchdog.service"
+install -m 644 /kiosk/files/unitotem-net-watchdog.timer \
+    "${ROOTFS}/etc/systemd/system/unitotem-net-watchdog.timer"
+
+# Last-resort NetworkManager profile, so a wired link always has an active
+# connection and therefore always an IPv6 link-local address to be rescued
+# over. 600 and root-owned is not optional - NetworkManager refuses to load a
+# keyfile that anyone else can read. See the file's own comments for why it
+# must also do ordinary DHCP rather than only link-local.
+mkdir -p "${ROOTFS}/etc/NetworkManager/system-connections"
+install -m 600 /kiosk/files/nm-fallback.nmconnection \
+    "${ROOTFS}/etc/NetworkManager/system-connections/unitotem-fallback.nmconnection"
+
 mkdir -p "${ROOTFS}/etc/unitotem"
 install -m 644 /kiosk/files/ota-preserve.list "${ROOTFS}/etc/unitotem/ota-preserve.list"
+install -m 644 /kiosk/files/net-watchdog.conf "${ROOTFS}/etc/unitotem/net-watchdog.conf"
 if [ "$ARCH" = "arm64" ]; then
     install -m 644 /kiosk/files/config-extra.txt "${ROOTFS}/etc/unitotem/config-extra.txt"
 fi
@@ -231,7 +247,8 @@ chroot "${ROOTFS}" systemctl enable \
     kiosk-update-mode \
     start-xorg \
     unitotem-boot-ok \
-    unitotem-ssh-hostkey
+    unitotem-ssh-hostkey \
+    unitotem-net-watchdog.timer
 
 # ---------- Regenerate initramfs ----------
 

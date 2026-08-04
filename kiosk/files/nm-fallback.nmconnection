@@ -1,0 +1,47 @@
+# Last-resort NetworkManager profile. Its job is to guarantee that a wired
+# interface ALWAYS has an active connection, and therefore always has an IPv6
+# link-local address - which makes "ssh root@fe80::...%iface" a rescue channel
+# that survives any IPv4 misconfiguration.
+#
+# Why this is needed: NetworkManager sets disable_ipv6=1 on an interface that
+# has no active connection. Observed for real - a device booted healthy, the
+# link was up, and yet it had neither an IPv4 address nor a link-local IPv6
+# one, so it was unreachable by every remote channel and needed physical
+# access to recover.
+#
+# Two properties are load-bearing and must not be "simplified":
+#
+#   ipv4 method=auto - NOT disabled. NetworkManager only auto-generates its
+#   own "Wired connection" for devices that match NO profile. Shipping a
+#   profile that matches all ethernet suppresses that, so this profile has to
+#   provide normal DHCP itself, or shipping it would BREAK ordinary
+#   networking. That is precisely the trap a test profile fell into here:
+#   it matched the interface but did not connect, and the device silently
+#   lost its address.
+#
+#   may-fail=true on ipv4 with ipv6 method=link-local - link-local always
+#   succeeds, so the connection stays active even when DHCP finds no server.
+#   That is the whole point: the rescue address must exist exactly when IPv4
+#   is broken.
+#
+# interface-name is deliberately unset so this matches any ethernet device
+# regardless of naming (end0, eth0, enp*). autoconnect-priority is strongly
+# negative so any real profile - user-configured, or written by
+# ota-engine.sh's apply-network - wins over this one.
+[connection]
+id=unitotem-fallback
+type=ethernet
+autoconnect=true
+autoconnect-priority=-999
+
+[ethernet]
+
+[ipv4]
+method=auto
+may-fail=true
+
+[ipv6]
+method=link-local
+may-fail=true
+
+[proxy]
