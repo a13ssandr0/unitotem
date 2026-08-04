@@ -60,6 +60,7 @@ for bin in \
     sha256sum base64 awk cut paste readlink mkfifo cp grep head tail \
     rm chmod tar \
     ip udevadm \
+    setsid \
 ; do
     p=$(command -v "$bin" 2>/dev/null) && copy_exec "$p" || echo "unitotem-ota hook: '$bin' non trovato, salto" >&2
 done
