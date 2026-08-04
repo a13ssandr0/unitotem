@@ -189,6 +189,18 @@ check "firewall copre anche IPv6" grep -q "ip6tables -P INPUT   DROP" /mnt/newro
 check "firewall accetta ICMPv6 (senza, IPv6 non funziona affatto)" \
     grep -q "ip6tables -A INPUT -p ipv6-icmp -j ACCEPT" /mnt/newroot/sbin/iptables-firewall.sh
 
+# Packaging checks for the /var overlay: cheap here, and the alternative is
+# finding out on hardware. The two have to agree - an fstab tmpfs would mask
+# the overlay underneath it, which is exactly the arrangement being replaced.
+check "l'hook overlay copre anche /var" \
+    grep -qE 'for d in etc root var' /mnt/newroot/etc/initramfs-tools/scripts/init-bottom/setup-overlays
+check "fstab non rimonta piu' tmpfs su /var/lib/* (maschererebbe l'overlay)" \
+    bash -c "! grep -qE '^tmpfs[[:space:]]+/var/lib/' /mnt/newroot/etc/fstab"
+check "fstab tiene comunque /var/cache e /var/tmp su tmpfs (usura SD)" \
+    bash -c "grep -qE '^tmpfs[[:space:]]+/var/cache' /mnt/newroot/etc/fstab && grep -qE '^tmpfs[[:space:]]+/var/tmp' /mnt/newroot/etc/fstab"
+check "journald chiede storage persistente (ora ottenibile)" \
+    grep -q '^Storage=persistent' /mnt/newroot/etc/systemd/journald.conf
+
 log "=== populate-real-kernel (arm64 only) ==="
 "${ENGINE[@]}" populate-real-kernel
 check "kernel8.img (sistema reale) scritto su firmware" test -f /mnt/newroot/boot/firmware/kernel8.img
@@ -197,7 +209,38 @@ check "kernel8.img del sistema reale e' un Image arm64 valido (ARMd grezzo o gzi
     bash -c 'k=/mnt/newroot/boot/firmware/kernel8.img; [ "$(dd if="$k" bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d " \n")" = "1f8b" ] || [ "$(dd if="$k" bs=1 skip=56 count=4 2>/dev/null)" = "ARMd" ]'
 check "almeno un dtb bcm27* copiato sulla firmware" bash -c 'ls /mnt/newroot/boot/firmware/bcm27*.dtb >/dev/null 2>&1'
 
+log "=== migrate-etc-overlay ==="
+# Seeded first, because the call below used to run with no assertion at all -
+# it could have done nothing and the suite would still have been green.
+# Markers cover three distinct behaviours: a whitelisted /etc path must come
+# back, a non-whitelisted one must NOT (the new image's /etc wins by design),
+# and the whole /var upper must be archived and reset - that last one is what
+# stops the previous image's dpkg database and Python venv from shadowing the
+# new image's after an OTA.
+DATA_MNT=/mnt/newroot/mnt/data
+mkdir -p "$DATA_MNT/upper/etc/NetworkManager/system-connections" \
+         "$DATA_MNT/upper/etc/cron.d" \
+         "$DATA_MNT/upper/var/lib/dpkg" \
+         "$DATA_MNT/upper/var/log"
+echo "preservami" > "$DATA_MNT/upper/etc/NetworkManager/system-connections/test.nmconnection"
+echo "sostituiscimi" > "$DATA_MNT/upper/etc/cron.d/estraneo"
+echo "vecchio-db" > "$DATA_MNT/upper/var/lib/dpkg/status"
+echo "vecchi-log" > "$DATA_MNT/upper/var/log/vecchio.log"
+
 "${ENGINE[@]}" migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data
+
+check "migrate: profilo NetworkManager reimportato dalla whitelist" \
+    test -f "$DATA_MNT/upper/etc/NetworkManager/system-connections/test.nmconnection"
+check "migrate: file /etc non in whitelist NON reimportato" \
+    bash -c "! test -e '$DATA_MNT/upper/etc/cron.d/estraneo'"
+check "migrate: upper/var azzerato (niente dpkg della vecchia immagine)" \
+    bash -c "! test -e '$DATA_MNT/upper/var/lib/dpkg/status'"
+check "migrate: upper/var esiste comunque, pronto per il prossimo boot" \
+    test -d "$DATA_MNT/upper/var"
+check "migrate: il vecchio /var e' archiviato in history, non perso" \
+    bash -c "ls '$DATA_MNT'/history/*/var/log/vecchio.log >/dev/null 2>&1"
+check "migrate: anche il vecchio /etc e' archiviato in history" \
+    bash -c "ls '$DATA_MNT'/history/*/etc/cron.d/estraneo >/dev/null 2>&1"
 
 log "=== set-trial-boot (rpi-tryboot) ==="
 "${ENGINE[@]}" set-trial-boot --firmware rpi-tryboot --disk "$LOOP" --bootfs-part "$BOOTFS_PART"
