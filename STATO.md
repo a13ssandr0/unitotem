@@ -36,6 +36,18 @@ segue è stato confermato sul sistema realmente avviato, non dedotto:
 - **Flash di Raspberry Pi OS attraverso il fallback OTA.** Il fallback gira in RAM e ha `dd`/`unxz`, quindi
   può riscrivere l'intero disco via rete (~3 GB, 20 MB/s). Usato per rimettere il Pi in stato "vergine" e
   poterlo poi adottare. L'immagine va preconfigurata prima (`ssh`, `userconf.txt`, `enable_uart=1`).
+- **Canale di soccorso via IPv6 link-local.** Un profilo NetworkManager di ultima istanza garantisce che un
+  link cablato abbia sempre una connessione attiva, e quindi sempre un `fe80::…` raggiungibile via SSH anche
+  con IPv4 rotto. Verificato con il firewall IPv6 attivo. L'indirizzo risulta derivato in EUI-64 dal MAC
+  (`d8:3a:dd:45:f9:37` → `fe80::da3a:ddff:fe45:f937`), quindi **calcolabile in anticipo**: dà la capacità
+  "raggiungi il dispositivo conoscendone il MAC" senza aggiungere un demone di gestione non cifrato.
+- **Firewall IPv6**: prima assente del tutto — IPv4 in `DROP` e IPv6 completamente aperto. Ora rispecchia le
+  regole IPv4, con ICMPv6 accettato perché senza Neighbour Discovery IPv6 non funziona affatto.
+- **Display senza bande**: `disable_fw_kms_setup=1` + `disable_overscan=1`, entrambi presenti in Raspberry Pi
+  OS e assenti da noi. Misurato prima/dopo: da 48/46/48/56 pixel a zero.
+- **Console seriale**: `console=ttyS0` (con i DTB Raspberry la UART del connettore è `ttyS0`, non `ttyS1`).
+  Ogni boot UniTotem era muto sulla seriale, il che ha tolto diagnostica proprio durante un guasto.
+- **Diagnostica media**: `vcgencmd` (`throttled=0x0`) e `gst-inspect-1.0` ora presenti.
 
 ## Due bug reali trovati in questa sessione
 
@@ -64,6 +76,17 @@ filesystem DATA da cui fare overlay. Il commento fuorviante è stato sostituito 
 | `inside-real-sd.sh` | Harness su SD fisica, non ha lo scenario "Round 2". Obsoleto da quando l'OTA via rete funziona. |
 | Flash di OS estranei: solo via `dd`, non via parts set | `parts-lib.sh` classifica le partizioni per label (`FIRMWARE`/`ROOT`/`DATA`) e i passi di boot scrivono `config.txt` in formato UniTotem, con la promozione affidata a `unitotem-boot-ok`. Per un'immagine estranea si usa il fallback + `dd` dell'immagine intera. |
 | Round 2 del loopback maschera i bug di stdin | Sostituisce `ota_ssh` con un `eval` che non tocca stdin. Ora coperto da due guard espliciti, ma resta una limitazione strutturale del mock. |
+
+## Da fare subito
+
+- **Riattivare il watchdog di rete** sul Pi di prova: `ENABLED=0` in `/etc/unitotem/net-watchdog.conf` è
+  stato messo a mano per non farlo scattare durante le verifiche, non è il default dell'immagine.
+- **Stato e progresso dell'OTA a schermo via whiptail.** Oggi non si vede nulla, per due cause distinte:
+  `cmd_serve_fallback` scrive l'interfaccia su `/dev/console`, che con `console=tty1 console=ttyS0` è la
+  **seriale** e non lo schermo (va usato `/dev/tty1` esplicito), e `--infobox` ritorna subito senza
+  persistere. Le funzioni `gauge_start`/`gauge_feed`/`gauge_stop` previste in PLAN.md §9 non sono mai state
+  scritte. Approccio: ogni sottocomando pubblica fase e percentuale su un file in `/run`, e `serve-fallback`
+  tiene un ciclo che ridisegna un `whiptail --gauge`; la percentuale da `pv -n`, già nel payload.
 
 ## Prossimi passi consigliati
 
