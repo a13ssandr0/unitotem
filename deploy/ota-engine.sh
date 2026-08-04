@@ -253,6 +253,7 @@ cmd_probe() {
 # round-trip otherwise).
 # ---------------------------------------------------------------------------
 cmd_restore_table() {
+    ota_status_set "Ricostruzione tabella delle partizioni"
     parse_args "$@"
     need disk; need table-b64; need tail-part
     local disk; disk=$(resolve_disk "${ARG[disk]}")
@@ -343,11 +344,19 @@ cmd_restore_part() {
     # partclone.<fstype> made the image (that binary choice only matters on
     # the generation side, in deploy/make-parts.sh) - it reads the image's
     # own header to know how to lay the blocks back out.
+    # pv sits after decompression so it measures the payload, which is what
+    # --used-bytes describes; measuring the compressed side would give a
+    # percentage against a total nobody knows. -n makes it emit a bare integer
+    # per update, which ota_ui_feed reads back. Its stderr goes to a file
+    # rather than a pipe on purpose: the UI runs in a different process, and a
+    # pipe would couple the transfer's fate to the reader's.
+    ota_status_set "Ripristino partizione ${ARG[part]} (${ARG[cloner]})"
     case "${ARG[comp]:-xz}" in
-        xz)   unxz -dc <&4 | partclone.restore "${restore_flags[@]}" -F -B ;;
-        zstd) unzstd -dc <&4 | partclone.restore "${restore_flags[@]}" -F -B ;;
+        xz)   unxz -dc <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | partclone.restore "${restore_flags[@]}" -F -B ;;
+        zstd) unzstd -dc <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | partclone.restore "${restore_flags[@]}" -F -B ;;
         *)    fail "compressione sconosciuta: ${ARG[comp]:-}" ;;
     esac || fail "restore fallito su $part_dev"
+    ota_status_set "Verifica filesystem partizione ${ARG[part]}..."
     exec 4<&-
 
     if [ "${ARG[cloner]}" != dd ]; then
@@ -438,6 +447,7 @@ cmd_prepare_bootfs() {
 # touch it. (No-op on amd64: grub.cfg lives on the ext4 BOOT partition
 # there, never on the FAT ESP this tar covers.)
 cmd_populate_bootfs() {
+    ota_status_set "Copia file di avvio (firmware, dtb, overlay)"
     parse_args "$@"
     need disk; need bootfs-part; need data-host; need data-port
     local disk; disk=$(resolve_disk "${ARG[disk]}")
@@ -543,6 +553,7 @@ append_config_extra() {
 }
 
 cmd_set_trial_boot() {
+    ota_status_set "Preparazione avvio di prova"
     parse_args "$@"
     need firmware
     case "${ARG[firmware]}" in
@@ -664,6 +675,7 @@ EOF
 # runs - this only handles the disk being deployed onto.
 # ---------------------------------------------------------------------------
 cmd_mount_target() {
+    ota_status_set "Montaggio sistema ripristinato"
     parse_args "$@"
     need disk
     local disk; disk=$(resolve_disk "${ARG[disk]}")
@@ -718,6 +730,7 @@ cmd_umount_target() {
 # on the restored BOOT ext4 partition, and GRUB's trial-boot entry already
 # points at /mnt/newroot's own /vmlinuz,/initrd.img symlinks.
 cmd_populate_real_kernel() {
+    ota_status_set "Installazione kernel del sistema"
     parse_args "$@"
     [ -d /mnt/newroot/boot/firmware ] || { echo "UNITOTEM_KERNEL_POPULATED=skip"; return 0; }
     # No `ls` here on purpose: this initrd's `ls` doesn't parse options at
@@ -740,6 +753,7 @@ cmd_populate_real_kernel() {
 # whitelist is reintroduced.
 # ---------------------------------------------------------------------------
 cmd_migrate_etc_overlay() {
+    ota_status_set "Migrazione configurazione da DATA"
     parse_args "$@"
     need root-mnt; need data-mnt
     local root="${ARG[root-mnt]}" data="${ARG[data-mnt]}"
@@ -872,6 +886,69 @@ CONSOLE_TERM_FOR() {
         ttyS*|ttyAMA*) echo vt220 ;;
         *) echo linux ;;
     esac
+}
+
+# ---------------------------------------------------------------------------
+# On-screen status. Every subcommand is a SEPARATE process invoked over SSH by
+# the host, so none of them can own the display; the only long-lived process on
+# the target is serve-fallback. They therefore publish phase and progress to
+# files under /run, and serve-fallback runs one loop that redraws a whiptail
+# gauge from them.
+#
+# The gauge is drawn on /dev/tty1, deliberately NOT /dev/console. With the
+# cmdline this project writes (console=tty1 console=ttyS0,115200) the kernel
+# makes the LAST entry /dev/console, so /dev/console is the serial port - the
+# previous code wrote the whiptail box there and it went out the UART instead
+# of appearing on the screen, which is why the display stayed blank during an
+# OTA. Serial keeps the kernel log; the screen gets the UI.
+#
+# Two files rather than one: the phase is set once per step, while pv appends a
+# percentage per update, so mixing them would mean rewriting the phase
+# thousands of times. Both live in /run, which is a tmpfs here, so nothing
+# survives to confuse the next boot.
+# ---------------------------------------------------------------------------
+OTA_STATUS_FILE=/run/unitotem-ota.status
+OTA_PCT_FILE=/run/unitotem-ota.pct
+
+# Announce a step. Clears any stale percentage so a finished transfer's 100%
+# is not shown against the next, not-yet-started one.
+ota_status_set() {
+    printf '%s\n' "${1:-}" > "$OTA_STATUS_FILE" 2>/dev/null || true
+    : > "$OTA_PCT_FILE" 2>/dev/null || true
+}
+
+# Feeds whiptail's gauge protocol: a XXX-delimited block carrying the new
+# percentage and the new text.
+ota_ui_feed() {
+    local phase pct
+    while :; do
+        phase=""
+        [ -r "$OTA_STATUS_FILE" ] && read -r phase < "$OTA_STATUS_FILE" 2>/dev/null
+        pct=""
+        if [ -s "$OTA_PCT_FILE" ]; then
+            # tail is copy_exec'd into this initrd; the substitution strips
+            # anything that is not a digit without needing tr, which is NOT
+            # present here (confirmed on hardware: "tr: not found").
+            pct=$(tail -n1 "$OTA_PCT_FILE" 2>/dev/null)
+            pct="${pct//[!0-9]/}"
+        fi
+        [ -n "$pct" ] || pct=0
+        [ "$pct" -le 100 ] 2>/dev/null || pct=100
+        printf 'XXX\n%s\n%s\n\n%s\nXXX\n' "$pct" "${OTA_UI_HEADER:-}" "${phase:-In attesa di comandi via SSH...}"
+        sleep 1
+    done
+}
+
+# Best-effort throughout: a board with no /dev/tty1 (amd64 serial-only, or a
+# headless unit) simply gets no UI, and that must never hold up an OTA.
+ota_ui_start() {
+    OTA_UI_HEADER="$1"
+    [ -w /dev/tty1 ] || return 0
+    command -v whiptail >/dev/null 2>&1 || return 0
+    ota_status_set ""
+    ( ota_ui_feed | TERM=linux TERMINFO=/lib/terminfo whiptail \
+        --backtitle "UniTotem OTA" --gauge "" 14 72 0 > /dev/tty1 2>/dev/null ) &
+    OTA_UI_PID=$!
 }
 
 configure_networking_ota() {
@@ -1095,10 +1172,15 @@ cmd_serve_fallback() {
     # set one fixed, known value every boot. dropbear (below) accepts
     # password auth by default; no flag needed for that.
 
-    local term; term=$(CONSOLE_TERM_FOR "${ARG[console-dev]:-tty1}")
-    TERM="$term" TERMINFO=/lib/terminfo whiptail --backtitle "UniTotem OTA" \
-        --infobox "In modalita' di recupero OTA.\n\nMotivo: ${reason}\nIndirizzo: ${myip:-<nessuno>}\nPorta: 2222\n\nIn attesa di comandi via SSH..." \
-        10 60 > /dev/console 2>/dev/null || true
+    # Replaces a one-shot --infobox that was written to /dev/console. It had
+    # two independent faults: /dev/console is the serial port here (see
+    # ota_ui_start), and --infobox returns immediately without persisting, so
+    # even on the right device it would have been overwritten by the next
+    # message. The gauge below stays up for the whole session and reports what
+    # each step is doing.
+    ota_ui_start "Modalita' di recupero OTA
+Motivo: ${reason}
+Indirizzo: ${myip:-<nessuno>}   Porta: 2222"
 
     if [ -f /boot-ota/unitotem-ota.conf ]; then
         read_kv_lines < /boot-ota/unitotem-ota.conf
