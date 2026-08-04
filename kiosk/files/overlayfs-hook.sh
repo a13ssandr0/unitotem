@@ -31,29 +31,36 @@ if ! mount -t ext4 -o noatime,nodiratime "$DATA_DEV" "${rootmnt}/mnt/data"; then
     exit 0
 fi
 
-# KNOWN UNRESOLVED ISSUE (found and diagnosed on real Pi 4 hardware,
-# 2026-07-30, during the OTA redesign work - not something that regressed
-# just now): both overlay mounts below succeed here (verified rc=0, and
-# `mount` shows them live, right up to the end of this script) but do NOT
-# survive the subsequent switch_root into the real system - `findmnt /etc
-# /root` on the booted system shows nothing. --make-rshared/--make-shared
-# (the standard fix for "custom submount doesn't survive switch_root") was
-# tried and did NOT resolve it either. Net effect: /etc and /root are
-# NOT actually overlaid/writable at runtime today, despite this script
-# reporting success. A separate, real bug was ALSO found and fixed in the
-# same investigation: `mount` itself was being shadowed by a non-functional
-# klibc stub this early in boot (busybox-initramfs/klibc-utils hook-
-# ordering issue, same class as the mke2fs/dd bugs documented in the OTA
-# tooling) - deploy/ota-engine.sh's initramfs hook (kiosk/files/ota-hook)
-# force-copies the real mount/umount/losetup/mkfifo for exactly this
-# reason, which also benefits this script once the image is rebuilt with
-# it. That fix alone was NOT sufficient to make the overlay survive
-# switch_root, though - the propagation issue is a separate, still-open
-# problem. Likely next step if picked back up: do the overlay mount from a
-# systemd unit ordered before local-fs.target on the REAL system instead of
-# from here (i.e. once PID 1 has already taken over the final, stable mount
-# namespace), rather than continuing to fight switch_root's mount handoff
-# from inside the initramfs.
+# HISTORY, and why this script now reports its own result.
+#
+# This was long recorded as a known-unresolved bug: the overlays mounted
+# fine here (rc=0, visible in `mount`) but appeared not to survive
+# switch_root, leaving /etc and /root read-only at runtime. During that
+# investigation a separate, very real bug was found and fixed: `mount`
+# itself was being shadowed this early in boot by a non-functional klibc
+# stub (same class as the mke2fs/dd bugs documented in the OTA tooling), so
+# deploy/ota-engine.sh's initramfs hook (kiosk/files/ota-hook) force-copies
+# the real mount/umount/losetup/mkfifo. The initrd shipped today does carry
+# the real util-linux mount, the overlay module and `overlay` in
+# conf/modules - all three verified by extracting the built initramfs.
+#
+# Strong evidence now says the overlay is in fact working: the root
+# filesystem is mounted read-only (see kiosk/files/fstab-arm64 and the ro
+# kernel cmdline), yet unitotem-ssh-hostkey.service writes host keys into
+# /etc/ssh on every boot and was confirmed succeeding on real hardware
+# (service 0/SUCCESS, restored key matching DATA byte for byte). That is
+# only possible if /etc really is overlaid and writable.
+#
+# Rather than rewrite a mechanism that the evidence says works - or keep
+# trusting a stale comment - the script now records what actually happened
+# where it can be read after boot. Do not delete that marker: it is the
+# difference between knowing and assuming, and this exact question already
+# cost one wrong diagnosis.
+#
+# --make-rshared/--make-shared below are retained deliberately. They were
+# added as an attempted fix, did not resolve anything on their own, and are
+# kept only because the current arrangement is known-good on hardware;
+# removing them is a separate change that needs its own boot test.
 mkdir -p "${rootmnt}/mnt/data/upper/etc" \
          "${rootmnt}/mnt/data/work/etc"
 mount --make-rshared "${rootmnt}" 2>/dev/null || true
@@ -70,3 +77,27 @@ mount -t overlay overlay \
     "${rootmnt}/root" \
     || log_warning_msg "overlay: /root fallito"
 mount --make-shared "${rootmnt}/root" 2>/dev/null || true
+
+# Record the outcome on DATA itself, which survives into the booted system
+# at /mnt/data - so "is /etc actually overlaid?" is answerable after the
+# fact with `cat /mnt/data/.unitotem-overlay-status` instead of having to
+# reproduce an early-boot state. Two independent facts are captured: what
+# this script observed here in the initramfs, and a write probe proving the
+# overlay is genuinely writable rather than merely mounted. Best-effort
+# throughout: never allowed to fail the boot.
+{
+    echo "boot-marker=1"
+    for d in etc root; do
+        if grep -q " ${rootmnt}/${d} overlay " /proc/mounts 2>/dev/null; then
+            echo "initramfs-${d}=overlay-mounted"
+        else
+            echo "initramfs-${d}=NOT-MOUNTED"
+        fi
+    done
+    if touch "${rootmnt}/etc/.unitotem-overlay-writetest" 2>/dev/null; then
+        rm -f "${rootmnt}/etc/.unitotem-overlay-writetest" 2>/dev/null
+        echo "initramfs-etc-writable=yes"
+    else
+        echo "initramfs-etc-writable=no"
+    fi
+} > "${rootmnt}/mnt/data/.unitotem-overlay-status" 2>/dev/null || true
