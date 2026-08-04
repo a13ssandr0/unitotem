@@ -70,5 +70,13 @@ sync
 # a grace period, "reboot" never even reached the journal (killed before it
 # could act); the brief sleep gives it room to actually start before this
 # script - and the SSH session with it - exits.
-setsid nohup reboot >/dev/null 2>&1 < /dev/null &
-sleep 2
+#
+# The reboot is also DELAYED, not just detached. With it firing immediately
+# the two seconds below were not enough: sshd went down while this script was
+# still the remote end of a live session, so ssh reported "Connection closed
+# by remote host" and a non-zero status to the caller even though the arming
+# had fully succeeded - a false failure on every prepared-target deploy.
+# Sleeping inside the detached session instead lets this script exit, the SSH
+# session close cleanly, and only then does the machine go down.
+setsid nohup sh -c 'sleep 5; exec reboot' >/dev/null 2>&1 < /dev/null &
+sleep 1
