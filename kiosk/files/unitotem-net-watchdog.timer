@@ -1,0 +1,14 @@
+[Unit]
+Description=UniTotem - controllo periodico raggiungibilita' di rete
+
+[Timer]
+# Il primo controllo non e' immediato: all'avvio NetworkManager ha bisogno di
+# tempo per completare DHCP, e partire subito conterebbe come fallimento una
+# situazione del tutto normale.
+OnBootSec=5min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=unitotem-net-watchdog.service
+
+[Install]
+WantedBy=timers.target

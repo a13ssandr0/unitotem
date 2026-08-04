@@ -1,0 +1,8 @@
+[Unit]
+Description=UniTotem - watchdog di rete (riavvio in OTA se irraggiungibile)
+Documentation=man:unitotem-net-watchdog
+After=network.target NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-net-watchdog
