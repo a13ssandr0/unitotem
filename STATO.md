@@ -66,33 +66,55 @@ come documentato per settimane. Era il bug #1 — su un'installazione da zero no
 filesystem DATA da cui fare overlay. Il commento fuorviante è stato sostituito da un marker auto-verificante
 (`/mnt/data/.unitotem-overlay-status`).
 
+## Verifica del 4 agosto (sera): interfaccia a schermo, amd64, fault injection
+
+- **Interfaccia OTA a schermo: funzionante, fotografata durante un OTA reale.** `whiptail --gauge` resta su
+  per l'intera sessione (~3 minuti continuativi nella cattura), con motivo, indirizzo, porta, fase e
+  percentuale presa da `pv`. Prima non compariva nulla.
+- **amd64 riallineato**: immagine ricostruita il 4 agosto (era ferma al 30 luglio), parts set rigenerato,
+  loopback §11.1 **44/44**.
+- **arm64**: rebuild, parts set, loopback §11.1 **100/100**.
+- **Fault injection §11.5 livello 4**: nuovo harness `work/loopback-test/{run,inside}-bootcount.sh`, **10/10**.
+  Copre `cmd_init_premount`, che nessun test raggiungeva: tre avvii non confermati cadono nel fallback, un
+  trial con contatore alto si avvia comunque e riparte da 1, `/boot-ota` non resta montato, ROOT assente
+  innesca il fallback.
+- **Due deploy consecutivi su hardware**, entrambi completati: `UNITOTEM_ETC_MIGRATED=1` (il bug `date` è
+  chiuso) e `UNITOTEM_NET_APPLIED=1` al primo giro, `skip-esistente` al secondo — il percorso di scrittura
+  del profilo di rete è quindi verificato su hardware **e** idempotente.
+- **Copertura complementare di `pv`** senza costruirla apposta: il container di test arm64 ha `pv`, quello
+  amd64 no, quindi i due loopback esercitano entrambi i rami del restore.
+
+### Tre bug trovati e chiusi in questa fase
+
+1. **La prima versione dell'interfaccia sollevava un errore vero** dentro `serve-fallback` su hardware
+   (`ERRORE: errore inatteso alla riga 949`, fino all'ERR trap e al gestore di rollback). Il commento che la
+   dichiarava best-effort non aveva nulla che lo rendesse vero; ora è chiamata in contesto `||`, che
+   sopprime `errexit` e l'ERR trap per tutto il corpo della funzione.
+2. **Il falso negativo di `unitotem-ota-arm` era bloccante**, non cosmetico: `die` interrompeva il deploy a
+   ogni giro benché l'arming fosse riuscito. Corretto ai due estremi — il chiamante non usa più l'exit
+   status di ssh come verdetto (lo è `wait_ota_reachable`), e lo script sul target ritarda il reboot dentro
+   la sessione staccata.
+3. **La build nativa sul Pi non era mai partita**: `debootstrap` rifiuta `/tmp` perché montato `nodev` (e
+   sono 256 MB). `ROOTFS` era cablato; ora è sovrascrivibile e punta su DATA. Stage0 nativo verificato
+   `RC=0`. Il ripiego automatico su Docker+qemu funzionava, e per questo il problema era invisibile.
+
 ## Non fatto / limiti noti
 
 | Gap | Note |
 |---|---|
-| **amd64 fermo al 30 luglio** | Nessun rebuild da allora. I fix sono nel sorgente condiviso ma mai verificati su immagine/deploy amd64. È il gap più grosso rimasto. |
-| `unitotem-ota-arm` falso negativo | Il reboot chiude la sessione SSH prima che l'exit 0 sia letto, quindi `remote-deploy.sh deploy` riporta un fallimento benché l'arming sia riuscito. Aggirato a mano ogni volta; andrebbe reso robusto. |
-| Build nativa sul Pi | Implementata, mai eseguita per una build reale completa. |
+| **Tre fix sono in sorgente ma non in nessuna immagine** | Dimensionamento dell'area di testo del gauge, `unitotem-ota-arm` con reboot ritardato, `ROOTFS` sovrascrivibile. Verificati singolarmente su hardware, ma entreranno in un'immagine solo alla prossima build. |
+| **Build nativa: mai completata end-to-end** | Il bloccante è rimosso e stage0 gira nativo, ma stage1→3 non sono ancora stati eseguiti sul Pi in un giro completo. |
+| `logrotate` / `dpkg-db-backup` falliti | Su ogni dispositivo, non solo su quello di prova: sono artefatti del root read-only, il sistema resta `degraded`. Estranei all'OTA, ma sarebbero da mascherare o adattare. |
 | `inside-real-sd.sh` | Harness su SD fisica, non ha lo scenario "Round 2". Obsoleto da quando l'OTA via rete funziona. |
 | Flash di OS estranei: solo via `dd`, non via parts set | `parts-lib.sh` classifica le partizioni per label (`FIRMWARE`/`ROOT`/`DATA`) e i passi di boot scrivono `config.txt` in formato UniTotem, con la promozione affidata a `unitotem-boot-ok`. Per un'immagine estranea si usa il fallback + `dd` dell'immagine intera. |
-| **Un nuovo sottocomando del motore è utilizzabile solo un OTA dopo** | Il fallback che esegue un OTA è quello installato in precedenza, caricato in RAM all'avvio; lo Stage 1 riscrive la copia su disco, che entra in gioco al giro successivo. Osservato dal vivo: `apply-network`, aggiunto oggi, ha risposto `Sottocomando sconosciuto` durante il deploy odierno (fallimento non fatale, deploy completato). Conseguenza pratica: `apply-network` è verificato solo in loopback, non ancora su hardware. |
+| **Un nuovo sottocomando del motore è utilizzabile solo un OTA dopo** | Il fallback che esegue un OTA è quello installato in precedenza, caricato in RAM all'avvio; lo Stage 1 riscrive la copia su disco, che entra in gioco al giro successivo. È la ragione per cui ogni verifica a schermo richiede **due** deploy, e per cui i tre fix qui sopra non sono ancora in un'immagine. |
 | Round 2 del loopback maschera i bug di stdin | Sostituisce `ota_ssh` con un `eval` che non tocca stdin. Ora coperto da due guard espliciti, ma resta una limitazione strutturale del mock. |
-
-## Da fare subito
-
-- **Riattivare il watchdog di rete** sul Pi di prova: `ENABLED=0` in `/etc/unitotem/net-watchdog.conf` è
-  stato messo a mano per non farlo scattare durante le verifiche, non è il default dell'immagine.
-- **Stato e progresso dell'OTA a schermo via whiptail.** Oggi non si vede nulla, per due cause distinte:
-  `cmd_serve_fallback` scrive l'interfaccia su `/dev/console`, che con `console=tty1 console=ttyS0` è la
-  **seriale** e non lo schermo (va usato `/dev/tty1` esplicito), e `--infobox` ritorna subito senza
-  persistere. Le funzioni `gauge_start`/`gauge_feed`/`gauge_stop` previste in PLAN.md §9 non sono mai state
-  scritte. Approccio: ogni sottocomando pubblica fase e percentuale su un file in `/run`, e `serve-fallback`
-  tiene un ciclo che ridisegna un `whiptail --gauge`; la percentuale da `pv -n`, già nel payload.
 
 ## Prossimi passi consigliati
 
-1. **Rebuild e verifica amd64** — allineare l'architettura rimasta indietro.
-2. Rendere robusto `unitotem-ota-arm` (o il suo chiamante) rispetto alla chiusura della sessione SSH.
+1. **Una build che incorpori i tre fix** e un deploy di conferma — chiude sia il gauge completo sia
+   l'arming pulito sul target.
+2. Completare la build nativa sul Pi end-to-end, ora che stage0 passa.
 3. Estendere `inside-real-sd.sh` con lo scenario "Round 2", quando serve di nuovo l'harness su SD fisica.
 
 Nota di metodo emersa più volte oggi: `should_run()` in `build-kiosk.sh` confronta i timestamp a livello di
