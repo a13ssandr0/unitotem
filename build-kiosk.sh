@@ -69,7 +69,10 @@ build_natively_on_pi() {
     # ... mounted with noexec or nodev") - stage0 failed on its first line and
     # the whole native build fell back to qemu without that ever being
     # obvious. The build tree on DATA has neither restriction.
-    local envvars="ARCH=arm64 ROOTFS='${PI_BUILD_BASE}/rootfs'"
+    # Both paths are moved off their container-friendly defaults: /tmp is a
+    # 256 MB nodev tmpfs here, and /mnt is where DATA is mounted - stage3
+    # mounting the image over it hid the build tree it was about to copy.
+    local envvars="ARCH=arm64 ROOTFS='${PI_BUILD_BASE}/rootfs' IMG_MNT='${PI_BUILD_BASE}/imgmnt'"
     local var
     for var in RELEASE MIRROR KIOSK_HOSTNAME ROOT_PASSWORD KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE; do
         [ -n "${!var:-}" ] && envvars="${envvars} ${var}='${!var}'"

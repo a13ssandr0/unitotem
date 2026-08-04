@@ -74,17 +74,17 @@ LOOP=$(losetup --find --show --partscan "${IMG_FILE}")
 echo "Loop device: ${LOOP}"
 
 cleanup_loop() {
-    umount -lf /mnt/mnt/data      2>/dev/null || true
+    umount -lf ${IMG_MNT}/mnt/data      2>/dev/null || true
     if [ "$ARCH" = "amd64" ]; then
-        umount -lf /mnt/boot/efi  2>/dev/null || true
-        umount -lf /mnt/boot      2>/dev/null || true
-        umount -lf /mnt/dev       2>/dev/null || true
-        umount -lf /mnt/proc      2>/dev/null || true
-        umount -lf /mnt/sys       2>/dev/null || true
+        umount -lf ${IMG_MNT}/boot/efi  2>/dev/null || true
+        umount -lf ${IMG_MNT}/boot      2>/dev/null || true
+        umount -lf ${IMG_MNT}/dev       2>/dev/null || true
+        umount -lf ${IMG_MNT}/proc      2>/dev/null || true
+        umount -lf ${IMG_MNT}/sys       2>/dev/null || true
     elif [ "$ARCH" = "arm64" ]; then
-        umount -lf /mnt/boot/firmware 2>/dev/null || true
+        umount -lf ${IMG_MNT}/boot/firmware 2>/dev/null || true
     fi
-    umount -lf /mnt               2>/dev/null || true
+    umount -lf ${IMG_MNT}               2>/dev/null || true
     losetup -d "${LOOP}"          2>/dev/null || true
 }
 trap cleanup_loop EXIT
@@ -105,24 +105,29 @@ fi
 
 # ---------- Mount & populate ----------
 
+# Not redundant now that IMG_MNT is overridable: /mnt always exists, an
+# arbitrary override path does not, and mount fails outright on a missing
+# mountpoint.
+mkdir -p "${IMG_MNT}"
+
 if [ "$ARCH" = "amd64" ]; then
-    mount "${LOOP}p3" /mnt
-    mkdir -p /mnt/{boot,mnt/data}
-    mount "${LOOP}p2" /mnt/boot
-    mkdir -p /mnt/boot/efi
-    mount "${LOOP}p1" /mnt/boot/efi
-    mount "${LOOP}p4" /mnt/mnt/data
+    mount "${LOOP}p3" ${IMG_MNT}
+    mkdir -p ${IMG_MNT}/{boot,mnt/data}
+    mount "${LOOP}p2" ${IMG_MNT}/boot
+    mkdir -p ${IMG_MNT}/boot/efi
+    mount "${LOOP}p1" ${IMG_MNT}/boot/efi
+    mount "${LOOP}p4" ${IMG_MNT}/mnt/data
 
 elif [ "$ARCH" = "arm64" ]; then
-    mount "${LOOP}p2" /mnt
-    mkdir -p /mnt/{boot,mnt/data}
-    mkdir -p /mnt/boot/firmware
-    mount "${LOOP}p1" /mnt/boot/firmware
-    mount "${LOOP}p3" /mnt/mnt/data
+    mount "${LOOP}p2" ${IMG_MNT}
+    mkdir -p ${IMG_MNT}/{boot,mnt/data}
+    mkdir -p ${IMG_MNT}/boot/firmware
+    mount "${LOOP}p1" ${IMG_MNT}/boot/firmware
+    mount "${LOOP}p3" ${IMG_MNT}/mnt/data
 fi
 
 echo "Copying rootfs..."
-rsync -aHAXx --info=progress2 "${ROOTFS}/" /mnt/
+rsync -aHAXx --info=progress2 "${ROOTFS}/" ${IMG_MNT}/
 # Without this, the boot-ability assertions below (arm64 especially - the
 # amd64 branch happens to do enough intervening I/O via grub-install/
 # update-grub to mask this) can read back stale/incomplete data for a large
@@ -148,30 +153,30 @@ for f in "$RECOVERY_VMLINUZ" "$RECOVERY_INITRD" "$RECOVERY_MANIFEST"; do
 done
 
 if [ "$ARCH" = "amd64" ]; then
-    mkdir -p /mnt/boot/efi/unitotem
-    cp "$RECOVERY_VMLINUZ" /mnt/boot/efi/unitotem/recovery-vmlinuz
-    cp "$RECOVERY_INITRD"  /mnt/boot/efi/unitotem/recovery-initrd.img
+    mkdir -p ${IMG_MNT}/boot/efi/unitotem
+    cp "$RECOVERY_VMLINUZ" ${IMG_MNT}/boot/efi/unitotem/recovery-vmlinuz
+    cp "$RECOVERY_INITRD"  ${IMG_MNT}/boot/efi/unitotem/recovery-initrd.img
     {
         echo "$(sha256sum "$RECOVERY_VMLINUZ" | cut -d' ' -f1)  recovery-vmlinuz"
         echo "$(sha256sum "$RECOVERY_INITRD"  | cut -d' ' -f1)  recovery-initrd.img"
-    } > /mnt/boot/efi/unitotem/recovery.sha256
+    } > ${IMG_MNT}/boot/efi/unitotem/recovery.sha256
 elif [ "$ARCH" = "arm64" ]; then
-    cp "$RECOVERY_VMLINUZ" /mnt/boot/firmware/recovery8.img
-    cp "$RECOVERY_INITRD"  /mnt/boot/firmware/recovery-initrd.img
+    cp "$RECOVERY_VMLINUZ" ${IMG_MNT}/boot/firmware/recovery8.img
+    cp "$RECOVERY_INITRD"  ${IMG_MNT}/boot/firmware/recovery-initrd.img
     {
         echo "$(sha256sum "$RECOVERY_VMLINUZ" | cut -d' ' -f1)  recovery8.img"
         echo "$(sha256sum "$RECOVERY_INITRD"  | cut -d' ' -f1)  recovery-initrd.img"
-    } > /mnt/boot/firmware/recovery.sha256
+    } > ${IMG_MNT}/boot/firmware/recovery.sha256
 fi
 
 # ---------- Install bootloader (amd64 only) ----------
 
 if [ "$ARCH" = "amd64" ]; then
-    mount --bind /dev  /mnt/dev
-    mount --bind /proc /mnt/proc
-    mount --bind /sys  /mnt/sys
+    mount --bind /dev  ${IMG_MNT}/dev
+    mount --bind /proc ${IMG_MNT}/proc
+    mount --bind /sys  ${IMG_MNT}/sys
 
-    chroot /mnt grub-install \
+    chroot ${IMG_MNT} grub-install \
         --target=x86_64-efi \
         --efi-directory=/boot/efi \
         --boot-directory=/boot \
@@ -184,16 +189,16 @@ if [ "$ARCH" = "amd64" ]; then
     # legacy BIOS firmware - matters for deploy/remote-deploy.sh, which
     # can't make a BIOS target bootable on its own if the image itself
     # never shipped BIOS support.
-    chroot /mnt grub-install \
+    chroot ${IMG_MNT} grub-install \
         --target=i386-pc \
         --boot-directory=/boot \
         "${LOOP}"
 
-    chroot /mnt update-grub
+    chroot ${IMG_MNT} update-grub
 
-    umount -lf /mnt/dev
-    umount -lf /mnt/proc
-    umount -lf /mnt/sys
+    umount -lf ${IMG_MNT}/dev
+    umount -lf ${IMG_MNT}/proc
+    umount -lf ${IMG_MNT}/sys
 fi
 
 # ---------- Boot-ability assertions ----------
@@ -205,7 +210,7 @@ fi
 boot_assert_fail() { echo "BOOT-ABILITY CHECK FAILED: $*" >&2; exit 1; }
 
 if [ "$ARCH" = "arm64" ]; then
-    FWDIR=/mnt/boot/firmware
+    FWDIR=${IMG_MNT}/boot/firmware
 
     [ -f "$FWDIR/kernel8.img" ] || boot_assert_fail "$FWDIR/kernel8.img assente"
     # Two valid formats here, not one: a raw uncompressed arm64 Image
@@ -260,11 +265,11 @@ if [ "$ARCH" = "arm64" ]; then
 fi
 
 if [ "$ARCH" = "amd64" ]; then
-    RECOVERY_VMLINUZ_INSTALLED=/mnt/boot/efi/unitotem/recovery-vmlinuz
-    RECOVERY_INITRD_INSTALLED=/mnt/boot/efi/unitotem/recovery-initrd.img
+    RECOVERY_VMLINUZ_INSTALLED=${IMG_MNT}/boot/efi/unitotem/recovery-vmlinuz
+    RECOVERY_INITRD_INSTALLED=${IMG_MNT}/boot/efi/unitotem/recovery-initrd.img
 else
-    RECOVERY_VMLINUZ_INSTALLED=/mnt/boot/firmware/recovery8.img
-    RECOVERY_INITRD_INSTALLED=/mnt/boot/firmware/recovery-initrd.img
+    RECOVERY_VMLINUZ_INSTALLED=${IMG_MNT}/boot/firmware/recovery8.img
+    RECOVERY_INITRD_INSTALLED=${IMG_MNT}/boot/firmware/recovery-initrd.img
 fi
 for pair in "$RECOVERY_VMLINUZ:$RECOVERY_VMLINUZ_INSTALLED" "$RECOVERY_INITRD:$RECOVERY_INITRD_INSTALLED"; do
     src="${pair%%:*}"; installed="${pair#*:}"
@@ -275,9 +280,9 @@ for pair in "$RECOVERY_VMLINUZ:$RECOVERY_VMLINUZ_INSTALLED" "$RECOVERY_INITRD:$R
 done
 
 if [ "$ARCH" = "amd64" ]; then
-    BOOTFS_FREE=$(df -B1 --output=avail /mnt/boot/efi | tail -1 | tr -d ' ')
+    BOOTFS_FREE=$(df -B1 --output=avail ${IMG_MNT}/boot/efi | tail -1 | tr -d ' ')
 else
-    BOOTFS_FREE=$(df -B1 --output=avail /mnt/boot/firmware | tail -1 | tr -d ' ')
+    BOOTFS_FREE=$(df -B1 --output=avail ${IMG_MNT}/boot/firmware | tail -1 | tr -d ' ')
 fi
 [ "$BOOTFS_FREE" -ge $((64 * 1024 * 1024)) ] \
     || boot_assert_fail "meno di 64MiB liberi sulla partizione di boot dopo tutte le copie ($((BOOTFS_FREE / 1024 / 1024))MiB)"
@@ -287,14 +292,14 @@ fi
 sync
 
 if [ "$ARCH" = "amd64" ]; then
-    umount /mnt/mnt/data
-    umount /mnt/boot/efi
-    umount /mnt/boot
+    umount ${IMG_MNT}/mnt/data
+    umount ${IMG_MNT}/boot/efi
+    umount ${IMG_MNT}/boot
 elif [ "$ARCH" = "arm64" ]; then
-    umount /mnt/mnt/data
-    umount /mnt/boot/firmware
+    umount ${IMG_MNT}/mnt/data
+    umount ${IMG_MNT}/boot/firmware
 fi
-umount /mnt
+umount ${IMG_MNT}
 
 # fsck after unmount, directly on the loop partitions - a mounted (even
 # read-only-checked) filesystem doesn't give fsck a reliable view.

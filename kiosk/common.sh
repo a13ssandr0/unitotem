@@ -12,6 +12,13 @@ WORK_DIR="/work/${ARCH}"
 # and at 256 MB it could not have held a multi-GB rootfs anyway. The native
 # path points this at the build tree on DATA instead.
 ROOTFS="${ROOTFS:-/tmp/rootfs}"
+# Where stage3 mounts the image it is assembling. Overridable for the same
+# reason as ROOTFS, and it bit in the same way: /mnt is free inside the build
+# container, but on a real UniTotem it is where DATA lives - so mounting the
+# image there hid /mnt/data, and with it the build tree, mid-stage3. rsync
+# then failed with "No such file or directory" on a rootfs that was still
+# perfectly present, just no longer reachable.
+IMG_MNT="${IMG_MNT:-/mnt}"
 
 KIOSK_HOSTNAME="${KIOSK_HOSTNAME:-unitotem}"
 ROOT_PASSWORD="${ROOT_PASSWORD:-unitotem}"
