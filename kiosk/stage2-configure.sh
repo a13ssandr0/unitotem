@@ -68,32 +68,30 @@ fi
 if [ "$ARCH" = "arm64" ]; then
     mkdir -p "${ROOTFS}/boot/firmware"
     install -m 644 /kiosk/files/config.txt "${ROOTFS}/boot/firmware/config.txt"
-    # console=ttyS1 - NOT serial0, and NOT ttyS0 either. Both of those were
-    # tried on real hardware and produced total silence on a known-good FT232.
+    # console=ttyS0 - and this value depends entirely on WHOSE device tree the
+    # image ships, so do not "correct" it without re-checking that.
     #
     # The serial console on the GPIO14/15 header pins is the mini-UART
-    # (serial@7e215040, brcm,bcm2835-aux-uart). Two separate things decide what
-    # to call it, and the Debian DTBs we ship differ from Raspberry Pi's own on
-    # both counts:
-    #  1. serial0/serial1 aliases are SWAPPED. Raspberry Pi's DTBs map
-    #     serial0=&uart1 (mini-UART, header pins); mainline/Debian's
-    #     bcm283x.dtsi maps serial0=&uart0 (PL011), and on a Pi 4 the PL011 is
-    #     pinmuxed to GPIO30/32 for Bluetooth (it even carries a bluetooth child
-    #     node). So console=serial0 sends every byte out the Bluetooth UART.
-    #  2. The 8250 driver takes its tty INDEX from the DT serial alias, so with
-    #     the mini-UART aliased as serial1 it enumerates as ttyS1 - ttyS0 does
-    #     not exist at all. Verified by decompiling the very dtb on the card:
-    #     serial1 = /soc/serial@7e215040, status okay, pinctrl uart1_gpio14
-    #     (brcm,pins = <14 15>), and chosen/stdout-path = "serial1:115200n8".
-    # Debian's own Raspberry Pi images use console=ttyS1,115200 for this reason.
+    # (serial@7e215040, brcm,bcm2835-aux-uart). The 8250 driver takes its tty
+    # INDEX from the DT serial alias, and the two DTB families disagree about
+    # that alias:
+    #  - mainline/Debian bcm283x.dtsi aliases serial0=&uart0 (the PL011, which
+    #    on a Pi 4 is pinmuxed to GPIO30/32 for Bluetooth) and serial1=&uart1,
+    #    so the header UART enumerated as ttyS1 and ttyS0 did not exist.
+    #  - Raspberry Pi's own DTBs alias serial0=&uart1, so the header UART is
+    #    ttyS0.
     #
-    # Needs enable_uart=1 in config.txt (the mini-UART derives its baud from the
-    # VPU core clock; enable_uart=1 is what pins that clock). Note dtoverlay=
-    # /dtparam= cannot help here: the Debian dtbs are built without -@, so they
-    # carry no __symbols__/__overrides__ and no overlay can ever apply.
-    # Revisit all of this if we ever switch to linux-image-rpi-v8, which brings
-    # Raspberry Pi's own dtbs and therefore the other alias convention.
-    echo "console=tty1 console=ttyS1,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet splash loglevel=3 rd.systemd.show_status=false plymouth.ignore-serial-consoles" \
+    # This image used to ship the generic Debian kernel and therefore ttyS1.
+    # kiosk/stage1-packages.sh now installs linux-image-rpi-v8, which brings
+    # Raspberry Pi's DTBs and flips the convention - the previous version of
+    # this comment even warned to revisit it on exactly that switch, and it was
+    # missed: every UniTotem boot went silent on a known-good FT232 while a
+    # stock Raspberry Pi OS on the same hardware, same adapter, logged happily
+    # on ttyS0. That silence cost real diagnostic ability during a failure.
+    #
+    # Still needs enable_uart=1 in config.txt (the mini-UART derives its baud
+    # from the VPU core clock, and enable_uart=1 is what pins that clock).
+    echo "console=tty1 console=ttyS0,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet splash loglevel=3 rd.systemd.show_status=false plymouth.ignore-serial-consoles" \
         > "${ROOTFS}/boot/firmware/cmdline.txt"
 
     cat > "${ROOTFS}/etc/modules-load.d/rpi-gpu.conf" << 'EOF'
