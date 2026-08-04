@@ -914,22 +914,71 @@ configure_networking_ota() {
     ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1
 }
 
+# PWR and ACT blink in ALTERNATION (one on while the other is off), 50/50
+# duty, for the whole OTA session - a visual "this device is in
+# maintenance/receiving mode" signal that is unmistakable at a glance,
+# unlike a single blinking LED which can read as normal activity. Called
+# from cmd_serve_fallback, so it covers both the resident fallback and the
+# real system's own OTA-capable initramfs (same function, both paths).
+# Best-effort and silent throughout: amd64 has no such sysfs path at all,
+# and each LED is handled independently so a board exposing only one of the
+# two still gets a blink.
+#
+# The half-period offset is what makes them alternate, and it is NOT
+# optional decoration: the kernel's timer trigger always starts a LED in the
+# ON phase (changing the trigger forces brightness to 0, and the first timer
+# tick then switches it on), so arming both back-to-back makes them blink in
+# UNISON - verified on a real Pi 4 by sampling both brightness files, not
+# assumed. Offsetting the second arm by half a period is what mirrors them.
+#
+# The wait is a bash busy-loop on EPOCHREALTIME rather than `sleep 0.5`
+# because the resident fallback initramfs ships klibc's sleep, which parses
+# only whole seconds and rejects "0.5" outright (there is no busybox in this
+# initrd - see PLAN.md's note on that discovery). Burning ~500ms of CPU once
+# per OTA session, on a device that is about to sit idle waiting for the
+# network, is a fair price for keeping the documented 500ms rate instead of
+# slowing the blink to whole seconds just to fit klibc's sleep.
+ota_led_maintenance() {
+    local half_ms=500
+    local have_pwr=0 have_act=0
+    [ -w /sys/class/leds/PWR/trigger ] && have_pwr=1
+    [ -w /sys/class/leds/ACT/trigger ] && have_act=1
+    [ "$have_pwr" = 1 ] || [ "$have_act" = 1 ] || return 0
+
+    _led_arm() {
+        local led="$1"
+        echo timer      > "/sys/class/leds/${led}/trigger"   2>/dev/null || return 0
+        echo "$half_ms" > "/sys/class/leds/${led}/delay_on"  2>/dev/null || true
+        echo "$half_ms" > "/sys/class/leds/${led}/delay_off" 2>/dev/null || true
+    }
+
+    [ "$have_pwr" = 1 ] && _led_arm PWR
+
+    # Only worth offsetting when both LEDs are actually being driven.
+    # The [.,] pattern is deliberate: EPOCHREALTIME renders with the
+    # LC_NUMERIC decimal separator, which is a comma under this image's own
+    # it_IT.UTF-8 locale - stripping only "." would leave a comma in the
+    # string and break the arithmetic. $SECONDS caps the spin at ~3s so a
+    # missing or malformed EPOCHREALTIME can never hang the fallback here.
+    if [ "$have_pwr" = 1 ] && [ "$have_act" = 1 ] && [ -n "${EPOCHREALTIME:-}" ]; then
+        local t0="${EPOCHREALTIME/[.,]/}"
+        local target=$(( half_ms * 1000 ))
+        local guard=$SECONDS
+        while (( ${EPOCHREALTIME/[.,]/} - t0 < target )); do
+            (( SECONDS - guard < 3 )) || break
+        done
+    fi
+
+    [ "$have_act" = 1 ] && _led_arm ACT
+    return 0
+}
+
 cmd_serve_fallback() {
     parse_args "$@"
     local reason="${ARG[reason]:-richiesta esplicita}"
     log "Modalita' OTA: $reason"
 
-    # Power LED blinks 50/50 for the whole OTA session (fallback and the
-    # real system's own initramfs alike, both call this same function) as a
-    # visual "this device is in maintenance/receiving mode" signal - the
-    # disk-activity LED (ACT/mmc0/mmc1) is deliberately left untouched, its
-    # trigger stays whatever the board's normal default already is.
-    # Best-effort and silent: amd64 hardware has no such sysfs path at all.
-    if [ -w /sys/class/leds/PWR/trigger ]; then
-        echo timer > /sys/class/leds/PWR/trigger 2>/dev/null || true
-        echo 500 > /sys/class/leds/PWR/delay_on 2>/dev/null || true
-        echo 500 > /sys/class/leds/PWR/delay_off 2>/dev/null || true
-    fi
+    ota_led_maintenance
 
     local myip; myip=$(configure_networking_ota || true)
 
