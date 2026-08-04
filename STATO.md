@@ -92,6 +92,10 @@ filesystem DATA da cui fare overlay. Il commento fuorviante è stato sostituito 
 
 1. **Rebuild e verifica amd64** — allineare l'architettura rimasta indietro.
 2. Rendere robusto `unitotem-ota-arm` (o il suo chiamante) rispetto alla chiusura della sessione SSH.
-3. Ricostruire l'immagine per portarci le ultime correzioni non ancora compilate (probe dell'overlay con
-   `: >` invece di `touch`): l'immagine attualmente deployata è precedente, quindi il marker riporta
-   `initramfs-etc-writable=no` pur essendo `/etc` scrivibile davvero.
+3. Estendere `inside-real-sd.sh` con lo scenario "Round 2", quando serve di nuovo l'harness su SD fisica.
+
+Nota di metodo emersa più volte oggi: `should_run()` in `build-kiosk.sh` confronta i timestamp a livello di
+**directory** (`kiosk/files/*`), quindi un file modificato *durante* una build risulta più vecchio
+dell'artefatto che avrebbe dovuto invalidare, e la build successiva lo salta silenziosamente. È costato tre
+cicli sprecati. Rimedio immediato: `FORCE_STAGE=2`. Rimedio strutturale da valutare: confrontare gli hash
+dei file invece dei timestamp.
