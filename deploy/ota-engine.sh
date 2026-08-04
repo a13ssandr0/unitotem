@@ -956,11 +956,10 @@ ota_ui_feed() {
         fi
         [ -n "$pct" ] || pct=0
         [ "$pct" -le 100 ] 2>/dev/null || pct=100
-        # No blank line inside the text block: whiptail stops rendering the
-        # update at the first empty line, so a header/phase separator silently
-        # swallowed the phase - verified on screen, the header appeared and the
-        # phase did not.
-        printf 'XXX\n%s\n%s\n%s\nXXX\n' "$pct" "${OTA_UI_HEADER:-}" "${phase:-In attesa di comandi via SSH...}"
+        # Header (3 lines) + a blank separator + the phase = 5 lines, which is
+        # exactly what ota_ui_start sizes the text area for. Keep the two in
+        # step: anything beyond that height is silently dropped, not wrapped.
+        printf 'XXX\n%s\n%s\n\n%s\nXXX\n' "$pct" "${OTA_UI_HEADER:-}" "${phase:-In attesa di comandi via SSH...}"
         sleep 1
     done
 }
@@ -1002,10 +1001,17 @@ ota_ui_start() {
     # shells open with O_NOCTTY, so newt still died on "open /dev/tty: No such
     # device or address". Both were seen on hardware before this form worked.
     #
-    # The initial gauge text is non-empty on purpose: starting it empty left
-    # the text area unrendered and later updates never appeared.
+    # The initial --gauge text is five blank-ish lines, and its LINE COUNT is
+    # the point, not its content: whiptail sizes the text area once, when the
+    # dialog is created, and clips every later update to that height. An empty
+    # initial text gave a zero-line area, so no update ever showed anything; a
+    # one-line one showed only the first line of each update - which is what a
+    # real OTA looked like on screen, header only, no reason, no address, no
+    # phase. Five lines is what ota_ui_feed sends (3 header + blank + phase);
+    # change one and change the other.
+    local placeholder=$' \n \n \n \n '
     setsid -c sh -c "TERM=linux TERMINFO=/lib/terminfo exec whiptail \
-            --backtitle 'UniTotem OTA' --gauge 'Avvio...' 14 72 0 < '$OTA_UI_FIFO'" \
+            --backtitle 'UniTotem OTA' --gauge '$placeholder' 14 72 0 < '$OTA_UI_FIFO'" \
         < /dev/tty1 > /dev/tty1 2>/dev/null &
     ( ota_ui_feed > "$OTA_UI_FIFO" ) &
     OTA_UI_PID=$!
