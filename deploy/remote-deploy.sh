@@ -353,7 +353,7 @@ push_recovery_kernel() {
 build_legacy_cmdline() {
     local console="$OPT_CONSOLE"
     if [ -z "$console" ]; then
-        [ "$ARCH" = arm64 ] && console="tty1 console=ttyS1,115200" || console="tty0"
+        [ "$ARCH" = arm64 ] && console="tty1 console=ttyS0,115200" || console="tty0"
     fi
     echo "unitotem.ota=1 console=${console}"
 }
@@ -407,7 +407,7 @@ cd "$BOOTMNT"
 [ -f config.txt.unitotem-bak ]  || cp -a config.txt  config.txt.unitotem-bak
 [ -f cmdline.txt.unitotem-bak ] || cp -a cmdline.txt cmdline.txt.unitotem-bak
 # enable_uart=1 is not optional here even though nothing in this file reads
-# it: build_legacy_cmdline() pairs this config with console=ttyS1,115200,
+# it: build_legacy_cmdline() pairs this config with console=ttyS0,115200,
 # and on a Pi the mini-UART derives its baud from the VPU core clock, which
 # only enable_uart=1 pins. Without it the serial console is silently dead -
 # and this config.txt replaces the target's own wholesale, so whatever the

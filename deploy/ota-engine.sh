@@ -500,7 +500,7 @@ EOF
             # the mainline/Debian DTBs we ship, the opposite of what it means
             # under Raspberry Pi's own DTBs - see the longer note in
             # kiosk/stage2-configure.sh. Pairs with enable_uart=1 above.
-            echo "unitotem.ota=1 console=tty1 console=ttyS1,115200" > "$mnt/cmdline.txt"
+            echo "unitotem.ota=1 console=tty1 console=ttyS0,115200" > "$mnt/cmdline.txt"
             ;;
         uefi|bios)
             mkdir -p "$mnt/grub"
@@ -591,7 +591,7 @@ initramfs initramfs8 followkernel
 cmdline=cmdline-trial.txt
 EOF
             append_config_extra /mnt/newroot/etc/unitotem/config-extra.txt "$mnt/tryboot.txt"
-            echo "console=tty1 console=ttyS1,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet unitotem.ota.bootcount=1" \
+            echo "console=tty1 console=ttyS0,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet unitotem.ota.bootcount=1" \
                 > "$mnt/cmdline-trial.txt"
             sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
             ;;
@@ -610,7 +610,7 @@ kernel=kernel8.img
 initramfs initramfs8 followkernel
 EOF
             append_config_extra /mnt/newroot/etc/unitotem/config-extra.txt "$mnt/config.txt"
-            echo "console=tty1 console=ttyS1,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet unitotem.ota.bootcount=1" \
+            echo "console=tty1 console=ttyS0,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet unitotem.ota.bootcount=1" \
                 > "$mnt/cmdline.txt"
             sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
             ;;
@@ -646,7 +646,7 @@ EOF
             # /mnt/newroot that isn't booted yet) - so the extra-config file
             # is this system's own local /etc/unitotem, not /mnt/newroot's.
             append_config_extra /etc/unitotem/config-extra.txt "$mnt/config.txt"
-            echo "console=tty1 console=ttyS1,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet" > "$mnt/cmdline.txt"
+            echo "console=tty1 console=ttyS0,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet" > "$mnt/cmdline.txt"
             rm -f "$mnt/tryboot.txt" "$mnt/cmdline-trial.txt" \
                   "$mnt/config.txt.unitotem-bak" "$mnt/cmdline.txt.unitotem-bak"
             sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
