@@ -64,7 +64,12 @@ build_natively_on_pi() {
     _pi_rsync "${DIR}/deploy/ota-engine.sh" "${PI_HOST}:${PI_BUILD_BASE}/kiosk/files/ota-engine.sh"
     _pi_rsync "${DIR}/deploy/parts-lib.sh" "${PI_HOST}:${PI_BUILD_BASE}/kiosk/deploy-parts-lib.sh" 2>/dev/null || true
 
-    local envvars="ARCH=arm64"
+    # ROOTFS off /tmp: on the Pi that is a 256 MB tmpfs mounted nodev, and
+    # debootstrap refuses such a target outright ("Cannot install into target
+    # ... mounted with noexec or nodev") - stage0 failed on its first line and
+    # the whole native build fell back to qemu without that ever being
+    # obvious. The build tree on DATA has neither restriction.
+    local envvars="ARCH=arm64 ROOTFS='${PI_BUILD_BASE}/rootfs'"
     local var
     for var in RELEASE MIRROR KIOSK_HOSTNAME ROOT_PASSWORD KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE; do
         [ -n "${!var:-}" ] && envvars="${envvars} ${var}='${!var}'"
