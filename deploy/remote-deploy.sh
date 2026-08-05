@@ -77,6 +77,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# A caller that supplies --accept-changes has already been shown what will be
+# destroyed and has confirmed it - that digest IS the confirmation, and it is
+# a stricter one than typing SI. Without this the generic prompts (disk
+# choice, final "procedo?") still block on a terminal that a web UI does not
+# have, so a UI-driven deploy could never actually complete. The digest is
+# still verified before anything is armed: changes_gate checks it before this
+# flag is ever consulted.
+[ -n "$OPT_ACCEPT_CHANGES" ] && OPT_YES=1
+
 # ---------------------------------------------------------------------------
 # Probe: one SSH round-trip, parseable KEY: value / DISK: ... lines. Adds
 # to the pre-redesign do_probe(): UniTotem/DATA detection, tryboot

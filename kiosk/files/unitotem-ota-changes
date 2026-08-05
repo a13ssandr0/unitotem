@@ -64,15 +64,19 @@ unowned_files() {
     comm -23 <(scan_files "$root") <(owned_paths "$root")
 }
 
+# Output: "<sha256>\tpath", TAB-separated because a path may contain spaces -
+# splitting on whitespace truncated "/opt/x/file con spazi" to "/opt/x/file",
+# i.e. under-reported exactly the files someone puts there on purpose.
+#
+# One sha256sum invocation over the whole list rather than one per file: the
+# per-file version forked 3043 times and that dominated everything else on a
+# Pi - a clean check took 1m31s, of which the hashing was almost all of it.
+# NUL-delimited so the spaces survive the hand-off to xargs too.
 sha_of() {
-    local root="$1" rel
-    while IFS= read -r rel; do
-        [ -f "$root$rel" ] || continue
-        # TAB, not spaces: a path with a space in it was being truncated at
-        # the first one, so a tampered "/opt/x/file con spazi" was reported as
-        # "/opt/x/file". Everything after the first TAB is the path.
-        printf '%s\t%s\n' "$(sha256sum "$root$rel" 2>/dev/null | cut -d' ' -f1)" "$rel"
-    done
+    local root="$1"
+    if [ -n "$root" ]; then sed "s#^#${root}#"; else cat; fi \
+        | tr '\n' '\0' | xargs -0 -r sha256sum 2>/dev/null \
+        | sed -E "s#^([0-9a-f]+)  ${root}#\\1\t#"
 }
 
 pkg_list() {
