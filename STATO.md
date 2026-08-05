@@ -133,10 +133,53 @@ Verificato su hardware dopo il deploy:
 - `migrate-etc-overlay` veniva invocata **senza alcuna asserzione**: poteva non fare nulla e restare verde.
   Ora è verificata su entrambe le architetture.
 
+## Verifica del 5 agosto (sera): apt coerente e OTA che avvisa prima di distruggere
+
+L'OTA sostituisce ROOT per intero, quindi qualunque cosa installata o modificata sul dispositivo veniva
+distrutta **in silenzio**: un aggiornamento e la perdita del lavoro altrui erano indistinguibili.
+
+- **`unitotem-ota-changes`** (nuovo, `/usr/sbin/`) dice cosa è cambiato rispetto all'immagine e lo
+  classifica: `clean`, `packages-only`, `mixed`. I file che appartengono a un pacchetto appena installato
+  o aggiornato sono **attribuiti** a quell'operazione, non elencati come modifiche a sé — altrimenti un
+  `apt install` di routine sarebbe indistinguibile da un binario modificato a mano.
+- La **baseline** è generata a build time da *lo stesso script* che poi confronta. Due implementazioni di
+  "quali file contano" divergerebbero, e la divergenza apparirebbe come modifiche fantasma su ogni
+  dispositivo. Riscontro: la baseline arm64 conta 3.043 file non posseduti, la scansione sul dispositivo
+  ne trovava 3.042 — e su un'installazione fresca il verdetto è `clean`.
+- **`--accept-changes <digest>`**: conferma non interattiva che procede solo se l'insieme delle modifiche
+  è ancora quello mostrato. È ciò che rende una conferma da interfaccia web sicura quanto un prompt.
+- **`API-OTA.md`**: contratto per il frontend nell'altro progetto.
+- **Database dpkg riportato su ROOT** (`initramfs-dpkg-pinned-to-root=yes`), timer `apt-daily*`
+  mascherati, `kiosk-update` che ferma i servizi veri.
+
+### Prove di quanto l'incoerenza fosse reale
+
+Non era teorica: sul Pi il database dpkg su DATA aveva registrato `libpam0g` in stato **half-installed**,
+uno stato che i file su ROOT read-only non potevano completare. Ha fatto **fallire la build nativa**. È
+sparita da sé col deploy, che sostituisce ROOT e azzera l'upper di `/var`.
+
+### Difetti trovati solo su hardware
+
+1. **Un bind mount ha flag propri**: `kiosk-update enter` rimontava `/` in rw e `/var/lib/dpkg` restava
+   `ro` nello stesso istante. apt non poteva prendere i lock, dpkg non poteva scrivere: installare un
+   pacchetto era impossibile.
+2. **Liste dei pacchetti azzerate** dall'OTA (stanno sull'overlay), quindi ogni `install` falliva con
+   "Unable to locate package" su un dispositivo appena installato.
+3. **1m31s invece dei ~15s stimati**: lo sha256 forkava un processo per file (3.043). Ora 11s. La stima
+   che avevo scritto nel piano era sbagliata per il codice come l'avevo scritto.
+
+Verificato end-to-end su Pi 4: `clean` da fresco → `packages-only` dopo `apt install sl` → `mixed` dopo
+modifiche a file (incluso uno con spazi nel nome, che una versione precedente troncava) → digest stale
+rifiutato → digest corretto accettato → modifiche effettivamente distrutte dal deploy, come annunciato.
+Loopback: **arm64 136/136**, **amd64 74/74**.
+
 ## Non fatto / limiti noti
 
 | Gap | Note |
 |---|---|
+| **Due fix sono in sorgente ma non nell'immagine sul Pi** | Il remount del bind dpkg in `kiosk-update` e lo sha256 batch. Verificati su hardware copiando gli script a mano; entrano in un'immagine solo alla prossima build. Stessa proprietà di ritardo di un giro di sempre. |
+| `iso/installer.sh` è disallineato dal repo | Indipendente da questo lavoro: installa `chromium-flags-amd64`, che non esiste più in `kiosk/files/`. Con `set -euo pipefail` l'installer si fermerebbe lì. Non è nella pipeline di `build-kiosk.sh`, quindi non blocca nulla oggi. |
+| `unitotem-manager.service` in crash-loop sul Pi | `status=1/FAILURE` a ripetizione, preesistente e non toccato da questo lavoro. Lo schermo resta nero dopo Xorg. |
 | `MaxLevelStore=warning` limita cosa viene salvato | Ora che i log persistono, vale la pena rivedere la soglia: `info`/`notice` non finiscono su disco, quindi parte della cronologia di un guasto manca comunque. Scelta deliberata per l'usura della SD, ma da ripesare con l'overlay attivo. |
 | L'immagine amd64 non è mai stata avviata | Ricostruita e verificata in loopback (58/58), ma nessun avvio reale: l'overlay `/var` è dimostrato solo su arm64. |
 | `inside-real-sd.sh` | Harness su SD fisica, non ha lo scenario "Round 2". Obsoleto da quando l'OTA via rete funziona. |
