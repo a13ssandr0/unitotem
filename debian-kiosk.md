@@ -164,8 +164,8 @@ locale-gen
 echo "LANG=it_IT.UTF-8" > /etc/locale.conf
 ln -sf /usr/share/zoneinfo/Europe/Rome /etc/localtime
 
-# Imposta la password di root usata per SSH
-# L'autologin su tty1 ignora la password; SSH la richiede
+# Imposta la password di root usata per SSH (e per il login su console:
+# l'immagine non usa autologin, la sessione X parte da start-xorg.service)
 echo "root:CAMBIA_QUESTA_PASSWORD" | chpasswd
 # oppure interattivo: passwd root
 ```
@@ -502,7 +502,7 @@ systemctl enable NetworkManager
 ```bash
 apt-get install -y \
     intel-media-va-driver-non-free i965-va-driver-shaders \
-    libva2 libva-drm2 libva-wayland2 libva-utils \
+    libva2 libva-drm2 libva-utils \
     mesa-vulkan-drivers mesa-utils libgl1-mesa-dri
 ```
 
@@ -512,7 +512,7 @@ apt-get install -y \
     firmware-amd-graphics \
     mesa-va-drivers mesa-vulkan-drivers \
     libdrm-amdgpu1 \
-    libva2 libva-drm2 libva-wayland2 libva-utils \
+    libva2 libva-drm2 libva-utils \
     libgl1-mesa-dri
 ```
 
@@ -520,7 +520,7 @@ apt-get install -y \
 ```bash
 apt-get install -y \
     nvidia-driver nvidia-vaapi-driver \
-    libva2 libva-drm2 libva-wayland2 libva-utils
+    libva2 libva-drm2 libva-utils
 
 echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia-drm.conf
 echo "nvidia-drm" >> /etc/modules-load.d/nvidia.conf
@@ -541,23 +541,18 @@ apt-get install -y libglvnd0 libglx0 libgles2 vulkan-tools libvulkan1
 
 ---
 
-> **⚠️ OBSOLETE (sezioni 14-19): architettura Sway/Wayland abbandonata.**
-> Sway rifiuta di girare come root (`sway/main.c:170`) e CEF (usato da
-> unitotem-manager per il rendering) è architetturalmente legato a X11 -
-> non può essere reso nativo-Wayland (reparenting di finestre X11 tramite
-> `CefWindowInfo.SetAsChild`, incompatibile col modello di sicurezza
-> Wayland). L'intera pipeline Sway + chromium-kiosk + kiosk-wm-service
-> (controllo via DBus) + autologin è stata sostituita da X11 puro senza
-> window manager, con unitotem-manager che incorpora CEF direttamente nel
-> proprio processo Qt6 (niente più browser Chromium standalone). Vedi
-> **sezione 26** per il design attuale, completo e verificato. Queste
-> sezioni restano solo come riferimento storico.
+## 14. Sessione grafica (X11) e PipeWire
 
-## 14. Wayland + PipeWire
+La sessione grafica è un server Xorg puro, **senza window manager**: il viewer
+Qt6+CEF di `unitotem-manager` imposta da sé geometria fullscreen, rotazione e
+flip di ogni finestra per-schermo, e CEF supporta soltanto l'embedding X11.
+Il design completo della sessione (unit systemd, `xinitrc`, `XAUTHORITY`) è
+nella **sezione 26**; qui si installano solo i pacchetti.
 
 ```bash
 apt-get install -y \
-    sway xwayland wlr-randr \
+    xserver-xorg xserver-xorg-video-all xserver-xorg-input-all \
+    xinit x11-xserver-utils kbd \
     pipewire pipewire-audio pipewire-pulse pipewire-jack pipewire-alsa \
     wireplumber libpipewire-0.3-0 \
     gstreamer1.0-pipewire gstreamer1.0-vaapi \
@@ -571,350 +566,36 @@ for svc in pipewire pipewire-pulse wireplumber; do
 done
 ```
 
----
+Nessun browser standalone e nessuna tastiera virtuale vengono installati: il
+rendering degli asset avviene dentro il processo di `unitotem-manager` (CEF
+in-process, vedi `manager/webview/`). Il cursore non richiede configurazione
+di sessione: lo nasconde il flag `-nocursor` del server X, vedi l'`ExecStart=`
+di `start-xorg.service` nella sezione 26.
 
-## 15. Accelerazione hardware Chromium
-
-```bash
-apt-get install -y \
-    chromium chromium-sandbox \
-    libva2 libva-drm2 libva-wayland2 libva-utils \
-    ffmpeg libavcodec-extra
-
-mkdir -p /etc/kiosk
-
-cat > /etc/kiosk/chromium-flags << 'EOF'
---ozone-platform=wayland
---enable-features=VaapiVideoDecoder,VaapiVideoEncoder,CanvasOopRasterization
---disable-features=UseChromeOSDirectVideoDecoder
---use-gl=egl
---enable-gpu-rasterization
---enable-zero-copy
---ignore-gpu-blocklist
---enable-accelerated-video-decode
---disable-software-rasterizer
-EOF
-
-# Solo Raspberry Pi: sostituire il file sopra
-# cat > /etc/kiosk/chromium-flags << 'EOF'
-# --ozone-platform=wayland
-# --use-v4l2-codec
-# --enable-features=PlatformHEVCDecoderSupport,VaapiIgnoreDriverChecks
-# --enable-gpu-rasterization
-# --use-gl=egl
-# --ignore-gpu-blocklist
-# EOF
-
-# Solo Nvidia: aggiungere a chromium-flags
-# echo "--use-angle=vulkan" >> /etc/kiosk/chromium-flags
-
-cat > /usr/local/bin/chromium-kiosk << 'SCRIPT'
-#!/bin/bash
-FLAGS=$(grep -v '^#' /etc/kiosk/chromium-flags | tr '\n' ' ')
-exec /usr/bin/chromium $FLAGS "$@"
-SCRIPT
-chmod +x /usr/local/bin/chromium-kiosk
-```
+L'accelerazione video hardware si configura a livello di driver (sezione 13);
+su Raspberry Pi VAAPI non esiste e la decodifica passa per i dispositivi V4L2
+mem2mem (`/dev/video10` H.264 su tutti i modelli, `/dev/video19` HEVC da Pi 4
+in poi) — vedi i commenti in `kiosk/stage1-packages.sh`.
 
 ---
 
-## 16. Tastiera virtuale (wvkbd)
+## 15. Nota storica — l'architettura Wayland abbandonata
 
-`wvkbd` è un client Wayland leggero (`virtual-keyboard-unstable-v1`).
-Si controlla tramite segnali POSIX: `SIGUSR1` mostra, `SIGUSR2` nasconde.
-Non è nei repo Debian; si compila dal sorgente.
+La numerazione di questo documento salta da 15 a 20. Le sezioni 16-19 — e la
+15 nella sua forma originale — descrivevano l'architettura grafica iniziale,
+oggi inesistente nell'immagine: accelerazione hardware di un Chromium
+standalone (wrapper `chromium-kiosk` e relativi flag), configurazione del
+compositor sway, tastiera virtuale wvkbd, servizio dBus `kiosk-wm-service`
+(controllo del WM via IPC del compositor) e autologin di root che avviava la
+sessione da `.bash_profile`. Sono stati rimossi tutti
+insieme al compositor; i numeri delle sezioni successive restano invariati per
+non invalidare i riferimenti esterni (`PLAN.md` cita `debian-kiosk.md` §28).
 
-```bash
-apt-get install -y libwayland-dev libxkbcommon-dev scdoc
-
-git clone https://github.com/jjsullivan5196/wvkbd /tmp/wvkbd
-cd /tmp/wvkbd
-make
-make install          # installa wvkbd-mobintl, wvkbd-compact, ...
-cd /
-rm -rf /tmp/wvkbd
-```
-
-Alternativa dai repo Debian (richiede alcune dipendenze GNOME/libadwaita):
-```bash
-# apt-get install -y squeekboard
-# squeekboard usa sm.puri.OSK0 su dbus e supporta text-input-v3
-# (mostra/nasconde automaticamente quando un campo testo prende il focus)
-```
-
----
-
-## 17. Sway — configurazione kiosk
-
-```bash
-cat > /etc/kiosk/sway.conf << 'EOF'
-bar { mode hide }
-
-default_border none
-default_floating_border none
-hide_edge_borders both
-
-output * bg #000000 solid_color
-
-for_window [app_id=".*"] fullscreen enable
-for_window [class=".*"]  fullscreen enable
-
-# --- Cursore ---
-# Il cursore non viene mostrato finché il mouse non viene mosso (comportamento
-# default di wlroots: nessun pointer finché non arriva un evento di movimento).
-# Gli eventi touch non generano movimento del cursore: il puntatore rimane
-# invisibile durante l'uso del touchscreen senza configurazione aggiuntiva.
-# hide_cursor nasconde il cursore dopo N millisecondi di inattività del mouse.
-seat seat0 hide_cursor 3000
-seat seat0 hide_cursor when-typing enable
-
-# --- Input touch ---
-input type:touch events enabled
-
-# --- Tastiera virtuale ---
-# Avviata nascosta; risponde a SIGUSR1 (mostra) e SIGUSR2 (nasconde).
-# -L altezza in pixel del pannello tastiera
-exec wvkbd-mobintl --hidden -L 300
-
-# --- Servizio dBus kiosk (eredita SWAYSOCK) ---
-exec /usr/local/bin/kiosk-wm-service
-
-# --- Avvio automatico Chromium (decommentare) ---
-# exec_always /usr/local/bin/chromium-kiosk https://your-app-url
-EOF
-```
-
----
-
-## 18. Servizio dBus per controllo WM
-
-Running as root: nessuna policy dBus aggiuntiva richiesta.
-
-`ShowKeyboard` / `HideKeyboard` inviano SIGUSR1/SIGUSR2 a `wvkbd-mobintl`.
-
-```bash
-cat > /usr/local/bin/kiosk-wm-service << 'PYEOF'
-#!/usr/bin/env python3
-"""
-Servizio dBus kiosk — system bus — org.kiosk.WM
-
-Metodi:
-  Launch(cmdline)     avvia app via swaymsg exec
-  Kill()              termina finestra in focus
-  Reload()            ricarica config sway
-  ListOutputs()       nomi output attivi
-  FocusOutput(name)   sposta focus sull'output
-  ShowKeyboard()      mostra tastiera virtuale (SIGUSR1 → wvkbd)
-  HideKeyboard()      nasconde tastiera virtuale (SIGUSR2 → wvkbd)
-
-Segnali:
-  OutputConnected(name, width, height)
-  OutputDisconnected(name)
-"""
-import os, sys, json, struct, socket, subprocess, threading, signal, logging
-import dbus, dbus.service, dbus.mainloop.glib
-import pyudev
-from gi.repository import GLib
-
-logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-log = logging.getLogger("kiosk-wm")
-
-BUS_NAME         = "org.kiosk.WM"
-OBJ_PATH         = "/org/kiosk/WM"
-IFACE            = "org.kiosk.WM"
-IPC_MAGIC        = b"i3-ipc"
-IPC_SUBSCRIBE    = 2
-IPC_EVENT_OUTPUT = 0x80000001
-
-
-def _sway_sock():
-    p = os.environ.get("SWAYSOCK", "")
-    if not p:
-        raise RuntimeError("SWAYSOCK non impostato")
-    return p
-
-def _ipc_send(sock, mtype, payload: bytes):
-    sock.sendall(IPC_MAGIC + struct.pack("<II", len(payload), mtype) + payload)
-
-def _ipc_recv(sock):
-    hdr = b""
-    while len(hdr) < 14:
-        c = sock.recv(14 - len(hdr))
-        if not c:
-            raise EOFError
-        hdr += c
-    length, mtype = struct.unpack("<II", hdr[6:14])
-    data = b""
-    while len(data) < length:
-        c = sock.recv(length - len(data))
-        if not c:
-            raise EOFError
-        data += c
-    return mtype, data
-
-def swaymsg(cmd):
-    r = subprocess.run(["swaymsg", "--", cmd],
-                       capture_output=True, text=True, timeout=5)
-    return json.loads(r.stdout) if r.stdout else {}
-
-def get_outputs():
-    r = subprocess.run(["swaymsg", "-t", "get_outputs"],
-                       capture_output=True, text=True, timeout=5)
-    return json.loads(r.stdout) if r.stdout else []
-
-def signal_wvkbd(sig):
-    r = subprocess.run(["pkill", f"-{sig}", "wvkbd-mobintl"],
-                       capture_output=True)
-    return r.returncode == 0
-
-
-class KioskWM(dbus.service.Object):
-    def __init__(self, bus):
-        bn = dbus.service.BusName(BUS_NAME, bus=bus)
-        super().__init__(bn, OBJ_PATH)
-        self._known: set = set()
-        threading.Thread(target=self._watch_sway, daemon=True).start()
-        threading.Thread(target=self._watch_udev, daemon=True).start()
-
-    @dbus.service.method(IFACE, in_signature="s", out_signature="i")
-    def Launch(self, cmdline):
-        swaymsg(f"exec {cmdline}")
-        return 0
-
-    @dbus.service.method(IFACE, in_signature="", out_signature="")
-    def Kill(self):
-        swaymsg("kill")
-
-    @dbus.service.method(IFACE, in_signature="", out_signature="")
-    def Reload(self):
-        swaymsg("reload")
-
-    @dbus.service.method(IFACE, in_signature="", out_signature="as")
-    def ListOutputs(self):
-        return [o["name"] for o in get_outputs() if o.get("active")]
-
-    @dbus.service.method(IFACE, in_signature="s", out_signature="")
-    def FocusOutput(self, name):
-        swaymsg(f"focus output {name}")
-
-    @dbus.service.method(IFACE, in_signature="", out_signature="b")
-    def ShowKeyboard(self):
-        return signal_wvkbd("USR1")
-
-    @dbus.service.method(IFACE, in_signature="", out_signature="b")
-    def HideKeyboard(self):
-        return signal_wvkbd("USR2")
-
-    @dbus.service.signal(IFACE, signature="sii")
-    def OutputConnected(self, name, width, height):
-        pass
-
-    @dbus.service.signal(IFACE, signature="s")
-    def OutputDisconnected(self, name):
-        pass
-
-    def _refresh(self):
-        try:
-            outputs = get_outputs()
-            current = {o["name"] for o in outputs if o.get("active")}
-            for o in outputs:
-                n = o["name"]
-                if o.get("active") and n not in self._known:
-                    w = o.get("rect", {}).get("width",  0)
-                    h = o.get("rect", {}).get("height", 0)
-                    log.info("output connesso: %s %dx%d", n, w, h)
-                    GLib.idle_add(self.OutputConnected, n, w, h)
-            for n in self._known - current:
-                log.info("output disconnesso: %s", n)
-                GLib.idle_add(self.OutputDisconnected, n)
-            self._known = current
-        except Exception as e:
-            log.error("refresh outputs: %s", e)
-
-    def _watch_sway(self):
-        import time
-        while True:
-            try:
-                sock = socket.socket(socket.AF_UNIX)
-                sock.connect(_sway_sock())
-                _ipc_send(sock, IPC_SUBSCRIBE, json.dumps(["output"]).encode())
-                _ipc_recv(sock)
-                self._known = {o["name"] for o in get_outputs() if o.get("active")}
-                while True:
-                    mtype, _ = _ipc_recv(sock)
-                    if mtype == IPC_EVENT_OUTPUT:
-                        self._refresh()
-            except Exception as e:
-                log.warning("sway IPC: %s — riconnessione in 2s", e)
-                time.sleep(2)
-
-    def _watch_udev(self):
-        try:
-            ctx     = pyudev.Context()
-            monitor = pyudev.Monitor.from_netlink(ctx)
-            monitor.filter_by("drm")
-            for dev in iter(monitor.poll, None):
-                if dev.action == "change":
-                    GLib.idle_add(self._refresh)
-        except Exception as e:
-            log.error("udev monitor: %s", e)
-
-
-if __name__ == "__main__":
-    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-    bus = dbus.SystemBus()
-    KioskWM(bus)
-    log.info("kiosk-wm-service avviato (%s)", BUS_NAME)
-    GLib.MainLoop().run()
-PYEOF
-
-chmod +x /usr/local/bin/kiosk-wm-service
-```
-
-Utilizzo dall'esterno:
-```bash
-dbus-send --system --dest=org.kiosk.WM /org/kiosk/WM \
-    org.kiosk.WM.Launch string:"/usr/local/bin/chromium-kiosk https://example.com"
-
-dbus-send --system --dest=org.kiosk.WM /org/kiosk/WM org.kiosk.WM.ShowKeyboard
-dbus-send --system --dest=org.kiosk.WM /org/kiosk/WM org.kiosk.WM.HideKeyboard
-
-dbus-send --system --print-reply --dest=org.kiosk.WM /org/kiosk/WM \
-    org.kiosk.WM.ListOutputs
-
-dbus-monitor --system "type='signal',interface='org.kiosk.WM'"
-```
-
----
-
-## 19. Autologin root e avvio Sway
-
-```bash
-mkdir -p /etc/systemd/system/getty@tty1.service.d
-cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf << 'EOF'
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
-EOF
-
-cat > /root/.bash_profile << 'EOF'
-if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-    export XDG_RUNTIME_DIR=/run/user/0
-    export XDG_SESSION_TYPE=wayland
-    export MOZ_ENABLE_WAYLAND=1
-    export QT_QPA_PLATFORM=wayland
-    export SDL_VIDEODRIVER=wayland
-    export CLUTTER_BACKEND=wayland
-
-    # Solo Nvidia — abilitare:
-    # export GBM_BACKEND=nvidia-drm
-    # export __GLX_VENDOR_LIBRARY_NAME=nvidia
-    # export WLR_NO_HARDWARE_CURSORS=1
-
-    exec systemd-cat -t sway sway -c /etc/kiosk/sway.conf
-fi
-EOF
-```
+In sintesi il motivo dell'abbandono: CEF — il motore di rendering usato da
+`unitotem-manager` — sa fare embedding solo di finestre X11, e sway per giunta
+rifiuta esplicitamente di girare come root. La discussione completa, con le
+alternative valutate e scartate, è nella **sezione 26** insieme al design
+attuale.
 
 ---
 
@@ -1021,10 +702,24 @@ cat > /usr/local/bin/kiosk-update << 'SCRIPT'
 #!/bin/bash
 set -e
 
+# Le unit che possiedono davvero lo schermo su questa immagine.
+# systemctl stop e non pkill: start-xorg.service è Restart=always, quindi
+# uccidere il processo lo fa solo ripartire.
+KIOSK_UNITS="unitotem-manager.service start-xorg.service"
+
 _enter() {
     echo "[kiosk-update] Fermo il kiosk..."
-    pkill -x sway 2>/dev/null || true
-    sleep 1
+    for u in $KIOSK_UNITS; do
+        systemctl stop "$u" 2>/dev/null || true
+    done
+    # Verificato, non dato per scontato: aggiornare mentre il kiosk tiene
+    # ancora il display è esattamente ciò che questo passo deve impedire.
+    for u in $KIOSK_UNITS; do
+        if systemctl is-active --quiet "$u"; then
+            echo "[kiosk-update] ERRORE: non sono riuscito a fermare $u" >&2
+            exit 1
+        fi
+    done
 
     echo "[kiosk-update] Rimonto rootfs in rw..."
     mount -o remount,rw /
@@ -1169,7 +864,8 @@ systemctl enable \
     dbus \
     udev \
     systemd-logind \
-    ssh
+    ssh \
+    start-xorg          # sessione X del kiosk, vedi sezioni 14 e 26
 
 # Rigenera initramfs con overlay hook + Plymouth + moduli GPU
 update-initramfs -u -k all
@@ -1217,11 +913,15 @@ ffmpeg -hwaccels
 # Pi: v4l2-ctl --list-devices
 ```
 
-**Verifica cursore e touch in Sway:**
+**Verifica sessione X e cursore:**
 ```bash
-# Il cursore deve essere invisibile a schermo fermo
-# Al tocco del touchscreen il cursore non deve comparire
-# Al movimento del mouse deve comparire e sparire dopo 3 secondi
+systemctl status start-xorg
+ls /tmp/.X11-unix/           # deve esistere il socket X0
+DISPLAY=:0 XAUTHORITY=/run/unitotem-x11.auth xrandr
+
+# Il cursore non deve mai comparire: lo disabilita il flag -nocursor del
+# server X (vedi ExecStart= di start-xorg.service), né al tocco del
+# touchscreen né muovendo il mouse.
 ```
 
 **Test Plymouth:**
@@ -1253,23 +953,25 @@ rm -rf /mnt/data/upper/root /mnt/data/work/root
 
 ## 26. X11 senza window manager (design attuale)
 
-Sostituisce le sezioni 14-19 (Sway/Wayland, obsolete). CEF (usato da
-`unitotem-manager` per il rendering degli asset) è vincolato architetturalmente
-a X11 (`CefWindowInfo.SetAsChild` fa reparenting di una finestra X11 nativa
-dentro la finestra Qt - incompatibile col modello di sicurezza Wayland, che
-non permette embedding cross-client di superfici). Sway inoltre rifiuta
-esplicitamente di girare come root (`sway/main.c:170`). Cage (che permette
-root) ha un modello multi-monitor incompatibile (solo `-m last`/`-m extend`,
-non monitor indipendenti). Weston sarebbe stato praticabile ma è comunque un
-compositor Wayland - stesso muro architetturale con CEF. Si è quindi passati
-a X11 puro, senza window manager: `unitotem-manager` stesso (Qt6 + CEF, in
-process, vedi `manager/webview/`) gestisce direttamente posizionamento,
-dimensione, rotazione e flip di ogni finestra per-schermo; non serve nessun
-WM a gestire quelle responsabilità.
+La sessione grafica dell'immagine è un server X11 puro senza window manager:
+`unitotem-manager` stesso (Qt6 + CEF, in process, vedi `manager/webview/`)
+gestisce direttamente posizionamento, dimensione, rotazione e flip di ogni
+finestra per-schermo, quindi non c'è nessuna responsabilità che resti a un WM.
 
-**Pacchetti** (sostituisce sezioni 14-16; niente più `sway`, `xwayland`,
-`chromium`, `wvkbd` - `chromium-kiosk` non era comunque mai invocato da
-nessuna parte del codice):
+**Perché non un compositor** (nota storica, cfr. sezione 15): CEF — il motore
+usato da `unitotem-manager` per il rendering degli asset — è vincolato
+architetturalmente a X11, perché `CefWindowInfo.SetAsChild` fa reparenting di
+una finestra X11 nativa dentro la finestra Qt, cosa incompatibile col modello
+di sicurezza Wayland (che non permette embedding cross-client di superfici).
+A quel vincolo si aggiungeva che sway rifiuta esplicitamente di girare come
+root (`sway/main.c:170`); cage (che invece lo permette) ha un modello
+multi-monitor incompatibile (solo `-m last`/`-m extend`, non monitor
+indipendenti); weston sarebbe stato praticabile ma resta un compositor
+Wayland, quindi stesso muro con CEF. Da qui il passaggio a X11 puro, e la
+rimozione del browser Chromium standalone (`chromium-kiosk` non era comunque
+mai invocato da nessuna parte del codice) e della tastiera virtuale.
+
+**Pacchetti** (gli stessi della sezione 14):
 ```bash
 apt-get install -y \
     xserver-xorg xserver-xorg-video-all xserver-xorg-input-all \

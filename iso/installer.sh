@@ -435,16 +435,21 @@ chroot "$TARGET" apt-get install -y \
 
 chroot "$TARGET" apt-get install -y \
     intel-media-va-driver-non-free i965-va-driver-shaders \
-    libva2 libva-drm2 libva-wayland2 vainfo \
+    libva2 libva-drm2 vainfo \
     mesa-vulkan-drivers firmware-amd-graphics mesa-va-drivers libdrm-amdgpu1
 
 _ok "Base system installed"
 
-# ---- 7/10: Desktop environment + multimedia -------------------------
-_step "[7/10] Installing Wayland/Sway, PipeWire, Chromium…"
+# ---- 7/10: Display stack + multimedia -------------------------------
+# No window manager: unitotem-manager's own Qt6+CEF viewer already sets its
+# window to exact fullscreen geometry with no decorations, and CEF only
+# supports X11 embedding - a bare Xorg session is both sufficient and simpler
+# (mirrors kiosk/stage1-packages.sh's "X11 + PipeWire" block).
+_step "[7/10] Installing Xorg, PipeWire, Chromium…"
 
 chroot "$TARGET" apt-get install -y \
-    sway xwayland wlr-randr \
+    xserver-xorg xserver-xorg-video-all xserver-xorg-input-all \
+    xinit x11-xserver-utils kbd \
     pipewire pipewire-audio pipewire-pulse pipewire-jack pipewire-alsa \
     wireplumber libpipewire-0.3-0 \
     gstreamer1.0-pipewire gstreamer1.0-vaapi \
@@ -456,25 +461,15 @@ chroot "$TARGET" apt-get install -y \
 
 _ok "Desktop environment installed"
 
-# ---- 8/10: UniTotem packages + wvkbd --------------------------------
-_step "[8/10] Installing UniTotem packages and building wvkbd…"
+# ---- 8/10: UniTotem packages ----------------------------------------
+_step "[8/10] Installing UniTotem packages…"
 
 chroot "$TARGET" apt-get install -y \
-    libwayland-dev libxkbcommon-dev scdoc build-essential git \
-    pkg-config libcairo2-dev libpango1.0-dev \
     python3-pip python3-apt python3-venv \
     libopenjp2-7-dev openssl mediainfo haproxy rfkill alsa-utils
 
 chroot "$TARGET" apt-get install -y unitotem-manager
 
-chroot "$TARGET" /bin/bash -c '
-set -e
-git clone --depth=1 https://github.com/jjsullivan5196/wvkbd /tmp/wvkbd
-cd /tmp/wvkbd
-sed -i "/\.preferred_buffer_scale\s*=/d; /\.preferred_buffer_transform\s*=/d" main.c
-make && make install
-rm -rf /tmp/wvkbd
-'
 _ok "UniTotem packages installed"
 
 # ---- 9/10: System configuration -------------------------------------
@@ -556,9 +551,9 @@ install -m 644 "$KIOSK_FILES/plymouthd.conf" "$TARGET/etc/plymouth/plymouthd.con
 # GRUB config
 install -m 644 "$KIOSK_FILES/grub-default" "$TARGET/etc/default/grub"
 
-# Kiosk config
+# Kiosk config (X11, no window manager)
 mkdir -p "$TARGET/etc/kiosk"
-install -m 644 "$KIOSK_FILES/sway.conf"              "$TARGET/etc/kiosk/sway.conf"
+install -m 755 "$KIOSK_FILES/xinitrc"                "$TARGET/etc/kiosk/xinitrc"
 install -m 644 "$KIOSK_FILES/chromium-flags-amd64"   "$TARGET/etc/kiosk/chromium-flags"
 cat > "$TARGET/usr/local/bin/chromium-kiosk" << 'SCRIPT'
 #!/bin/bash
@@ -566,14 +561,14 @@ FLAGS=$(grep -v '^#' /etc/kiosk/chromium-flags | tr '\n' ' ')
 exec /usr/bin/chromium $FLAGS "$@"
 SCRIPT
 chmod +x "$TARGET/usr/local/bin/chromium-kiosk"
-install -m 755 "$KIOSK_FILES/kiosk-wm-service"          "$TARGET/usr/local/bin/kiosk-wm-service"
 install -m 755 "$KIOSK_FILES/kiosk-update"               "$TARGET/usr/local/bin/kiosk-update"
 
-# Autologin
-mkdir -p "$TARGET/etc/systemd/system/getty@tty1.service.d"
-install -m 644 "$KIOSK_FILES/autologin.conf" \
-    "$TARGET/etc/systemd/system/getty@tty1.service.d/autologin.conf"
-install -m 644 "$KIOSK_FILES/bash_profile" "$TARGET/root/.bash_profile"
+# X session: started as a proper systemd service (not autologin +
+# .bash_profile, which is tied to a getty/PAM login session's lifecycle and
+# proved fragile). Same unit used by the image build, see
+# kiosk/stage2-configure.sh.
+install -m 644 "$KIOSK_FILES/start-xorg.service" \
+    "$TARGET/etc/systemd/system/start-xorg.service"
 
 # OverlayFS initramfs hook
 install -m 755 "$KIOSK_FILES/overlayfs-hook.sh" \
@@ -613,7 +608,7 @@ done
 # Enable services
 chroot "$TARGET" systemctl enable \
     systemd-timesyncd NetworkManager dbus ssh \
-    iptables-firewall kiosk-update-mode
+    iptables-firewall kiosk-update-mode start-xorg
 
 # Rebuild initramfs
 chroot "$TARGET" update-initramfs -u -k all
