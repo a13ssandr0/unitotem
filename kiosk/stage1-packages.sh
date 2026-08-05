@@ -123,7 +123,7 @@ if [ "$ARCH" = "amd64" ]; then
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
         intel-media-va-driver-non-free \
         i965-va-driver-shaders \
-        libva2 libva-drm2 libva-wayland2 vainfo \
+        libva2 libva-drm2 vainfo \
         mesa-vulkan-drivers \
         firmware-amd-graphics \
         mesa-va-drivers \
@@ -156,9 +156,13 @@ fi
 # ---------- X11 + PipeWire ----------
 # No window manager: unitotem-manager's own Qt6+CEF viewer already sets its
 # window to exact fullscreen geometry with no decorations on its own, and CEF
-# only supports X11 embedding anyway (see manager/webview/window.py) - a bare
-# Xorg session (no WM) is both sufficient and simpler than a Wayland
-# compositor, which would still need XWayland underneath for CEF regardless.
+# only supports X11 embedding anyway (see manager/webview/window.py), so a
+# bare Xorg session (no WM) is all this image needs. The session itself is
+# kiosk/files/start-xorg.service + kiosk/files/xinitrc.
+#
+# Historical note: a compositor-based session was evaluated first and dropped
+# - CEF's X11-only embedding would have forced an X server underneath it
+# anyway, so the compositor bought nothing and cost a moving part.
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     xserver-xorg xserver-xorg-video-all xserver-xorg-input-all \
