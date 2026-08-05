@@ -198,8 +198,11 @@ check "fstab non rimonta piu' tmpfs su /var/lib/* (maschererebbe l'overlay)" \
     bash -c "! grep -qE '^tmpfs[[:space:]]+/var/lib/' /mnt/newroot/etc/fstab"
 check "fstab tiene comunque /var/cache e /var/tmp su tmpfs (usura SD)" \
     bash -c "grep -qE '^tmpfs[[:space:]]+/var/cache' /mnt/newroot/etc/fstab && grep -qE '^tmpfs[[:space:]]+/var/tmp' /mnt/newroot/etc/fstab"
+# Il drop-in, non journald.conf: stage2 non sovrascrive il file di sistema.
+# Cercarlo nel posto sbagliato dava un fallimento su una configurazione che
+# era in realta' corretta e attiva.
 check "journald chiede storage persistente (ora ottenibile)" \
-    grep -q '^Storage=persistent' /mnt/newroot/etc/systemd/journald.conf
+    bash -c "grep -rqs '^Storage=persistent' /mnt/newroot/etc/systemd/journald.conf.d/"
 
 log "=== populate-real-kernel (arm64 only) ==="
 "${ENGINE[@]}" populate-real-kernel
