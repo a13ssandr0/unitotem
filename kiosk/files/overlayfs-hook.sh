@@ -78,6 +78,28 @@ fi
 # build-time database, and the same would be true of /var/unitotem-venv, the
 # manager's Python environment. An overlay keeps the lower layer visible and
 # only diverts writes, so that objection does not apply to it.
+# /var/lib/dpkg is the one thing under /var that must NOT follow the overlay.
+# It is the inventory of the files installed on ROOT, so it belongs on ROOT
+# with them: an OTA replaces that whole partition, and database and files have
+# to arrive as one consistent pair. With it on DATA they drift - already
+# observed on hardware, where the upper's `status` had diverged from the
+# image's copy after apt-daily ran.
+#
+# The bind has to be staged BEFORE the /var overlay goes on, because once it
+# does the ROOT copy is no longer reachable at that path. So: stash it aside
+# now, overlay /var, then bind the stash back over the overlay's version.
+#
+# Consequence worth knowing: on a device whose upper had already drifted, that
+# drift is discarded here and ROOT becomes authoritative again. That is the
+# intended direction - ROOT is what the image and the OTA agree on.
+DPKG_STASH="${rootmnt}/mnt/data/.dpkg-lower"
+dpkg_pin=skip
+if [ -d "${rootmnt}/var/lib/dpkg" ]; then
+    mkdir -p "$DPKG_STASH"
+    mount --bind "${rootmnt}/var/lib/dpkg" "$DPKG_STASH" 2>/dev/null \
+        && dpkg_pin=stashed
+fi
+
 for d in etc root var; do
     mkdir -p "${rootmnt}/mnt/data/upper/${d}" \
              "${rootmnt}/mnt/data/work/${d}"
@@ -88,6 +110,22 @@ for d in etc root var; do
         || log_warning_msg "overlay: /${d} fallito"
     mount --make-shared "${rootmnt}/${d}" 2>/dev/null || true
 done
+
+# Now that /var carries the overlay, put ROOT's dpkg database back on top of
+# it. The stash is unmounted straight after: the two binds share the same
+# superblock, so dropping the intermediate leaves this one intact, and an
+# orphaned mount left over switch_root is a bug this project has already paid
+# for once (see the /boot-ota note in deploy/ota-engine.sh).
+if [ "$dpkg_pin" = stashed ]; then
+    if mount --bind "$DPKG_STASH" "${rootmnt}/var/lib/dpkg" 2>/dev/null; then
+        dpkg_pin=yes
+    else
+        dpkg_pin=FALLITO
+        log_warning_msg "overlay: /var/lib/dpkg non ancorato a ROOT"
+    fi
+    umount "$DPKG_STASH" 2>/dev/null || true
+    rmdir "$DPKG_STASH" 2>/dev/null || true
+fi
 
 # Record the outcome on DATA itself, which survives into the booted system
 # at /mnt/data - so "is /etc actually overlaid?" is answerable after the
@@ -116,4 +154,8 @@ done
             echo "initramfs-${d}-writable=no"
         fi
     done
+    # Recorded like the overlays themselves, and for the same reason: whether
+    # the dpkg database is on ROOT or on DATA is otherwise only answerable by
+    # reproducing an early-boot state, and getting it wrong is silent.
+    echo "initramfs-dpkg-pinned-to-root=${dpkg_pin}"
 } > "${rootmnt}/mnt/data/.unitotem-overlay-status" 2>/dev/null || true

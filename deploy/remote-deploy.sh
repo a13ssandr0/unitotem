@@ -12,10 +12,15 @@
 #
 # Usage:
 #   ./deploy/remote-deploy.sh probe   root@host
+#   ./deploy/remote-deploy.sh changes root@host [--json]
 #   ./deploy/remote-deploy.sh deploy  root@host [--parts DIR] [--disk BYID]
 #                                     [--port N] [--wipe-data]
 #                                     [--console STR] [--debug] [--yes]
+#                                     [--accept-changes DIGEST]
 #   ./deploy/remote-deploy.sh disarm  root@host
+#
+# See API-OTA.md for the machine-readable contract behind `changes` and
+# `--accept-changes` - it is what the UniTotem web interface drives.
 #   ./deploy/remote-deploy.sh recover HOST[:PORT] [--parts DIR] ...
 #   ./deploy/remote-deploy.sh serve   [--parts DIR] ...
 set -euo pipefail
@@ -34,7 +39,7 @@ trap clear_target_privilege EXIT
 SUBCMD="${1:-}"; shift || true
 
 case "$SUBCMD" in
-    probe|deploy|disarm)
+    probe|deploy|disarm|changes)
         TARGET_USERHOST="${1:-}"; shift || true
         [ -n "$TARGET_USERHOST" ] || { echo "Uso: $0 $SUBCMD user@host [opzioni]" >&2; exit 1; }
         ;;
@@ -43,7 +48,7 @@ case "$SUBCMD" in
         [ -n "$RECOVER_HOSTPORT" ] || { echo "Uso: $0 recover HOST[:PORT] [opzioni]" >&2; exit 1; }
         ;;
     serve) ;;
-    *) echo "Uso: $0 {probe|deploy|disarm|recover|serve} ... [opzioni]" >&2; exit 1 ;;
+    *) echo "Uso: $0 {probe|deploy|changes|disarm|recover|serve} ... [opzioni]" >&2; exit 1 ;;
 esac
 
 OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
@@ -52,6 +57,10 @@ OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
 # serial for arm64 - matching every other cmdline.txt this project writes),
 # and still honors an explicit --console override when one is given.
 OPT_CONSOLE="" OPT_DEBUG=0 OPT_YES=0
+# Non-interactive confirmation of a known change set. Carries the digest the
+# operator was actually shown, so a UI-driven deploy cannot proceed over a
+# different set of changes than the one that was approved - see cmd_changes.
+OPT_ACCEPT_CHANGES="" OPT_JSON=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -62,6 +71,8 @@ while [ $# -gt 0 ]; do
         --console)    OPT_CONSOLE="$2"; shift 2 ;;
         --debug)      OPT_DEBUG=1; shift ;;
         --yes)        OPT_YES=1; shift ;;
+        --accept-changes) OPT_ACCEPT_CHANGES="$2"; shift 2 ;;
+        --json)       OPT_JSON=1; shift ;;
         *) die "Opzione sconosciuta: $1" ;;
     esac
 done
@@ -659,6 +670,9 @@ cmd_deploy() {
     echo "Parts set   : $(basename "$OPT_PARTS")"
     echo "Disco target: ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE"))"
     echo "Target      : $([ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && echo 'gia'\'' UniTotem (percorso preparato)' || echo 'sistema legacy (push del fallback)')"
+
+    changes_gate
+
     if [ "$OPT_YES" != 1 ]; then
         read -rp "Procedo con il deploy? [scrivi SI]: " ans
         [ "$ans" = "SI" ] || die "annullato dall'utente"
@@ -738,6 +752,103 @@ cmd_serve() {
 }
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# What has been changed on the target since its image was built.
+#
+# An OTA replaces ROOT wholesale, so anything installed or edited on the
+# running system is destroyed by it. Saying so beforehand is the difference
+# between an update and a surprise. The heavy lifting is on the target
+# (/usr/sbin/unitotem-ota-changes, which needs dpkg and so cannot live in the
+# fallback's ota-engine.sh); this side only presents it and gates on it.
+# ---------------------------------------------------------------------------
+
+# exit 0 = nothing changed, 1 = changes found, 2 = the check itself failed.
+# Anything else means the target has no such command, which is the normal
+# state of a device whose image predates it - not an error worth blocking a
+# deploy over.
+CHANGES_OUT="" CHANGES_RC=0
+run_changes_check() {
+    local flag="${1:-}"
+    CHANGES_OUT=$(ssh_t "command -v unitotem-ota-changes >/dev/null 2>&1 || exit 127; unitotem-ota-changes check ${flag}" 2>&1) \
+        && CHANGES_RC=0 || CHANGES_RC=$?
+}
+
+cmd_changes() {
+    setup_target_privilege
+    if [ "$OPT_JSON" = 1 ]; then
+        run_changes_check --json
+    else
+        run_changes_check
+    fi
+    case "$CHANGES_RC" in
+        0|1) printf '%s\n' "$CHANGES_OUT" ;;
+        127) die "il target non ha unitotem-ota-changes (immagine anteriore a questa funzione)" ;;
+        *)   die "controllo delle modifiche fallito sul target: ${CHANGES_OUT}" ;;
+    esac
+    return "$CHANGES_RC"
+}
+
+changes_gate() {
+    # A foreign device being adopted has no baseline to compare against, and
+    # nothing on it is being preserved anyway - the whole disk is going.
+    if [ "${P[HAVE_UNITOTEM]:-0}" != 1 ]; then
+        return 0
+    fi
+
+    log "Controllo le modifiche fatte sul target dall'installazione..."
+    run_changes_check
+
+    if [ "$CHANGES_RC" = 127 ]; then
+        # Expected on the first deploy that installs the tool: the image
+        # running right now was built before it existed.
+        warn "il target non espone unitotem-ota-changes: impossibile dire cosa verra' sovrascritto"
+        return 0
+    fi
+    if [ "$CHANGES_RC" -gt 1 ]; then
+        warn "controllo delle modifiche non riuscito (${CHANGES_OUT}) - proseguo senza"
+        return 0
+    fi
+    if [ "$CHANGES_RC" = 0 ]; then
+        log "Nessuna modifica rispetto all'immagine installata."
+        return 0
+    fi
+
+    local verdict digest
+    verdict=$(printf '%s\n' "$CHANGES_OUT" | awk '/^Esito:/{print $2; exit}')
+    digest=$(printf '%s\n' "$CHANGES_OUT" | awk '/^Digest:/{print $2; exit}')
+
+    echo ""
+    echo "=============================================================="
+    echo " Il deploy sostituisce ROOT: quanto segue andrebbe PERDUTO."
+    echo "=============================================================="
+    printf '%s\n' "$CHANGES_OUT"
+    echo "=============================================================="
+
+    # A digest supplied by the caller must still describe what is on the
+    # device *now*. If someone installed a package between the moment the
+    # operator looked at the list and the moment they confirmed, this is what
+    # stops the deploy from silently destroying something nobody was shown.
+    if [ -n "$OPT_ACCEPT_CHANGES" ]; then
+        if [ "$OPT_ACCEPT_CHANGES" = "$digest" ]; then
+            log "Modifiche accettate (digest corrispondente)."
+            return 0
+        fi
+        die "il digest fornito non corrisponde alle modifiche attuali (atteso ${digest}) - il sistema e' cambiato da quando e' stato mostrato"
+    fi
+
+    if [ "$OPT_YES" = 1 ]; then
+        warn "--yes: procedo sovrascrivendo le modifiche elencate sopra (esito: ${verdict})"
+        return 0
+    fi
+
+    local ans
+    case "$verdict" in
+        packages-only) read -rp "Sono solo pacchetti installati. Procedo e li perdo? [scrivi SI]: " ans ;;
+        *)             read -rp "Ci sono anche file modificati NON spiegati da pacchetti. Procedo? [scrivi SI]: " ans ;;
+    esac
+    [ "$ans" = "SI" ] || die "annullato dall'utente"
+}
+
 cmd_disarm() {
     do_probe
     log "Rimuovo l'arming su ${TARGET_USERHOST} (${FIRMWARE})..."
@@ -764,6 +875,7 @@ REMOTE_EOF
 
 case "$SUBCMD" in
     probe)   do_probe; print_probe ;;
+    changes) cmd_changes ;;
     deploy)  cmd_deploy ;;
     disarm)  cmd_disarm ;;
     recover) cmd_recover ;;
