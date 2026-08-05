@@ -193,6 +193,23 @@ check "ROOT montata ha /sbin/init o systemd" bash -c '[ -x /mnt/newroot/sbin/ini
 check "ROOT montata ha /etc/kiosk (marker UniTotem)" test -d /mnt/newroot/etc/kiosk
 check "BOOT/ESP montata sotto /boot/efi ha grub" test -d /mnt/newroot/boot/efi/EFI
 
+check "unitotem-ota-changes installato" test -x /mnt/newroot/usr/sbin/unitotem-ota-changes
+check "baseline generata da stage3" test -s /mnt/newroot/usr/lib/unitotem/baseline/packages
+check "baseline: manifest dei file non posseduti non vuoto" \
+    test -s /mnt/newroot/usr/lib/unitotem/baseline/unowned.sha256
+# Il numero esatto varia, ma un ordine di grandezza sbagliato tradisce una
+# normalizzazione usr-merge rotta: senza, i "non posseduti" raddoppiano.
+check "baseline: conteggio dei non posseduti plausibile (<6000)" \
+    bash -c '[ "$(wc -l < /mnt/newroot/usr/lib/unitotem/baseline/unowned.sha256)" -lt 6000 ]'
+check "baseline: il manifest non contiene se stesso" \
+    bash -c "! grep -q '/usr/lib/unitotem/baseline/' /mnt/newroot/usr/lib/unitotem/baseline/unowned.sha256"
+check "l'hook overlay ancora /var/lib/dpkg su ROOT" \
+    grep -q 'dpkg_pin' /mnt/newroot/etc/initramfs-tools/scripts/init-bottom/setup-overlays
+check "timer apt automatici mascherati" \
+    bash -c 'ls -l /mnt/newroot/etc/systemd/system/apt-daily.timer 2>/dev/null | grep -q /dev/null'
+check "kiosk-update ferma i servizi reali, non sway" \
+    bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/kiosk-update && ! grep -q 'pkill -x sway' /mnt/newroot/usr/local/bin/kiosk-update"
+
 # Stessi controlli di confezionamento del lato arm64: fstab-amd64 e' stato
 # modificato in parallelo a fstab-arm64, e "e' simmetrico quindi va bene" non
 # e' una verifica. L'hook overlay invece e' condiviso fra le due architetture.

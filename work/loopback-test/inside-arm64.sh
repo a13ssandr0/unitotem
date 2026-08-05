@@ -204,6 +204,23 @@ check "fstab tiene comunque /var/cache e /var/tmp su tmpfs (usura SD)" \
 check "journald chiede storage persistente (ora ottenibile)" \
     bash -c "grep -rqs '^Storage=persistent' /mnt/newroot/etc/systemd/journald.conf.d/"
 
+check "unitotem-ota-changes installato" test -x /mnt/newroot/usr/sbin/unitotem-ota-changes
+check "baseline generata da stage3" test -s /mnt/newroot/usr/lib/unitotem/baseline/packages
+check "baseline: manifest dei file non posseduti non vuoto" \
+    test -s /mnt/newroot/usr/lib/unitotem/baseline/unowned.sha256
+# Il numero esatto varia, ma un ordine di grandezza sbagliato tradisce una
+# normalizzazione usr-merge rotta: senza, i "non posseduti" raddoppiano.
+check "baseline: conteggio dei non posseduti plausibile (<6000)" \
+    bash -c '[ "$(wc -l < /mnt/newroot/usr/lib/unitotem/baseline/unowned.sha256)" -lt 6000 ]'
+check "baseline: il manifest non contiene se stesso" \
+    bash -c "! grep -q '/usr/lib/unitotem/baseline/' /mnt/newroot/usr/lib/unitotem/baseline/unowned.sha256"
+check "l'hook overlay ancora /var/lib/dpkg su ROOT" \
+    grep -q 'dpkg_pin' /mnt/newroot/etc/initramfs-tools/scripts/init-bottom/setup-overlays
+check "timer apt automatici mascherati" \
+    bash -c 'ls -l /mnt/newroot/etc/systemd/system/apt-daily.timer 2>/dev/null | grep -q /dev/null'
+check "kiosk-update ferma i servizi reali, non sway" \
+    bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/kiosk-update && ! grep -q 'pkill -x sway' /mnt/newroot/usr/local/bin/kiosk-update"
+
 log "=== populate-real-kernel (arm64 only) ==="
 "${ENGINE[@]}" populate-real-kernel
 check "kernel8.img (sistema reale) scritto su firmware" test -f /mnt/newroot/boot/firmware/kernel8.img
