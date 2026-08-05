@@ -168,6 +168,9 @@ install -m 755 /kiosk/files/ota-local-bottom-verify \
     "${ROOTFS}/etc/initramfs-tools/scripts/local-bottom/zz-unitotem-verify"
 
 install -m 755 /kiosk/files/unitotem-ota-arm "${ROOTFS}/usr/sbin/unitotem-ota-arm"
+# Not in the fallback's ota-engine.sh: this one needs dpkg, which the resident
+# fallback initrd does not carry. It only ever runs on the booted system.
+install -m 755 /kiosk/files/unitotem-ota-changes "${ROOTFS}/usr/sbin/unitotem-ota-changes"
 install -m 755 /kiosk/files/unitotem-boot-ok "${ROOTFS}/usr/sbin/unitotem-boot-ok"
 install -m 644 /kiosk/files/unitotem-boot-ok.service \
     "${ROOTFS}/etc/systemd/system/unitotem-boot-ok.service"
@@ -247,6 +250,26 @@ chroot "${ROOTFS}" systemctl enable \
     unitotem-boot-ok \
     unitotem-ssh-hostkey \
     unitotem-net-watchdog.timer
+
+# ---------- Disable unattended apt ----------
+# Three independent reasons, any one of which would be enough:
+#
+#  - /var/lib/dpkg is pinned to the read-only ROOT (see
+#    kiosk/files/overlayfs-hook.sh), so these timers cannot take dpkg's lock
+#    and would fail on every run. They were among the failed units observed
+#    on hardware before that.
+#  - Updates on this image go through OTA, which replaces whole partitions.
+#    A package upgraded behind its back is undone at the next deploy anyway.
+#  - unitotem-ota-changes reports what has been modified relative to the
+#    image so an operator can decide before an OTA destroys it. A background
+#    timer mutating packages makes that report noisy for changes nobody made
+#    - and it was already happening: the dpkg status on DATA had drifted from
+#    the image's copy with no human involved.
+#
+# `mask`, not `disable`: apt ships these as static-ish units pulled in by
+# package updates, and disable alone has a habit of being undone.
+chroot "${ROOTFS}" systemctl mask apt-daily.timer apt-daily-upgrade.timer \
+    apt-daily.service apt-daily-upgrade.service
 
 # ---------- Regenerate initramfs ----------
 

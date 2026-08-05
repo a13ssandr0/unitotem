@@ -1,10 +1,36 @@
 #!/bin/bash
 set -e
 
+# The units that actually own the screen on this image. This used to be a
+# single `pkill -x sway`, which stopped nothing at all: there is no sway here
+# (bare Xorg, no window manager - see kiosk/stage1-packages.sh for why), so
+# the kiosk kept running through the whole update while this script reported
+# "Fermo il kiosk...". Confirmed on hardware: Xorg was still up after `enter`.
+#
+# systemctl stop, not pkill: start-xorg.service is Restart=always, so killing
+# the process just brings it straight back. Stopping the unit is the only
+# thing that holds.
+KIOSK_UNITS="unitotem-manager.service start-xorg.service"
+
 _enter() {
     echo "[kiosk-update] Fermo il kiosk..."
-    pkill -x sway 2>/dev/null || true
-    sleep 1
+    local u failed=""
+    for u in $KIOSK_UNITS; do
+        systemctl stop "$u" 2>/dev/null || true
+    done
+    # Verified rather than assumed: an update that runs while the kiosk still
+    # holds the display is exactly the situation this step exists to prevent,
+    # and it failed silently for as long as the pkill was there.
+    for u in $KIOSK_UNITS; do
+        if systemctl is-active --quiet "$u"; then
+            failed="${failed} ${u}"
+        fi
+    done
+    if [ -n "$failed" ]; then
+        echo "[kiosk-update] ERRORE: non sono riuscito a fermare:${failed}" >&2
+        echo "[kiosk-update] Interrompo: aggiornare con il kiosk attivo non e' sicuro." >&2
+        exit 1
+    fi
 
     echo "[kiosk-update] Rimonto rootfs in rw..."
     mount -o remount,rw /
