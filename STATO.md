@@ -98,13 +98,47 @@ filesystem DATA da cui fare overlay. Il commento fuorviante è stato sostituito 
    sono 256 MB). `ROOTFS` era cablato; ora è sovrascrivibile e punta su DATA. Stage0 nativo verificato
    `RC=0`. Il ripiego automatico su Docker+qemu funzionava, e per questo il problema era invisibile.
 
+## Verifica del 5 agosto: `/var` in overlay, build nativa, terza immagine
+
+Il root read-only stava **mangiando scritture in silenzio**. `/etc` e `/root` erano in overlay, `/var` no: la
+sua scrivibilità era affidata a un elenco di tmpfs in `fstab` compilato a mano, che per costruzione poteva
+coprire solo le directory già viste fallire. Non copriva `/var/log/journal`, quindi journald ripiegava su
+`/run` e **ogni riavvio buttava via tutti i log** — proprio la diagnostica che serve dopo un guasto in campo,
+e `journald.conf` chiedeva `Storage=persistent` da sempre. Stessa causa, danno minore: `logrotate`,
+`dpkg-db-backup` e 11 record `wtmp` persi per avvio.
+
+`/var` è ora in overlay accanto a `etc` e `root`. L'obiezione in `fstab` contro un tmpfs su tutto `/var/lib`
+resta valida ed è conservata — nasconderebbe il database dpkg e i 78 MB di `/var/unitotem-venv` — ma è
+un'obiezione al **tmpfs**, non alla scrivibilità: un overlay lascia visibile il livello inferiore e devia solo
+le scritture. `/var/cache` e `/var/tmp` restano tmpfs di proposito (puro ricambio, nessun motivo di consumare
+la SD).
+
+Verificato su hardware dopo il deploy:
+
+| Prima | Dopo |
+|---|---|
+| `degraded`, 2 unit fallite | **`running`, 0 fallite** |
+| journal in `/run` (volatile) | journal in `/var/log/journal`, **boot precedente leggibile dopo il riavvio** |
+| `wtmp` non scrivibile | scrivibile |
+| — | dpkg integro (915 pacchetti), venv visibile, upper `/var` = 11 MB su DATA |
+
+`migrate-etc-overlay` azzera ora anche l'upper di `/var`: senza, dopo un OTA il database dpkg e il venv della
+**vecchia** immagine coprirebbero quelli nuovi. Il vecchio contenuto finisce in `history/`, non è perso.
+
+- **Build nativa sul Pi: completata end-to-end per la prima volta.** Restava un secondo bloccante dopo
+  `ROOTFS`: stage3 montava l'immagine in costruzione su `/mnt`, che sull'appliance è dove sta DATA — si
+  copriva da solo l'albero di build, e `rsync` falliva su un rootfs perfettamente presente. `IMG_MNT` è ora
+  sovrascrivibile come `ROOTFS`.
+- Loopback: **arm64 120/120**, **amd64 58/58** (erano 100 e 44; la differenza sono i controlli nuovi).
+- `migrate-etc-overlay` veniva invocata **senza alcuna asserzione**: poteva non fare nulla e restare verde.
+  Ora è verificata su entrambe le architetture.
+
 ## Non fatto / limiti noti
 
 | Gap | Note |
 |---|---|
-| **Tre fix sono in sorgente ma non in nessuna immagine** | Dimensionamento dell'area di testo del gauge, `unitotem-ota-arm` con reboot ritardato, `ROOTFS` sovrascrivibile. Verificati singolarmente su hardware, ma entreranno in un'immagine solo alla prossima build. |
-| **Build nativa: mai completata end-to-end** | Il bloccante è rimosso e stage0 gira nativo, ma stage1→3 non sono ancora stati eseguiti sul Pi in un giro completo. |
-| `logrotate` / `dpkg-db-backup` falliti | Su ogni dispositivo, non solo su quello di prova: sono artefatti del root read-only, il sistema resta `degraded`. Estranei all'OTA, ma sarebbero da mascherare o adattare. |
+| `MaxLevelStore=warning` limita cosa viene salvato | Ora che i log persistono, vale la pena rivedere la soglia: `info`/`notice` non finiscono su disco, quindi parte della cronologia di un guasto manca comunque. Scelta deliberata per l'usura della SD, ma da ripesare con l'overlay attivo. |
+| L'immagine amd64 non è mai stata avviata | Ricostruita e verificata in loopback (58/58), ma nessun avvio reale: l'overlay `/var` è dimostrato solo su arm64. |
 | `inside-real-sd.sh` | Harness su SD fisica, non ha lo scenario "Round 2". Obsoleto da quando l'OTA via rete funziona. |
 | Flash di OS estranei: solo via `dd`, non via parts set | `parts-lib.sh` classifica le partizioni per label (`FIRMWARE`/`ROOT`/`DATA`) e i passi di boot scrivono `config.txt` in formato UniTotem, con la promozione affidata a `unitotem-boot-ok`. Per un'immagine estranea si usa il fallback + `dd` dell'immagine intera. |
 | **Un nuovo sottocomando del motore è utilizzabile solo un OTA dopo** | Il fallback che esegue un OTA è quello installato in precedenza, caricato in RAM all'avvio; lo Stage 1 riscrive la copia su disco, che entra in gioco al giro successivo. È la ragione per cui ogni verifica a schermo richiede **due** deploy, e per cui i tre fix qui sopra non sono ancora in un'immagine. |

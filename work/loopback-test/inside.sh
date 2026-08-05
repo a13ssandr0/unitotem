@@ -193,7 +193,31 @@ check "ROOT montata ha /sbin/init o systemd" bash -c '[ -x /mnt/newroot/sbin/ini
 check "ROOT montata ha /etc/kiosk (marker UniTotem)" test -d /mnt/newroot/etc/kiosk
 check "BOOT/ESP montata sotto /boot/efi ha grub" test -d /mnt/newroot/boot/efi/EFI
 
+# Stessi controlli di confezionamento del lato arm64: fstab-amd64 e' stato
+# modificato in parallelo a fstab-arm64, e "e' simmetrico quindi va bene" non
+# e' una verifica. L'hook overlay invece e' condiviso fra le due architetture.
+check "l'hook overlay copre anche /var" \
+    grep -qE 'for d in etc root var' /mnt/newroot/etc/initramfs-tools/scripts/init-bottom/setup-overlays
+check "fstab non rimonta piu' tmpfs su /var/lib/* (maschererebbe l'overlay)" \
+    bash -c "! grep -qE '^tmpfs[[:space:]]+/var/lib/' /mnt/newroot/etc/fstab"
+check "fstab tiene comunque /var/cache e /var/tmp su tmpfs (usura disco)" \
+    bash -c "grep -qE '^tmpfs[[:space:]]+/var/cache' /mnt/newroot/etc/fstab && grep -qE '^tmpfs[[:space:]]+/var/tmp' /mnt/newroot/etc/fstab"
+check "journald chiede storage persistente" \
+    bash -c "grep -rqs '^Storage=persistent' /mnt/newroot/etc/systemd/journald.conf.d/"
+
+DATA_MNT=/mnt/newroot/mnt/data
+mkdir -p "$DATA_MNT/upper/etc/cron.d" "$DATA_MNT/upper/var/lib/dpkg"
+echo "vecchio-db" > "$DATA_MNT/upper/var/lib/dpkg/status"
+echo "sostituiscimi" > "$DATA_MNT/upper/etc/cron.d/estraneo"
+
 "${ENGINE[@]}" migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data
+
+check "migrate: upper/var azzerato (niente dpkg della vecchia immagine)" \
+    bash -c "! test -e '$DATA_MNT/upper/var/lib/dpkg/status'"
+check "migrate: il vecchio /var e' archiviato in history, non perso" \
+    bash -c "ls '$DATA_MNT'/history/*/var/lib/dpkg/status >/dev/null 2>&1"
+check "migrate: file /etc non in whitelist NON reimportato" \
+    bash -c "! test -e '$DATA_MNT/upper/etc/cron.d/estraneo'"
 
 log "=== set-trial-boot (uefi, chroot sul target appena scritto) ==="
 "${ENGINE[@]}" set-trial-boot --firmware uefi --target /mnt/newroot
