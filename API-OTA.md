@@ -44,8 +44,12 @@ quindi ogni file sotto di esso risulterebbe mancante su ogni dispositivo.
 | `2` | il controllo stesso è fallito (baseline assente, argomenti errati) |
 | `127` | comando assente: immagine anteriore a questa funzione |
 
-**Costo**: ~15 secondi su Raspberry Pi 4 (misurato: `dpkg -V` completo 10 s su 913 pacchetti, sha256 di
-3.042 file non appartenenti a pacchetti 3 s). Sostenibile in una richiesta sincrona.
+**Costo**: ~11 secondi su Raspberry Pi 4, misurato end-to-end sul dispositivo. Sostenibile in una
+richiesta sincrona, ma vedere sotto per l'avanzamento se si preferisce non bloccare l'interfaccia.
+
+Un dettaglio utile a chi dimensiona i timeout: la prima versione impiegava **1m31s** perché calcolava lo
+sha256 con un processo per file (3.043 fork). Il costo era tutto lì, non nella lettura del disco. Se un
+domani il rapporto tornasse a essere lento, è il primo posto dove guardare.
 
 **Avanzamento**: con `OTA_CHANGES_PROGRESS=1` nell'ambiente, la fase corrente viene scritta come singola
 riga di testo in `/run/unitotem-ota-changes.progress`. È pensato per una barra di stato, non per essere
@@ -102,6 +106,11 @@ dispositivo. Se qualcuno ha installato un pacchetto fra il momento in cui l'oper
 quello in cui ha confermato, il deploy si ferma. È questa la proprietà che rende una conferma da
 interfaccia web sicura quanto un prompt da terminale: non si può approvare un insieme di modifiche e
 distruggerne un altro.
+
+`--accept-changes` implica anche l'esecuzione **non interattiva**: sopprime la scelta del disco e la
+conferma finale, che altrimenti resterebbero in attesa su un terminale che un'interfaccia web non ha. Il
+digest resta comunque verificato prima di qualunque scrittura — è una conferma più stringente di quella da
+tastiera, non una scorciatoia per saltarla.
 
 `--yes` esiste ancora e accetta tutto senza guardare. È per gli script, non per l'interfaccia.
 

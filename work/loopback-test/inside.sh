@@ -208,7 +208,7 @@ check "l'hook overlay ancora /var/lib/dpkg su ROOT" \
 check "timer apt automatici mascherati" \
     bash -c 'ls -l /mnt/newroot/etc/systemd/system/apt-daily.timer 2>/dev/null | grep -q /dev/null'
 check "kiosk-update ferma i servizi reali, non sway" \
-    bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/kiosk-update && ! grep -q 'pkill -x sway' /mnt/newroot/usr/local/bin/kiosk-update"
+    bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/kiosk-update && ! grep -qE '^[^#]*pkill -x sway' /mnt/newroot/usr/local/bin/kiosk-update"
 
 # Stessi controlli di confezionamento del lato arm64: fstab-amd64 e' stato
 # modificato in parallelo a fstab-arm64, e "e' simmetrico quindi va bene" non

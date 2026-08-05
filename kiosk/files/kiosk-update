@@ -34,7 +34,21 @@ _enter() {
 
     echo "[kiosk-update] Rimonto rootfs in rw..."
     mount -o remount,rw /
+    # /var/lib/dpkg is a bind mount back onto ROOT (see
+    # kiosk/files/overlayfs-hook.sh) and a bind carries its OWN flags: it stays
+    # read-only when / is remounted rw. Without this, apt reports "Not using
+    # locking for read only lock file /var/lib/dpkg/lock" and dpkg cannot
+    # update the database at all - confirmed on hardware, where / showed rw
+    # and /var/lib/dpkg showed ro at the same moment.
+    mountpoint -q /var/lib/dpkg && mount -o remount,rw /var/lib/dpkg
     mount -o remount,size=1G /var/cache
+
+    # The package lists live on the DATA overlay and an OTA resets them, so a
+    # freshly deployed device has none and every install fails with "Unable to
+    # locate package". Refreshing here costs one download and removes a
+    # confusing first-use failure.
+    echo "[kiosk-update] Aggiorno gli elenchi dei pacchetti..."
+    apt-get update -qq || echo "[kiosk-update] ATTENZIONE: apt-get update fallito, gli elenchi potrebbero essere incompleti" >&2
 
     echo "[kiosk-update] Pronti."
     echo "  /etc  /root       → overlay su DATA (sempre persistente)"
@@ -59,6 +73,9 @@ _exit() {
 
     echo "[kiosk-update] Rimonto rootfs in ro..."
     sync
+    # Same asymmetry as on the way in: the bind has to be told separately, or
+    # the package database would stay writable on an otherwise read-only root.
+    mountpoint -q /var/lib/dpkg && mount -o remount,ro /var/lib/dpkg 2>/dev/null || true
     mount -o remount,ro / 2>/dev/null || true
 
     echo "[kiosk-update] Riavvio in 5 secondi..."
