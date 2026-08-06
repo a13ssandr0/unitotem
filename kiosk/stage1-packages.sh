@@ -27,6 +27,20 @@ if [ "$ARCH" = "arm64" ]; then
         | gpg --dearmor > "${ROOTFS}/etc/apt/trusted.gpg.d/raspberrypi.gpg"
     echo "deb http://archive.raspberrypi.org/debian/ bookworm main" \
         > "${ROOTFS}/etc/apt/sources.list.d/raspi.list"
+else
+    # backports, amd64 only: this image has to drive whatever GPU the machine
+    # it is installed on happens to have, and bookworm cannot do that for
+    # recent hardware. Intel ARC (DG2) is the clearest case - on the 6.1
+    # kernel it sits behind i915.force_probe and Mesa 22.3 barely handles it,
+    # so "supported" would have been true only on paper. Backports carries
+    # kernel 6.12, Mesa 25.0 and 2025 firmware, which also helps RDNA3 and
+    # recent Intel iGPUs.
+    #
+    # Adding the suite does not change anything on its own: backports is
+    # NotAutomatic (priority 100), so nothing is pulled from it unless asked
+    # for by name with -t. Every such request below is deliberate.
+    echo "deb http://deb.debian.org/debian bookworm-backports main contrib non-free non-free-firmware" \
+        > "${ROOTFS}/etc/apt/sources.list.d/backports.list"
 fi
 
 # UniTotem Manager repository
@@ -40,11 +54,19 @@ chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get update
 # ---------- Kernel + firmware + bootloader ----------
 
 if [ "$ARCH" = "amd64" ]; then
+    # Kernel and firmware from backports (6.12 instead of 6.1, firmware
+    # 2025-04 instead of 2023-02). Required for Intel ARC to be driven at all,
+    # and it is the same firmware package set that carries recent AMD and
+    # Intel blobs. linux-headers-amd64 has to come from the same suite or the
+    # NVIDIA DKMS build below has nothing matching to build against.
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        -t bookworm-backports \
         linux-image-amd64 \
+        linux-headers-amd64 \
         firmware-linux \
         firmware-linux-nonfree \
-        firmware-misc-nonfree \
+        firmware-misc-nonfree
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         grub-efi-amd64 \
         grub-pc-bin \
         efibootmgr
@@ -120,14 +142,64 @@ chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
 # ---------- GPU drivers (arch-specific) ----------
 
 if [ "$ARCH" = "amd64" ]; then
+    # One image, three GPU vendors. That works because libglvnd dispatches GL
+    # to whichever vendor's driver is actually present at runtime, so Mesa
+    # (Intel/AMD) and the NVIDIA blob coexist without either being chosen at
+    # build time. The X server picks its driver the same way: modesetting for
+    # Intel, amdgpu for AMD, nvidia for NVIDIA (xserver-xorg-video-all already
+    # supplies amdgpu/ati/nouveau; modern Intel is served by the server's
+    # built-in modesetting, which is why there is no xserver-xorg-video-intel
+    # here - that driver is legacy and hurts on anything recent).
+
+    # Mesa from backports: 25.0 instead of 22.3. This is what actually makes
+    # Intel ARC work (iris + ANV for DG2) and it materially improves RDNA3.
+    # Upgrades the versions the common block above already installed.
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        -t bookworm-backports \
+        libgl1-mesa-dri mesa-vulkan-drivers mesa-va-drivers mesa-utils
+
+    # Intel, including ARC. intel-media-va-driver-non-free is the iHD driver
+    # and covers Gen8 onwards, DG2/ARC included; i965 is kept for Gen4-8
+    # hardware that iHD dropped. Both can be installed: libva selects by PCI
+    # ID at runtime.
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
         intel-media-va-driver-non-free \
         i965-va-driver-shaders \
-        libva2 libva-drm2 vainfo \
-        mesa-vulkan-drivers \
-        firmware-amd-graphics \
-        mesa-va-drivers \
+        libva2 libva-drm2 vainfo
+
+    # AMD. The kernel driver is in-tree; what is needed from userspace is the
+    # firmware (from backports, for RDNA3 and newer) and libdrm.
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        -t bookworm-backports firmware-amd-graphics
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
         libdrm-amdgpu1
+
+    # NVIDIA, proprietary. Two consequences worth being explicit about:
+    #
+    #  - it blacklists nouveau unconditionally (Debian ships that rule with
+    #    the package), and the 535 branch covers Maxwell onwards. On a
+    #    pre-Maxwell card nvidia will not bind and nouveau is blacklisted, so
+    #    that machine loses acceleration. That is the accepted cost of having
+    #    working NVDEC and full performance on everything newer.
+    #  - the module is built by DKMS here, against this image's own kernel.
+    #    DKMS's usual weakness - drifting out of sync when the kernel is
+    #    upgraded underneath it - cannot happen on this appliance: nothing is
+    #    upgraded in place, an OTA replaces the whole ROOT partition with an
+    #    image whose kernel and module were built together.
+    #
+    # nvidia-vaapi-driver bridges VAAPI onto NVDEC, so the same video path
+    # used for Intel and AMD works here too instead of falling back to CPU.
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        nvidia-driver \
+        nvidia-vaapi-driver
+
+    # Fail the build rather than ship an image whose NVIDIA module silently
+    # did not build: DKMS failures are reported by apt as warnings, and the
+    # result would be an image that looks fine and has no NVIDIA support.
+    KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
+    chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
+        || { echo "ERRORE: il modulo NVIDIA non e' stato costruito per ${KVER}" >&2; exit 1; }
+    echo "Modulo NVIDIA costruito per ${KVER}"
 
 elif [ "$ARCH" = "arm64" ]; then
     # Note for anyone reading the list below: libva/vainfo are INERT on a
