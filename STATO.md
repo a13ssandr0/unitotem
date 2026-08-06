@@ -173,6 +173,34 @@ modifiche a file (incluso uno con spazi nel nome, che una versione precedente tr
 rifiutato → digest corretto accettato → modifiche effettivamente distrutte dal deploy, come annunciato.
 Loopback: **arm64 136/136**, **amd64 74/74**.
 
+## Verifica del 6 agosto: driver video amd64 per tutti e tre i fornitori
+
+L'immagine amd64 non aveva **alcun** driver NVIDIA e nulla di abbastanza recente per le Intel ARC. Ora
+porta Intel, AMD e NVIDIA insieme: è `libglvnd` a smistare GL verso il fornitore effettivamente presente,
+ed è questo che permette a una sola immagine di funzionare su tutti e tre senza scegliere a build time.
+
+**Le ARC sono la ragione per cui la base amd64 passa ai backports.** Sul kernel 6.1 di bookworm le DG2
+stanno dietro `i915.force_probe` e Mesa 22.3 le regge a malapena: dichiararle supportate sarebbe stato vero
+solo sulla carta. I backports portano kernel **6.12.95**, Mesa **25.0.7** e firmware **2025-04**, che
+giovano anche a RDNA3 e alle Intel integrate recenti. Aggiungere la suite non cambia nulla di per sé
+(backports è `NotAutomatic`): ogni pacchetto che ne proviene è richiesto per nome con `-t`.
+
+NVIDIA è il driver proprietario, con due conseguenze dichiarate nel codice invece che scoperte dopo:
+mette una blacklist su nouveau e il ramo 535 parte da Maxwell, quindi **una scheda pre-Maxwell resta senza
+driver**; e il modulo è costruito da DKMS a build time. Quel secondo punto di solito è il punto debole di
+DKMS, ma qui non può mordere: nulla viene aggiornato sul posto, un OTA sostituisce la partizione con
+un'immagine il cui kernel e modulo sono stati costruiti insieme.
+
+- La build **fallisce** se il modulo NVIDIA non viene costruito: apt segnala i fallimenti DKMS come
+  semplici avvisi, e senza questa guardia ne uscirebbe un'immagine apparentemente sana e priva di NVIDIA.
+- Gli headers del kernel sono **volutamente conservati** (94 MiB, misurati, e il modulo sopravvive al loro
+  purge): servono a DKMS se qualcuno aggiorna il kernel in place con `kiosk-update`, che è un percorso che
+  l'immagine ora supporta esplicitamente.
+- Costo: immagine amd64 da **774 a 1057 MiB** compressi. Su un OTA quella differenza viaggia in rete a
+  ogni deploy.
+- Loopback amd64 **92/92**, con nove controlli dedicati: kernel 6.12+, Mesa 25.x, modulo NVIDIA, driver X
+  NVIDIA e amdgpu, VAAPI su NVDEC, iHD per ARC, radeonsi per AMD, firmware 2025.
+
 ## Non fatto / limiti noti
 
 | Gap | Note |
@@ -180,6 +208,8 @@ Loopback: **arm64 136/136**, **amd64 74/74**.
 | **Due fix sono in sorgente ma non nell'immagine sul Pi** | Il remount del bind dpkg in `kiosk-update` e lo sha256 batch. Verificati su hardware copiando gli script a mano; entrano in un'immagine solo alla prossima build. Stessa proprietà di ritardo di un giro di sempre. |
 | `iso/installer.sh` è disallineato dal repo | Indipendente da questo lavoro: installa `chromium-flags-amd64`, che non esiste più in `kiosk/files/`. Con `set -euo pipefail` l'installer si fermerebbe lì. Non è nella pipeline di `build-kiosk.sh`, quindi non blocca nulla oggi. |
 | `unitotem-manager.service` in crash-loop sul Pi | `status=1/FAILURE` a ripetizione, preesistente e non toccato da questo lavoro. Lo schermo resta nero dopo Xorg. |
+| **Driver video amd64 verificati solo in loopback** | Nessuna prova su hardware reale con GPU NVIDIA, AMD o ARC: la verifica dice che i pezzi sono nell'immagine, non che guidano lo schermo. |
+| Schede NVIDIA pre-Maxwell senza driver | Conseguenza accettata del proprietario, che blacklista nouveau. Servirebbe una variante d'immagine o una blacklist condizionata. |
 | `MaxLevelStore=warning` limita cosa viene salvato | Ora che i log persistono, vale la pena rivedere la soglia: `info`/`notice` non finiscono su disco, quindi parte della cronologia di un guasto manca comunque. Scelta deliberata per l'usura della SD, ma da ripesare con l'overlay attivo. |
 | L'immagine amd64 non è mai stata avviata | Ricostruita e verificata in loopback (58/58), ma nessun avvio reale: l'overlay `/var` è dimostrato solo su arm64. |
 | `inside-real-sd.sh` | Harness su SD fisica, non ha lo scenario "Round 2". Obsoleto da quando l'OTA via rete funziona. |
