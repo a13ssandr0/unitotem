@@ -210,25 +210,23 @@ if [ "$ARCH" = "amd64" ]; then
     # error anyone would notice until the screen stayed black.
 
 elif [ "$ARCH" = "arm64" ]; then
-    # Note for anyone reading the list below: libva/vainfo are INERT on a
-    # Raspberry Pi. VideoCore has no VAAPI driver - hardware video decode is
-    # reached through V4L2 mem2mem devices instead (/dev/video10
-    # "bcm2835-codec-decode" for H.264 on every model, plus /dev/video19
-    # "rpi-hevc-dec" for HEVC on Pi 4 and later only). They are kept purely
-    # because the amd64 branch above shares consumers with them; do not read
-    # their presence as VAAPI being available here.
+    # No VAAPI here, deliberately. libva/vainfo used to be installed on this
+    # branch too, with a comment admitting they were inert and were kept only
+    # because the amd64 branch happened to share consumers - which is not a
+    # reason to ship them. VideoCore has no VAAPI driver at all: hardware
+    # video decode on a Pi goes through V4L2 mem2mem devices instead
+    # (/dev/video10 "bcm2835-codec-decode" for H.264 on every model, plus
+    # /dev/video19 "rpi-hevc-dec" for HEVC on Pi 4 and later). Shipping the
+    # VAAPI stack here only invited the reading that VAAPI was available.
     #
-    # gstreamer1.0-tools provides gst-inspect/gst-launch, which is how one
-    # actually confirms those V4L2 decoders are exposed to the media stack -
-    # without it the question can only be answered by guesswork.
-    #
-    # raspi-utils provides vcgencmd, and that is not a nicety: it is the only
-    # way to see whether the board is thermally or voltage throttled. On a
-    # kiosk "the video stutters" and "the PSU is undersized" look identical
-    # from every other angle.
+    # What is left is diagnostics, not drivers, and each earns its place:
+    # v4l-utils gives v4l2-ctl to interrogate those decoders directly,
+    # gstreamer1.0-tools gives gst-inspect to confirm the media stack can see
+    # them, and raspi-utils gives vcgencmd - the only way to tell whether the
+    # board is thermally or voltage throttled. On a kiosk "the video stutters"
+    # and "the PSU is undersized" look identical from every other angle.
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        libva2 libva-drm2 vainfo \
-        v4l-utils libv4l-dev \
+        v4l-utils \
         gstreamer1.0-tools \
         raspi-utils
 fi
@@ -249,9 +247,18 @@ chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     xinit x11-xserver-utils kbd \
     pipewire pipewire-audio pipewire-pulse pipewire-jack pipewire-alsa \
     wireplumber libpipewire-0.3-0 \
-    gstreamer1.0-pipewire gstreamer1.0-vaapi \
+    gstreamer1.0-pipewire \
     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
     gstreamer1.0-libav libspa-0.2-bluetooth
+
+# gstreamer1.0-vaapi is amd64-only: it is a VAAPI plugin, and on a Pi there is
+# no VAAPI driver for it to talk to. Leaving it in the shared list would also
+# have dragged libva back onto arm64 through dependencies, undoing the removal
+# above without anyone noticing.
+if [ "$ARCH" = "amd64" ]; then
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        gstreamer1.0-vaapi
+fi
 
 # ---------- UniTotem packages ----------
 

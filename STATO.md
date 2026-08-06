@@ -201,6 +201,15 @@ un'immagine il cui kernel e modulo sono stati costruiti insieme.
 - Loopback amd64 **92/92**, con nove controlli dedicati: kernel 6.12+, Mesa 25.x, modulo NVIDIA, driver X
   NVIDIA e amdgpu, VAAPI su NVDEC, iHD per ARC, radeonsi per AMD, firmware 2025.
 
+**Nulla di tutto questo tocca arm64**: backports e driver stanno interamente dentro rami `amd64`. Anzi,
+arm64 è stata ripulita in senso opposto — non installa più `libva2`/`libva-drm2`/`vainfo` né
+`gstreamer1.0-vaapi`. Erano lì da sempre, con un commento che ne ammetteva l'inutilità («inerti, tenuti
+perché il ramo amd64 condivide i consumatori»), che non è una ragione per spedirli: VideoCore non ha
+alcun driver VAAPI e la decodifica passa dai dispositivi V4L2 mem2mem. `gstreamer1.0-vaapi` in particolare
+andava spostato nel ramo amd64, altrimenti avrebbe ritrascinato `libva` per dipendenza vanificando la
+rimozione. Su arm64 restano solo strumenti di diagnosi — `v4l-utils`, `gstreamer1.0-tools`, `raspi-utils` —
+che non sono driver.
+
 ## Non fatto / limiti noti
 
 | Gap | Note |
