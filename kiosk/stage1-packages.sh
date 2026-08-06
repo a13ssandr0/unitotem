@@ -201,6 +201,14 @@ if [ "$ARCH" = "amd64" ]; then
         || { echo "ERRORE: il modulo NVIDIA non e' stato costruito per ${KVER}" >&2; exit 1; }
     echo "Modulo NVIDIA costruito per ${KVER}"
 
+    # linux-headers and the DKMS toolchain are deliberately NOT purged here,
+    # even though the module is already built and they are worth 94 MiB
+    # (measured, and the module does survive their removal). They are what
+    # lets DKMS rebuild if someone upgrades the kernel in place through
+    # `kiosk-update enter`, which this image explicitly supports. Without them
+    # that upgrade would produce a running system with no NVIDIA module and no
+    # error anyone would notice until the screen stayed black.
+
 elif [ "$ARCH" = "arm64" ]; then
     # Note for anyone reading the list below: libva/vainfo are INERT on a
     # Raspberry Pi. VideoCore has no VAAPI driver - hardware video decode is
