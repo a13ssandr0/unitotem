@@ -210,6 +210,29 @@ check "timer apt automatici mascherati" \
 check "kiosk-update ferma i servizi reali, non sway" \
     bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/kiosk-update && ! grep -qE '^[^#]*pkill -x sway' /mnt/newroot/usr/local/bin/kiosk-update"
 
+# --- Driver video amd64: l'immagine deve poter guidare NVIDIA, AMD e Intel
+# (ARC comprese) senza sapere in anticipo su che macchina finira'. Ognuno di
+# questi controlli corrisponde a un pezzo che, se manca, si scopre solo quando
+# il kiosk arriva su quell'hardware e resta a schermo nero.
+check "kernel dai backports (6.12+, serve alle ARC)" \
+    bash -c 'ls /mnt/newroot/lib/modules/ | grep -qE "^6\\.(1[2-9]|[2-9][0-9])"'
+check "Mesa dai backports (25.x: iris/ANV per DG2, RDNA3)" \
+    bash -c 'chroot /mnt/newroot dpkg-query -W -f="\${Version}" libgl1-mesa-dri 2>/dev/null | grep -q "^25\\."'
+check "modulo NVIDIA costruito da DKMS nell'immagine" \
+    bash -c 'ls /mnt/newroot/lib/modules/*/updates/dkms/nvidia-current.ko* >/dev/null 2>&1'
+check "driver X NVIDIA presente" \
+    bash -c 'ls /mnt/newroot/usr/lib/xorg/modules/drivers/nvidia_drv.so >/dev/null 2>&1'
+check "VAAPI su NVDEC (nvidia-vaapi-driver)" \
+    bash -c 'ls /mnt/newroot/usr/lib/x86_64-linux-gnu/dri/nvidia_drv_video.so >/dev/null 2>&1'
+check "driver VAAPI Intel iHD (copre ARC/DG2)" \
+    test -e /mnt/newroot/usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+check "driver VAAPI AMD (radeonsi via mesa-va-drivers)" \
+    test -e /mnt/newroot/usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+check "driver X amdgpu presente" \
+    test -e /mnt/newroot/usr/lib/xorg/modules/drivers/amdgpu_drv.so
+check "firmware GPU aggiornato (2025, non 2023)" \
+    bash -c 'chroot /mnt/newroot dpkg-query -W -f="\${Version}" firmware-amd-graphics 2>/dev/null | grep -q "^2025"'
+
 # Stessi controlli di confezionamento del lato arm64: fstab-amd64 e' stato
 # modificato in parallelo a fstab-arm64, e "e' simmetrico quindi va bene" non
 # e' una verifica. L'hook overlay invece e' condiviso fra le due architetture.
