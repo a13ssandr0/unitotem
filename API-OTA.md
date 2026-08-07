@@ -44,8 +44,11 @@ quindi ogni file sotto di esso risulterebbe mancante su ogni dispositivo.
 | `2` | il controllo stesso è fallito (baseline assente, argomenti errati) |
 | `127` | comando assente: immagine anteriore a questa funzione |
 
-**Costo**: ~11 secondi su Raspberry Pi 4, misurato end-to-end sul dispositivo. Sostenibile in una
-richiesta sincrona, ma vedere sotto per l'avanzamento se si preferisce non bloccare l'interfaccia.
+**Costo**: dipende dalla cache del filesystem, e la differenza è grande abbastanza da dover dimensionare i
+timeout sul caso peggiore. Misurato su Raspberry Pi 4: **~1m20s alla prima esecuzione dopo un riavvio**
+(cache fredda, legge 87 MB dalla SD e attraversa 44.000 file), **~11 s nelle esecuzioni successive**. Il
+tempo è quasi tutto I/O: la CPU usata resta sotto i 30 s in entrambi i casi. Non dare per scontato il caso
+caldo: la prima chiamata dopo l'avvio del dispositivo è proprio quella che un'interfaccia fa per prima.
 
 Un dettaglio utile a chi dimensiona i timeout: la prima versione impiegava **1m31s** perché calcolava lo
 sha256 con un processo per file (3.043 fork). Il costo era tutto lì, non nella lettura del disco. Se un
