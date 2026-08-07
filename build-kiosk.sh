@@ -46,6 +46,14 @@ probe_pi() {
 build_natively_on_pi() {
     echo "[arm64] Pi raggiungibile (${PI_HOST}): build nativa, nessuna emulazione qemu"
 
+    # /var/lib/dpkg va rimontato a parte: e' un bind su ROOT (vedi
+    # kiosk/files/overlayfs-hook.sh) e un bind porta i propri flag, quindi
+    # resta read-only anche dopo il remount di /. Senza, apt fallisce con
+    # "Not using locking for read only lock file /var/lib/dpkg/lock" e la
+    # build nativa ripiega su qemu - osservato, ed e' la stessa asimmetria
+    # gia' corretta in kiosk/files/kiosk-update: questo era il secondo
+    # chiamante, mancato la prima volta.
+    #
     # root resta scrivibile per l'intera build (non solo per creare i
     # symlink): apt-get install scrive su /var/lib/dpkg, /usr, /etc - un
     # secondo remount,ro subito dopo i symlink avrebbe fatto fallire quello.
@@ -54,6 +62,7 @@ build_natively_on_pi() {
     _pi_ssh "trap 'mount -o remount,ro / 2>/dev/null || true' EXIT; \
         mkdir -p '${PI_BUILD_BASE}/kiosk' '${PI_BUILD_BASE}/work' '${PI_BUILD_BASE}/deploy' && \
         mount -o remount,rw / && \
+        { mountpoint -q /var/lib/dpkg && mount -o remount,rw /var/lib/dpkg || true; } && \
         ln -sfn '${PI_BUILD_BASE}/kiosk' /kiosk && \
         ln -sfn '${PI_BUILD_BASE}/work' /work && \
         ln -sfn '${PI_BUILD_BASE}/deploy' /deploy" \
@@ -64,14 +73,13 @@ build_natively_on_pi() {
     _pi_rsync "${DIR}/deploy/ota-engine.sh" "${PI_HOST}:${PI_BUILD_BASE}/kiosk/files/ota-engine.sh"
     _pi_rsync "${DIR}/deploy/parts-lib.sh" "${PI_HOST}:${PI_BUILD_BASE}/kiosk/deploy-parts-lib.sh" 2>/dev/null || true
 
-    # ROOTFS off /tmp: on the Pi that is a 256 MB tmpfs mounted nodev, and
-    # debootstrap refuses such a target outright ("Cannot install into target
-    # ... mounted with noexec or nodev") - stage0 failed on its first line and
-    # the whole native build fell back to qemu without that ever being
-    # obvious. The build tree on DATA has neither restriction.
-    # Both paths are moved off their container-friendly defaults: /tmp is a
-    # 256 MB nodev tmpfs here, and /mnt is where DATA is mounted - stage3
-    # mounting the image over it hid the build tree it was about to copy.
+    # Both paths are moved off their container-friendly defaults, each after
+    # failing here for its own reason: /tmp on the Pi is a 256 MB tmpfs mounted
+    # nodev, which debootstrap refuses outright ("Cannot install into target
+    # ... mounted with noexec or nodev"), and /mnt is where DATA is mounted, so
+    # stage3 mounting the image there hid the very build tree it was about to
+    # copy. Both failures sent the whole native build back to qemu without
+    # saying why.
     local envvars="ARCH=arm64 ROOTFS='${PI_BUILD_BASE}/rootfs' IMG_MNT='${PI_BUILD_BASE}/imgmnt'"
     local var
     for var in RELEASE MIRROR KIOSK_HOSTNAME ROOT_PASSWORD KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE; do
@@ -85,6 +93,7 @@ build_natively_on_pi() {
     _pi_ssh "set -e; \
         trap 'mount -o remount,ro / 2>/dev/null || true' EXIT; \
         mount -o remount,rw /; \
+        { mountpoint -q /var/lib/dpkg && mount -o remount,rw /var/lib/dpkg; } || true; \
         apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             debootstrap qemu-user-static dosfstools e2fsprogs gdisk parted kpartx util-linux \
             xz-utils pigz curl ca-certificates wget gnupg2 rsync git partclone \

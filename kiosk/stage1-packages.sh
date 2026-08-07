@@ -210,10 +210,17 @@ if [ "$ARCH" = "amd64" ]; then
     # error anyone would notice until the screen stayed black.
 
 elif [ "$ARCH" = "arm64" ]; then
-    # No VAAPI here, deliberately. libva/vainfo used to be installed on this
-    # branch too, with a comment admitting they were inert and were kept only
-    # because the amd64 branch happened to share consumers - which is not a
-    # reason to ship them. VideoCore has no VAAPI driver at all: hardware
+    # No VAAPI driver or tooling here, deliberately - vainfo and
+    # gstreamer1.0-vaapi used to be installed on this branch, with a comment
+    # admitting they were inert and were kept only because the amd64 branch
+    # happened to share consumers, which is not a reason to ship them.
+    #
+    # libva2 itself does still land on the image: gstreamer1.0-plugins-bad
+    # depends on it outright, and that package carries elements worth having.
+    # So do not read its presence as a leftover - it is a shared library with
+    # no driver behind it, which is exactly the situation the removal above
+    # was meant to stop advertising. VideoCore has no VAAPI driver at all:
+    # hardware
     # video decode on a Pi goes through V4L2 mem2mem devices instead
     # (/dev/video10 "bcm2835-codec-decode" for H.264 on every model, plus
     # /dev/video19 "rpi-hevc-dec" for HEVC on Pi 4 and later). Shipping the
