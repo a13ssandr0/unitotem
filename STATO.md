@@ -210,6 +210,49 @@ andava spostato nel ramo amd64, altrimenti avrebbe ritrascinato `libva` per dipe
 rimozione. Su arm64 restano solo strumenti di diagnosi — `v4l-utils`, `gstreamer1.0-tools`, `raspi-utils` —
 che non sono driver.
 
+## Verifica del 7 agosto: codec, accelerazione del browser, e una cache che mentiva
+
+**Il motore di riproduzione è Chromium, non GStreamer.** Il manager ha `PyChromeDevTools` e nessun CEF:
+pilota il browser via DevTools protocol, e `qt6-multimedia` non è nemmeno installato. Quindi codec e
+accelerazione che decidono la resa sono quelli di Chromium — lo stack GStreamer dell'immagine conta molto
+meno di quanto la lista dei pacchetti suggerisca.
+
+**Codec, misurati interrogando il browser** (`MediaSource.isTypeSupported`), non dedotti: H.264, AAC, MP3,
+VP9, AV1, Opus tutti supportati. **HEVC no.**
+
+**L'accelerazione video non era attiva.** Chromium su Linux la tiene spenta di default; l'immagine aveva
+solo `--enable-gpu-rasterization` (default Debian), che copre il compositing e non il video. Un H.264 1080p
+veniva decodificato in CPU su una scheda con un decoder hardware fermo. Ora `/etc/chromium.d/50-unitotem-accel`
+(il wrapper Debian legge quella directory, quindi il manager non va toccato) aggiunge
+`AcceleratedVideoDecodeLinuxGL` + variante zero-copy, più `VaapiVideoDecoder` **solo su amd64** — sul Pi non
+c'è driver VAAPI dietro e chiederlo rischierebbe di far rinunciare Chromium invece di ripiegare su V4L2.
+
+I nomi delle feature sono stati **letti dal binario**: cambiano tra versioni e uno sbagliato viene ignorato
+in silenzio, il che è indistinguibile dall'accelerazione non disponibile. stage2 fa fallire la build se il
+segnaposto non viene sostituito.
+
+### Il bug più grave di questa fase: la cache di build restituiva immagini sbagliate
+
+La prima pulizia VAAPI **non è mai entrata nell'immagine**, ed era già stata deployata sul Pi. `should_run`
+confrontava ogni stage solo con i propri sorgenti, **mai col tarball dello stage precedente**: stage1 si
+ricostruiva con la modifica, stage2 si saltava, stage3 assemblava da un tarball del giorno prima. L'unico
+indizio era il conteggio pacchetti identico. Corretto; dopo il fix il conteggio è sceso da 915 a 912, cioè
+i tre pacchetti effettivamente rimossi.
+
+È la quarta volta che la cache produce un'immagine plausibile e sbagliata, ma le prime tre erano granularità
+dei timestamp: questa era un **arco mancante nel grafo delle dipendenze**.
+
+### Altri due difetti trovati e chiusi
+
+- Il remount del bind `/var/lib/dpkg` mancava in `build-kiosk.sh` (avevo corretto solo `kiosk-update`):
+  rompeva la build nativa con un errore di lock di apt.
+- Una build interrotta lascia i bind di chroot dentro il rootfs, e il successivo `rm -rf` fallisce con
+  "Directory not empty" — messaggio che non nomina i mount. Il percorso nativo ora li smonta prima di
+  partire.
+
+Il ripiego automatico su qemu ha assorbito in silenzio **quattro** guasti diversi della build nativa: continua
+a produrre immagini valide, e nel farlo nasconde perché la strada veloce non parte mai.
+
 ## Non fatto / limiti noti
 
 | Gap | Note |
@@ -217,6 +260,9 @@ che non sono driver.
 | **Due fix sono in sorgente ma non nell'immagine sul Pi** | Il remount del bind dpkg in `kiosk-update` e lo sha256 batch. Verificati su hardware copiando gli script a mano; entrano in un'immagine solo alla prossima build. Stessa proprietà di ritardo di un giro di sempre. |
 | `iso/installer.sh` è disallineato dal repo | Indipendente da questo lavoro: installa `chromium-flags-amd64`, che non esiste più in `kiosk/files/`. Con `set -euo pipefail` l'installer si fermerebbe lì. Non è nella pipeline di `build-kiosk.sh`, quindi non blocca nulla oggi. |
 | `unitotem-manager.service` in crash-loop sul Pi | `status=1/FAILURE` a ripetizione, preesistente e non toccato da questo lavoro. Lo schermo resta nero dopo Xorg. |
+| **HEVC non riproducibile** | Chromium non ha `PlatformHEVCDecoderSupport` compilata e GStreamer non espone `v4l2slh265dec`: il decoder HEVC del Pi 4 (`/dev/video19`) resta irraggiungibile da entrambe le strade. Servirebbe una build diversa di Chromium. |
+| **Accelerazione: cablaggio verificato, resa no** | I flag sono assemblati correttamente dal wrapper, ma non ho riprodotto un video misurando l'uso della CPU. Manca la prova che il decoder hardware venga davvero ingaggiato. |
+| `avdemux_asf` assente | I decoder WMV/VC-1 ci sono via libav, ma il contenitore ASF non si apre. Irrilevante finché la riproduzione passa da Chromium. |
 | **Driver video amd64 verificati solo in loopback** | Nessuna prova su hardware reale con GPU NVIDIA, AMD o ARC: la verifica dice che i pezzi sono nell'immagine, non che guidano lo schermo. |
 | Schede NVIDIA pre-Maxwell senza driver | Conseguenza accettata del proprietario, che blacklista nouveau. Servirebbe una variante d'immagine o una blacklist condizionata. |
 | `MaxLevelStore=warning` limita cosa viene salvato | Ora che i log persistono, vale la pena rivedere la soglia: `info`/`notice` non finiscono su disco, quindi parte della cronologia di un guasto manca comunque. Scelta deliberata per l'usura della SD, ma da ripesare con l'overlay attivo. |
