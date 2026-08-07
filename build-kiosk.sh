@@ -192,9 +192,21 @@ for ARCH in ${ARCHES}; do
         case "$stage_num" in
             1|2) extra_deps=("${DIR}/kiosk/files"/* "${DIR}/deploy/ota-engine.sh") ;;
         esac
+        # The previous stage's tarball is this stage's actual input, and it was
+        # missing from this list. The consequence was not theoretical: stage1
+        # was rebuilt with a changed package set, stage2 saw none of its own
+        # sources change and skipped, so stage3 assembled the image from a
+        # stage2 tarball built the day before - and the "cleaned" image still
+        # contained everything the change had removed. Nothing in the log said
+        # so; the package count being identical was the only hint.
+        local prev_tarball=""
+        if [ "$stage_num" -gt 0 ]; then
+            prev_tarball="${DIR}/work/${ARCH}/stage$((stage_num - 1)).tar.gz"
+        fi
         local dep newest_dep=""
         for dep in "${DIR}/kiosk/stage${stage_num}"*.sh "${DIR}/kiosk/common.sh" \
-                   "${extra_deps[@]}" "${DIR}/Dockerfile.kiosk"; do
+                   "${extra_deps[@]}" "${DIR}/Dockerfile.kiosk" \
+                   ${prev_tarball:+"$prev_tarball"}; do
             [ -e "$dep" ] || continue
             if [ -z "$newest_dep" ] || [ "$dep" -nt "$newest_dep" ]; then newest_dep="$dep"; fi
         done
