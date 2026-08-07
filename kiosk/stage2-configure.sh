@@ -226,6 +226,27 @@ install -m 644 /kiosk/files/iptables-firewall.service \
 install -m 750 /kiosk/files/iptables-firewall.sh \
     "${ROOTFS}/sbin/iptables-firewall.sh"
 
+# ---------- Chromium: hardware video decode ----------
+# Debian's chromium wrapper sources /etc/chromium.d/*, so the image can set
+# this without the manager knowing - it launches the browser over the DevTools
+# protocol and passes no acceleration flags of its own.
+#
+# The VAAPI feature is amd64-only on purpose. On a Pi there is no VAAPI driver
+# behind it, and asking Chromium for a decoder that cannot initialise risks it
+# giving up on acceleration rather than falling through to the V4L2 path that
+# does work there.
+if [ "$ARCH" = "amd64" ]; then
+    ACCEL_FEATURES="AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,VaapiVideoDecoder"
+else
+    ACCEL_FEATURES="AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL"
+fi
+mkdir -p "${ROOTFS}/etc/chromium.d"
+sed "s/@UNITOTEM_ACCEL_FEATURES@/${ACCEL_FEATURES}/" /kiosk/files/chromium-accel \
+    > "${ROOTFS}/etc/chromium.d/50-unitotem-accel"
+chmod 644 "${ROOTFS}/etc/chromium.d/50-unitotem-accel"
+grep -q '@UNITOTEM_ACCEL_FEATURES@' "${ROOTFS}/etc/chromium.d/50-unitotem-accel" \
+    && { echo "ERRORE: placeholder delle feature Chromium non sostituito" >&2; exit 1; }
+
 install -m 644 /kiosk/files/kiosk-update-mode.service \
     "${ROOTFS}/etc/systemd/system/kiosk-update-mode.service"
 
