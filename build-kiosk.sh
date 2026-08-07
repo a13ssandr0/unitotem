@@ -68,6 +68,14 @@ build_natively_on_pi() {
         ln -sfn '${PI_BUILD_BASE}/deploy' /deploy" \
         || { echo "[arm64] impossibile preparare l'albero di build sul Pi" >&2; return 1; }
 
+    # An interrupted build leaves stage2's chroot bind mounts (proc, sys, dev)
+    # inside the rootfs, and stage0's `rm -rf "${ROOTFS}"` then fails with
+    # "Directory not empty" - a message that mentions nothing about mounts.
+    # The native build gives up, qemu takes over, and the only trace is a line
+    # in a log nobody reads. Deepest first, lazily, best effort.
+    _pi_ssh "awk -v b='${PI_BUILD_BASE}' 'index(\$2, b)==1 {print \$2}' /proc/mounts \
+        | sort -r | xargs -r -n1 umount -lf" >/dev/null 2>&1 || true
+
     echo "[arm64] Sincronizzo i sorgenti sul Pi..."
     _pi_rsync -r --delete "${DIR}/kiosk/" "${PI_HOST}:${PI_BUILD_BASE}/kiosk/"
     _pi_rsync "${DIR}/deploy/ota-engine.sh" "${PI_HOST}:${PI_BUILD_BASE}/kiosk/files/ota-engine.sh"
