@@ -50,9 +50,10 @@ timeout sul caso peggiore. Misurato su Raspberry Pi 4: **~1m20s alla prima esecu
 tempo è quasi tutto I/O: la CPU usata resta sotto i 30 s in entrambi i casi. Non dare per scontato il caso
 caldo: la prima chiamata dopo l'avvio del dispositivo è proprio quella che un'interfaccia fa per prima.
 
-Un dettaglio utile a chi dimensiona i timeout: la prima versione impiegava **1m31s** perché calcolava lo
-sha256 con un processo per file (3.043 fork). Il costo era tutto lì, non nella lettura del disco. Se un
-domani il rapporto tornasse a essere lento, è il primo posto dove guardare.
+Nota storica, per non ripercorrere la stessa strada: una prima versione era lenta **anche a cache calda**
+(1m31s) perché calcolava lo sha256 con un processo per file, 3.043 fork. Quel costo è stato eliminato. Se
+un domani il caso caldo tornasse sopra i 15 s, il fork per file è il primo posto dove guardare; se invece a
+essere lenta è solo la prima esecuzione, è la cache fredda ed è normale.
 
 **Avanzamento**: con `OTA_CHANGES_PROGRESS=1` nell'ambiente, la fase corrente viene scritta come singola
 riga di testo in `/run/unitotem-ota-changes.progress`. È pensato per una barra di stato, non per essere
