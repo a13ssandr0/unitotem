@@ -460,6 +460,23 @@ EOF
 # DATA non in fstab: montata dall'initramfs hook, persiste dopo switch_root
 ```
 
+> **`/var/tmp` is a 64 MiB tmpfs, and that breaks `mkinitramfs`.** Any operation
+> that regenerates the initramfs — installing or reconfiguring a `linux-image-*`
+> package, installing a DKMS driver — builds its staging tree under `/var/tmp`
+> and dies part-way through with `No space left on device`, naming only whichever
+> file it happened to be copying and never the tmpfs. The kernel package is then
+> left unconfigured and `dpkg` stays wedged until it is retried. Point `TMPDIR`
+> at the DATA partition first:
+>
+> ```bash
+> mkdir -p /mnt/data/tmp
+> export TMPDIR=/mnt/data/tmp
+> dpkg --configure -a
+> ```
+>
+> Being a tmpfs, `/var/tmp` is also empty after every reboot, so nothing meant to
+> survive one belongs there.
+
 ---
 
 ## 11. Pacchetti sistema base
