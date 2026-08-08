@@ -253,6 +253,37 @@ dei timestamp: questa era un **arco mancante nel grafo delle dipendenze**.
 Il ripiego automatico su qemu ha assorbito in silenzio **quattro** guasti diversi della build nativa: continua
 a produrre immagini valide, e nel farlo nasconde perché la strada veloce non parte mai.
 
+## Verifica dell'8 agosto: amd64 su Debian 13 (trixie)
+
+L'immagine amd64 era su **oldstable**, e l'impalcatura `bookworm-backports` costruita il giorno prima
+esisteva solo per compensarlo. Su trixie quegli stessi pacchetti arrivano da stable, alla stessa versione
+o più recenti, quindi l'impalcatura è stata rimossa invece che trascinata avanti.
+
+| | bookworm + backports | trixie (ora) |
+|---|---|---|
+| kernel | 6.12.95 | **6.12.101** |
+| Mesa | 25.0.7 | 25.0.7 |
+| NVIDIA | 535.261 | **550.163** |
+| Intel media (ARC) | 23.1.1 | **25.2.3** |
+
+DKMS di NVIDIA 550.163.01 compilato contro il 6.12.101 di trixie, `unitotem-manager 2.3.0` installato
+senza errori. Loopback **98/98**, con controlli espliciti che il codename dell'immagine e le sue
+`sources.list` coincidano e che non sopravviva alcuna lista backports. Immagine da 1057 a **1072 MiB**.
+
+**arm64 resta di proposito su bookworm.** Ci guadagnerebbe poco: l'archivio Raspberry Pi spedisce già un
+kernel 6.12 lì, quindi il problema che ha forzato la mano ad amd64 non si pone. E il rischio aperto del
+salto è l'ambiente Python del manager, oggi 3.11, che su trixie incontrerebbe 3.13: tenere il Pi dov'è
+lascia un dispositivo di riferimento funzionante mentre quel punto si chiarisce nel progetto del manager.
+
+La suite ora viene da `$RELEASE` ovunque, anche nelle `sources.list` che finiscono dentro l'immagine. Con
+due architetture su due release, una suite cablata avrebbe fatto il bootstrap di una base puntando apt
+all'altra — disallineamento che salta fuori molto dopo, come dipendenze irrisolvibili o come apt che
+propone un mezzo aggiornamento al primo `kiosk-update enter`.
+
+Nota di percorso: la prima build si è incastrata dentro `debootstrap` (log fermo 15 minuti, shell in
+`wait4` senza figli). Un `debootstrap trixie` pulito nello stesso container riusciva, quindi era uno stallo
+di rete transitorio: ripetuta, è andata.
+
 ## Non fatto / limiti noti
 
 | Gap | Note |
@@ -260,6 +291,8 @@ a produrre immagini valide, e nel farlo nasconde perché la strada veloce non pa
 | **Due fix sono in sorgente ma non nell'immagine sul Pi** | Il remount del bind dpkg in `kiosk-update` e lo sha256 batch. Verificati su hardware copiando gli script a mano; entrano in un'immagine solo alla prossima build. Stessa proprietà di ritardo di un giro di sempre. |
 | `iso/installer.sh` è disallineato dal repo | Indipendente da questo lavoro: installa `chromium-flags-amd64`, che non esiste più in `kiosk/files/`. Con `set -euo pipefail` l'installer si fermerebbe lì. Non è nella pipeline di `build-kiosk.sh`, quindi non blocca nulla oggi. |
 | `unitotem-manager.service` in crash-loop sul Pi | `status=1/FAILURE` a ripetizione, preesistente e non toccato da questo lavoro. Lo schermo resta nero dopo Xorg. |
+| **Immagine trixie mai avviata** | Costruita e verificata in loopback (98/98), ma nessun avvio reale: non ho hardware amd64 su cui provarla, quindi trixie è dimostrata come immagine, non come sistema funzionante. |
+| **Il manager sotto Python 3.13 non è provato** | Il pacchetto si installa su trixie, ma che il suo codice giri sotto 3.13 lo si saprà solo avviandolo. È la ragione per cui arm64 non è stata spostata. |
 | **HEVC non riproducibile** | Chromium non ha `PlatformHEVCDecoderSupport` compilata e GStreamer non espone `v4l2slh265dec`: il decoder HEVC del Pi 4 (`/dev/video19`) resta irraggiungibile da entrambe le strade. Servirebbe una build diversa di Chromium. |
 | **Accelerazione: cablaggio verificato, resa no** | I flag sono assemblati correttamente dal wrapper, ma non ho riprodotto un video misurando l'uso della CPU. Manca la prova che il decoder hardware venga davvero ingaggiato. |
 | `avdemux_asf` assente | I decoder WMV/VC-1 ci sono via libav, ma il contenitore ASF non si apre. Irrilevante finché la riproduzione passa da Chromium. |
