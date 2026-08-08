@@ -16,32 +16,28 @@ install_policy_rc
 
 # ---------- APT sources ----------
 
-cat > "${ROOTFS}/etc/apt/sources.list" << 'EOF'
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
-deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
+# Written from $RELEASE rather than hardcoded: the two architectures are on
+# different Debian releases (see kiosk/common.sh for why), and a hardcoded
+# suite here would have silently bootstrapped one base and then pointed apt at
+# the other - a mismatch that only shows up much later, as unresolvable
+# dependencies deep in a stage.
+cat > "${ROOTFS}/etc/apt/sources.list" << EOF
+deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security ${RELEASE}-security main contrib non-free non-free-firmware
 EOF
 
 if [ "$ARCH" = "arm64" ]; then
     curl -fsSL https://archive.raspberrypi.org/debian/raspberrypi.gpg.key \
         | gpg --dearmor > "${ROOTFS}/etc/apt/trusted.gpg.d/raspberrypi.gpg"
-    echo "deb http://archive.raspberrypi.org/debian/ bookworm main" \
+    echo "deb http://archive.raspberrypi.org/debian/ ${RELEASE} main" \
         > "${ROOTFS}/etc/apt/sources.list.d/raspi.list"
-else
-    # backports, amd64 only: this image has to drive whatever GPU the machine
-    # it is installed on happens to have, and bookworm cannot do that for
-    # recent hardware. Intel ARC (DG2) is the clearest case - on the 6.1
-    # kernel it sits behind i915.force_probe and Mesa 22.3 barely handles it,
-    # so "supported" would have been true only on paper. Backports carries
-    # kernel 6.12, Mesa 25.0 and 2025 firmware, which also helps RDNA3 and
-    # recent Intel iGPUs.
-    #
-    # Adding the suite does not change anything on its own: backports is
-    # NotAutomatic (priority 100), so nothing is pulled from it unless asked
-    # for by name with -t. Every such request below is deliberate.
-    echo "deb http://deb.debian.org/debian bookworm-backports main contrib non-free non-free-firmware" \
-        > "${ROOTFS}/etc/apt/sources.list.d/backports.list"
 fi
+# No backports entry any more. amd64 used to assemble its GPU support out of
+# bookworm-backports because bookworm's own kernel and Mesa were too old for
+# recent hardware; on trixie every one of those packages comes from stable, at
+# the same version or newer, so the scaffolding is gone rather than carried
+# along out of habit.
 
 # UniTotem Manager repository
 curl -fsSL https://a13ssandr0.github.io/unitotem-manager/KEY.gpg \
@@ -54,13 +50,15 @@ chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get update
 # ---------- Kernel + firmware + bootloader ----------
 
 if [ "$ARCH" = "amd64" ]; then
-    # Kernel and firmware from backports (6.12 instead of 6.1, firmware
-    # 2025-04 instead of 2023-02). Required for Intel ARC to be driven at all,
-    # and it is the same firmware package set that carries recent AMD and
-    # Intel blobs. linux-headers-amd64 has to come from the same suite or the
-    # NVIDIA DKMS build below has nothing matching to build against.
+    # Kernel 6.12 and 2025 firmware, straight from trixie - the reason this
+    # architecture is on trixie at all (see kiosk/common.sh). On bookworm the
+    # same versions had to be assembled out of backports because Intel ARC
+    # cannot be driven by a 6.1 kernel.
+    #
+    # linux-headers-amd64 is here so the NVIDIA DKMS build later in this file
+    # has matching headers; it is deliberately kept in the shipped image, see
+    # the note beside that build.
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        -t bookworm-backports \
         linux-image-amd64 \
         linux-headers-amd64 \
         firmware-linux \
@@ -151,11 +149,11 @@ if [ "$ARCH" = "amd64" ]; then
     # built-in modesetting, which is why there is no xserver-xorg-video-intel
     # here - that driver is legacy and hurts on anything recent).
 
-    # Mesa from backports: 25.0 instead of 22.3. This is what actually makes
-    # Intel ARC work (iris + ANV for DG2) and it materially improves RDNA3.
-    # Upgrades the versions the common block above already installed.
+    # Mesa 25.0 from trixie: this is what actually makes Intel ARC work (iris +
+    # ANV for DG2) and it materially improves RDNA3. mesa-vulkan-drivers and
+    # mesa-va-drivers are not in the shared block above, so they are named
+    # here rather than being a redundant reinstall.
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        -t bookworm-backports \
         libgl1-mesa-dri mesa-vulkan-drivers mesa-va-drivers mesa-utils
 
     # Intel, including ARC. intel-media-va-driver-non-free is the iHD driver
@@ -170,9 +168,7 @@ if [ "$ARCH" = "amd64" ]; then
     # AMD. The kernel driver is in-tree; what is needed from userspace is the
     # firmware (from backports, for RDNA3 and newer) and libdrm.
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        -t bookworm-backports firmware-amd-graphics
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        libdrm-amdgpu1
+        firmware-amd-graphics libdrm-amdgpu1
 
     # NVIDIA, proprietary. Two consequences worth being explicit about:
     #

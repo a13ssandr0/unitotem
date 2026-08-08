@@ -2,7 +2,26 @@
 # Common functions and defaults for kiosk build stages
 
 ARCH="${ARCH:-amd64}"
-RELEASE="${RELEASE:-bookworm}"
+# Per-architecture on purpose, and asymmetric for a concrete reason rather
+# than tidiness. amd64 moved to trixie because bookworm could not drive recent
+# GPUs: kernel 6.1 hides Intel ARC behind i915.force_probe and Mesa 22.3 barely
+# handles it, so that image had been assembled out of bookworm-backports.
+# trixie ships all of it from stable - and newer (NVIDIA 550 rather than 535,
+# Intel media 25.2 rather than 23.1) - which removes the backports scaffolding
+# entirely.
+#
+# arm64 stays on bookworm and gains almost nothing from moving: the Raspberry
+# Pi archive already ships a 6.12 kernel there, so the problem that forced
+# amd64's hand never applied. The open risk is unitotem-manager's Python
+# environment, which runs on 3.11 today and would meet 3.13 on trixie; keeping
+# the Pi on bookworm keeps one known-working reference device while that is
+# settled in the manager's own project.
+if [ -z "${RELEASE:-}" ]; then
+    case "$ARCH" in
+        amd64) RELEASE=trixie ;;
+        *)     RELEASE=bookworm ;;
+    esac
+fi
 MIRROR="${MIRROR:-https://deb.debian.org/debian}"
 WORK_DIR="/work/${ARCH}"
 # Overridable because /tmp is only a sane place to build under Docker. On the

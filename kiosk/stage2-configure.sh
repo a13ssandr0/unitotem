@@ -115,10 +115,14 @@ fi
 # ---------- NetworkManager ----------
 
 mkdir -p "${ROOTFS}/etc/netplan"
-cat > "${ROOTFS}/etc/apt/sources.list" << 'EOF'
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
-deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
+# Same suite the image was actually built from - see kiosk/common.sh. Left
+# hardcoded this would point a running device's apt at a different release than
+# its own filesystem, which is the kind of thing that looks fine until someone
+# runs `kiosk-update enter` and apt starts proposing a half-upgrade.
+cat > "${ROOTFS}/etc/apt/sources.list" << EOF
+deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security ${RELEASE}-security main contrib non-free non-free-firmware
 EOF
 
 mkdir -p "${ROOTFS}/etc/netplan"

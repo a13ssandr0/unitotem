@@ -210,13 +210,23 @@ check "timer apt automatici mascherati" \
 check "kiosk-update ferma i servizi reali, non sway" \
     bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/kiosk-update && ! grep -qE '^[^#]*pkill -x sway' /mnt/newroot/usr/local/bin/kiosk-update"
 
+# La suite dell'immagine e le sue sources.list devono coincidere: un'immagine
+# costruita su trixie che punta apt a bookworm sembra sana finche' qualcuno non
+# entra in modo aggiornamento e apt propone un mezzo downgrade.
+check "l'immagine amd64 e' Debian 13 (trixie)" \
+    grep -q "VERSION_CODENAME=trixie" /mnt/newroot/etc/os-release
+check "le sources.list dell'immagine puntano a trixie, non a bookworm" \
+    bash -c "grep -q ' trixie ' /mnt/newroot/etc/apt/sources.list && ! grep -q bookworm /mnt/newroot/etc/apt/sources.list"
+check "nessun residuo di backports nell'immagine" \
+    bash -c "! ls /mnt/newroot/etc/apt/sources.list.d/backports.list >/dev/null 2>&1"
+
 # --- Driver video amd64: l'immagine deve poter guidare NVIDIA, AMD e Intel
 # (ARC comprese) senza sapere in anticipo su che macchina finira'. Ognuno di
 # questi controlli corrisponde a un pezzo che, se manca, si scopre solo quando
 # il kiosk arriva su quell'hardware e resta a schermo nero.
-check "kernel dai backports (6.12+, serve alle ARC)" \
+check "kernel 6.12+ (serve alle ARC)" \
     bash -c 'ls /mnt/newroot/lib/modules/ | grep -qE "^6\\.(1[2-9]|[2-9][0-9])"'
-check "Mesa dai backports (25.x: iris/ANV per DG2, RDNA3)" \
+check "Mesa 25.x (iris/ANV per DG2, RDNA3)" \
     bash -c 'chroot /mnt/newroot dpkg-query -W -f="\${Version}" libgl1-mesa-dri 2>/dev/null | grep -q "^25\\."'
 check "modulo NVIDIA costruito da DKMS nell'immagine" \
     bash -c 'ls /mnt/newroot/lib/modules/*/updates/dkms/nvidia-current.ko* >/dev/null 2>&1'
