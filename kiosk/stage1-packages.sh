@@ -109,12 +109,25 @@ elif [ "$ARCH" = "arm64" ]; then
     # project already expects) and ships overlays/ including
     # vc4-kms-v3d(-pi5).dtbo, which kiosk/files/config.txt now enables. See
     # PLAN.md's arm64 follow-up section for the full history.
+    # raspberrypi-bootloader is gone as of trixie - it does not exist in the
+    # archive at all any more (apt: "Unable to locate package"), not renamed,
+    # not a transitional dummy. Checked what actually replaced it rather than
+    # guessing: raspi-firmware's own package description now reads "contains
+    # all the proprietary files necessary to boot a Raspberry Pi board", and
+    # its .deb ships bootcode.bin/fixup*.dat/start*.elf under
+    # /usr/lib/raspi-firmware/ - the exact payload raspberrypi-bootloader used
+    # to provide directly under /boot/. Its postinst copies them into
+    # /boot/firmware/ on every install (`cp -r /usr/lib/raspi-firmware/*
+    # /boot/firmware/`), and that copy is NOT skipped inside this chroot: the
+    # postinst's mountpoint guard has `if ischroot; then true # skip mount
+    # point check`, and chroot(1) is exactly how apt-get is invoked here. So
+    # raspi-firmware alone is a complete replacement, confirmed by reading its
+    # actual postinst rather than assuming the merge was safe.
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         linux-image-rpi-v8 \
         firmware-brcm80211 \
         firmware-linux \
         firmware-linux-nonfree \
-        raspberrypi-bootloader \
         raspi-firmware
 fi
 
