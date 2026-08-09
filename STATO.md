@@ -284,15 +284,59 @@ Nota di percorso: la prima build si è incastrata dentro `debootstrap` (log ferm
 `wait4` senza figli). Un `debootstrap trixie` pulito nello stesso container riusciva, quindi era uno stallo
 di rete transitorio: ripetuta, è andata.
 
+## Verifica del 9 agosto: arm64 su Debian 13 (trixie), avviato per davvero
+
+`amd64` era passata a trixie il giorno prima; arm64 era rimasta di proposito su bookworm perché sembrava
+bloccata dalla chiave dell'archivio Raspberry Pi. Non lo era: era l'URL legacy `raspberrypi.gpg.key` a
+essere non aggiornato (auto-firma SHA1, rifiutata da trixie dal 2026-02-01). Il pacchetto
+`raspberrypi-archive-keyring` — quello che usa pi-gen stesso, vendorizzato in questo repo — ha una versione
+per trixie (`2025.1+rpt1`) con la stessa chiave rifirmata SHA512. Confermato scaricandola e ispezionandola,
+non assunto. Vedi la memoria `verify-upstream-repos-first`, scritta proprio per questo episodio.
+
+Quattro bug distinti, ognuno trovato solo perché la build è stata portata fino in fondo invece di fermarsi
+al primo errore plausibile:
+
+1. **SIGPIPE sotto `pipefail`.** Il fetch del keyring usava `awk '...{print; exit}'` dentro una pipe con
+   `curl | gzip -dc`: l'uscita anticipata di awk manda SIGPIPE a monte, `pipefail` lo trasforma in fallimento
+   di pipeline, `set -e` interrompe lo script **senza alcun messaggio** — il valore era già stato catturato
+   correttamente. Riprodotto isolatamente (`seq 1 200000 | awk '/^100$/{print;exit}'` sotto `set -e
+   pipefail` esce 141 senza output) prima di toccare il codice.
+2. **`raspberrypi-bootloader` non esiste più su trixie**, non rinominato, nessun pacchetto di transizione.
+   Verificato leggendo il vero `postinst` di `raspi-firmware`: da trixie contiene lui stesso
+   `bootcode.bin`/`start*.elf`/`fixup*.dat` e li copia in `/boot/firmware/` — la riga `if ischroot; then
+   true # skip mount point check` conferma che lo fa anche dentro il nostro chroot di build.
+3. **L'initramfs non è uno stream compresso solo**: `mkinitramfs` concatena segmenti — un cpio grezzo
+   iniziale (hook di `raspi-firmware`, nuovo su trixie) seguito dal corpo compresso vero. Il controllo di
+   build-ability leggeva solo i primi byte, quindi vedeva sempre e solo il formato del segmento piccolo. Tre
+   tentativi prima di quello giusto: prima ho esteso il rilevamento a più formati per magic (ancora
+   sbagliato, stesso errore concettuale), poi sono passato a `unmkinitramfs` (lo strumento reale che il
+   kernel stesso userebbe), verificandolo però contro una riproduzione minimale che appiattiva tutto — e
+   quella riproduzione mentiva: il file vero (pacchetti completi: X11, Chromium, pipewire) produce
+   `early/`+`main/` con `/init` dentro `main/`. Scoperto tirando giù il file vero rimasto sul Pi dopo il
+   fallimento ed estraendolo lì, non ricostruendo un'approssimazione.
+4. **`build-kiosk.sh` non rimontava il bind di `/var/lib/dpkg`** per il percorso nativo — stessa asimmetria
+   già corretta in `kiosk-update`, mancata la prima volta perché è un secondo chiamante.
+
+**Risultato**: build nativa sul Pi, tutti e quattro gli stage senza ripiego su qemu. Loopback **136/136**.
+Deploy sul Pi riuscito, e il dispositivo è **tornato su con Debian 13, kernel 6.18.39, `running`, 0 unit
+fallite** — la prova che conta di più, perché il controllo di build-ability da solo dimostra che
+l'immagine è coerente, non che il kernel reale sa avviarla.
+
+`unitotem-manager` va ancora in crash-loop, ma **non per Python 3.13**: il traceback reale (catturato
+eseguendo il manager in foreground, perché journald non cattura il suo stdout/stderr) è
+`OSError: [Errno 30] Read-only file system: '/usr/share/unitotem-manager/static/uploaded'` — tenta un
+`makedirs` sotto ROOT, fuori da qualunque overlay (`/etc`, `/root`, `/var` sono scrivibili, `/usr` no). Bug
+dell'altro progetto, preesistente, non causato né risolto da questo lavoro; ora però con la causa esatta
+invece di un sintomo generico.
+
 ## Non fatto / limiti noti
 
 | Gap | Note |
 |---|---|
 | **Due fix sono in sorgente ma non nell'immagine sul Pi** | Il remount del bind dpkg in `kiosk-update` e lo sha256 batch. Verificati su hardware copiando gli script a mano; entrano in un'immagine solo alla prossima build. Stessa proprietà di ritardo di un giro di sempre. |
 | `iso/installer.sh` è disallineato dal repo | Indipendente da questo lavoro: installa `chromium-flags-amd64`, che non esiste più in `kiosk/files/`. Con `set -euo pipefail` l'installer si fermerebbe lì. Non è nella pipeline di `build-kiosk.sh`, quindi non blocca nulla oggi. |
-| `unitotem-manager.service` in crash-loop sul Pi | `status=1/FAILURE` a ripetizione, preesistente e non toccato da questo lavoro. Lo schermo resta nero dopo Xorg. |
-| **Immagine trixie mai avviata** | Costruita e verificata in loopback (98/98), ma nessun avvio reale: non ho hardware amd64 su cui provarla, quindi trixie è dimostrata come immagine, non come sistema funzionante. |
-| **Il manager sotto Python 3.13 non è provato** | Il pacchetto si installa su trixie, ma che il suo codice giri sotto 3.13 lo si saprà solo avviandolo. È la ragione per cui arm64 non è stata spostata. |
+| `unitotem-manager.service` in crash-loop sul Pi | Causa nota con precisione ora: `OSError` scrivendo sotto `/usr/share/...`, ROOT read-only e non overlaid. Bug del progetto manager, non di questo repo. |
+| **Immagine amd64 trixie mai avviata** | Costruita e verificata in loopback (98/98), ma nessun avvio reale: non ho hardware amd64 su cui provarla. arm64 su trixie invece **è** stata avviata (9 agosto), quindi il gap è ormai specifico ad amd64. |
 | **HEVC non riproducibile** | Chromium non ha `PlatformHEVCDecoderSupport` compilata e GStreamer non espone `v4l2slh265dec`: il decoder HEVC del Pi 4 (`/dev/video19`) resta irraggiungibile da entrambe le strade. Servirebbe una build diversa di Chromium. |
 | **Accelerazione: cablaggio verificato, resa no** | I flag sono assemblati correttamente dal wrapper, ma non ho riprodotto un video misurando l'uso della CPU. Manca la prova che il decoder hardware venga davvero ingaggiato. |
 | `avdemux_asf` assente | I decoder WMV/VC-1 ci sono via libav, ma il contenitore ASF non si apre. Irrilevante finché la riproduzione passa da Chromium. |
