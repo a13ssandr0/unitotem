@@ -262,12 +262,15 @@ Un singolo file funziona per entrambi i modelli senza script aggiuntivi.
 
 ```bash
 apt-get install -y \
-    linux-image-arm64 \
+    linux-image-rpi-v8 \
     firmware-brcm80211 \
     firmware-linux \
     firmware-linux-nonfree \
-    raspberrypi-bootloader \
     raspi-firmware
+# raspberrypi-bootloader no longer exists on trixie - raspi-firmware alone now
+# ships bootcode.bin/start*.elf/fixup*.dat and installs them into
+# /boot/firmware/ via its own postinst. See kiosk/stage1-packages.sh for the
+# full explanation.
 
 cat > /boot/firmware/config.txt << 'EOF'
 # Configurazioni comuni a tutti i modelli
