@@ -245,8 +245,37 @@ if [ "$ARCH" = "arm64" ]; then
     # through the three-concurrent-process pipe form intermittently came up
     # empty. The data was never corrupt; only the concurrent-pipe read of it
     # was unreliable, so the check no longer uses one.
-    zcat "$FWDIR/initramfs8" > /tmp/initramfs8-check.raw 2>/tmp/initramfs8-check.err \
-        || boot_assert_fail "$FWDIR/initramfs8: zcat fallito ($(cat /tmp/initramfs8-check.err))"
+    #
+    # Not gzip-only, same reasoning as kernel8.img above: trixie's
+    # initramfs-tools defaults to COMPRESS=zstd (bookworm was gzip), and
+    # forcing gzip here would fight upstream's own choice rather than verify
+    # what actually ships. What matters is whether the KERNEL can decompress
+    # it at boot - the Pi firmware only hands the blob to the kernel, it does
+    # not decompress the initramfs itself - and this is not assumed: the
+    # actual linux-image-6.18.39+rpt-rpi-v8 package for trixie was downloaded
+    # and its config confirmed CONFIG_RD_ZSTD=y alongside CONFIG_RD_GZIP=y.
+    # Detected by magic rather than by $RELEASE, so this keeps working
+    # whichever compressor a future initramfs-tools default picks.
+    # Each arm carries its own `|| boot_assert_fail`, not a shared check after
+    # the case statement: under this script's `set -e`, a failing command
+    # inside a matched case arm aborts the script right there, before any
+    # code after `esac` would run - the same silent-failure shape as the
+    # SIGPIPE bug fixed in kiosk/stage1-packages.sh's keyring fetch, and
+    # avoided here the same way, by never letting set -e see a bare failure.
+    initramfs_magic=$(dd if="$FWDIR/initramfs8" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    case "$initramfs_magic" in
+        1f8b*)
+            zcat "$FWDIR/initramfs8" > /tmp/initramfs8-check.raw 2>/tmp/initramfs8-check.err \
+                || boot_assert_fail "$FWDIR/initramfs8: zcat fallito ($(cat /tmp/initramfs8-check.err))" ;;
+        28b52ffd)
+            zstd -dc "$FWDIR/initramfs8" > /tmp/initramfs8-check.raw 2>/tmp/initramfs8-check.err \
+                || boot_assert_fail "$FWDIR/initramfs8: zstd -d fallito ($(cat /tmp/initramfs8-check.err))" ;;
+        fd377a58)
+            xz -dc "$FWDIR/initramfs8" > /tmp/initramfs8-check.raw 2>/tmp/initramfs8-check.err \
+                || boot_assert_fail "$FWDIR/initramfs8: xz -d fallito ($(cat /tmp/initramfs8-check.err))" ;;
+        *)
+            boot_assert_fail "$FWDIR/initramfs8: formato di compressione non riconosciuto (magic: ${initramfs_magic})" ;;
+    esac
     cpio -t < /tmp/initramfs8-check.raw > /tmp/initramfs8-check.list 2>/dev/null \
         || boot_assert_fail "$FWDIR/initramfs8: cpio -t fallito nel leggerlo"
     grep -qE "^init$|sbin/init$" /tmp/initramfs8-check.list \

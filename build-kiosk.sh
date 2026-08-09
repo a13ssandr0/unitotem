@@ -104,7 +104,7 @@ build_natively_on_pi() {
         { mountpoint -q /var/lib/dpkg && mount -o remount,rw /var/lib/dpkg; } || true; \
         apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             debootstrap qemu-user-static dosfstools e2fsprogs gdisk parted kpartx util-linux \
-            xz-utils pigz curl ca-certificates wget gnupg2 rsync git partclone \
+            xz-utils pigz zstd curl ca-certificates wget gnupg2 rsync git partclone \
             device-tree-compiler initramfs-tools-core cpio >/dev/null; \
         for s in stage0-bootstrap.sh stage1-packages.sh stage1-recovery-initrd.sh \
                  stage2-configure.sh stage3-image.sh; do \
