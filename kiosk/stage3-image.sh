@@ -259,12 +259,18 @@ if [ "$ARCH" = "arm64" ]; then
     rm -rf /tmp/initramfs8-check
     unmkinitramfs "$FWDIR/initramfs8" /tmp/initramfs8-check > /tmp/initramfs8-check.log 2>&1 \
         || boot_assert_fail "$FWDIR/initramfs8: unmkinitramfs fallito ($(cat /tmp/initramfs8-check.log))"
-    # Flat layout, /init directly under the target dir - confirmed by actually
-    # extracting the real early-hook-plus-compressed-main file this project
-    # produces (twice, reproducibly), not assumed from how other projects'
-    # initramfs images might be laid out.
-    [ -x /tmp/initramfs8-check/init ] \
-        || boot_assert_fail "$FWDIR/initramfs8 non contiene /init"
+    # Two valid layouts, not one: unmkinitramfs splits a genuinely
+    # multi-segment initramfs into early/ and main/ subdirectories, with
+    # /init inside main/ - confirmed by pulling the ACTUAL file this build
+    # produced (with the real, full package set: X11, chromium, pipewire, not
+    # a minimal stand-in) straight off the Pi and extracting it there. A
+    # smaller reproduction built earlier from just the kernel + raspi-firmware
+    # had unmkinitramfs flatten everything with /init at the top instead -
+    # different real behavior for a different real input, not one right
+    # answer and one wrong guess, so both are checked rather than picking the
+    # one that happened to match the most recent test.
+    [ -x /tmp/initramfs8-check/init ] || [ -x /tmp/initramfs8-check/main/init ] \
+        || boot_assert_fail "$FWDIR/initramfs8 non contiene /init (ne' in cima ne' in main/)"
     rm -rf /tmp/initramfs8-check /tmp/initramfs8-check.log
 
     grep -q "^kernel=" "$FWDIR/config.txt" || boot_assert_fail "config.txt: manca kernel="
