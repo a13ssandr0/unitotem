@@ -41,8 +41,17 @@ if [ "$ARCH" = "arm64" ]; then
     # with SHA512. Fetched per-$RELEASE from the suite's own Packages index
     # rather than a hardcoded filename, so this does not go stale again the
     # same way when Raspberry Pi ships the next re-sign.
+    # No early `exit` in the awk program, on purpose: under set -e/pipefail
+    # (both active in this script) awk exiting while curl/gzip are still
+    # writing to the pipe delivers them a SIGPIPE, and pipefail turns that
+    # into a failed pipeline even though $RPI_KEYRING_DEB had already been
+    # captured correctly - the script aborted right after this line with no
+    # error text at all, reproduced in isolation and confirmed as the actual
+    # cause of a native-build failure that otherwise looked silent. The `f`
+    # flag is reset on every "Package: " line instead, so a later stanza
+    # cannot be mistaken for a match without needing an early exit to prevent it.
     RPI_KEYRING_DEB=$(curl -fsSL "https://archive.raspberrypi.org/debian/dists/${RELEASE}/main/binary-${ARCH}/Packages.gz" \
-        | gzip -dc | awk '/^Package: raspberrypi-archive-keyring$/{f=1} f&&/^Filename:/{print $2; exit}')
+        | gzip -dc | awk '/^Package: /{f=($0=="Package: raspberrypi-archive-keyring")} f&&/^Filename:/{print $2}')
     [ -n "$RPI_KEYRING_DEB" ] || { echo "ERRORE: raspberrypi-archive-keyring non trovato per ${RELEASE}" >&2; exit 1; }
     curl -fsSL "https://archive.raspberrypi.org/debian/${RPI_KEYRING_DEB}" -o /tmp/rpi-keyring.deb
     dpkg-deb -x /tmp/rpi-keyring.deb /tmp/rpi-keyring
