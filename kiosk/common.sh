@@ -2,26 +2,24 @@
 # Common functions and defaults for kiosk build stages
 
 ARCH="${ARCH:-amd64}"
-# Per-architecture on purpose, and asymmetric for a concrete reason rather
-# than tidiness. amd64 moved to trixie because bookworm could not drive recent
-# GPUs: kernel 6.1 hides Intel ARC behind i915.force_probe and Mesa 22.3 barely
-# handles it, so that image had been assembled out of bookworm-backports.
-# trixie ships all of it from stable - and newer (NVIDIA 550 rather than 535,
-# Intel media 25.2 rather than 23.1) - which removes the backports scaffolding
-# entirely.
+# Both architectures on trixie now. amd64 moved first because bookworm could
+# not drive recent GPUs at all: kernel 6.1 hides Intel ARC behind
+# i915.force_probe and Mesa 22.3 barely handles it, so that image had been
+# assembled out of bookworm-backports before this. arm64 was believed blocked
+# on trixie - the Raspberry Pi archive's raspberrypi.gpg.key is a fixed,
+# unmaintained artifact still self-signed with SHA1, which trixie's OpenPGP
+# policy (SHA1 refused since 2026-02-01) rejects outright. That was true of
+# the URL, not of Raspberry Pi's own current release: pi-gen itself trusts the
+# packaged raspberrypi-archive-keyring rather than that URL (see this repo's
+# vendored copy, stage0/00-configure-apt), and the copy published for trixie
+# re-signs the same key with SHA512 - confirmed by downloading and inspecting
+# it, not assumed. kiosk/stage1-packages.sh now fetches that packaged keyring
+# instead of the stale URL.
 #
-# arm64 stays on bookworm and gains almost nothing from moving: the Raspberry
-# Pi archive already ships a 6.12 kernel there, so the problem that forced
-# amd64's hand never applied. The open risk is unitotem-manager's Python
-# environment, which runs on 3.11 today and would meet 3.13 on trixie; keeping
-# the Pi on bookworm keeps one known-working reference device while that is
-# settled in the manager's own project.
-if [ -z "${RELEASE:-}" ]; then
-    case "$ARCH" in
-        amd64) RELEASE=trixie ;;
-        *)     RELEASE=bookworm ;;
-    esac
-fi
+# unitotem-manager's Python environment (3.11 today, 3.13 on trixie) is the
+# one thing this does not verify - the package installs, but nothing has
+# booted this image and run the manager under it yet.
+RELEASE="${RELEASE:-trixie}"
 MIRROR="${MIRROR:-https://deb.debian.org/debian}"
 WORK_DIR="/work/${ARCH}"
 # Overridable because /tmp is only a sane place to build under Docker. On the

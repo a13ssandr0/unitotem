@@ -28,8 +28,27 @@ deb http://security.debian.org/debian-security ${RELEASE}-security main contrib 
 EOF
 
 if [ "$ARCH" = "arm64" ]; then
-    curl -fsSL https://archive.raspberrypi.org/debian/raspberrypi.gpg.key \
-        | gpg --dearmor > "${ROOTFS}/etc/apt/trusted.gpg.d/raspberrypi.gpg"
+    # NOT the legacy raspberrypi.gpg.key URL: that file is a fixed artifact
+    # Raspberry Pi stopped updating, still self-signed with SHA1, which
+    # Debian's OpenPGP policy has refused since 2026-02-01 - trixie's apt
+    # rejected the repo outright ("Sub-process /usr/bin/sqv returned an error
+    # code (1) ... SHA1 is not considered secure"). The packaged
+    # raspberrypi-archive-keyring is what pi-gen itself trusts (see
+    # stage0/00-configure-apt/01-packages in the vendored copy in this repo)
+    # and IS kept current: the copy published for trixie
+    # (raspberrypi-archive-keyring_2025.1+rpt1_all.deb, confirmed by
+    # downloading and inspecting it) carries the same signing key re-signed
+    # with SHA512. Fetched per-$RELEASE from the suite's own Packages index
+    # rather than a hardcoded filename, so this does not go stale again the
+    # same way when Raspberry Pi ships the next re-sign.
+    RPI_KEYRING_DEB=$(curl -fsSL "https://archive.raspberrypi.org/debian/dists/${RELEASE}/main/binary-${ARCH}/Packages.gz" \
+        | gzip -dc | awk '/^Package: raspberrypi-archive-keyring$/{f=1} f&&/^Filename:/{print $2; exit}')
+    [ -n "$RPI_KEYRING_DEB" ] || { echo "ERRORE: raspberrypi-archive-keyring non trovato per ${RELEASE}" >&2; exit 1; }
+    curl -fsSL "https://archive.raspberrypi.org/debian/${RPI_KEYRING_DEB}" -o /tmp/rpi-keyring.deb
+    dpkg-deb -x /tmp/rpi-keyring.deb /tmp/rpi-keyring
+    install -Dm644 /tmp/rpi-keyring/usr/share/keyrings/raspberrypi-archive-keyring.gpg \
+        "${ROOTFS}/etc/apt/trusted.gpg.d/raspberrypi.gpg"
+    rm -rf /tmp/rpi-keyring.deb /tmp/rpi-keyring
     echo "deb http://archive.raspberrypi.org/debian/ ${RELEASE} main" \
         > "${ROOTFS}/etc/apt/sources.list.d/raspi.list"
 fi
