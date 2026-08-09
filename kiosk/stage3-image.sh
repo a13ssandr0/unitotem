@@ -235,52 +235,37 @@ if [ "$ARCH" = "arm64" ]; then
     done
 
     [ -s "$FWDIR/initramfs8" ] || boot_assert_fail "$FWDIR/initramfs8 assente o vuoto"
-    # Decompress to a regular file first, then inspect that - not a live
-    # `zcat | cpio -t | grep -q` pipe. Confirmed by hand that the pipe form
-    # can report "no /init" on a file that is actually fine: pulling the
-    # same freshly-written initramfs8 (87MB compressed / 257MB raw) back out
-    # via an independent remount and inspecting it sequentially (decompress
-    # to a file, then cpio -t on that file) found /init cleanly and listed
-    # all 2602 entries, both times, repeatably - while the same bytes read
-    # through the three-concurrent-process pipe form intermittently came up
-    # empty. The data was never corrupt; only the concurrent-pipe read of it
-    # was unreliable, so the check no longer uses one.
+    # unmkinitramfs, not a hand-rolled decompress-then-cpio-t: an initramfs is
+    # not necessarily one compressed stream. mkinitramfs concatenates segments
+    # - an early, uncompressed cpio (hooks that must run before the main
+    # archive; on trixie/arm64 this is raspi-firmware's own early hook,
+    # confirmed by reproducing the exact build in a clean container and
+    # watching mkinitramfs -v name it) followed by the real, compressed main
+    # archive. Reading only the first few bytes - what this check used to do,
+    # by magic number, gzip-only at first and then extended to try zstd/xz -
+    # was checking the small early segment's format, never the compressed
+    # body, and would keep breaking at the next hook or compressor default
+    # change. unmkinitramfs already contains the real concatenation-and-
+    # multi-codec logic (gzip/zstd/xz/lz4/raw, any number of segments) -
+    # written once, matching what the kernel's own initramfs unpacker does at
+    # actual boot, not reimplemented here to chase it.
     #
-    # Not gzip-only, same reasoning as kernel8.img above: trixie's
-    # initramfs-tools defaults to COMPRESS=zstd (bookworm was gzip), and
-    # forcing gzip here would fight upstream's own choice rather than verify
-    # what actually ships. What matters is whether the KERNEL can decompress
-    # it at boot - the Pi firmware only hands the blob to the kernel, it does
-    # not decompress the initramfs itself - and this is not assumed: the
-    # actual linux-image-6.18.39+rpt-rpi-v8 package for trixie was downloaded
-    # and its config confirmed CONFIG_RD_ZSTD=y alongside CONFIG_RD_GZIP=y.
-    # Detected by magic rather than by $RELEASE, so this keeps working
-    # whichever compressor a future initramfs-tools default picks.
-    # Each arm carries its own `|| boot_assert_fail`, not a shared check after
-    # the case statement: under this script's `set -e`, a failing command
-    # inside a matched case arm aborts the script right there, before any
-    # code after `esac` would run - the same silent-failure shape as the
-    # SIGPIPE bug fixed in kiosk/stage1-packages.sh's keyring fetch, and
-    # avoided here the same way, by never letting set -e see a bare failure.
-    initramfs_magic=$(dd if="$FWDIR/initramfs8" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    case "$initramfs_magic" in
-        1f8b*)
-            zcat "$FWDIR/initramfs8" > /tmp/initramfs8-check.raw 2>/tmp/initramfs8-check.err \
-                || boot_assert_fail "$FWDIR/initramfs8: zcat fallito ($(cat /tmp/initramfs8-check.err))" ;;
-        28b52ffd)
-            zstd -dc "$FWDIR/initramfs8" > /tmp/initramfs8-check.raw 2>/tmp/initramfs8-check.err \
-                || boot_assert_fail "$FWDIR/initramfs8: zstd -d fallito ($(cat /tmp/initramfs8-check.err))" ;;
-        fd377a58)
-            xz -dc "$FWDIR/initramfs8" > /tmp/initramfs8-check.raw 2>/tmp/initramfs8-check.err \
-                || boot_assert_fail "$FWDIR/initramfs8: xz -d fallito ($(cat /tmp/initramfs8-check.err))" ;;
-        *)
-            boot_assert_fail "$FWDIR/initramfs8: formato di compressione non riconosciuto (magic: ${initramfs_magic})" ;;
-    esac
-    cpio -t < /tmp/initramfs8-check.raw > /tmp/initramfs8-check.list 2>/dev/null \
-        || boot_assert_fail "$FWDIR/initramfs8: cpio -t fallito nel leggerlo"
-    grep -qE "^init$|sbin/init$" /tmp/initramfs8-check.list \
+    # A previous version of this check also read a live
+    # `zcat | cpio -t | grep -q` pipe rather than a file, and that pipe form
+    # was independently confirmed unreliable - intermittently reporting no
+    # /init on a file that a sequential decompress-then-list of the exact same
+    # bytes read cleanly, repeatably. unmkinitramfs writes real files to a
+    # directory, sidestepping that class of problem too.
+    rm -rf /tmp/initramfs8-check
+    unmkinitramfs "$FWDIR/initramfs8" /tmp/initramfs8-check > /tmp/initramfs8-check.log 2>&1 \
+        || boot_assert_fail "$FWDIR/initramfs8: unmkinitramfs fallito ($(cat /tmp/initramfs8-check.log))"
+    # Flat layout, /init directly under the target dir - confirmed by actually
+    # extracting the real early-hook-plus-compressed-main file this project
+    # produces (twice, reproducibly), not assumed from how other projects'
+    # initramfs images might be laid out.
+    [ -x /tmp/initramfs8-check/init ] \
         || boot_assert_fail "$FWDIR/initramfs8 non contiene /init"
-    rm -f /tmp/initramfs8-check.raw /tmp/initramfs8-check.list /tmp/initramfs8-check.err
+    rm -rf /tmp/initramfs8-check /tmp/initramfs8-check.log
 
     grep -q "^kernel=" "$FWDIR/config.txt" || boot_assert_fail "config.txt: manca kernel="
     grep -q "^initramfs .* followkernel" "$FWDIR/config.txt" || boot_assert_fail "config.txt: manca 'initramfs ... followkernel'"
