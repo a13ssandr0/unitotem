@@ -295,7 +295,7 @@ def cmd_status(a, conf):
         out["pending_confirm"] = out["trial"]
         o = other_slot(cur)
         out["other_version"] = st[o].get("version")
-        out["rollback_available"] = bool(st[o].get("valid") and st[o].get("version") and not pid)
+        out["rollback_available"] = bool(st[o].get("valid") and st[o].get("confirmed") and not pid)
         out["armed"] = pend if (pend and pend.get("slot") != cur) else None
         try:
             out["default_slot"] = grubenv_get(conf, "saved_entry").replace("slot-", "") or None
@@ -435,7 +435,6 @@ def cmd_apply(a, conf):
     grubenv(conf, "set", f"next_entry=slot-{new}")
     set_last_result(conf, op="apply", result="armed", version=st[new]["version"], slot=new)
     if a.reboot:
-        print(json.dumps({"armed": True, "slot": new, "rebooting": True}) if a.json else "armed, rebooting", flush=True)
         subprocess.Popen(["systemd-run", "--on-active=3", "--quiet", "systemctl", "reboot"])
         return 0, {"armed": True, "slot": new, "rebooting": True}
     return 0, {"armed": True, "slot": new, "rebooting": False}
@@ -450,6 +449,8 @@ def confirm_now(conf):
     grubenv(conf, "unset", "next_entry")
     st = slots_state(conf)
     st[cur] = {"version": pend["version"], "valid": True, "prepared": True, "confirmed": True}
+    if pend.get("from") in st and st[pend["from"]].get("valid"):
+        st[pend["from"]]["confirmed"] = True
     write_state(conf, "slots.json", st)
     try: os.unlink(state_path(conf, "pending.json"))
     except OSError: pass
@@ -483,6 +484,13 @@ def cmd_boot_ok(a, conf):
         return 0, {"ab": False}
     pend = read_state(conf, "pending.json")
     if not pend:
+        # Plain boot: remember that this slot holds a system that has actually come up, which is what
+        # makes it a legitimate rollback target later (a freshly fetched slot is valid but never ran).
+        st = slots_state(conf)
+        ver = current_version(conf)
+        if not (st[cur].get("confirmed") and st[cur].get("version") == ver):
+            st[cur] = {"version": ver, "valid": True, "prepared": True, "confirmed": True}
+            write_state(conf, "slots.json", st)
         return 0, {"trial": False}
     if pend.get("slot") != cur:
         # We are on the old slot although a trial was armed: the trial slot did not come back.
