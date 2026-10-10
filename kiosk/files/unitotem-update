@@ -24,6 +24,7 @@ CONF_DEFAULTS = {
     "UPDATE_BOOTFS": "/boot/firmware",                       # Raspberry Pi: the FAT partition the firmware reads
     "UPDATE_BACKEND": "",                                    # "grub" | "rpi"; empty = detect
     "UPDATE_DT_BOOTLOADER": "/proc/device-tree/chosen/bootloader",  # exists on boards with the EEPROM bootloader (tryboot)
+    "UPDATE_CRASHPOINT": "",                                 # test hook: freeze at the named point (power-cut tests)
     "UPDATE_REBOOT_CMD": "",                                 # test hook: replaces the real reboot
     "UPDATE_DATA": "/mnt/data",
     "UPDATE_CMDLINE": "/proc/cmdline",
@@ -51,6 +52,20 @@ def load_conf():
         if "UNITOTEM_" + k in os.environ:
             conf[k] = os.environ["UNITOTEM_" + k]
     return conf
+
+
+def crashpoint(conf, name):
+    """Power-cut test hook. When UPDATE_CRASHPOINT names this point the process announces it on the serial
+    console and then blocks forever, so a test harness can kill the VM at exactly this moment and see what
+    the disk looks like. A no-op unless configured."""
+    if conf.get("UPDATE_CRASHPOINT") != name:
+        return
+    try:
+        with open("/dev/ttyS0", "w") as f: f.write(f"\nCRASHPOINT {name}\n")
+    except OSError:
+        pass
+    sys.stderr.write(f"CRASHPOINT {name}\n"); sys.stderr.flush()
+    time.sleep(10 ** 6)
 
 
 def vkey(v):
@@ -359,8 +374,10 @@ def import_whitelist(conf, new_slot, old_slot, plist):
                 if os.path.isdir(src) and not os.path.islink(src):
                     shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
                 else:
-                    if os.path.lexists(dst): os.unlink(dst)
-                    shutil.copy2(src, dst, follow_symlinks=False)
+                    # Copy beside, then rename: a power cut leaves the old file or the new one, never half.
+                    tmp = dst + ".unitotem-new"
+                    shutil.copy2(src, tmp, follow_symlinks=False)
+                    os.replace(tmp, dst)
                 n += 1
     return n
 
@@ -499,6 +516,7 @@ def do_fetch(a, conf):
             st[cur] = {"version": current_version(conf), "valid": True, "prepared": True, "confirmed": True}
             st[new] = {"version": None, "valid": False}
             write_state(conf, "slots.json", st)
+            crashpoint(conf, "fetch_after_invalidate")
             try: os.unlink(state_path(conf, "pending.json"))
             except OSError: pass
             base = conf["UPDATE_BASE_URL"].rstrip("/") + "/releases/latest/download/"
@@ -515,6 +533,7 @@ def do_fetch(a, conf):
                         if not chunk: break
                         h.update(chunk); done += len(chunk)
                         xz.stdin.write(chunk)
+                        if done * 2 >= total: crashpoint(conf, "fetch_mid_write")
                         if time.time() - last > 1:
                             last = time.time()
                             rate = done / max(last - t0, 1e-3)
@@ -528,12 +547,14 @@ def do_fetch(a, conf):
             xz.wait(); err = pc.communicate()[1].decode(errors="replace")
             if xz.returncode or pc.returncode:
                 raise Fail("write-failed", f"xz rc={xz.returncode} partclone rc={pc.returncode}: {err[-300:]}")
+            crashpoint(conf, "fetch_after_write")
             progress(conf, op="fetch", phase="verify", state="running", percent=100, bytes=done, total=total)
             if done != total or h.hexdigest() != part["sha256"]:
                 raise Fail("bad-checksum", "sha256/dimensione dell'asset scaricato non corrisponde al manifest")
             run_out("e2fsck", "-fn", dev)
             # partclone copies the label and UUID with the data: give this slot its own identity.
             run_out("tune2fs", "-L", label(new), "-U", "random", dev)
+            crashpoint(conf, "fetch_after_relabel")
             mnt = tempfile.mkdtemp(prefix="unitotem-slot-")
             run_out("mount", "-o", "ro", dev, mnt)
             try:
@@ -548,8 +569,10 @@ def do_fetch(a, conf):
                 imported = prepare_overlays(conf, new, cur, mnt)
             finally:
                 subprocess.run(["umount", mnt]); os.rmdir(mnt)
+            crashpoint(conf, "fetch_before_valid")
             st[new] = {"version": m["version"], "valid": True, "prepared": True}
             write_state(conf, "slots.json", st)
+            crashpoint(conf, "fetch_after_valid")
             set_last_result(conf, op="fetch", result="ok", version=m["version"], slot=new, etc_imported=imported)
             progress(conf, op="fetch", phase="arm", state="done", percent=100, version=m["version"])
             return 0, {"fetched": True, "version": m["version"], "slot": new, "etc_imported": imported}
@@ -583,6 +606,7 @@ def cmd_apply(a, conf):
     st = slots_state(conf)
     if not (st[new].get("valid") and st[new].get("prepared")):
         raise Fail("nothing-fetched", f"lo slot {new} non contiene una release verificata (eseguire fetch)")
+    crashpoint(conf, "apply_start")
     write_state(conf, "pending.json", {"slot": new, "from": cur, "from_version": current_version(conf), "version": st[new]["version"],
                                        "armed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     # A Raspberry trial only exists for a boot requested with the tryboot flag, so arming without the
@@ -592,7 +616,9 @@ def cmd_apply(a, conf):
     # One-shot: GRUB clears next_entry before booting it (Raspberry: the firmware reads tryboot.txt only on the
     # tryboot boot), so a crash/power cut during the trial lands back on the current slot with no software involved.
     imported = import_whitelist(conf, new, cur, state_path(conf, "preserve.list"))
+    crashpoint(conf, "apply_after_pending")
     be_arm_trial(conf, new)
+    crashpoint(conf, "apply_after_arm")
     set_last_result(conf, op="apply", result="armed", version=st[new]["version"], slot=new)
     if a.reboot:
         be_reboot(conf, trial=True)
@@ -605,7 +631,9 @@ def confirm_now(conf):
     pend = read_state(conf, "pending.json")
     if not pend or pend.get("slot") != cur:
         raise Fail("nothing-to-confirm", "nessuna prova di avvio in corso su questo slot")
+    crashpoint(conf, "confirm_start")
     be_set_default(conf, cur)
+    crashpoint(conf, "confirm_after_default")
     st = slots_state(conf)
     st[cur] = {"version": pend["version"], "valid": True, "prepared": True, "confirmed": True}
     if pend.get("from") in st:
@@ -664,6 +692,7 @@ def cmd_boot_ok(a, conf):
         set_last_result(conf, op="trial", result="rolled-back", reason="trial-did-not-confirm",
                         version=pend.get("version"))
         return 0, {"trial": False, "rolled_back": True}
+    crashpoint(conf, "bootok_health_wait")
     deadline = time.time() + int(conf["UPDATE_HEALTH_TIMEOUT"])
     while time.time() < deadline:
         if health_ok(conf):
@@ -687,7 +716,9 @@ def cmd_rollback(a, conf):
     st = slots_state(conf)
     if not st[old].get("valid"):
         raise Fail("no-rollback", "lo slot precedente non contiene un sistema valido", rc=13)
+    crashpoint(conf, "rollback_start")
     be_set_default(conf, old)
+    crashpoint(conf, "rollback_after_default")
     try: os.unlink(state_path(conf, "pending.json"))
     except OSError: pass
     set_last_result(conf, op="rollback", result="armed", slot=old, version=st[old].get("version"))
