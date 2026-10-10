@@ -57,3 +57,10 @@ if grep -qw "unitotem.ota.bootcount=1" /proc/cmdline; then
         unitotem-ota-engine promote-default --firmware "$FIRMWARE"
     fi
 fi
+
+# A/B layout (unitotem.slot= on the cmdline): confirmation is gated on the manager answering its
+# health check, and a trial slot that does not come up healthy reboots into the previous slot.
+# Runs last and does not abort the unit: a failure here is recorded in unitotem-update's own state.
+if grep -q 'unitotem.slot=' /proc/cmdline && [ -x /usr/sbin/unitotem-update ]; then
+    /usr/sbin/unitotem-update --json boot-ok || true
+fi

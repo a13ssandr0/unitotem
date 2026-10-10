@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """unitotem-update - check/fetch/apply whole-image updates (see AB-DESIGN.md).
 
-Implemented so far: `status`, `check`. `fetch`, `apply`, `confirm`, `rollback`, `cancel` need the A/B layout
-and exit 2 with error_code "not-implemented" until it exists.
+Implemented: status, check, fetch, apply, confirm, boot-ok, rollback, cancel - for the amd64/GRUB A/B
+layout (two ROOT slots, kernel inside each slot, GRUB on the ESP). The Raspberry Pi backend is not written:
+there the slot-switch commands exit 2 "backend-unsupported".
 
-Exit codes: 0 ok / update available   10 nothing to do   2 failed   127 (shell) command absent.
-Everything is JSON with --json; progress for long operations goes to /run/unitotem-update.progress.
+Exit codes: 0 ok / update available   10 nothing to do   11 (reserved: changes need acceptance)
+            12 operation already running   13 no rollback available   2 failed   127 (shell) command absent.
+Everything is JSON with --json; progress for long operations goes to /run/unitotem-update.progress as ONE json
+line rewritten atomically. `fetch` runs detached (systemd-run) unless --foreground, so a manager restart
+does not interrupt it; poll `status`.
 """
-import argparse, json, os, subprocess, sys, tempfile, urllib.request, urllib.error
+import argparse, fcntl, glob, hashlib, json, os, shutil, signal, ssl, subprocess, sys, tempfile, time
+import urllib.request, urllib.error
 
 CONF_DEFAULTS = {
     "UPDATE_BASE_URL": "https://github.com/a13ssandr0/unitotem",
@@ -15,13 +20,19 @@ CONF_DEFAULTS = {
     "UPDATE_KEYS_DIR": "/usr/share/unitotem/update-keys",
     "UPDATE_STATE_DIR": "/mnt/data/unitotem/update",
     "UPDATE_VERSION_FILE": "/usr/share/unitotem/release-version",
+    "UPDATE_GRUBENV": "/boot/efi/unitotem-grub/grub/grubenv",
+    "UPDATE_DATA": "/mnt/data",
+    "UPDATE_CMDLINE": "/proc/cmdline",
+    "UPDATE_RUN_DIR": "/run",
+    "UPDATE_HEALTH_URL": "https://localhost/health",   # empty = no health gate
+    "UPDATE_HEALTH_TIMEOUT": "180",
 }
 TIMEOUT = 30
 
 
 class Fail(Exception):
-    def __init__(self, code, msg):
-        super().__init__(msg); self.code = code
+    def __init__(self, code, msg, rc=2):
+        super().__init__(msg); self.code = code; self.rc = rc
 
 
 def load_conf():
@@ -116,11 +127,181 @@ def fetch_trusted(conf):
     return manifest
 
 
+# ---------------------------------------------------------------------------
+# A/B plumbing (amd64 / GRUB backend)
+# ---------------------------------------------------------------------------
+def cur_slot(conf):
+    try:
+        for tok in open(conf["UPDATE_CMDLINE"]).read().split():
+            if tok.startswith("unitotem.slot=") and tok[-1] in "ab":
+                return tok[-1]
+    except OSError:
+        pass
+    return None
+
+
+def other_slot(s):
+    return "b" if s == "a" else "a"
+
+
+def label(slot):
+    return "ROOT_" + slot.upper()
+
+
+def run_out(*cmd, check=True):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if check and r.returncode:
+        raise Fail("command-failed", f"{' '.join(cmd)}: {r.stderr.strip() or r.stdout.strip()}")
+    return r.stdout.strip()
+
+
+def is_efi_grub(conf):
+    return os.path.exists(conf["UPDATE_GRUBENV"]) or os.path.isdir("/sys/firmware/efi")
+
+
+def need_backend(conf):
+    if cur_slot(conf) is None:
+        raise Fail("not-ab", "questo sistema non e' avviato da uno slot A/B (layout 1)")
+    if not is_efi_grub(conf):
+        raise Fail("backend-unsupported", "backend di avvio non implementato per questa scheda (solo amd64/GRUB)")
+
+
+def grubenv(conf, op, *kv):
+    return run_out("grub-editenv", conf["UPDATE_GRUBENV"], op, *kv)
+
+
+def grubenv_get(conf, key):
+    for line in grubenv(conf, "list").splitlines():
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1]
+    return ""
+
+
+def slots_state(conf):
+    st = read_state(conf, "slots.json", {})
+    for s_ in "ab":
+        st.setdefault(s_, {"version": None, "valid": False})
+    return st
+
+
+def progress(conf, **kw):
+    path = os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update.progress")
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f: json.dump(kw, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def read_progress(conf):
+    try:
+        return json.load(open(os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update.progress")))
+    except (OSError, ValueError):
+        return None
+
+
+class Lock:
+    """One long operation at a time; the pid file lets `cancel` find it."""
+    def __init__(self, conf):
+        self.path = os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update.lock")
+        self.f = None
+
+    def __enter__(self):
+        self.f = open(self.path, "a+")
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise Fail("busy", "un'altra operazione di aggiornamento e' in corso", rc=12)
+        self.f.seek(0); self.f.truncate(); self.f.write(str(os.getpid())); self.f.flush()
+        return self
+
+    def __exit__(self, *e):
+        try: os.unlink(self.path)
+        except OSError: pass
+        self.f.close()
+
+
+def op_running(conf):
+    path = os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update.lock")
+    try:
+        with open(path, "a+") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); fcntl.flock(f, fcntl.LOCK_UN)
+                return None
+            except OSError:
+                f.seek(0); return int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return None
+
+
+def set_last_result(conf, **kw):
+    kw["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    write_state(conf, "last-result.json", kw)
+
+
+def prepare_overlays(conf, new_slot, old_slot, new_root_mnt):
+    """Give the new slot its own overlay upper dirs on DATA: /etc starts from the whitelist
+    (ota-preserve.list of the NEW image) imported from the current slot's /etc, /root is carried over
+    whole, /var starts empty (persistent things live under DATA/unitotem/persist). The current slot's
+    uppers are left untouched, which is what makes a rollback land on its own state."""
+    data = conf["UPDATE_DATA"]
+    for d in ("etc", "root", "var"):
+        for kind in ("upper", "work"):
+            shutil.rmtree(os.path.join(data, kind, f"{d}.{new_slot}"), ignore_errors=True)
+            os.makedirs(os.path.join(data, kind, f"{d}.{new_slot}"))
+    old_etc = os.path.join(data, "upper", f"etc.{old_slot}")
+    new_etc = os.path.join(data, "upper", f"etc.{new_slot}")
+    plist = os.path.join(new_root_mnt, "etc/unitotem/ota-preserve.list")
+    n = 0
+    if os.path.isfile(plist):
+        for line in open(plist):
+            pat = line.strip()
+            if not pat or pat.startswith("#") or "=" in pat:
+                continue
+            for src in glob.glob(os.path.join(old_etc, pat)):
+                rel = os.path.relpath(src, old_etc)
+                dst = os.path.join(new_etc, rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                if os.path.lexists(dst):
+                    continue
+                if os.path.isdir(src) and not os.path.islink(src):
+                    shutil.copytree(src, dst, symlinks=True)
+                else:
+                    shutil.copy2(src, dst, follow_symlinks=False)
+                n += 1
+    old_root = os.path.join(data, "upper", f"root.{old_slot}")
+    if os.path.isdir(old_root):
+        shutil.copytree(old_root, os.path.join(data, "upper", f"root.{new_slot}"), symlinks=True, dirs_exist_ok=True)
+    return n
+
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
 def cmd_status(a, conf):
-    return 0, {"layout": 1, "ab": False, "current_version": current_version(conf),
-               "slot": None, "other_slot": None, "trial": False, "pending_confirm": False,
-               "rollback_available": False, "op": None,
-               "last_result": read_state(conf, "last-result.json"), "base_url": conf["UPDATE_BASE_URL"]}
+    cur = cur_slot(conf)
+    out = {"layout": 2 if cur else 1, "ab": bool(cur), "current_version": current_version(conf),
+           "slot": cur, "other_slot": other_slot(cur) if cur else None, "trial": False,
+           "pending_confirm": False, "rollback_available": False, "op": None,
+           "last_result": read_state(conf, "last-result.json"), "base_url": conf["UPDATE_BASE_URL"]}
+    pid = op_running(conf)
+    if pid:
+        out["op"] = {"pid": pid, "progress": read_progress(conf)}
+    if cur:
+        st = slots_state(conf)
+        pend = read_state(conf, "pending.json")
+        out["trial"] = bool(pend and pend.get("slot") == cur)
+        out["pending_confirm"] = out["trial"]
+        o = other_slot(cur)
+        out["other_version"] = st[o].get("version")
+        out["rollback_available"] = bool(st[o].get("valid") and st[o].get("version") and not pid)
+        out["armed"] = pend if (pend and pend.get("slot") != cur) else None
+        try:
+            out["default_slot"] = grubenv_get(conf, "saved_entry").replace("slot-", "") or None
+        except Fail:
+            out["default_slot"] = None
+    return 0, out
 
 
 def cmd_check(a, conf):
@@ -130,24 +311,248 @@ def cmd_check(a, conf):
     total = sum(p["size"] for p in m["parts"])
     out = {"available": avail, "current_version": cur, "version": m["version"], "channel": m["channel"],
            "arch": m.get("arch"), "layout": m["layout"], "size": total,
-           "needs_layout_migration": m["layout"] != 1}
+           "needs_layout_migration": m["layout"] != (2 if cur_slot(conf) else 1)}
     return (0 if avail else 10), out
+
+
+class Cancelled(Exception):
+    pass
+
+
+def do_fetch(a, conf):
+    need_backend(conf)
+    cur = cur_slot(conf); new = other_slot(cur)
+    with Lock(conf):
+        def on_term(*_): raise Cancelled()
+        signal.signal(signal.SIGTERM, on_term)
+        dev = None
+        st = slots_state(conf)
+        try:
+            progress(conf, op="fetch", phase="check", state="running", percent=0)
+            m = fetch_trusted(conf)
+            if m["layout"] != 2:
+                raise Fail("layout-mismatch", f"la release e' per layout {m['layout']}, questo sistema e' layout 2")
+            if vkey(m["version"]) <= vkey(current_version(conf)) and not a.force:
+                raise Fail("not-newer", f"{m['version']} non e' piu' recente di {current_version(conf)}", rc=10)
+            part = next((p for p in m["parts"] if p.get("role") == "root"), None)
+            if not part:
+                raise Fail("no-root-part", "il manifest non contiene la parte con role=root")
+            dev = run_out("blkid", "-L", label(new))
+            if not dev:
+                raise Fail("no-slot-device", f"partizione {label(new)} non trovata")
+            if subprocess.run(["findmnt", "-S", dev], capture_output=True).returncode == 0:
+                raise Fail("slot-mounted", f"{dev} e' montato: rifiuto di scriverci")
+            # Point of no return for the old contents of the inactive slot: from here it is not a
+            # valid rollback target until the write has been verified.
+            st[new] = {"version": None, "valid": False}
+            write_state(conf, "slots.json", st)
+            try: os.unlink(state_path(conf, "pending.json"))
+            except OSError: pass
+            base = conf["UPDATE_BASE_URL"].rstrip("/") + "/releases/latest/download/"
+            total = part["size"]; done = 0; h = hashlib.sha256()
+            xz = subprocess.Popen(["xz", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            pc = subprocess.Popen(["partclone.restore", "-C", "-s", "-", "-o", dev], stdin=xz.stdout,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            xz.stdout.close()
+            t0 = time.time(); last = 0
+            try:
+                with urllib.request.urlopen(base + part["file"], timeout=TIMEOUT) as r:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk: break
+                        h.update(chunk); done += len(chunk)
+                        xz.stdin.write(chunk)
+                        if time.time() - last > 1:
+                            last = time.time()
+                            rate = done / max(last - t0, 1e-3)
+                            progress(conf, op="fetch", phase="write", state="running",
+                                     percent=int(done * 100 / total), bytes=done, total=total,
+                                     eta_s=int((total - done) / rate) if rate else None)
+                xz.stdin.close()
+            except (urllib.error.URLError, OSError) as e:
+                xz.kill(); pc.kill()
+                raise Fail("network", f"download interrotto: {e}")
+            xz.wait(); err = pc.communicate()[1].decode(errors="replace")
+            if xz.returncode or pc.returncode:
+                raise Fail("write-failed", f"xz rc={xz.returncode} partclone rc={pc.returncode}: {err[-300:]}")
+            progress(conf, op="fetch", phase="verify", state="running", percent=100, bytes=done, total=total)
+            if done != total or h.hexdigest() != part["sha256"]:
+                raise Fail("bad-checksum", "sha256/dimensione dell'asset scaricato non corrisponde al manifest")
+            run_out("e2fsck", "-fn", dev)
+            # partclone copies the label and UUID with the data: give this slot its own identity.
+            run_out("tune2fs", "-L", label(new), "-U", "random", dev)
+            mnt = tempfile.mkdtemp(prefix="unitotem-slot-")
+            run_out("mount", "-o", "ro", dev, mnt)
+            try:
+                ver = open(os.path.join(mnt, "usr/share/unitotem/release-version")).read().strip()
+                if ver != m["version"]:
+                    raise Fail("version-mismatch", f"l'immagine scritta dichiara {ver}, il manifest {m['version']}")
+                if not os.path.exists(os.path.join(mnt, "usr/lib/systemd/systemd")):
+                    raise Fail("bad-image", "systemd assente nello slot scritto")
+                progress(conf, op="fetch", phase="arm", state="running", percent=100)
+                imported = prepare_overlays(conf, new, cur, mnt)
+            finally:
+                subprocess.run(["umount", mnt]); os.rmdir(mnt)
+            st[new] = {"version": m["version"], "valid": True, "prepared": True}
+            write_state(conf, "slots.json", st)
+            set_last_result(conf, op="fetch", result="ok", version=m["version"], slot=new, etc_imported=imported)
+            progress(conf, op="fetch", phase="arm", state="done", percent=100, version=m["version"])
+            return 0, {"fetched": True, "version": m["version"], "slot": new, "etc_imported": imported}
+        except Cancelled:
+            st[new] = {"version": None, "valid": False}; write_state(conf, "slots.json", st)
+            set_last_result(conf, op="fetch", result="cancelled")
+            progress(conf, op="fetch", state="cancelled")
+            return 2, {"error": "operazione annullata", "error_code": "cancelled"}
+        except Fail as e:
+            set_last_result(conf, op="fetch", result="failed", error_code=e.code, error=str(e))
+            progress(conf, op="fetch", state="failed", error=str(e), error_code=e.code)
+            raise
+
+
+def cmd_fetch(a, conf):
+    need_backend(conf)
+    if a.foreground:
+        return do_fetch(a, conf)
+    if op_running(conf):
+        raise Fail("busy", "un'altra operazione di aggiornamento e' in corso", rc=12)
+    cmd = [sys.executable, os.path.abspath(__file__), "--json", "fetch", "--foreground"] + (["--force"] if a.force else [])
+    run_out("systemd-run", "--unit", "unitotem-update-fetch", "--collect", "--quiet", *cmd)
+    return 0, {"started": True, "unit": "unitotem-update-fetch"}
+
+
+def cmd_apply(a, conf):
+    need_backend(conf)
+    cur = cur_slot(conf); new = other_slot(cur)
+    if op_running(conf):
+        raise Fail("busy", "un'operazione e' in corso", rc=12)
+    st = slots_state(conf)
+    if not (st[new].get("valid") and st[new].get("prepared")):
+        raise Fail("nothing-fetched", f"lo slot {new} non contiene una release verificata (eseguire fetch)")
+    write_state(conf, "pending.json", {"slot": new, "from": cur, "version": st[new]["version"],
+                                       "armed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    # One-shot: GRUB clears next_entry before booting it, so a crash/power cut during the trial
+    # lands back on saved_entry (the current slot) with no software involved.
+    grubenv(conf, "set", f"next_entry=slot-{new}")
+    set_last_result(conf, op="apply", result="armed", version=st[new]["version"], slot=new)
+    if a.reboot:
+        print(json.dumps({"armed": True, "slot": new, "rebooting": True}) if a.json else "armed, rebooting", flush=True)
+        subprocess.Popen(["systemd-run", "--on-active=3", "--quiet", "systemctl", "reboot"])
+        return 0, {"armed": True, "slot": new, "rebooting": True}
+    return 0, {"armed": True, "slot": new, "rebooting": False}
+
+
+def confirm_now(conf):
+    cur = cur_slot(conf)
+    pend = read_state(conf, "pending.json")
+    if not pend or pend.get("slot") != cur:
+        raise Fail("nothing-to-confirm", "nessuna prova di avvio in corso su questo slot")
+    grubenv(conf, "set", f"saved_entry=slot-{cur}")
+    grubenv(conf, "unset", "next_entry")
+    st = slots_state(conf)
+    st[cur] = {"version": pend["version"], "valid": True, "prepared": True, "confirmed": True}
+    write_state(conf, "slots.json", st)
+    try: os.unlink(state_path(conf, "pending.json"))
+    except OSError: pass
+    set_last_result(conf, op="confirm", result="ok", version=pend["version"], slot=cur)
+    return {"confirmed": True, "slot": cur, "version": pend["version"]}
+
+
+def cmd_confirm(a, conf):
+    need_backend(conf)
+    return 0, confirm_now(conf)
+
+
+def health_ok(conf):
+    url = conf["UPDATE_HEALTH_URL"]
+    if not url:
+        return True
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(url, timeout=5, context=ctx) as r:
+            return r.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def cmd_boot_ok(a, conf):
+    """Called by unitotem-boot-ok on every boot. On the first boot of a trial slot: wait for the
+    health endpoint, then confirm; if it never answers, record that and reboot - next_entry was
+    one-shot, so the reboot lands on the previous (still default) slot."""
+    cur = cur_slot(conf)
+    if cur is None:
+        return 0, {"ab": False}
+    pend = read_state(conf, "pending.json")
+    if not pend:
+        return 0, {"trial": False}
+    if pend.get("slot") != cur:
+        # We are on the old slot although a trial was armed: the trial slot did not come back.
+        try: os.unlink(state_path(conf, "pending.json"))
+        except OSError: pass
+        st = slots_state(conf)
+        st[pend["slot"]]["confirmed"] = False
+        write_state(conf, "slots.json", st)
+        set_last_result(conf, op="trial", result="rolled-back", reason="trial-did-not-confirm",
+                        version=pend.get("version"))
+        return 0, {"trial": False, "rolled_back": True}
+    deadline = time.time() + int(conf["UPDATE_HEALTH_TIMEOUT"])
+    while time.time() < deadline:
+        if health_ok(conf):
+            return 0, confirm_now(conf)
+        time.sleep(3)
+    set_last_result(conf, op="trial", result="rolled-back", reason="health-timeout", version=pend.get("version"))
+    try: os.unlink(state_path(conf, "pending.json"))
+    except OSError: pass
+    subprocess.Popen(["systemctl", "reboot"])
+    return 2, {"error": "il sistema non ha risposto al controllo di salute: ritorno allo slot precedente",
+               "error_code": "health-timeout"}
+
+
+def cmd_rollback(a, conf):
+    need_backend(conf)
+    cur = cur_slot(conf); old = other_slot(cur)
+    if op_running(conf):
+        raise Fail("busy", "un'operazione e' in corso", rc=12)
+    st = slots_state(conf)
+    if not st[old].get("valid"):
+        raise Fail("no-rollback", "lo slot precedente non contiene un sistema valido", rc=13)
+    grubenv(conf, "set", f"saved_entry=slot-{old}")
+    grubenv(conf, "unset", "next_entry")
+    try: os.unlink(state_path(conf, "pending.json"))
+    except OSError: pass
+    set_last_result(conf, op="rollback", result="armed", slot=old, version=st[old].get("version"))
+    if a.reboot:
+        subprocess.Popen(["systemd-run", "--on-active=3", "--quiet", "systemctl", "reboot"])
+    return 0, {"rollback": True, "slot": old, "rebooting": bool(a.reboot)}
+
+
+def cmd_cancel(a, conf):
+    pid = op_running(conf)
+    if not pid:
+        return 10, {"cancelled": False, "reason": "nessuna operazione in corso"}
+    os.kill(pid, signal.SIGTERM)
+    return 0, {"cancelled": True, "pid": pid}
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json", action="store_true")
     sp = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("status", "check", "fetch", "apply", "confirm", "rollback", "cancel"):
+    for n in ("status", "check", "confirm", "boot-ok", "cancel"):
         sp.add_parser(n)
+    f = sp.add_parser("fetch"); f.add_argument("--foreground", action="store_true"); f.add_argument("--force", action="store_true")
+    f.add_argument("--accept-changes", help="accettato e ignorato: in A/B lo slot corrente resta intatto")
+    for n in ("apply", "rollback"):
+        x = sp.add_parser(n); x.add_argument("--reboot", action="store_true")
     a = ap.parse_args()
     conf = load_conf()
+    table = {"status": cmd_status, "check": cmd_check, "fetch": cmd_fetch, "apply": cmd_apply, "confirm": cmd_confirm,
+             "boot-ok": cmd_boot_ok, "rollback": cmd_rollback, "cancel": cmd_cancel}
     try:
-        if a.cmd not in ("status", "check"):
-            raise Fail("not-implemented", f"'{a.cmd}' richiede il layout A/B, non ancora implementato")
-        rc, out = {"status": cmd_status, "check": cmd_check}[a.cmd](a, conf)
+        rc, out = table[a.cmd](a, conf)
     except Fail as e:
-        rc, out = 2, {"error": str(e), "error_code": e.code}
+        rc, out = e.rc, {"error": str(e), "error_code": e.code}
+    except Cancelled:
+        rc, out = 2, {"error": "operazione annullata", "error_code": "cancelled"}
     if a.json:
         print(json.dumps(out))
     else:
