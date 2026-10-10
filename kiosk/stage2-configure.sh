@@ -204,6 +204,10 @@ install -m 644 /kiosk/files/unitotem-ssh-hostkey.service \
     "${ROOTFS}/etc/systemd/system/unitotem-ssh-hostkey.service"
 
 install -m 755 /kiosk/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
+# Public half of the update root key only. The private keys live outside the repo
+# (tools/release/backup-keys.sh); losing them means no fielded device accepts an update again.
+install -d -m 755 "${ROOTFS}/usr/share/unitotem/update-keys"
+install -m 644 /kiosk/files/update-root.pub "${ROOTFS}/usr/share/unitotem/update-keys/root.pub"
 install -m 755 /kiosk/files/unitotem-persist-paths "${ROOTFS}/usr/sbin/unitotem-persist-paths"
 install -m 644 /kiosk/files/unitotem-persist-paths.service \
     "${ROOTFS}/etc/systemd/system/unitotem-persist-paths.service"
