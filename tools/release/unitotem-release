@@ -112,6 +112,13 @@ def cmd_build_ab(a):
                              capture_output=True, text=True).stdout.strip()
         if ver != a.version:
             sys.exit(f"l'immagine dichiara versione '{ver}', richiesta '{a.version}' (ricostruire con RELEASE_VERSION={a.version})")
+        # The stream must not announce itself as a bootable slot. partclone copies the label and UUID along
+        # with the data, so a device that loses power half-way through writing it would otherwise carry a second
+        # filesystem labelled ROOT_A (same UUID as the real slot A) - and "root=LABEL=ROOT_A" or GRUB's
+        # `search --label` may then pick the half-written copy. A neutral label that nothing boots by closes
+        # that window; unitotem-update gives the slot its real label and a fresh UUID once the write verified.
+        import uuid
+        run("tune2fs", "-L", "ROOT_NEW", "-U", str(uuid.uuid4()), raw)
         dst = os.path.join(out, "root.ext4.pc.xz")
         with open(dst, "wb") as f:
             pc = subprocess.Popen(["partclone.extfs", "-c", "-L", "/dev/null", "-s", raw, "-o", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
