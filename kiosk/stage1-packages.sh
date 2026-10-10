@@ -312,6 +312,16 @@ chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y unitotem-manager
 
+# Local override: any .deb in work/extra-debs/ is installed over what the apt repository provided. This is how
+# an image gets a manager build that is not published yet (e.g. one with the /health endpoint the A/B update
+# gate waits for). Empty/absent directory = nothing happens.
+if ls /work/extra-debs/*.deb >/dev/null 2>&1; then
+    mkdir -p "${ROOTFS}/tmp/extra-debs"
+    cp /work/extra-debs/*.deb "${ROOTFS}/tmp/extra-debs/"
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades /tmp/extra-debs/*.deb
+    rm -rf "${ROOTFS}/tmp/extra-debs"
+fi
+
 # ---------- Clean up ----------
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get clean
