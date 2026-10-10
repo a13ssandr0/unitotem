@@ -169,6 +169,8 @@ scn_trial_boot_cut() {   # kill at DELAY seconds after the reboot into the trial
     sleep "$d"; vm_kill; log "$n: spenta ${d}s dopo l'avvio del firmware verso B"
     : > "$W/serial.log"; vm_start "$RUN"; wait_ssh 240 || { check "$n: la VM riparte" false; return; }
     check "$n: la VM riparte dopo il taglio" true
+    # state right after the restart, before boot-ok has had time to touch anything (kept for diagnosis)
+    SSH 'cd /mnt/data/unitotem/update 2>/dev/null && for f in slots.json pending.json last-result.json; do echo "== $f"; cat $f 2>&1; echo; done; grub-editenv /boot/efi/unitotem-grub/grub/grubenv list; uptime -s' >"$W/state-after-restart-$d.txt" 2>&1
     UU status >"$W/st.json"; sleep 20; UU status >"$W/st.json"
     local cur; cur=$(jfield slot < "$W/st.json")
     # one-shot already consumed: GRUB goes to the saved default (A) unless B got far enough to confirm
