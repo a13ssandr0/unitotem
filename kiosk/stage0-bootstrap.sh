@@ -29,6 +29,6 @@ else
 fi
 
 echo "Saving stage 0 tarball..."
-tar -C "${ROOTFS}" -czf "${WORK_DIR}/stage0.tar.gz" .
+tar -I pigz -C "${ROOTFS}" -cf "${WORK_DIR}/stage0.tar.gz" .
 
 echo "=== Stage 0 complete ==="

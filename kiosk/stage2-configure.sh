@@ -8,7 +8,7 @@ rm -rf "${ROOTFS}"
 mkdir -p "${ROOTFS}"
 
 echo "Extracting stage 1..."
-tar -C "${ROOTFS}" -xzf "${WORK_DIR}/stage1.tar.gz"
+tar -I pigz -C "${ROOTFS}" -xf "${WORK_DIR}/stage1.tar.gz"
 
 ensure_qemu
 mount_chroot
@@ -361,6 +361,6 @@ fi
 umount_chroot
 
 echo "Saving stage 2 tarball..."
-tar -C "${ROOTFS}" -czf "${WORK_DIR}/stage2.tar.gz" .
+tar -I pigz -C "${ROOTFS}" -cf "${WORK_DIR}/stage2.tar.gz" .
 
 echo "=== Stage 2 complete ==="

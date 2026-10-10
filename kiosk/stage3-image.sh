@@ -8,7 +8,7 @@ rm -rf "${ROOTFS}"
 mkdir -p "${ROOTFS}" "/deploy/${ARCH}"
 
 echo "Extracting stage 2..."
-tar -C "${ROOTFS}" -xzf "${WORK_DIR}/stage2.tar.gz"
+tar -I pigz -C "${ROOTFS}" -xf "${WORK_DIR}/stage2.tar.gz"
 
 IMG_DATE="$(date +%Y-%m-%d)"
 IMG_FILE="/deploy/${ARCH}/kiosk-${IMG_DATE}-${ARCH}.img"
