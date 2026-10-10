@@ -114,7 +114,7 @@ def cmd_build_ab(a):
             sys.exit(f"l'immagine dichiara versione '{ver}', richiesta '{a.version}' (ricostruire con RELEASE_VERSION={a.version})")
         dst = os.path.join(out, "root.ext4.pc.xz")
         with open(dst, "wb") as f:
-            pc = subprocess.Popen(["partclone.extfs", "-c", "-s", raw, "-o", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            pc = subprocess.Popen(["partclone.extfs", "-c", "-L", "/dev/null", "-s", raw, "-o", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             xz = subprocess.Popen(["xz", "-T0", "-6"], stdin=pc.stdout, stdout=f)
             pc.stdout.close()
             if xz.wait() or pc.wait():
