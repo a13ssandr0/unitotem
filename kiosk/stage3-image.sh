@@ -129,7 +129,11 @@ mkfs.ext4 -F -L "${ROOT_LABEL}" "${LOOP}p${P_ROOT}"
 # Slot B starts empty but formatted and labelled, so the layout is complete from day one and
 # the first update only has to write into it.
 [ -z "$P_ROOTB" ] || mkfs.ext4 -F -L ROOT_B "${LOOP}p${P_ROOTB}"
-mkfs.ext4 -F -L DATA -O ^has_journal "${LOOP}p${P_DATA}"
+# DATA keeps its journal. It was created without one (^has_journal) to spare the SD card; a forced power-cut test
+# then found state files read back as NULs and a directory entry missing, with no journal to replay and no fsck
+# at boot: freed blocks were reused while the on-disk bitmap still showed them free. A power loss on an
+# appliance is the normal case, so DATA gets crash consistency (data=ordered, the ext4 default).
+mkfs.ext4 -F -L DATA "${LOOP}p${P_DATA}"
 
 boot_assert_fail() { echo "BOOT-ABILITY CHECK FAILED: $*" >&2; exit 1; }
 

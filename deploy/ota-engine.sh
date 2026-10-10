@@ -429,7 +429,7 @@ cmd_data_op() {
         preserve) log "DATA preservata (${part_dev})" ;;
         mkfs)
             log "Formatto DATA (${part_dev})..."
-            mkfs.ext4 -F -L DATA -O ^has_journal "$part_dev" || fail "mkfs.ext4 su DATA fallito"
+            mkfs.ext4 -F -L DATA "$part_dev" || fail "mkfs.ext4 su DATA fallito"
             ;;
         *) fail "data-op sconosciuta: ${ARG[op]}" ;;
     esac
