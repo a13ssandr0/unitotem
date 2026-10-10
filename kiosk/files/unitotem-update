@@ -60,6 +60,14 @@ def crashpoint(conf, name):
     the disk looks like. A no-op unless configured."""
     if conf.get("UPDATE_CRASHPOINT") != name:
         return
+    # One-shot: strip the key from the persistent config first, so the boot after the "power cut" does not
+    # freeze at the same point again. Synced, so the stripped file is part of the state the test inherits.
+    cf = os.environ.get("UNITOTEM_UPDATE_CONF", "/etc/unitotem/update.conf")
+    try:
+        lines = [l for l in open(cf).read().splitlines() if not l.startswith("UPDATE_CRASHPOINT=")]
+        _atomic_write(cf, "\n".join(lines) + "\n"); os.sync()
+    except OSError:
+        pass
     try:
         with open("/dev/ttyS0", "w") as f: f.write(f"\nCRASHPOINT {name}\n")
     except OSError:
