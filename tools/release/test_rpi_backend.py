@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory() as td:
                 UPDATE_RUN_DIR=run, UPDATE_CMDLINE=cmdline, UPDATE_DATA=os.path.join(td, "data"),
                 UPDATE_REBOOT_CMD=f"echo trial=$UNITOTEM_REBOOT_TRIAL >> {reboots}", UPDATE_HEALTH_URL="")
 
+    uu.slot_check = lambda *a: None      # no real block device here
     check("backend rpi riconosciuto", uu.need_backend(conf) == "rpi")
     check("default slot letto da os_prefix", uu.be_default_slot(conf) == "a")
 
