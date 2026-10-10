@@ -1,6 +1,7 @@
 # Design: immagine Debian immutabile con aggiornamento A/B
 
-**Stato: proposta, nulla implementato né verificato su hardware.** Tutto ciò che segue è deduzione dal codice
+**Stato (2026-10-10): amd64/GRUB implementato e provato in QEMU/UEFI, arm64 non implementato.** Vedi
+"Stato dell'implementazione" in fondo. Il resto di questo documento è la proposta di partenza, dedotta dal codice
 attuale (`PLAN.md`, `STATO.md`, `deploy/ota-engine.sh`, `kiosk/files/*`) e da documentazione nota dei
 firmware; le voci che dipendono da un comportamento non provato sono marcate **[da verificare]**.
 
@@ -216,3 +217,27 @@ che giustifichi il rischio, e già in contrasto con la scelta di restare su Debi
 1. Slot da 5 GiB va bene (disco minimo cresce di ~3 GiB)? È l'unico vincolo difficile da cambiare dopo.
 2. Resume del download (staging su DATA) o ricominciare da capo se cade?
 3. ~~Chiave di firma~~ → vedi "Release e chiavi di firma su GitHub"; resta da decidere dove si custodisce la chiave radice (gestore di password, chiavetta, carta).
+
+## Stato dell'implementazione (2026-10-10)
+
+Attivo con `AB_LAYOUT=1` in `build-kiosk.sh` (spento di default: il layout a ROOT singolo resta quello supportato).
+
+**Provato in QEMU/UEFI con un'immagine amd64 costruita davvero** (dentro la VM, non su hardware reale):
+GRUB avvia lo slot A da `ROOT_A`; `next_entry` è one-shot (prova su B, il riavvio successivo torna ad A);
+`unitotem-update` scarica da un finto GitHub (`tools/release/fake-github.py`), verifica firma e sha256,
+scrive lo slot inattivo con partclone (≈23 s per 1 GB), rietichetta lo slot con nuovo UUID, importa nell'`/etc`
+del nuovo slot solo la whitelist, arma la prova, riavvia, conferma, torna indietro con `rollback`, torna indietro
+da solo se il controllo di salute non risponde, e annulla un download in corso. Le regressioni dell'harness
+`run-bootcount.sh` (layout singolo) passano, con 2 casi nuovi per gli slot.
+
+**Non provato / non scritto:**
+- arm64: `os_prefix` e `tryboot` per slot sono solo predisposti nella build, mai avviati; il backend di
+  `unitotem-update` per Raspberry non esiste (esce con `backend-unsupported`).
+- Hardware amd64 reale (UEFI e BIOS legacy): provato solo UEFI in VM.
+- Perdita di corrente a metà `fetch` o a metà prova su disco reale (in VM ho provato solo l'arresto ordinato).
+- Migrazione di un dispositivo a ROOT singolo verso il layout A/B (DATA cambia posizione).
+- `deploy/remote-deploy.sh` e `ota-engine.sh` conoscono ancora solo il layout singolo: il deploy da host del
+  primo sistema A/B non è adattato. Per ora l'immagine A/B si avvia da disco intero.
+- Chiave radice reale: i test usano chiavi usa-e-getta messe in `/etc/unitotem/test-keys`; l'immagine non ne
+  contiene ancora una in `/usr/share/unitotem/update-keys/`.
+- `--accept-changes` è accettato e ignorato: lo slot corrente non viene distrutto dall'aggiornamento.

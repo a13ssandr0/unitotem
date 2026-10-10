@@ -211,6 +211,21 @@ check "4f: fallback quando la partizione ROOT non esiste" \
     grep -q 'partizione ROOT non trovata' /tmp/premount.out
 e2label "${LOOP}p2" ROOT
 
+# A/B: the slot to validate is the one named in root=, not a fixed "ROOT".
+log "=== 4g: layout A/B, root=LABEL=ROOT_B ==="
+e2label "${LOOP}p2" ROOT_B
+udevadm settle --timeout=10 2>/dev/null || true
+rm -f /boot-ota/unitotem-ota.bootcount 2>/dev/null || true
+set_cmdline "console=tty1 root=LABEL=ROOT_B ro quiet unitotem.slot=b"
+run_init_premount
+check "4g: nessun fallback se lo slot B nominato in root= esiste" \
+    bash -c '! grep -q "non trovata\|e2fsck" /tmp/premount.out'
+set_cmdline "console=tty1 root=LABEL=ROOT_A ro quiet unitotem.slot=a"
+run_init_premount
+check "4g: fallback se lo slot A nominato in root= non esiste (anche se ROOT_B c'e')" \
+    grep -q 'partizione ROOT_A non trovata' /tmp/premount.out
+e2label "${LOOP}p2" ROOT
+
 echo
 log "=== RISULTATI ==="
 cat "$RESULTS"
