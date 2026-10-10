@@ -100,7 +100,8 @@ if [ "$ARCH" = "arm64" ]; then
     #
     # Still needs enable_uart=1 in config.txt (the mini-UART derives its baud
     # from the VPU core clock, and enable_uart=1 is what pins that clock).
-    echo "console=tty1 console=ttyS0,115200 root=LABEL=${ROOT_LABEL} rootfstype=ext4 rootwait ro quiet splash loglevel=3 rd.systemd.show_status=false plymouth.ignore-serial-consoles" \
+    AB_SLOT_ARG=""; [ "$AB_LAYOUT" = 1 ] && AB_SLOT_ARG=" unitotem.slot=a"
+    echo "console=tty1 console=ttyS0,115200 root=LABEL=${ROOT_LABEL} rootfstype=ext4 rootwait ro quiet splash loglevel=3 rd.systemd.show_status=false plymouth.ignore-serial-consoles${AB_SLOT_ARG}" \
         > "${ROOTFS}/boot/firmware/cmdline.txt"
 
     cat > "${ROOTFS}/etc/modules-load.d/rpi-gpu.conf" << 'EOF'

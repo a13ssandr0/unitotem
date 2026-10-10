@@ -120,6 +120,24 @@ def cmd_build_ab(a):
             if xz.wait() or pc.wait():
                 sys.exit("partclone/xz fallito")
     parts = [{"file": "root.ext4.pc.xz", "role": "root", "size": os.path.getsize(dst), "sha256": sha256(dst)}]
+    if a.arch == "arm64":
+        # Raspberry: the slot's kernel/initramfs/dtbs/overlays live on the FAT partition (p1), in slota/.
+        # Ship them as their own asset; the device re-targets cmdline.txt for the slot it installs them in.
+        info1 = subprocess.run(["sgdisk", "-i", "1", a.image], check=True, capture_output=True, text=True).stdout
+        f1 = int(next(l for l in info1.splitlines() if l.startswith("First sector")).split(":")[1].split()[0])
+        l1 = int(next(l for l in info1.splitlines() if l.startswith("Last sector")).split(":")[1].split()[0])
+        with tempfile.TemporaryDirectory(dir=a.out) as td:
+            fat = os.path.join(td, "fw.img")
+            run("dd", f"if={a.image}", f"of={fat}", "bs=512", f"skip={f1}", f"count={l1 - f1 + 1}", "status=none")
+            os.makedirs(os.path.join(td, "x"))
+            run("mcopy", "-s", "-n", "-i", fat, "::slota", os.path.join(td, "x"))
+            bf = os.path.join(out, "bootfiles.tar.xz")
+            with open(bf, "wb") as f:
+                tr = subprocess.Popen(["tar", "-C", os.path.join(td, "x", "slota"), "-cf", "-", "."], stdout=subprocess.PIPE)
+                xz2 = subprocess.Popen(["xz", "-T0", "-6"], stdin=tr.stdout, stdout=f); tr.stdout.close()
+                if xz2.wait() or tr.wait():
+                    sys.exit("tar/xz dei file di avvio fallito")
+        parts.append({"file": "bootfiles.tar.xz", "role": "bootfiles", "size": os.path.getsize(bf), "sha256": sha256(bf)})
     manifest = {"schema": 1, "version": a.version, "channel": a.channel, "arch": a.arch, "layout": 2, "min_updater": 1,
                 "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "parts": parts}
     mpath = os.path.join(out, "manifest.json")
