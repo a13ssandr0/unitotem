@@ -99,3 +99,26 @@ cleanup() {
 }
 
 trap cleanup EXIT INT TERM
+
+
+# apt_install ARGS... : `apt-get install -y ARGS` inside the chroot, with the download step done first by aria2c
+# (many files in flight at once). apt alone fetches one file at a time per host, so with ~800 small packages the
+# per-request latency, not the link, sets the pace. Everything is verified twice: aria2 checks the SHA256 apt
+# printed, and apt re-checks the archive it finds in the cache. Falls back to plain apt when aria2c is missing
+# (the native Raspberry build host) or fails.
+apt_install() {
+    local uris
+    uris=$(chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --print-uris "$@" 2>/dev/null \
+           | grep "^'" || true)
+    if [ -n "$uris" ] && command -v aria2c >/dev/null 2>&1; then
+        local list; list=$(mktemp)
+        printf '%s\n' "$uris" | awk '{u=$1; gsub(/\x27/,"",u); h=$4; sub(/^SHA256:/,"",h);
+            print u; print "  out=" $2; if (h != "") print "  checksum=sha-256=" h}' > "$list"
+        mkdir -p "${ROOTFS}/var/cache/apt/archives"
+        aria2c -q -i "$list" -d "${ROOTFS}/var/cache/apt/archives" -j 16 -x 4 -s 4 --file-allocation=none \
+               --allow-overwrite=true --auto-file-renaming=false --retry-wait=3 --max-tries=5 \
+            || echo "aria2c fallito: apt scarichera' da solo" >&2
+        rm -f "$list"
+    fi
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+}

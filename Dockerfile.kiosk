@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         util-linux \
         xz-utils \
         pigz \
+        aria2 \
         zstd \
         curl \
         ca-certificates \

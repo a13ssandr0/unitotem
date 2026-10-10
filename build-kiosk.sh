@@ -137,6 +137,24 @@ ${DOCKER} build -f "${DIR}/Dockerfile.kiosk" -t kiosk-builder "${DIR}"
 
 mkdir -p "${DIR}/work" "${DIR}/deploy"
 
+# The architectures share nothing (own work/<arch>, deploy/<arch>, apt cache subdirectory), so with more than one
+# they are built side by side, each in a child of this script with its output prefixed. A sequential loop left the
+# machine ~90% idle: most of a build is waiting on the network or on dpkg, and waiting overlaps well.
+# BUILD_CHILD marks the children; ARCHES=<one> runs them through the ordinary loop below.
+if [ -z "${BUILD_CHILD:-}" ] && [ "$(echo ${ARCHES} | wc -w)" -gt 1 ]; then
+    declare -A CHILD_PID
+    for a in ${ARCHES}; do
+        BUILD_CHILD=1 ARCHES="$a" bash "${BASH_SOURCE[0]}" > >(sed -u "s/^/[$a] /") 2>&1 &
+        CHILD_PID[$a]=$!
+    done
+    rc=0
+    for a in "${!CHILD_PID[@]}"; do
+        wait "${CHILD_PID[$a]}" || { echo "[$a] build FALLITA" >&2; rc=1; }
+    done
+    [ "$rc" = 0 ] && echo "All builds complete." || echo "Almeno una build e' fallita." >&2
+    exit "$rc"
+fi
+
 for ARCH in ${ARCHES}; do
     echo ""
     echo "=================================================="
