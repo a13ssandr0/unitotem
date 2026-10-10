@@ -407,7 +407,10 @@ cmd_format_part() {
 # because this is the one place that decides what the next boot is.
 grubenv_write() {
     local file="$1"; shift
-    local body; body=$(printf '# GRUB Environment Block\n'; for kv in "$@"; do printf '%s\n' "$kv"; done)
+    # Built with += and $'\n', not $(...): command substitution strips the trailing newline, which would
+    # fuse the '#' padding onto the last value ("ota-recovery####...") and silently change what GRUB reads.
+    local body="# GRUB Environment Block"$'\n' kv
+    for kv in "$@"; do body+="$kv"$'\n'; done
     local pad=$((1024 - ${#body}))
     [ "$pad" -ge 0 ] || fail "grubenv troppo grande"
     { printf '%s' "$body"; printf '%*s' "$pad" '' | tr ' ' '#'; } > "$file.new" || fail "scrittura grubenv fallita"
