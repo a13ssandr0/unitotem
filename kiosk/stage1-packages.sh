@@ -320,16 +320,16 @@ fi
 
 apt_install \
     python3-pip python3-apt python3-venv \
-    libopenjp2-7-dev openssl mediainfo haproxy rfkill alsa-utils cron
+    libopenjp2-7-dev openssl mediainfo rfkill alsa-utils cron libxcb-icccm4 libxcb-shape0
 
 apt_install unitotem-manager
 
-# Local override: any .deb in work/extra-debs/ is installed over what the apt repository provided. This is how
+# Local override: any .deb in work/extra-debs/<arch>/ is installed over what the apt repository provided. This is how
 # an image gets a manager build that is not published yet (e.g. one with the /health endpoint the A/B update
 # gate waits for). Empty/absent directory = nothing happens.
-if ls /work/extra-debs/*.deb >/dev/null 2>&1; then
+if ls /work/extra-debs/${ARCH}/*.deb >/dev/null 2>&1; then
     mkdir -p "${ROOTFS}/tmp/extra-debs"
-    cp /work/extra-debs/*.deb "${ROOTFS}/tmp/extra-debs/"
+    cp /work/extra-debs/${ARCH}/*.deb "${ROOTFS}/tmp/extra-debs/"
     chroot "${ROOTFS}" sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades /tmp/extra-debs/*.deb"
     rm -rf "${ROOTFS}/tmp/extra-debs"
 fi
