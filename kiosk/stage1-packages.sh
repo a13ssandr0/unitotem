@@ -17,6 +17,12 @@ install_policy_rc
 # Build-time only: dpkg fsync()s every file it unpacks, which on the container's overlay filesystem dominates
 # the install and keeps the CPUs idle. The result is thrown into a tarball and re-checked later, so a crash
 # mid-build costs a rerun, not data. Removed again before the tarball is made (see "Clean up").
+# Downloaded .debs persist across builds in work/apt-cache (mounted at /aptcache by build-kiosk.sh). A rebuild
+# of stage 1 used to fetch ~2 GB again at the link speed - the CPUs sat ~95% idle meanwhile.
+if [ -d /aptcache ]; then
+    mkdir -p "/aptcache/${ARCH}/partial" "${ROOTFS}/var/cache/apt/archives"
+    mount --bind "/aptcache/${ARCH}" "${ROOTFS}/var/cache/apt/archives"
+fi
 mkdir -p "${ROOTFS}/etc/apt/apt.conf.d"
 echo 'Dpkg::Options { "--force-unsafe-io"; };' > "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
 
@@ -330,6 +336,8 @@ fi
 
 # ---------- Clean up ----------
 rm -f "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
+# Unmount the cache BEFORE apt-get clean: clean empties the archive directory, which would wipe the cache.
+mountpoint -q "${ROOTFS}/var/cache/apt/archives" && umount "${ROOTFS}/var/cache/apt/archives"
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get clean
 rm -rf "${ROOTFS}/var/lib/apt/lists/"*
