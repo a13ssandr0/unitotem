@@ -240,6 +240,13 @@ Le architetture si costruiscono ora in parallelo e i pacchetti vengono scaricati
   DATA non erano fsync'ati e dopo un taglio comparivano vuoti o assenti: ora fsync del file e della directory, e
   `os.sync()` prima di marcare `valid`; (4) con grubenv illegibile GRUB sceglieva il fallback invece di uno slot:
   la voce di fallback e' ora l'ultima; (5) il file di whitelist si copiava non atomicamente.
+  (6) il piu' grave: DATA era creata senza journal (`^has_journal`, scelta per risparmiare la SD) e senza fsck all'avvio.
+  Dopo un taglio un file mai toccato (`slots.json`) si rileggeva come byte nulli: blocchi liberati e riusati mentre
+  la bitmap su disco li diceva ancora liberi. Ora il journal resta (stage3, `data-op mkfs`), l'initramfs lo aggiunge
+  alle DATA esistenti (`tune2fs -O has_journal` a filesystem smontato) ed esegue `e2fsck -p` prima del mount.
+  Sulle ROOT (journal di default) non c'era il problema.
+- Risultato finale su immagine 2026.10.6 + release 2026.10.7 (stessi artefatti consegnati): **21 scenari, 103 controlli,
+  0 falliti** (`work/loopback-test/powercut-ab.sh par 6 all`, circa 25 minuti con 6 VM in parallelo).
 - Principio adottato (richiesta dell'utente): dopo qualsiasi interruzione si RIPETE l'operazione (idempotente) invece
   di fidarsi di un flag. `apply` rifa' un fsck in sola lettura e controlla l'etichetta dello slot prima di armare.
 
