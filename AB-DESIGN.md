@@ -218,26 +218,41 @@ che giustifichi il rischio, e già in contrasto con la scelta di restare su Debi
 2. Resume del download (staging su DATA) o ricominciare da capo se cade?
 3. ~~Chiave di firma~~ → vedi "Release e chiavi di firma su GitHub"; resta da decidere dove si custodisce la chiave radice (gestore di password, chiavetta, carta).
 
-## Stato dell'implementazione (2026-10-10)
+## Stato dell'implementazione (2026-10-10, sera)
 
 Attivo con `AB_LAYOUT=1` in `build-kiosk.sh` (spento di default: il layout a ROOT singolo resta quello supportato).
+Le architetture si costruiscono ora in parallelo e i pacchetti vengono scaricati con aria2 in una cache persistente
+(`work/apt-cache`); le immagini amd64/arm64 A/B si ottengono con
+`AB_LAYOUT=1 RELEASE_VERSION=x.y.z ARCHES="amd64 arm64" ./build-kiosk.sh`.
 
-**Provato in QEMU/UEFI con un'immagine amd64 costruita davvero** (dentro la VM, non su hardware reale):
-GRUB avvia lo slot A da `ROOT_A`; `next_entry` è one-shot (prova su B, il riavvio successivo torna ad A);
-`unitotem-update` scarica da un finto GitHub (`tools/release/fake-github.py`), verifica firma e sha256,
-scrive lo slot inattivo con partclone (≈23 s per 1 GB), rietichetta lo slot con nuovo UUID, importa nell'`/etc`
-del nuovo slot solo la whitelist, arma la prova, riavvia, conferma, torna indietro con `rollback`, torna indietro
-da solo se il controllo di salute non risponde, e annulla un download in corso. Le regressioni dell'harness
-`run-bootcount.sh` (layout singolo) passano, con 2 casi nuovi per gli slot.
+**Provato in QEMU/UEFI (amd64), non su hardware:**
+- Primo deploy da host (`remote-deploy.sh` + `ota-engine.sh`, modalita' A/B): harness loopback `work/loopback-test/run-ab.sh`
+  (27 controlli) e poi avvio del disco risultante: GRUB trova la sua configurazione grazie al volid FAT preservato,
+  prova lo slot A (one-shot), il fallback resta il default finche' `unitotem-boot-ok` non conferma.
+- Aggiornamento in sede con `unitotem-update`: check, fetch, apply, prova, conferma, rollback manuale, rollback
+  automatico se `/health` non risponde, annullamento, rifiuto con `busy`.
+- 21 scenari di spegnimento forzato (`work/loopback-test/powercut-ab.sh`, `kill -9` di QEMU a ogni punto critico di
+  fetch/apply/prova/conferma/rollback, durante l'avvio dello slot nuovo e con grubenv corrotto). Hanno trovato
+  e fatto correggere: (1) per tutta la scrittura dello slot inattivo esisteva un secondo filesystem con etichetta
+  `ROOT_A` e UUID dello slot A, che `root=LABEL=ROOT_A` o GRUB potevano scegliere: lo stream di release ha ora
+  etichetta neutra `ROOT_NEW` e lo slot prende la sua etichetta solo a scrittura verificata; (2) un nuovo `fetch`
+  dopo il taglio non trovava lo slot (ricerca per etichetta): ora per nome di partizione GPT; (3) i file di stato su
+  DATA non erano fsync'ati e dopo un taglio comparivano vuoti o assenti: ora fsync del file e della directory, e
+  `os.sync()` prima di marcare `valid`; (4) con grubenv illegibile GRUB sceglieva il fallback invece di uno slot:
+  la voce di fallback e' ora l'ultima; (5) il file di whitelist si copiava non atomicamente.
+- Principio adottato (richiesta dell'utente): dopo qualsiasi interruzione si RIPETE l'operazione (idempotente) invece
+  di fidarsi di un flag. `apply` rifa' un fsck in sola lettura e controlla l'etichetta dello slot prima di armare.
+
+**Raspberry Pi (arm64): scritto, NON provato su una scheda.** Backend `os_prefix` + `tryboot` dietro la stessa interfaccia
+di GRUB, release con asset `bootfiles` (kernel/initramfs/dtb/overlay dello slot), `apply` richiede `--reboot` perche'
+il tryboot esiste solo con il riavvio contestuale. Testato solo in modo "a secco" (`tools/release/test_rpi_backend.py`,
+22 controlli con una directory finta al posto della FAT). Non so se il firmware della Pi 4 rispetta `os_prefix` per tutti
+i file ne' come si comporta `tryboot.txt` con `os_prefix`; la Pi di test (<pi-host>) non era raggiungibile.
+Il deploy da host A/B e' implementato solo per amd64/UEFI.
 
 **Non provato / non scritto:**
-- arm64: `os_prefix` e `tryboot` per slot sono solo predisposti nella build, mai avviati; il backend di
-  `unitotem-update` per Raspberry non esiste (esce con `backend-unsupported`).
-- Hardware amd64 reale (UEFI e BIOS legacy): provato solo UEFI in VM.
-- Perdita di corrente a metà `fetch` o a metà prova su disco reale (in VM ho provato solo l'arresto ordinato).
+- Hardware amd64 reale (UEFI e BIOS legacy).
+- Il modello di spegnimento usato (kill di QEMU) non simula la cache volatile di un disco fisico ne' il riordino delle
+  scritture, ne' un taglio dentro una singola scrittura di blocco.
 - Migrazione di un dispositivo a ROOT singolo verso il layout A/B (DATA cambia posizione).
-- `deploy/remote-deploy.sh` e `ota-engine.sh` conoscono ancora solo il layout singolo: il deploy da host del
-  primo sistema A/B non è adattato. Per ora l'immagine A/B si avvia da disco intero.
-- Chiave radice reale: i test usano chiavi usa-e-getta messe in `/etc/unitotem/test-keys`; l'immagine non ne
-  contiene ancora una in `/usr/share/unitotem/update-keys/`.
-- `--accept-changes` è accettato e ignorato: lo slot corrente non viene distrutto dall'aggiornamento.
+- `--accept-changes` e' accettato e ignorato: lo slot corrente non viene distrutto dall'aggiornamento.
