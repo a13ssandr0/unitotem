@@ -365,6 +365,13 @@ fi
 [ "$BOOTFS_FREE" -ge $((64 * 1024 * 1024)) ] \
     || boot_assert_fail "meno di 64MiB liberi sulla partizione di boot dopo tutte le copie ($((BOOTFS_FREE / 1024 / 1024))MiB)"
 
+# ---------- Release version ----------
+# What unitotem-update compares against the manifest, and what `fetch` re-reads from a freshly written
+# slot to make sure it contains the release it was asked for. Written before the baseline below so it
+# is part of the pristine image rather than reported as a modification.
+mkdir -p ${IMG_MNT}/usr/share/unitotem
+echo "${RELEASE_VERSION:-$(date +%Y.%m.%d)}" > ${IMG_MNT}/usr/share/unitotem/release-version
+
 # ---------- Change-detection baseline ----------
 # Deliberately the last thing done to the image: it records what a pristine
 # install looks like, so anything written afterwards would be baked in as

@@ -90,7 +90,7 @@ build_natively_on_pi() {
     # saying why.
     local envvars="ARCH=arm64 ROOTFS='${PI_BUILD_BASE}/rootfs' IMG_MNT='${PI_BUILD_BASE}/imgmnt'"
     local var
-    for var in RELEASE MIRROR KIOSK_HOSTNAME ROOT_PASSWORD KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE; do
+    for var in RELEASE MIRROR KIOSK_HOSTNAME ROOT_PASSWORD KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE RELEASE_VERSION; do
         [ -n "${!var:-}" ] && envvars="${envvars} ${var}='${!var}'"
     done
 
@@ -164,7 +164,7 @@ for ARCH in ${ARCHES}; do
 
     # Pass through optional config overrides
     for VAR in RELEASE MIRROR KIOSK_HOSTNAME ROOT_PASSWORD \
-               KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE; do
+               KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE RELEASE_VERSION; do
         [ -n "${!VAR:-}" ] && RUN_OPTS+=(-e "${VAR}=${!VAR}")
     done
 

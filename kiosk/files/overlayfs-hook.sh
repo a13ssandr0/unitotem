@@ -100,12 +100,20 @@ if [ -d "${rootmnt}/var/lib/dpkg" ]; then
         && dpkg_pin=stashed
 fi
 
+# A/B layout: each ROOT slot keeps its own overlay state on DATA (upper/etc.a, upper/etc.b, ...),
+# named by unitotem.slot= on the kernel command line, so updating one slot never touches what the
+# other needs for a rollback. Single-ROOT images have no such argument: empty suffix, same paths as ever.
+slot_sfx=""
+for tok in $(cat /proc/cmdline); do
+    case "$tok" in unitotem.slot=a|unitotem.slot=b) slot_sfx=".${tok#unitotem.slot=}" ;; esac
+done
+
 for d in etc root var; do
-    mkdir -p "${rootmnt}/mnt/data/upper/${d}" \
-             "${rootmnt}/mnt/data/work/${d}"
+    mkdir -p "${rootmnt}/mnt/data/upper/${d}${slot_sfx}" \
+             "${rootmnt}/mnt/data/work/${d}${slot_sfx}"
     mount --make-rshared "${rootmnt}" 2>/dev/null || true
     mount -t overlay overlay \
-        -o lowerdir="${rootmnt}/${d}",upperdir="${rootmnt}/mnt/data/upper/${d}",workdir="${rootmnt}/mnt/data/work/${d}" \
+        -o lowerdir="${rootmnt}/${d}",upperdir="${rootmnt}/mnt/data/upper/${d}${slot_sfx}",workdir="${rootmnt}/mnt/data/work/${d}${slot_sfx}" \
         "${rootmnt}/${d}" \
         || log_warning_msg "overlay: /${d} fallito"
     mount --make-shared "${rootmnt}/${d}" 2>/dev/null || true
@@ -136,6 +144,7 @@ fi
 # throughout: never allowed to fail the boot.
 {
     echo "boot-marker=1"
+    echo "overlay-slot-suffix=${slot_sfx:-none}"
     for d in etc root var; do
         if grep -q " ${rootmnt}/${d} overlay " /proc/mounts 2>/dev/null; then
             echo "initramfs-${d}=overlay-mounted"
