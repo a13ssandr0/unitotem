@@ -25,6 +25,21 @@ if [ -z "$DATA_DEV" ]; then
     exit 0
 fi
 
+# DATA must be crash-consistent. Images built before this check (and devices deployed from them) have a DATA
+# filesystem WITHOUT a journal: add one while it is still unmounted, then let fsck repair/replay what a power cut
+# left behind before mounting. -p only touches what is safely fixable; a failure here is logged, never fatal.
+if command -v tune2fs >/dev/null 2>&1 && command -v dumpe2fs >/dev/null 2>&1; then
+    dumpe2fs -h "$DATA_DEV" 2>/dev/null | grep -q has_journal \
+        || tune2fs -O has_journal "$DATA_DEV" >/dev/null 2>&1 \
+        || log_warning_msg "overlay: impossibile aggiungere il journal a DATA"
+fi
+if command -v e2fsck >/dev/null 2>&1; then
+    e2fsck -p "$DATA_DEV" >/dev/null 2>&1
+    data_fsck_rc=$?
+    # 0 clean, 1 repaired: both fine. Anything above is worth a line in the log, but never stops the boot.
+    [ "$data_fsck_rc" -le 1 ] || log_warning_msg "overlay: e2fsck -p su DATA ha restituito ${data_fsck_rc}"
+fi
+
 mkdir -p "${rootmnt}/mnt/data"
 if ! mount -t ext4 -o noatime,nodiratime "$DATA_DEV" "${rootmnt}/mnt/data"; then
     log_warning_msg "overlay: mount DATA fallito, skip"
