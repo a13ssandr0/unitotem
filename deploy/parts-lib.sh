@@ -19,7 +19,8 @@ parts_action_for_label() {
     case "$1" in
         EFI|FIRMWARE) echo "filecopy" ;;
         DATA)         echo "data" ;;
-        BOOT|ROOT)    echo "restore" ;;
+        BOOT|ROOT|ROOT_A) echo "restore" ;;
+        ROOT_B)       echo "format" ;;     # A/B: the inactive slot ships empty, labelled
         BIOS)         echo "raw" ;;
         *)            echo "skip" ;;
     esac
@@ -28,7 +29,7 @@ parts_action_for_label() {
 parts_cloner_for_label() {
     case "$1" in
         EFI|FIRMWARE) echo "fat" ;;
-        BOOT|ROOT)    echo "extfs" ;;
+        BOOT|ROOT|ROOT_A) echo "extfs" ;;
         BIOS)         echo "dd" ;;
         *)            echo "" ;;
     esac
@@ -67,7 +68,7 @@ make_parts() {
     local table_sha256; table_sha256=$(sha256sum "$outdir/layout.sfdisk" | cut -d' ' -f1)
     local bootcode_sha256; bootcode_sha256=$(sha256sum "$outdir/bootcode.bin" | cut -d' ' -f1)
 
-    local nparts=0 data_part="" has_esp=0 bootfs_part="" total_used=0
+    local nparts=0 data_part="" has_esp=0 bootfs_part="" total_used=0 layout=1
     local part_blocks=()
 
     local n dev label fstype ptype action cloner used stream stream_bytes stream_sha256
@@ -93,6 +94,7 @@ make_parts() {
 
         case "$label" in
             DATA) data_part="$n" ;;
+            ROOT_A) layout=2 ;;
             EFI)  has_esp=1; bootfs_part="$n" ;;
             FIRMWARE) bootfs_part="$n" ;;
         esac
@@ -105,10 +107,15 @@ make_parts() {
             echo "UNITOTEM_PART_ACTION=$action"
             echo "UNITOTEM_PART_START=$start"
             echo "UNITOTEM_PART_SECTORS=$sectors"
+            # FAT serial of the boot partition: GRUB's images find their config by it, so a deploy that
+            # reformats the partition has to give it back.
+            if [ "$action" = filecopy ]; then
+                echo "UNITOTEM_PART_VOLID=$(blkid -s UUID -o value "$dev" 2>/dev/null || true)"
+            fi
         } >> "$outdir/parts.manifest.partial"
 
         case "$action" in
-            data)
+            data|format)
                 echo "" >> "$outdir/parts.manifest.partial"
                 continue
                 ;;
@@ -178,6 +185,7 @@ make_parts() {
 
     {
         echo "UNITOTEM_PARTS_PROTO=1"
+        echo "UNITOTEM_LAYOUT=$layout"
         echo "UNITOTEM_ARCH=$arch"
         echo "UNITOTEM_SET_NAME=$setname"
         echo "UNITOTEM_SOURCE_IMAGE=$(basename "$srcimg")"

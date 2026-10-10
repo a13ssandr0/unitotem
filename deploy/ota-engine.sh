@@ -389,6 +389,32 @@ cmd_restore_part() {
 }
 
 # ---------------------------------------------------------------------------
+# format-part: an empty, labelled ext4 (A/B: the inactive ROOT_B slot, which a deploy leaves empty
+# for the first update to fill).
+# ---------------------------------------------------------------------------
+cmd_format_part() {
+    parse_args "$@"
+    need disk; need part; need label
+    local disk; disk=$(resolve_disk "${ARG[disk]}")
+    local part_dev; part_dev=$(pdev_target "$disk" "${ARG[part]}")
+    log "Formatto ${ARG[label]} (${part_dev})..."
+    mkfs.ext4 -F -L "${ARG[label]}" "$part_dev" >/dev/null || fail "mkfs.ext4 su ${ARG[label]} fallito"
+    echo "UNITOTEM_PART_FORMATTED=${ARG[part]}"
+}
+
+# grubenv_write FILE key=value... : rewrite a GRUB environment block (1024 bytes: header, one
+# key=value per line, '#' padding). Done by hand because the fallback has no grub-editenv, and
+# because this is the one place that decides what the next boot is.
+grubenv_write() {
+    local file="$1"; shift
+    local body; body=$(printf '# GRUB Environment Block\n'; for kv in "$@"; do printf '%s\n' "$kv"; done)
+    local pad=$((1024 - ${#body}))
+    [ "$pad" -ge 0 ] || fail "grubenv troppo grande"
+    { printf '%s' "$body"; printf '%*s' "$pad" '' | tr ' ' '#'; } > "$file.new" || fail "scrittura grubenv fallita"
+    mv -f "$file.new" "$file"
+}
+
+# ---------------------------------------------------------------------------
 # data-op: DATA partition handling - preserve (no-op) or fresh mkfs.
 # ---------------------------------------------------------------------------
 cmd_data_op() {
@@ -438,7 +464,12 @@ cmd_prepare_bootfs() {
     local bootfs_dev; bootfs_dev=$(pdev_target "$disk" "${ARG[bootfs-part]}")
     if [ "${ARG[fresh]:-0}" = 1 ]; then
         log "Formatto la partizione di boot ($bootfs_dev, ${ARG[fstype]})..."
-        mkfs.fat -F32 -n "${ARG[label]:-BOOT}" "$bootfs_dev" || fail "mkfs.fat su $bootfs_dev fallito"
+        # --volid: the FAT serial of the image's own boot partition. GRUB's EFI/BIOS images locate the
+        # directory holding grub.cfg by that serial (search.fs_uuid), so a freshly formatted partition
+        # with a random one boots to a bare grub prompt.
+        local volid_args=()
+        [ -n "${ARG[volid]:-}" ] && volid_args=(-i "${ARG[volid]//-/}")
+        mkfs.fat -F32 "${volid_args[@]}" -n "${ARG[label]:-BOOT}" "$bootfs_dev" || fail "mkfs.fat su $bootfs_dev fallito"
     fi
     echo "UNITOTEM_BOOTFS_READY=1"
 }
@@ -535,6 +566,18 @@ EOF
             echo "unitotem.ota=1 console=tty1 console=ttyS0,115200" > "$mnt/cmdline.txt"
             ;;
         uefi|bios)
+            if [ "${ARG[layout]:-1}" = ab ]; then
+                # A/B: GRUB lives in unitotem-grub/ on this partition (put there by populate-bootfs, which
+                # must have run). Its grub.cfg has an 'ota-recovery' entry; making it the saved default is
+                # the whole job, and it is a plain file write.
+                [ -f "$mnt/unitotem-grub/grub/grub.cfg" ] \
+                    || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "A/B: unitotem-grub/grub/grub.cfg assente (populate-bootfs non eseguito?)"; }
+                grubenv_write "$mnt/unitotem-grub/grub/grubenv" "saved_entry=ota-recovery"
+                sync
+                ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
+                echo "UNITOTEM_DEFAULT_RECOVERY=1"
+                return 0
+            fi
             mkdir -p "$mnt/grub"
             cat > "$mnt/grub/grub.cfg" << 'EOF'
 set default=0
@@ -580,6 +623,24 @@ cmd_set_trial_boot() {
     need firmware
     case "${ARG[firmware]}" in
         uefi|bios)
+            if [ "${ARG[layout]:-1}" = ab ]; then
+                need target
+                local t="${ARG[target]}" ge="${ARG[target]}/boot/efi/unitotem-grub/grub/grubenv"
+                [ -f "$ge" ] || fail "A/B: grubenv assente in $ge (ESP montata sul target?)"
+                # Trial = one-shot next_entry; saved_entry stays on the fallback until unitotem-boot-ok
+                # confirms. The same state unitotem-update writes for an in-place update, so the boot-ok
+                # path is identical for a first deploy and for every later one.
+                local ver; ver=$(cat "$t/usr/share/unitotem/release-version" 2>/dev/null || echo unknown)
+                local ud="$t/mnt/data/unitotem/update" now
+                TZ=UTC0 printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+                mkdir -p "$ud"
+                printf '{"slot": "a", "from": null, "version": "%s", "armed_at": "%s"}\n' "$ver" "$now" > "$ud/pending.json"
+                printf '{"a": {"version": "%s", "valid": true, "prepared": true}, "b": {"version": null, "valid": false}}\n' "$ver" > "$ud/slots.json"
+                grubenv_write "$ge" "saved_entry=ota-recovery" "next_entry=slot-a"
+                sync
+                echo "UNITOTEM_TRIAL_ARMED=1"
+                return 0
+            fi
             # This runs inside the fallback/recovery environment, not on the
             # target - every grub-* command below has to operate on the
             # just-restored system at ${ARG[target]} (/mnt/newroot, already
@@ -779,6 +840,19 @@ cmd_migrate_etc_overlay() {
     parse_args "$@"
     need root-mnt; need data-mnt
     local root="${ARG[root-mnt]}" data="${ARG[data-mnt]}"
+    # A/B: the new system is slot A and keeps its overlay state in upper/<d>.a (see
+    # kiosk/files/overlayfs-hook.sh). Slot B is about to be formatted empty, so whatever a previous
+    # install left for it, and the update bookkeeping that described it, is stale and goes.
+    local sfx=""
+    if [ -n "${ARG[slot]:-}" ]; then
+        sfx=".${ARG[slot]}"
+        local other; other=b; [ "${ARG[slot]}" = b ] && other=a
+        local dd
+        for dd in etc root var; do
+            rm -rf "$data/upper/$dd.$other" "$data/work/$dd.$other"
+        done
+        rm -f "$data/unitotem/update/pending.json" "$data/unitotem/update/slots.json" "$data/unitotem/update/last-result.json"
+    fi
     # No `date` here on purpose: this is just a history-directory name (no
     # format consumed elsewhere), and `date` is one more external binary
     # missing from the resident fallback (same class of bug as the
@@ -801,11 +875,11 @@ cmd_migrate_etc_overlay() {
     # still be read after the fact.
     local d
     for d in etc var; do
-        if [ -d "$data/upper/$d" ]; then
+        if [ -d "$data/upper/$d$sfx" ]; then
             mkdir -p "$data/history/$ts"
-            mv "$data/upper/$d" "$data/history/$ts/$d" 2>/dev/null || true
-            mv "$data/work/$d"  "$data/history/$ts/$d.work" 2>/dev/null || true
-            mkdir -p "$data/upper/$d" "$data/work/$d"
+            mv "$data/upper/$d$sfx" "$data/history/$ts/$d" 2>/dev/null || true
+            mv "$data/work/$d$sfx"  "$data/history/$ts/$d.work" 2>/dev/null || true
+            mkdir -p "$data/upper/$d$sfx" "$data/work/$d$sfx"
         fi
     done
     local list="$root/etc/unitotem/ota-preserve.list"
@@ -816,8 +890,8 @@ cmd_migrate_etc_overlay() {
                 [ -e "$src" ] || continue
                 rel="${src#"$data/history/$ts/etc/"}"
                 reldir="${rel%/*}"; [ "$reldir" = "$rel" ] && reldir="."
-                mkdir -p "$data/upper/etc/$reldir"
-                cp -a "$src" "$data/upper/etc/$rel"
+                mkdir -p "$data/upper/etc$sfx/$reldir"
+                cp -a "$src" "$data/upper/etc$sfx/$rel"
             done
         done < "$list"
     fi
@@ -855,7 +929,7 @@ cmd_apply_network() {
     local link="${ARG[link]:-wired}" mode="${ARG[mode]:-dhcp}"
     local addr="${ARG[addr]:-}" gw="${ARG[gw]:-}" dns="${ARG[dns]:-}"
     local ssid_b64="${ARG[ssid-b64]:-}" psk_b64="${ARG[psk-b64]:-}"
-    local dir="$data/upper/etc/NetworkManager/system-connections"
+    local dir="$data/upper/etc${ARG[slot]:+.${ARG[slot]}}/NetworkManager/system-connections"
 
     # Never clobber a profile that migrate-etc-overlay just restored: that one
     # is the device's own established configuration and outranks anything
@@ -1483,6 +1557,7 @@ main() {
         restore-table)         cmd_restore_table "$@" ;;
         restore-part)          cmd_restore_part "$@" ;;
         data-op)                cmd_data_op "$@" ;;
+        format-part)            cmd_format_part "$@" ;;
         write-bootfile)         cmd_write_bootfile "$@" ;;
         read-bootfile)          cmd_read_bootfile "$@" ;;
         prepare-bootfs)         cmd_prepare_bootfs "$@" ;;

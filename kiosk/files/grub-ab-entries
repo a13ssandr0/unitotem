@@ -6,6 +6,15 @@ exec tail -n +3 "$0"
 # /etc/grub.d/10_unitotem_ab. 'saved_entry' in grubenv picks the default; grub-reboot sets a
 # one-shot trial entry that GRUB clears before booting it, so a power cut or a crash during a
 # trial returns to the default slot with no software involved.
+# The resident fallback on the ESP. During a deploy saved_entry points here, and the system under test is
+# booted one-shot through next_entry, so any failure of that boot lands in the fallback by itself.
+menuentry 'UniTotem OTA fallback' --id ota-recovery {
+    insmod part_gpt
+    insmod fat
+    search --no-floppy --set=root --label EFI
+    linux /unitotem/recovery-vmlinuz unitotem.ota=1 console=tty0 console=ttyS0,115200
+    initrd /unitotem/recovery-initrd.img
+}
 menuentry 'UniTotem slot A' --id slot-a {
     insmod part_gpt
     insmod ext2
