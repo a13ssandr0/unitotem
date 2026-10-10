@@ -1,0 +1,36 @@
+#!/bin/sh
+exec tail -n +3 "$0"
+# UniTotem A/B: two static entries, one per ROOT slot, found by filesystem label (the label is
+# set per slot, see unitotem-update; partclone copies the label with the data so the update
+# tool relabels after writing). Installed by kiosk/stage2-configure.sh at
+# /etc/grub.d/10_unitotem_ab. 'saved_entry' in grubenv picks the default; grub-reboot sets a
+# one-shot trial entry that GRUB clears before booting it, so a power cut or a crash during a
+# trial returns to the default slot with no software involved.
+menuentry 'UniTotem slot A' --id slot-a {
+    insmod part_gpt
+    insmod ext2
+    search --no-floppy --set=root --label ROOT_A
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false unitotem.slot=a
+    initrd /initrd.img
+}
+menuentry 'UniTotem slot B' --id slot-b {
+    insmod part_gpt
+    insmod ext2
+    search --no-floppy --set=root --label ROOT_B
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false unitotem.slot=b
+    initrd /initrd.img
+}
+menuentry 'UniTotem slot A (OTA recovery)' --id slot-a-recover {
+    insmod part_gpt
+    insmod ext2
+    search --no-floppy --set=root --label ROOT_A
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet unitotem.ota=recover unitotem.slot=a
+    initrd /initrd.img
+}
+menuentry 'UniTotem slot B (OTA recovery)' --id slot-b-recover {
+    insmod part_gpt
+    insmod ext2
+    search --no-floppy --set=root --label ROOT_B
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet unitotem.ota=recover unitotem.slot=b
+    initrd /initrd.img
+}
