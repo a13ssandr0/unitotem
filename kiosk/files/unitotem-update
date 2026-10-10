@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""unitotem-update - check/fetch/apply whole-image updates (see AB-DESIGN.md).
+
+Implemented so far: `status`, `check`. `fetch`, `apply`, `confirm`, `rollback`, `cancel` need the A/B layout
+and exit 2 with error_code "not-implemented" until it exists.
+
+Exit codes: 0 ok / update available   10 nothing to do   2 failed   127 (shell) command absent.
+Everything is JSON with --json; progress for long operations goes to /run/unitotem-update.progress.
+"""
+import argparse, json, os, subprocess, sys, tempfile, urllib.request, urllib.error
+
+CONF_DEFAULTS = {
+    "UPDATE_BASE_URL": "https://github.com/a13ssandr0/unitotem",
+    "UPDATE_CHANNEL": "stable",
+    "UPDATE_KEYS_DIR": "/usr/share/unitotem/update-keys",
+    "UPDATE_STATE_DIR": "/mnt/data/unitotem/update",
+    "UPDATE_VERSION_FILE": "/usr/share/unitotem/release-version",
+}
+TIMEOUT = 30
+
+
+class Fail(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg); self.code = code
+
+
+def load_conf():
+    conf = dict(CONF_DEFAULTS)
+    path = os.environ.get("UNITOTEM_UPDATE_CONF", "/etc/unitotem/update.conf")
+    if os.path.isfile(path):
+        for line in open(path):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1); conf[k.strip()] = v.strip().strip('"')
+    for k in conf:  # environment wins: lets tests redirect everything without touching /etc
+        if "UNITOTEM_" + k in os.environ:
+            conf[k] = os.environ["UNITOTEM_" + k]
+    return conf
+
+
+def vkey(v):
+    return [int(x) if x.isdigit() else x for x in v.replace("-", ".").split(".")]
+
+
+def current_version(conf):
+    try:
+        return open(conf["UPDATE_VERSION_FILE"]).read().strip() or "0"
+    except OSError:
+        return "0"
+
+
+def get(url):
+    try:
+        with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
+            return r.read()
+    except (urllib.error.URLError, OSError) as e:
+        raise Fail("network", f"{url}: {e}")
+
+
+def verify(pub_pem, data, sig):
+    with tempfile.TemporaryDirectory() as d:
+        paths = []
+        for name, content, mode in (("pub", pub_pem, "w"), ("data", data, "wb"), ("sig", sig, "wb")):
+            p = os.path.join(d, name)
+            with open(p, mode) as f: f.write(content)
+            paths.append(p)
+        r = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", paths[0], "-rawin",
+                            "-in", paths[1], "-sigfile", paths[2]], capture_output=True)
+        return r.returncode == 0
+
+
+def state_path(conf, name):
+    return os.path.join(conf["UPDATE_STATE_DIR"], name)
+
+
+def read_state(conf, name, default=None):
+    try:
+        return json.load(open(state_path(conf, name)))
+    except (OSError, ValueError):
+        return default
+
+
+def write_state(conf, name, obj):
+    os.makedirs(conf["UPDATE_STATE_DIR"], exist_ok=True)
+    tmp = state_path(conf, name) + ".tmp"
+    with open(tmp, "w") as f: json.dump(obj, f)
+    os.replace(tmp, state_path(conf, name))
+
+
+def fetch_trusted(conf):
+    """Return (manifest, base) after verifying keys.json against the root key and the manifest against it."""
+    if conf["UPDATE_CHANNEL"] != "stable":
+        raise Fail("channel-unsupported", "only the stable channel is implemented (beta needs tag listing)")
+    base = conf["UPDATE_BASE_URL"].rstrip("/") + "/releases/latest/download/"
+    try:
+        root_pub = open(os.path.join(conf["UPDATE_KEYS_DIR"], "root.pub")).read()
+    except OSError as e:
+        raise Fail("no-root-key", f"chiave radice assente: {e}")
+    keys_raw, keys_sig = get(base + "keys.json"), get(base + "keys.json.sig")
+    if not verify(root_pub, keys_raw, keys_sig):
+        raise Fail("bad-keys-signature", "keys.json non firmato dalla chiave radice")
+    keys = json.loads(keys_raw)
+    seen = read_state(conf, "keys-seq.json", {}).get("seq", 0)
+    if keys["seq"] < seen:
+        raise Fail("keys-rollback", f"keys.json seq {keys['seq']} < già visto {seen}")
+    man_raw, man_sig = get(base + "manifest.json"), get(base + "manifest.json.sig")
+    if not any(verify(k["pub"], man_raw, man_sig) for k in keys["keys"]):
+        raise Fail("bad-manifest-signature", "manifest non firmato da nessuna chiave autorizzata")
+    manifest = json.loads(man_raw)
+    if manifest.get("min_updater", 1) > 1:
+        raise Fail("updater-too-old", f"serve unitotem-update >= {manifest['min_updater']}")
+    # Only after everything verified: remember the key-list generation, so an old signed list can't come back.
+    if keys["seq"] > seen:
+        try: write_state(conf, "keys-seq.json", {"seq": keys["seq"]})
+        except OSError: pass
+    return manifest
+
+
+def cmd_status(a, conf):
+    return 0, {"layout": 1, "ab": False, "current_version": current_version(conf),
+               "slot": None, "other_slot": None, "trial": False, "pending_confirm": False,
+               "rollback_available": False, "op": None,
+               "last_result": read_state(conf, "last-result.json"), "base_url": conf["UPDATE_BASE_URL"]}
+
+
+def cmd_check(a, conf):
+    m = fetch_trusted(conf)
+    cur = current_version(conf)
+    avail = vkey(m["version"]) > vkey(cur)
+    total = sum(p["size"] for p in m["parts"])
+    out = {"available": avail, "current_version": cur, "version": m["version"], "channel": m["channel"],
+           "arch": m.get("arch"), "layout": m["layout"], "size": total,
+           "needs_layout_migration": m["layout"] != 1}
+    return (0 if avail else 10), out
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true")
+    sp = ap.add_subparsers(dest="cmd", required=True)
+    for n in ("status", "check", "fetch", "apply", "confirm", "rollback", "cancel"):
+        sp.add_parser(n)
+    a = ap.parse_args()
+    conf = load_conf()
+    try:
+        if a.cmd not in ("status", "check"):
+            raise Fail("not-implemented", f"'{a.cmd}' richiede il layout A/B, non ancora implementato")
+        rc, out = {"status": cmd_status, "check": cmd_check}[a.cmd](a, conf)
+    except Fail as e:
+        rc, out = 2, {"error": str(e), "error_code": e.code}
+    if a.json:
+        print(json.dumps(out))
+    else:
+        for k, v in out.items(): print(f"{k}: {v}")
+    return rc
+
+
+sys.exit(main())

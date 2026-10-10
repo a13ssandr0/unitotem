@@ -1,0 +1,13 @@
+[Unit]
+Description=UniTotem - media caricati e crontab persistenti su DATA
+After=local-fs.target
+Before=cron.service unitotem-manager.service
+RequiresMountsFor=/mnt/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-persist-paths
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

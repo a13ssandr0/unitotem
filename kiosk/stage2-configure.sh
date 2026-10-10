@@ -183,6 +183,11 @@ install -m 755 /kiosk/files/unitotem-ssh-hostkey "${ROOTFS}/usr/sbin/unitotem-ss
 install -m 644 /kiosk/files/unitotem-ssh-hostkey.service \
     "${ROOTFS}/etc/systemd/system/unitotem-ssh-hostkey.service"
 
+install -m 755 /kiosk/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
+install -m 755 /kiosk/files/unitotem-persist-paths "${ROOTFS}/usr/sbin/unitotem-persist-paths"
+install -m 644 /kiosk/files/unitotem-persist-paths.service \
+    "${ROOTFS}/etc/systemd/system/unitotem-persist-paths.service"
+
 install -m 755 /kiosk/files/unitotem-net-watchdog "${ROOTFS}/usr/sbin/unitotem-net-watchdog"
 install -m 644 /kiosk/files/unitotem-net-watchdog.service \
     "${ROOTFS}/etc/systemd/system/unitotem-net-watchdog.service"
@@ -274,6 +279,7 @@ chroot "${ROOTFS}" systemctl enable \
     start-xorg \
     unitotem-boot-ok \
     unitotem-ssh-hostkey \
+    unitotem-persist-paths \
     unitotem-net-watchdog.timer
 
 # ---------- Disable unattended apt ----------
