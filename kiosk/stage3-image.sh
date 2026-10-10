@@ -30,11 +30,28 @@ truncate -s "${IMAGE_SIZE}" "${IMG_FILE}"
 
 # ---------- Partition ----------
 
+# Partition numbers differ between layouts, so name them once and use the names below.
+# Single-ROOT: amd64 EFI/BOOT/ROOT/DATA, arm64 FIRMWARE/ROOT/DATA.
+# A/B (AB_LAYOUT=1): amd64 EFI/ROOT_A/ROOT_B/DATA (no BOOT: GRUB lives on the ESP and each
+# slot carries its own kernel), arm64 FIRMWARE/ROOT_A/ROOT_B/DATA.
+if [ "$ARCH" = "amd64" ]; then
+    if [ "$AB_LAYOUT" = 1 ]; then P_BOOTFS=1 P_ROOT=2 P_ROOTB=3 P_DATA=4 P_BOOT=
+    else P_BOOTFS=1 P_BOOT=2 P_ROOT=3 P_ROOTB= P_DATA=4; fi
+else
+    if [ "$AB_LAYOUT" = 1 ]; then P_BOOTFS=1 P_ROOT=2 P_ROOTB=3 P_DATA=4
+    else P_BOOTFS=1 P_ROOT=2 P_ROOTB= P_DATA=3; fi
+fi
+
 if [ "$ARCH" = "amd64" ]; then
     sgdisk -Z "${IMG_FILE}"
     sgdisk -n "1:0:+${EFI_SIZE}"  -t 1:ef00 -c 1:EFI  "${IMG_FILE}"
-    sgdisk -n "2:0:+${BOOT_SIZE}" -t 2:8300 -c 2:BOOT "${IMG_FILE}"
-    sgdisk -n "3:0:+${ROOT_SIZE}" -t 3:8300 -c 3:ROOT "${IMG_FILE}"
+    if [ "$AB_LAYOUT" = 1 ]; then
+        sgdisk -n "2:0:+${ROOT_SLOT_SIZE}" -t 2:8300 -c 2:ROOT_A "${IMG_FILE}"
+        sgdisk -n "3:0:+${ROOT_SLOT_SIZE}" -t 3:8300 -c 3:ROOT_B "${IMG_FILE}"
+    else
+        sgdisk -n "2:0:+${BOOT_SIZE}" -t 2:8300 -c 2:BOOT "${IMG_FILE}"
+        sgdisk -n "3:0:+${ROOT_SIZE}" -t 3:8300 -c 3:ROOT "${IMG_FILE}"
+    fi
     sgdisk -n "4:0:0"             -t 4:8300 -c 4:DATA "${IMG_FILE}"
     # BIOS boot partition: sits in the (otherwise unused) gap between the
     # GPT header/table and partition 1's start at sector 2048, so it doesn't
@@ -60,12 +77,23 @@ elif [ "$ARCH" = "arm64" ]; then
     }
     FW_START_MIB=1
     FW_END_MIB=$((FW_START_MIB + $(size_to_mib "$FIRMWARE_SIZE")))
-    ROOT_END_MIB=$((FW_END_MIB + $(size_to_mib "$ROOT_SIZE")))
-
     parted -s "${IMG_FILE}" mklabel gpt
     parted -s "${IMG_FILE}" mkpart FIRMWARE fat32  "${FW_START_MIB}M"  "${FW_END_MIB}M"
-    parted -s "${IMG_FILE}" mkpart ROOT     ext4   "${FW_END_MIB}M"   "${ROOT_END_MIB}M"
-    parted -s "${IMG_FILE}" mkpart DATA     ext4   "${ROOT_END_MIB}M" 100%
+    if [ "$AB_LAYOUT" = 1 ]; then
+        SLOT_MIB=$(size_to_mib "$ROOT_SLOT_SIZE")
+        A_END_MIB=$((FW_END_MIB + SLOT_MIB))
+        B_END_MIB=$((A_END_MIB + SLOT_MIB))
+        # MiB, not M: parted's bare "M" is 10^6 bytes, which leaves every boundary
+        # misaligned (and the slots a few percent smaller than asked). The single-ROOT
+        # branch keeps "M" so its layout stays byte-identical to what is deployed.
+        parted -s "${IMG_FILE}" mkpart ROOT_A ext4 "${FW_END_MIB}MiB" "${A_END_MIB}MiB"
+        parted -s "${IMG_FILE}" mkpart ROOT_B ext4 "${A_END_MIB}MiB"  "${B_END_MIB}MiB"
+        parted -s "${IMG_FILE}" mkpart DATA   ext4 "${B_END_MIB}MiB"  100%
+    else
+        ROOT_END_MIB=$((FW_END_MIB + $(size_to_mib "$ROOT_SIZE")))
+        parted -s "${IMG_FILE}" mkpart ROOT ext4 "${FW_END_MIB}M"   "${ROOT_END_MIB}M"
+        parted -s "${IMG_FILE}" mkpart DATA ext4 "${ROOT_END_MIB}M" 100%
+    fi
 fi
 
 # ---------- Loop device ----------
@@ -92,16 +120,18 @@ trap cleanup_loop EXIT
 # ---------- Format ----------
 
 if [ "$ARCH" = "amd64" ]; then
-    mkfs.fat -F32 -n EFI   "${LOOP}p1"
-    mkfs.ext4 -F -L BOOT   "${LOOP}p2"
-    mkfs.ext4 -F -L ROOT   "${LOOP}p3"
-    mkfs.ext4 -F -L DATA -O ^has_journal "${LOOP}p4"
-
+    mkfs.fat -F32 -n EFI   "${LOOP}p${P_BOOTFS}"
+    [ -z "$P_BOOT" ] || mkfs.ext4 -F -L BOOT "${LOOP}p${P_BOOT}"
 elif [ "$ARCH" = "arm64" ]; then
-    mkfs.fat -F32 -n FIRMWARE "${LOOP}p1"
-    mkfs.ext4 -F -L ROOT      "${LOOP}p2"
-    mkfs.ext4 -F -L DATA -O ^has_journal "${LOOP}p3"
+    mkfs.fat -F32 -n FIRMWARE "${LOOP}p${P_BOOTFS}"
 fi
+mkfs.ext4 -F -L "${ROOT_LABEL}" "${LOOP}p${P_ROOT}"
+# Slot B starts empty but formatted and labelled, so the layout is complete from day one and
+# the first update only has to write into it.
+[ -z "$P_ROOTB" ] || mkfs.ext4 -F -L ROOT_B "${LOOP}p${P_ROOTB}"
+mkfs.ext4 -F -L DATA -O ^has_journal "${LOOP}p${P_DATA}"
+
+boot_assert_fail() { echo "BOOT-ABILITY CHECK FAILED: $*" >&2; exit 1; }
 
 # ---------- Mount & populate ----------
 
@@ -110,21 +140,17 @@ fi
 # mountpoint.
 mkdir -p "${IMG_MNT}"
 
+mount "${LOOP}p${P_ROOT}" ${IMG_MNT}
+mkdir -p ${IMG_MNT}/{boot,mnt/data}
 if [ "$ARCH" = "amd64" ]; then
-    mount "${LOOP}p3" ${IMG_MNT}
-    mkdir -p ${IMG_MNT}/{boot,mnt/data}
-    mount "${LOOP}p2" ${IMG_MNT}/boot
+    [ -z "$P_BOOT" ] || mount "${LOOP}p${P_BOOT}" ${IMG_MNT}/boot
     mkdir -p ${IMG_MNT}/boot/efi
-    mount "${LOOP}p1" ${IMG_MNT}/boot/efi
-    mount "${LOOP}p4" ${IMG_MNT}/mnt/data
-
+    mount "${LOOP}p${P_BOOTFS}" ${IMG_MNT}/boot/efi
 elif [ "$ARCH" = "arm64" ]; then
-    mount "${LOOP}p2" ${IMG_MNT}
-    mkdir -p ${IMG_MNT}/{boot,mnt/data}
     mkdir -p ${IMG_MNT}/boot/firmware
-    mount "${LOOP}p1" ${IMG_MNT}/boot/firmware
-    mount "${LOOP}p3" ${IMG_MNT}/mnt/data
+    mount "${LOOP}p${P_BOOTFS}" ${IMG_MNT}/boot/firmware
 fi
+mount "${LOOP}p${P_DATA}" ${IMG_MNT}/mnt/data
 
 echo "Copying rootfs..."
 rsync -aHAXx --info=progress2 "${ROOTFS}/" ${IMG_MNT}/
@@ -169,6 +195,23 @@ elif [ "$ARCH" = "arm64" ]; then
     } > ${IMG_MNT}/boot/firmware/recovery.sha256
 fi
 
+# ---------- A/B on arm64: kernel, initramfs, dtbs and cmdline go in a per-slot directory ----------
+# `os_prefix=slota/` in config.txt makes the firmware read kernel, initramfs, dtbs, overlays and
+# cmdline.txt from that subdirectory; the firmware proper (start*.elf, fixup*.dat, bootcode.bin)
+# and config.txt stay at the top. Slot B's directory is written by the first update. Whether
+# the Pi 4 firmware honours os_prefix for every one of those files is UNVERIFIED on hardware
+# (AB-DESIGN.md) - the build only arranges the files so that test can be done.
+if [ "$ARCH" = "arm64" ] && [ "$AB_LAYOUT" = 1 ]; then
+    FW=${IMG_MNT}/boot/firmware
+    mkdir -p "$FW/slota"
+    for f in kernel8.img initramfs8 cmdline.txt overlays; do
+        [ -e "$FW/$f" ] && mv "$FW/$f" "$FW/slota/$f"
+    done
+    for f in "$FW"/*.dtb; do [ -e "$f" ] && mv "$f" "$FW/slota/"; done
+    sed -i '0,/^\[all\]/s//[all]\nos_prefix=slota\//' "$FW/config.txt"
+    grep -q '^os_prefix=slota/' "$FW/config.txt" || { echo "config.txt: os_prefix non inserito" >&2; exit 1; }
+fi
+
 # ---------- Install bootloader (amd64 only) ----------
 
 if [ "$ARCH" = "amd64" ]; then
@@ -176,10 +219,15 @@ if [ "$ARCH" = "amd64" ]; then
     mount --bind /proc ${IMG_MNT}/proc
     mount --bind /sys  ${IMG_MNT}/sys
 
+    # A/B has no BOOT partition: GRUB's directory (grub.cfg, grubenv) lives on the ESP, the one
+    # filesystem both slots share, so the default/trial selection survives a slot being rewritten.
+    if [ "$AB_LAYOUT" = 1 ]; then GRUB_BOOTDIR=/boot/efi/unitotem-grub; else GRUB_BOOTDIR=/boot; fi
+    mkdir -p "${IMG_MNT}${GRUB_BOOTDIR}"
+
     chroot ${IMG_MNT} grub-install \
         --target=x86_64-efi \
         --efi-directory=/boot/efi \
-        --boot-directory=/boot \
+        --boot-directory="${GRUB_BOOTDIR}" \
         --bootloader-id=debian \
         --no-nvram \
         --removable
@@ -191,10 +239,19 @@ if [ "$ARCH" = "amd64" ]; then
     # never shipped BIOS support.
     chroot ${IMG_MNT} grub-install \
         --target=i386-pc \
-        --boot-directory=/boot \
+        --boot-directory="${GRUB_BOOTDIR}" \
         "${LOOP}"
 
-    chroot ${IMG_MNT} update-grub
+    if [ "$AB_LAYOUT" = 1 ]; then
+        chroot ${IMG_MNT} grub-mkconfig -o "${GRUB_BOOTDIR}/grub/grub.cfg"
+        chroot ${IMG_MNT} grub-editenv "${GRUB_BOOTDIR}/grub/grubenv" set saved_entry=slot-a
+        grep -q "id 'slot-a'\|--id slot-a\|slot-a" "${IMG_MNT}${GRUB_BOOTDIR}/grub/grub.cfg" \
+            || boot_assert_fail "grub.cfg non contiene la voce slot-a"
+        grep -q "slot-b" "${IMG_MNT}${GRUB_BOOTDIR}/grub/grub.cfg" \
+            || boot_assert_fail "grub.cfg non contiene la voce slot-b"
+    else
+        chroot ${IMG_MNT} update-grub
+    fi
 
     umount -lf ${IMG_MNT}/dev
     umount -lf ${IMG_MNT}/proc
@@ -207,12 +264,13 @@ fi
 # plan's Context). These checks turn that class of bug into a build failure
 # instead, while the relevant partitions are still mounted and cheap to
 # inspect.
-boot_assert_fail() { echo "BOOT-ABILITY CHECK FAILED: $*" >&2; exit 1; }
 
 if [ "$ARCH" = "arm64" ]; then
     FWDIR=${IMG_MNT}/boot/firmware
+    SLOTDIR=$FWDIR
+    [ "$AB_LAYOUT" = 1 ] && SLOTDIR=$FWDIR/slota
 
-    [ -f "$FWDIR/kernel8.img" ] || boot_assert_fail "$FWDIR/kernel8.img assente"
+    [ -f "$SLOTDIR/kernel8.img" ] || boot_assert_fail "$SLOTDIR/kernel8.img assente"
     # Two valid formats here, not one: a raw uncompressed arm64 Image
     # ("ARMd" magic at offset 0x38 - what the generic Debian kernel this
     # project used to ship produced), or a gzip-compressed one (magic
@@ -221,20 +279,20 @@ if [ "$ARCH" = "arm64" ]; then
     # exactly the format linux-image-rpi-v8's own vmlinuz ships in
     # (confirmed directly against the real package, not assumed). Accept
     # either; only reject a file that is neither.
-    magic_gzip=$(dd if="$FWDIR/kernel8.img" bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    magic_gzip=$(dd if="$SLOTDIR/kernel8.img" bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
     if [ "$magic_gzip" != "1f8b" ]; then
-        magic=$(dd if="$FWDIR/kernel8.img" bs=1 skip=56 count=4 2>/dev/null)
+        magic=$(dd if="$SLOTDIR/kernel8.img" bs=1 skip=56 count=4 2>/dev/null)
         [ "$magic" = "ARMd" ] \
             || boot_assert_fail "kernel8.img non e' ne' un Image arm64 grezzo valido (magic letto: '${magic}', atteso 'ARMd' a offset 0x38) ne' gzip-compresso (magic: '${magic_gzip}', atteso '1f8b')"
     fi
 
-    dtb_count=$(find "$FWDIR" -maxdepth 1 -iname "bcm27*.dtb" | wc -l)
-    [ "$dtb_count" -gt 0 ] || boot_assert_fail "nessun bcm27*.dtb su $FWDIR"
-    for dtb in "$FWDIR"/bcm27*.dtb; do
+    dtb_count=$(find "$SLOTDIR" -maxdepth 1 -iname "bcm27*.dtb" | wc -l)
+    [ "$dtb_count" -gt 0 ] || boot_assert_fail "nessun bcm27*.dtb su $SLOTDIR"
+    for dtb in "$SLOTDIR"/bcm27*.dtb; do
         dtc -I dtb -O dts "$dtb" > /dev/null 2>&1 || boot_assert_fail "$dtb non e' un dtb valido (dtc non riesce a parsarlo)"
     done
 
-    [ -s "$FWDIR/initramfs8" ] || boot_assert_fail "$FWDIR/initramfs8 assente o vuoto"
+    [ -s "$SLOTDIR/initramfs8" ] || boot_assert_fail "$SLOTDIR/initramfs8 assente o vuoto"
     # unmkinitramfs, not a hand-rolled decompress-then-cpio-t: an initramfs is
     # not necessarily one compressed stream. mkinitramfs concatenates segments
     # - an early, uncompressed cpio (hooks that must run before the main
@@ -257,8 +315,8 @@ if [ "$ARCH" = "arm64" ]; then
     # bytes read cleanly, repeatably. unmkinitramfs writes real files to a
     # directory, sidestepping that class of problem too.
     rm -rf /tmp/initramfs8-check
-    unmkinitramfs "$FWDIR/initramfs8" /tmp/initramfs8-check > /tmp/initramfs8-check.log 2>&1 \
-        || boot_assert_fail "$FWDIR/initramfs8: unmkinitramfs fallito ($(cat /tmp/initramfs8-check.log))"
+    unmkinitramfs "$SLOTDIR/initramfs8" /tmp/initramfs8-check > /tmp/initramfs8-check.log 2>&1 \
+        || boot_assert_fail "$SLOTDIR/initramfs8: unmkinitramfs fallito ($(cat /tmp/initramfs8-check.log))"
     # Two valid layouts, not one: unmkinitramfs splits a genuinely
     # multi-segment initramfs into early/ and main/ subdirectories, with
     # /init inside main/ - confirmed by pulling the ACTUAL file this build
@@ -270,7 +328,7 @@ if [ "$ARCH" = "arm64" ]; then
     # answer and one wrong guess, so both are checked rather than picking the
     # one that happened to match the most recent test.
     [ -x /tmp/initramfs8-check/init ] || [ -x /tmp/initramfs8-check/main/init ] \
-        || boot_assert_fail "$FWDIR/initramfs8 non contiene /init (ne' in cima ne' in main/)"
+        || boot_assert_fail "$SLOTDIR/initramfs8 non contiene /init (ne' in cima ne' in main/)"
     rm -rf /tmp/initramfs8-check /tmp/initramfs8-check.log
 
     grep -q "^kernel=" "$FWDIR/config.txt" || boot_assert_fail "config.txt: manca kernel="
@@ -279,8 +337,8 @@ if [ "$ARCH" = "arm64" ]; then
     # pacchetto kernel Debian generico non ne spedisce nessuno (vedi il
     # follow-up "passare a linux-image-rpi-v8" nella documentazione OTA).
     while read -r ov; do
-        [ -f "$FWDIR/overlays/${ov}.dtbo" ] \
-            || boot_assert_fail "config.txt referenzia dtoverlay=${ov} ma $FWDIR/overlays/${ov}.dtbo non esiste"
+        [ -f "$SLOTDIR/overlays/${ov}.dtbo" ] \
+            || boot_assert_fail "config.txt referenzia dtoverlay=${ov} ma $SLOTDIR/overlays/${ov}.dtbo non esiste"
     done < <(awk -F= '/^dtoverlay=/{print $2}' "$FWDIR/config.txt")
 fi
 
@@ -325,28 +383,22 @@ bash /kiosk/files/unitotem-ota-changes baseline \
 
 sync
 
+umount ${IMG_MNT}/mnt/data
 if [ "$ARCH" = "amd64" ]; then
-    umount ${IMG_MNT}/mnt/data
     umount ${IMG_MNT}/boot/efi
-    umount ${IMG_MNT}/boot
+    [ -z "$P_BOOT" ] || umount ${IMG_MNT}/boot
 elif [ "$ARCH" = "arm64" ]; then
-    umount ${IMG_MNT}/mnt/data
     umount ${IMG_MNT}/boot/firmware
 fi
 umount ${IMG_MNT}
 
 # fsck after unmount, directly on the loop partitions - a mounted (even
 # read-only-checked) filesystem doesn't give fsck a reliable view.
-if [ "$ARCH" = "amd64" ]; then
-    fsck.vfat -n "${LOOP}p1" || boot_assert_fail "fsck.vfat su EFI (${LOOP}p1) non pulito"
-    fsck.ext4 -fn "${LOOP}p2" || boot_assert_fail "fsck.ext4 su BOOT (${LOOP}p2) non pulito"
-    fsck.ext4 -fn "${LOOP}p3" || boot_assert_fail "fsck.ext4 su ROOT (${LOOP}p3) non pulito"
-    fsck.ext4 -fn "${LOOP}p4" || boot_assert_fail "fsck.ext4 su DATA (${LOOP}p4) non pulito"
-elif [ "$ARCH" = "arm64" ]; then
-    fsck.vfat -n "${LOOP}p1" || boot_assert_fail "fsck.vfat su FIRMWARE (${LOOP}p1) non pulito"
-    fsck.ext4 -fn "${LOOP}p2" || boot_assert_fail "fsck.ext4 su ROOT (${LOOP}p2) non pulito"
-    fsck.ext4 -fn "${LOOP}p3" || boot_assert_fail "fsck.ext4 su DATA (${LOOP}p3) non pulito"
-fi
+fsck.vfat -n "${LOOP}p${P_BOOTFS}" || boot_assert_fail "fsck.vfat sulla partizione di boot (${LOOP}p${P_BOOTFS}) non pulito"
+[ -z "$P_BOOT" ]  || fsck.ext4 -fn "${LOOP}p${P_BOOT}"  || boot_assert_fail "fsck.ext4 su BOOT non pulito"
+fsck.ext4 -fn "${LOOP}p${P_ROOT}" || boot_assert_fail "fsck.ext4 su ${ROOT_LABEL} (${LOOP}p${P_ROOT}) non pulito"
+[ -z "$P_ROOTB" ] || fsck.ext4 -fn "${LOOP}p${P_ROOTB}" || boot_assert_fail "fsck.ext4 su ROOT_B non pulito"
+fsck.ext4 -fn "${LOOP}p${P_DATA}" || boot_assert_fail "fsck.ext4 su DATA (${LOOP}p${P_DATA}) non pulito"
 
 losetup -d "${LOOP}"
 trap - EXIT

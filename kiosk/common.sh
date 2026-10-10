@@ -42,7 +42,19 @@ ROOT_PASSWORD="${ROOT_PASSWORD:-unitotem}"
 KIOSK_LOCALE="${KIOSK_LOCALE:-it_IT.UTF-8}"
 KIOSK_TIMEZONE="${KIOSK_TIMEZONE:-Europe/Rome}"
 
-IMAGE_SIZE="${IMAGE_SIZE:-11G}"
+# A/B layout (AB-DESIGN.md): two ROOT slots instead of one. Off by default until the
+# whole boot/update chain is proven on hardware; the single-ROOT layout stays the
+# supported one meanwhile. With A/B the image holds slot A only populated - slot B
+# is written by the first update - but both partitions exist so DATA never moves again.
+AB_LAYOUT="${AB_LAYOUT:-0}"
+if [ "$AB_LAYOUT" = 1 ]; then
+    ROOT_LABEL=ROOT_A
+    IMAGE_SIZE="${IMAGE_SIZE:-14G}"
+    ROOT_SLOT_SIZE="${ROOT_SLOT_SIZE:-5G}"
+else
+    ROOT_LABEL=ROOT
+    IMAGE_SIZE="${IMAGE_SIZE:-11G}"
+fi
 EFI_SIZE="${EFI_SIZE:-1G}"
 BOOT_SIZE="${BOOT_SIZE:-1G}"
 ROOT_SIZE="${ROOT_SIZE:-8G}"
