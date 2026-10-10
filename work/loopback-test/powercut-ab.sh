@@ -87,6 +87,7 @@ fetched() {
     vm_start "$RUN"; wait_ssh 200 || return 1
     log "fetch completo (snapshot dopo il download)..."
     UU fetch --foreground | tee "$W/fetch.out"
+    grep -q '"fetched": true' "$W/fetch.out" || { echo "FETCH FALLITO: base1 non creata"; vm_kill; return 1; }
     clean_shutdown
     cp "$RUN" "$W/base1-overlay.qcow2"
     # flatten: base1 = base0 + fetch

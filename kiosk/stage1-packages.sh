@@ -98,13 +98,13 @@ if [ "$ARCH" = "amd64" ]; then
     # linux-headers-amd64 is here so the NVIDIA DKMS build later in this file
     # has matching headers; it is deliberately kept in the shipped image, see
     # the note beside that build.
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    apt_install --no-install-recommends \
         linux-image-amd64 \
         linux-headers-amd64 \
         firmware-linux \
         firmware-linux-nonfree \
         firmware-misc-nonfree
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    apt_install --no-install-recommends \
         grub-efi-amd64 \
         grub-pc-bin \
         efibootmgr
@@ -135,7 +135,7 @@ elif [ "$ARCH" = "arm64" ]; then
     # point check`, and chroot(1) is exactly how apt-get is invoked here. So
     # raspi-firmware alone is a complete replacement, confirmed by reading its
     # actual postinst rather than assuming the merge was safe.
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    apt_install --no-install-recommends \
         linux-image-rpi-v8 \
         firmware-brcm80211 \
         firmware-linux \
@@ -152,7 +152,7 @@ fi
 # other. gdisk/parted are not on the automated OTA restore path (sfdisk
 # covers that) but are kept anyway for manual disaster recovery - see the
 # OTA redesign plan, decisions table.
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+apt_install --no-install-recommends \
     partclone gdisk parted fdisk pv netcat-traditional dropbear-bin wpasupplicant whiptail dosfstools xz-utils
 
 mkdir -p "${ROOTFS}/usr/lib/unitotem"
@@ -164,7 +164,7 @@ mkdir -p "${ROOTFS}/etc/unitotem"
 
 # ---------- Base system ----------
 
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+apt_install \
     locales \
     sudo curl wget ca-certificates gnupg2 \
     openssh-server \
@@ -181,12 +181,12 @@ chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
 
 # ---------- Plymouth ----------
 
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+apt_install \
     plymouth plymouth-themes plymouth-label libplymouth5
 
 # ---------- GPU libraries (common) ----------
 
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+apt_install \
     libglvnd0 libglx0 libgles2 libvulkan1 \
     mesa-utils libgl1-mesa-dri
 
@@ -206,21 +206,21 @@ if [ "$ARCH" = "amd64" ]; then
     # ANV for DG2) and it materially improves RDNA3. mesa-vulkan-drivers and
     # mesa-va-drivers are not in the shared block above, so they are named
     # here rather than being a redundant reinstall.
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    apt_install \
         libgl1-mesa-dri mesa-vulkan-drivers mesa-va-drivers mesa-utils
 
     # Intel, including ARC. intel-media-va-driver-non-free is the iHD driver
     # and covers Gen8 onwards, DG2/ARC included; i965 is kept for Gen4-8
     # hardware that iHD dropped. Both can be installed: libva selects by PCI
     # ID at runtime.
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    apt_install \
         intel-media-va-driver-non-free \
         i965-va-driver-shaders \
         libva2 libva-drm2 vainfo
 
     # AMD. The kernel driver is in-tree; what is needed from userspace is the
     # firmware (from backports, for RDNA3 and newer) and libdrm.
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    apt_install \
         firmware-amd-graphics libdrm-amdgpu1
 
     # NVIDIA, proprietary. Two consequences worth being explicit about:
@@ -238,7 +238,7 @@ if [ "$ARCH" = "amd64" ]; then
     #
     # nvidia-vaapi-driver bridges VAAPI onto NVDEC, so the same video path
     # used for Intel and AMD works here too instead of falling back to CPU.
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    apt_install \
         nvidia-driver \
         nvidia-vaapi-driver
 
@@ -281,7 +281,7 @@ elif [ "$ARCH" = "arm64" ]; then
     # them, and raspi-utils gives vcgencmd - the only way to tell whether the
     # board is thermally or voltage throttled. On a kiosk "the video stutters"
     # and "the PSU is undersized" look identical from every other angle.
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    apt_install \
         v4l-utils \
         gstreamer1.0-tools \
         raspi-utils
@@ -298,7 +298,7 @@ fi
 # - CEF's X11-only embedding would have forced an X server underneath it
 # anyway, so the compositor bought nothing and cost a moving part.
 
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+apt_install \
     xserver-xorg xserver-xorg-video-all xserver-xorg-input-all \
     xinit x11-xserver-utils kbd \
     pipewire pipewire-audio pipewire-pulse pipewire-jack pipewire-alsa \
@@ -312,17 +312,17 @@ chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
 # have dragged libva back onto arm64 through dependencies, undoing the removal
 # above without anyone noticing.
 if [ "$ARCH" = "amd64" ]; then
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    apt_install \
         gstreamer1.0-vaapi
 fi
 
 # ---------- UniTotem packages ----------
 
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+apt_install \
     python3-pip python3-apt python3-venv \
     libopenjp2-7-dev openssl mediainfo haproxy rfkill alsa-utils cron
 
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y unitotem-manager
+apt_install unitotem-manager
 
 # Local override: any .deb in work/extra-debs/ is installed over what the apt repository provided. This is how
 # an image gets a manager build that is not published yet (e.g. one with the /health endpoint the A/B update
