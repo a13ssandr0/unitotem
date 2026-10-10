@@ -8,11 +8,17 @@ rm -rf "${ROOTFS}"
 mkdir -p "${ROOTFS}"
 
 echo "Extracting stage 0..."
-tar -C "${ROOTFS}" -xzf "${WORK_DIR}/stage0.tar.gz"
+tar -I pigz -C "${ROOTFS}" -xf "${WORK_DIR}/stage0.tar.gz"
 
 ensure_qemu
 mount_chroot
 install_policy_rc
+
+# Build-time only: dpkg fsync()s every file it unpacks, which on the container's overlay filesystem dominates
+# the install and keeps the CPUs idle. The result is thrown into a tarball and re-checked later, so a crash
+# mid-build costs a rerun, not data. Removed again before the tarball is made (see "Clean up").
+mkdir -p "${ROOTFS}/etc/apt/apt.conf.d"
+echo 'Dpkg::Options { "--force-unsafe-io"; };' > "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
 
 # ---------- APT sources ----------
 
@@ -318,11 +324,12 @@ chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y unitote
 if ls /work/extra-debs/*.deb >/dev/null 2>&1; then
     mkdir -p "${ROOTFS}/tmp/extra-debs"
     cp /work/extra-debs/*.deb "${ROOTFS}/tmp/extra-debs/"
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades /tmp/extra-debs/*.deb
+    chroot "${ROOTFS}" sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades /tmp/extra-debs/*.deb"
     rm -rf "${ROOTFS}/tmp/extra-debs"
 fi
 
 # ---------- Clean up ----------
+rm -f "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get clean
 rm -rf "${ROOTFS}/var/lib/apt/lists/"*
@@ -331,6 +338,6 @@ remove_policy_rc
 umount_chroot
 
 echo "Saving stage 1 tarball..."
-tar -C "${ROOTFS}" -czf "${WORK_DIR}/stage1.tar.gz" .
+tar -I pigz -C "${ROOTFS}" -cf "${WORK_DIR}/stage1.tar.gz" .
 
 echo "=== Stage 1 complete ==="

@@ -30,7 +30,7 @@ rm -rf "${ROOTFS}"
 mkdir -p "${ROOTFS}" "/deploy/${ARCH}"
 
 echo "Extracting stage 1..."
-tar -C "${ROOTFS}" -xzf "${STAGE1}"
+tar -I pigz -C "${ROOTFS}" -xf "${STAGE1}"
 
 ensure_qemu
 mount_chroot
