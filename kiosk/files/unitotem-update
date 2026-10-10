@@ -111,10 +111,27 @@ def state_path(conf, name):
     return os.path.join(conf["UPDATE_STATE_DIR"], name)
 
 
+def event(conf, text):
+    """Forensic trail of what touched the persistent state, on DATA next to it (bounded to ~64 KB). Written
+    best-effort and never allowed to break an operation; it exists so that a power-cut finding can be explained."""
+    try:
+        path = state_path(conf, "events.log")
+        if os.path.exists(path) and os.path.getsize(path) > 65536:
+            os.replace(path, path + ".old")
+        with open(path, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S', time.gmtime())} pid={os.getpid()} {' '.join(sys.argv[1:])[:60]} {text}\n")
+    except OSError:
+        pass
+
+
 def read_state(conf, name, default=None):
     try:
         return json.load(open(state_path(conf, name)))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        if name in ("slots.json", "pending.json"): event(conf, f"read {name}: assente")
+        return default
+    except (OSError, ValueError) as e:
+        event(conf, f"read {name}: ILLEGGIBILE ({type(e).__name__})")
         return default
 
 
@@ -124,6 +141,7 @@ def write_state(conf, name, obj):
     with open(tmp, "w") as f:
         json.dump(obj, f); f.flush(); os.fsync(f.fileno())
     os.replace(tmp, state_path(conf, name))
+    event(conf, f"write {name}: {json.dumps(obj)[:200]}")
     try:
         fd = os.open(conf["UPDATE_STATE_DIR"], os.O_RDONLY); os.fsync(fd); os.close(fd)
     except OSError:
@@ -713,6 +731,10 @@ def cmd_boot_ok(a, conf):
         if not (st[cur].get("confirmed") and st[cur].get("version") == ver):
             st[cur] = {"version": ver, "valid": True, "prepared": True, "confirmed": True}
             write_state(conf, "slots.json", st)
+        # A manual rollback is "armed" when requested and only done once the previous slot has actually come up.
+        lr = read_state(conf, "last-result.json") or {}
+        if lr.get("op") == "rollback" and lr.get("result") == "armed" and lr.get("slot") == cur:
+            set_last_result(conf, op="rollback", result="ok", slot=cur, version=ver)
         return 0, {"trial": False}
     if pend.get("slot") != cur:
         # We are on the old slot although a trial was armed: the trial slot did not come back.
