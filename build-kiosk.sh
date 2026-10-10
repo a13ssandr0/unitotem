@@ -151,7 +151,7 @@ for ARCH in ${ARCHES}; do
         echo "[arm64] Build nativa fallita, ripiego su Docker+qemu-aarch64..." >&2
     fi
 
-    mkdir -p "${DIR}/work/${ARCH}" "${DIR}/deploy/${ARCH}"
+    mkdir -p "${DIR}/work/${ARCH}" "${DIR}/deploy/${ARCH}" "${DIR}/work/apt-cache"
 
     RUN_OPTS=(
         --rm
@@ -159,6 +159,7 @@ for ARCH in ${ARCHES}; do
         -v /dev:/dev
         -v "${DIR}/work:/work"
         -v "${DIR}/deploy:/deploy"
+        -v "${DIR}/work/apt-cache:/aptcache"
         -e "ARCH=${ARCH}"
     )
 
