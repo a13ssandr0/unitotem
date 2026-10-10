@@ -121,8 +121,13 @@ def read_state(conf, name, default=None):
 def write_state(conf, name, obj):
     os.makedirs(conf["UPDATE_STATE_DIR"], exist_ok=True)
     tmp = state_path(conf, name) + ".tmp"
-    with open(tmp, "w") as f: json.dump(obj, f)
+    with open(tmp, "w") as f:
+        json.dump(obj, f); f.flush(); os.fsync(f.fileno())
     os.replace(tmp, state_path(conf, name))
+    try:
+        fd = os.open(conf["UPDATE_STATE_DIR"], os.O_RDONLY); os.fsync(fd); os.close(fd)
+    except OSError:
+        pass
 
 
 def fetch_trusted(conf):
@@ -581,6 +586,8 @@ def do_fetch(a, conf):
             finally:
                 subprocess.run(["umount", mnt]); os.rmdir(mnt)
             crashpoint(conf, "fetch_before_valid")
+            # Everything the flag vouches for must be on disk BEFORE the flag is: flush, then write it.
+            os.sync()
             st[new] = {"version": m["version"], "valid": True, "prepared": True}
             write_state(conf, "slots.json", st)
             crashpoint(conf, "fetch_after_valid")
@@ -609,6 +616,19 @@ def cmd_fetch(a, conf):
     return 0, {"started": True, "unit": "unitotem-update-fetch"}
 
 
+def slot_check(conf, new, st):
+    # Do not trust the flag alone: an interruption can leave it set over data that is not what it says. A
+    # read-only fsck and the label are cheap next to booting a half-written slot, and a failure here just
+    # means "fetch again" - the operation is repeated, never assumed done.
+    dev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
+    dev = dev[0] if dev else ""
+    if (not dev or run_out("blkid", "-s", "LABEL", "-o", "value", dev, check=False) != label(new)
+            or subprocess.run(["e2fsck", "-fn", dev], capture_output=True).returncode != 0):
+        st[new] = {"version": None, "valid": False}
+        write_state(conf, "slots.json", st)
+        raise Fail("slot-not-verified", f"lo slot {new} non supera il controllo prima dell'attivazione: rifare fetch")
+
+
 def cmd_apply(a, conf):
     need_backend(conf)
     cur = cur_slot(conf); new = other_slot(cur)
@@ -617,6 +637,7 @@ def cmd_apply(a, conf):
     st = slots_state(conf)
     if not (st[new].get("valid") and st[new].get("prepared")):
         raise Fail("nothing-fetched", f"lo slot {new} non contiene una release verificata (eseguire fetch)")
+    slot_check(conf, new, st)
     crashpoint(conf, "apply_start")
     write_state(conf, "pending.json", {"slot": new, "from": cur, "from_version": current_version(conf), "version": st[new]["version"],
                                        "armed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
