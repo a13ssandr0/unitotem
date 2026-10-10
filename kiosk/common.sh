@@ -112,8 +112,11 @@ apt_install() {
            | grep "^'" || true)
     if [ -n "$uris" ] && command -v aria2c >/dev/null 2>&1; then
         local list; list=$(mktemp)
-        printf '%s\n' "$uris" | awk '{u=$1; gsub(/\x27/,"",u); h=$4; sub(/^SHA256:/,"",h);
-            print u; print "  out=" $2; if (h != "") print "  checksum=sha-256=" h}' > "$list"
+        # apt prints the hash as "SHA256:xxxx" (or SHA512/SHA1/MD5Sum for repositories without SHA256); aria2 wants
+        # "sha-256=xxxx" etc. An unknown type is skipped rather than passed through - aria2 aborts the whole batch on it.
+        printf '%s\n' "$uris" | awk '{u=$1; gsub(/\x27/,"",u); split($4, hh, ":"); t=hh[1]; h=hh[2];
+            m["SHA256"]="sha-256"; m["SHA512"]="sha-512"; m["SHA1"]="sha-1"; m["MD5Sum"]="md5";
+            print u; print "  out=" $2; if (h != "" && (t in m)) print "  checksum=" m[t] "=" h}' > "$list"
         mkdir -p "${ROOTFS}/var/cache/apt/archives"
         aria2c -q -i "$list" -d "${ROOTFS}/var/cache/apt/archives" -j 16 -x 4 -s 4 --file-allocation=none \
                --allow-overwrite=true --auto-file-renaming=false --retry-wait=3 --max-tries=5 \

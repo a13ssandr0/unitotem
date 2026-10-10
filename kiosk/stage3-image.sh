@@ -38,8 +38,8 @@ if [ "$ARCH" = "amd64" ]; then
     if [ "$AB_LAYOUT" = 1 ]; then P_BOOTFS=1 P_ROOT=2 P_ROOTB=3 P_DATA=4 P_BOOT=
     else P_BOOTFS=1 P_BOOT=2 P_ROOT=3 P_ROOTB= P_DATA=4; fi
 else
-    if [ "$AB_LAYOUT" = 1 ]; then P_BOOTFS=1 P_ROOT=2 P_ROOTB=3 P_DATA=4
-    else P_BOOTFS=1 P_ROOT=2 P_ROOTB= P_DATA=3; fi
+    if [ "$AB_LAYOUT" = 1 ]; then P_BOOTFS=1 P_BOOT= P_ROOT=2 P_ROOTB=3 P_DATA=4
+    else P_BOOTFS=1 P_BOOT= P_ROOT=2 P_ROOTB= P_DATA=3; fi
 fi
 
 if [ "$ARCH" = "amd64" ]; then
