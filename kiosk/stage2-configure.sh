@@ -126,6 +126,10 @@ if [ "$AB_LAYOUT" = 1 ]; then
     # from there. A fixed LABEL=ROOT line here would point the wrong slot at the wrong fs.
     sed -i '/^LABEL=ROOT[[:space:]]\+\/[[:space:]]/d' "${ROOTFS}/etc/fstab"
     grep -q '^LABEL=ROOT[[:space:]]' "${ROOTFS}/etc/fstab" && { echo "fstab: riga / non rimossa" >&2; exit 1; }
+    # amd64 A/B has no BOOT partition (kernels live in each slot's own /boot, GRUB on the ESP):
+    # a leftover LABEL=BOOT line would make systemd wait for a device that does not exist.
+    sed -i '/^LABEL=BOOT[[:space:]]/d' "${ROOTFS}/etc/fstab"
+    grep -q '^LABEL=BOOT' "${ROOTFS}/etc/fstab" && { echo "fstab: riga BOOT non rimossa" >&2; exit 1; }
 fi
 
 # ---------- NetworkManager ----------
