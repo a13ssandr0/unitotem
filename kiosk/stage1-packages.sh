@@ -331,6 +331,12 @@ if ls /work/extra-debs/${ARCH}/*.deb >/dev/null 2>&1; then
     mkdir -p "${ROOTFS}/tmp/extra-debs"
     cp /work/extra-debs/${ARCH}/*.deb "${ROOTFS}/tmp/extra-debs/"
     chroot "${ROOTFS}" sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades /tmp/extra-debs/*.deb"
+    # The 2.x manager package pulled haproxy in as a dependency (it forwarded 80/443 to the app); the 3.x one binds
+    # those ports itself, and a still-enabled haproxy answers them with a 503 instead. Only when a local 3.x .deb
+    # replaced the repository package - the arm64 image still runs the repository 2.x manager.
+    if chroot "${ROOTFS}" dpkg -s haproxy >/dev/null 2>&1; then
+        chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y haproxy
+    fi
     rm -rf "${ROOTFS}/tmp/extra-debs"
 fi
 
