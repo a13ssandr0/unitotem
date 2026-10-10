@@ -77,6 +77,17 @@ with tempfile.TemporaryDirectory() as td:
     time.sleep(0.3)
     check("rollback: riavvio normale (non tryboot)", open(reboots).read().strip().splitlines()[-1] == "trial=0")
 
+    # whitelist import is repeatable: a change made between fetch and apply must reach the new slot
+    data = conf["UPDATE_DATA"]; os.makedirs(data + "/upper/etc.a/unitotem"); os.makedirs(data + "/upper/etc.b")
+    open(data + "/upper/etc.a/unitotem/update.conf", "w").write("v1\n")
+    open(data + "/upper/etc.a/hostname", "w").write("kiosk\n")
+    pl = os.path.join(td, "pl"); open(pl, "w").write("# c\nhostname\nunitotem*\nunitotem*/**\n")
+    n1 = uu.import_whitelist(conf, "b", "a", pl)
+    open(data + "/upper/etc.a/unitotem/update.conf", "w").write("v2\n")
+    uu.import_whitelist(conf, "b", "a", pl)
+    check("whitelist: prima importazione", n1 >= 2 and open(data + "/upper/etc.b/hostname").read() == "kiosk\n")
+    check("whitelist: reimportazione sovrascrive (modifica tra fetch e apply)", open(data + "/upper/etc.b/unitotem/update.conf").read() == "v2\n")
+
     # ---- release builder (arm64) + bootfiles install, via the fake server ----
     img = os.path.join(td, "arm.img")
     sh("truncate", "-s", "400M", img)
