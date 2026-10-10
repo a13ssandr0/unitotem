@@ -120,8 +120,13 @@ final_complete() {   # final_complete NAME : bring the update to a confirmed slo
         UU fetch --foreground >/dev/null 2>&1; local rc=$?
         check "$name: dopo il taglio un nuovo fetch riesce (rc=$rc)" test $rc -eq 0
         UU apply --reboot >/dev/null 2>&1
-        sleep 15; wait_ssh 240
-        sleep 25   # let boot-ok confirm
+        # poll for the outcome instead of sleeping: a loaded host makes the boot time vary a lot
+        local t
+        for ((t=0;t<80;t++)); do
+            sleep 3
+            UU status >"$W/st.json" 2>/dev/null || continue
+            [ "$(jfield slot < "$W/st.json" 2>/dev/null)" = b ] && [ "$(jfield pending_confirm < "$W/st.json" 2>/dev/null)" = False ] && break
+        done
     fi
     UU status >"$W/st.json"
     check "$name: a fine prova si e' su B confermato" bash -c "[ \"\$(python3 -c \"import json;d=json.load(open('$W/st.json'));print(d['slot'],d['pending_confirm'])\")\" = 'b False' ]"
@@ -158,10 +163,10 @@ scn_apply() {
 scn_trial_boot_cut() {   # kill at DELAY seconds after the reboot into the trial slot begins
     local d="$1" n="boot_cut_${1}s"
     new_run "$ROOTW/base1.qcow2" "$n"; vm_start "$RUN"; wait_ssh 200 || return
-    local before; before=$(serial_count 'Linux version')
+    local before; before=$(serial_count 'BdsDxe: starting')
     UU apply --reboot >/dev/null
-    wait_serial 'Linux version' $((before+1)) 120 || { check "$n: nuovo avvio osservato" false; vm_kill; return; }
-    sleep "$d"; vm_kill; log "$n: spenta ${d}s dopo l'inizio del kernel di B"
+    wait_serial 'BdsDxe: starting' $((before+1)) 120 || { check "$n: nuovo avvio osservato" false; vm_kill; return; }
+    sleep "$d"; vm_kill; log "$n: spenta ${d}s dopo l'avvio del firmware verso B"
     : > "$W/serial.log"; vm_start "$RUN"; wait_ssh 240 || { check "$n: la VM riparte" false; return; }
     check "$n: la VM riparte dopo il taglio" true
     UU status >"$W/st.json"; sleep 20; UU status >"$W/st.json"

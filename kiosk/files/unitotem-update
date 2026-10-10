@@ -512,7 +512,10 @@ def do_fetch(a, conf):
             part = next((p for p in m["parts"] if p.get("role") == "root"), None)
             if not part:
                 raise Fail("no-root-part", "il manifest non contiene la parte con role=root")
-            dev = run_out("blkid", "-L", label(new))
+            # By GPT partition name, not filesystem label: a slot that lost power mid-write has a neutral or
+            # stale label, and must still be findable to be rewritten.
+            dev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
+            dev = dev[0] if dev else run_out("blkid", "-L", label(new), check=False)
             if not dev:
                 raise Fail("no-slot-device", f"partizione {label(new)} non trovata")
             if subprocess.run(["findmnt", "-S", dev], capture_output=True).returncode == 0:
