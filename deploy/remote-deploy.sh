@@ -472,6 +472,21 @@ wait_ota_reachable() {
 # subcommands over the OTA SSH session, once it is reachable. See the
 # plan's "sequenza a due stage".
 # ---------------------------------------------------------------------------
+# populate-bootfs for the parts set's boot-partition tarball. One place, because A/B runs it in stage 1
+# and every other layout in stage 2.
+populate_bootfs_step() {
+    local host="$1" disk="$2" bootfs_part="$3"
+    local hostip="${P[SSHCLIENT]:-}"
+    [ -n "$hostip" ] && [ "$hostip" != none ] || hostip=$(ip -o route get "${host}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+    [ -n "$hostip" ] || die "impossibile determinare l'IP dell'host verso il target"
+    local bootfs_tar; bootfs_tar=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
+    [ -n "$bootfs_tar" ] || return 0
+    local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
+    wait_port_bound "$OPT_PORT" 10 || die "listener dati non pronto (bootfs)"
+    ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
+    wait "$pid" 2>/dev/null || true
+}
+
 run_ota_sequence() {
     local host="$1" disk_byid="$2"
 
@@ -502,7 +517,10 @@ run_ota_sequence() {
         # shellcheck disable=SC2086
         ota_ssh "$host" "unitotem-ota-engine restore-table --disk '${disk}' --table-b64 '${table_b64}' --tail-part '${data_part}' ${bootcode_arg}"
         local bootfs_label; bootfs_label=$([ "$ARCH" = arm64 ] && echo FIRMWARE || echo EFI)
-        ota_ssh "$host" "unitotem-ota-engine prepare-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --fstype vfat --fresh 1 --label ${bootfs_label}"
+        local volid_arg=""
+        [ -n "${P_BOOTFS_VOLID:-}" ] && volid_arg="--volid '${P_BOOTFS_VOLID}'"
+        # shellcheck disable=SC2086
+        ota_ssh "$host" "unitotem-ota-engine prepare-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --fstype vfat --fresh 1 --label ${bootfs_label} ${volid_arg}"
     fi
 
     log "Copio il kernel/initrd di fallback sulla partizione di boot..."
@@ -520,7 +538,17 @@ run_ota_sequence() {
     ota_ssh_send "$host" "unitotem-ota-engine write-bootfile --disk '${disk}' --bootfs-part '${bootfs_part}' --name ${recovery_name_initrd} ${subdir}" \
         < "${DIR}/deploy/${ARCH}/recovery-initrd-${ARCH}.img"
 
-    ota_ssh "$host" "unitotem-ota-engine set-default-recovery --disk '${disk}' --firmware '${firmware_grub}' --bootfs-part '${bootfs_part}'"
+    # A/B (amd64): the boot partition's file-level content carries GRUB itself and the grub.cfg whose
+    # 'ota-recovery' entry set-default-recovery selects, so it has to be there BEFORE the default is
+    # switched - and it must not be repeated in stage 2.
+    local bootfs_populated=0
+    if [ "${P_LAYOUT:-1}" = 2 ]; then
+        populate_bootfs_step "$host" "$disk" "$bootfs_part" || die "popolamento della partizione di boot fallito"
+        bootfs_populated=1
+        ota_ssh "$host" "unitotem-ota-engine set-default-recovery --disk '${disk}' --firmware '${firmware_grub}' --bootfs-part '${bootfs_part}' --layout ab"
+    else
+        ota_ssh "$host" "unitotem-ota-engine set-default-recovery --disk '${disk}' --firmware '${firmware_grub}' --bootfs-part '${bootfs_part}'"
+    fi
     log "Stage 1 completato: da qui ogni perdita di alimentazione riavvia sul fallback."
 
     log "=== Stage 2: immagine UniTotem ==="
@@ -541,13 +569,9 @@ run_ota_sequence() {
     # has its own exclude list protecting config.txt/cmdline.txt, the
     # recovery kernel/initrd Stage 1 just wrote, and every unitotem-ota.*
     # runtime state file.
-    log "Popolo il contenuto file-level della partizione di boot..."
-    local bootfs_tar; bootfs_tar=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
-    if [ -n "$bootfs_tar" ]; then
-        local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
-        wait_port_bound "$OPT_PORT" 10 || die "listener dati non pronto (bootfs)"
-        ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
-        wait "$pid" 2>/dev/null || true
+    if [ "$bootfs_populated" != 1 ]; then
+        log "Popolo il contenuto file-level della partizione di boot..."
+        populate_bootfs_step "$host" "$disk" "$bootfs_part" || die "popolamento della partizione di boot fallito"
     fi
 
     local -A block
@@ -577,6 +601,9 @@ run_ota_sequence() {
                 ota_ssh "$host" "unitotem-ota-engine restore-part --disk '${disk}' --part '${partnum}' --cloner '${cloner}' --comp '${comp}' --used-bytes '${used}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
                 wait "$pid" 2>/dev/null || true
                 ;;
+            format)
+                ota_ssh "$host" "unitotem-ota-engine format-part --disk '${disk}' --part '${partnum}' --label '${label}'"
+                ;;
             data)
                 if [ "$OPT_WIPE_DATA" = 1 ] || [ "${P[HAVE_DATA]:-0}" != 1 ]; then
                     ota_ssh "$host" "unitotem-ota-engine data-op --disk '${disk}' --part '${partnum}' --op mkfs"
@@ -598,7 +625,8 @@ run_ota_sequence() {
         ota_ssh "$host" "unitotem-ota-engine populate-real-kernel"
     fi
 
-    ota_ssh "$host" "unitotem-ota-engine migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data" || warn "migrazione /etc fallita (non fatale, il sistema nuovo usa comunque il proprio /etc)"
+    local slot_arg=""; [ "${P_LAYOUT:-1}" = 2 ] && slot_arg="--slot a"
+    ota_ssh "$host" "unitotem-ota-engine migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data ${slot_arg}" || warn "migrazione /etc fallita (non fatale, il sistema nuovo usa comunque il proprio /etc)"
 
     # Carry the probed network settings onto the installed system. This is
     # what makes ADOPTION keep working: a foreign device's configuration
@@ -607,7 +635,7 @@ run_ota_sequence() {
     # it. Skips itself when a profile was migrated, and when the link is
     # wired DHCP and therefore needs no profile at all. Non-fatal: a target
     # that cannot be reconfigured is still better off booting.
-    local net_args="--data-mnt /mnt/newroot/mnt/data --link '${P[NETLINK]:-wired}' --mode '${P[NETMODE]:-dhcp}'"
+    local net_args="${slot_arg} --data-mnt /mnt/newroot/mnt/data --link '${P[NETLINK]:-wired}' --mode '${P[NETMODE]:-dhcp}'"
     [ -n "${P[NETADDR]:-}" ]        && net_args="${net_args} --addr '${P[NETADDR]}'"
     [ -n "${P[NETGW]:-}" ]          && net_args="${net_args} --gw '${P[NETGW]}'"
     [ -n "${P[NETDNS]:-}" ]         && net_args="${net_args} --dns '${P[NETDNS]}'"
@@ -621,6 +649,8 @@ run_ota_sequence() {
     [ "$FIRMWARE" = rpi ] && trial_mode=$([ "$TRYBOOT_CAPABLE" = 1 ] && echo rpi-tryboot || echo rpi-legacy)
     if [ "$FIRMWARE" = rpi ]; then
         ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --disk '${disk}' --bootfs-part '${bootfs_part}'"
+    elif [ "${P_LAYOUT:-1}" = 2 ]; then
+        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --target /mnt/newroot --layout ab"
     else
         ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --target /mnt/newroot"
     fi
@@ -672,8 +702,17 @@ cmd_deploy() {
             /^UNITOTEM_PART_LABEL=/{if($2==want){print n; exit}}
         ' "${OPT_PARTS}/parts.manifest"
     }
-    P_ROOT_PART=$(part_num_for_label ROOT)
+    P_LAYOUT=$(awk -F= '/^UNITOTEM_LAYOUT=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
+    P_LAYOUT="${P_LAYOUT:-1}"
+    if [ "$P_LAYOUT" = 2 ]; then
+        [ "$ARCH" = amd64 ] && [ "$FIRMWARE" = uefi ] \
+            || die "il layout A/B e' implementato solo per amd64/UEFI (target: ${ARCH}/${FIRMWARE}); BIOS legacy e Raspberry Pi non ancora"
+        P_ROOT_PART=$(part_num_for_label ROOT_A)
+    else
+        P_ROOT_PART=$(part_num_for_label ROOT)
+    fi
     P_BOOT_PART=$(part_num_for_label BOOT)
+    P_BOOTFS_VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
 
     echo ""
     echo "Parts set   : $(basename "$OPT_PARTS")"
