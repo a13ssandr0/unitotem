@@ -14,8 +14,11 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$DIR/deploy/lib.sh" 2>/dev/null
-W="$DIR/work/powercut"; mkdir -p "$W"
-PORT=2230; HTTP_PORT=18081
+# Base disks and releases are shared (read-only backing files); every job gets its own directory, SSH port and
+# serial log, so scenarios can run side by side (`par N ...`) - the VMs are what use the CPU.
+ROOTW="$DIR/work/powercut"; PC_ID="${PC_ID:-0}"
+W="$ROOTW/job-$PC_ID"; mkdir -p "$W"
+PORT=$((2230 + PC_ID)); HTTP_PORT=18081
 OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd; OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
 RESULTS="$W/results.txt"
 pass=0; failn=0
@@ -29,8 +32,8 @@ VM_PID=""
 vm_start() {   # vm_start DISK.qcow2   (serial -> $W/serial.log, appended)
     local disk="$1"
     cp "$OVMF_VARS" "$W/vars.fd" 2>/dev/null || true
-    [ -f "$W/vars.keep" ] && cp "$W/vars.keep" "$W/vars.fd"
-    qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 2 -m 3072 \
+    [ -f "$ROOTW/vars.keep" ] && cp "$ROOTW/vars.keep" "$W/vars.fd"
+    qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 2 -m 2048 \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" -drive if=pflash,format=raw,file="$W/vars.fd" \
         -drive file="$disk",format=qcow2,if=virtio -netdev user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22 -device virtio-net-pci,netdev=n0 \
         -device virtio-vga -display none -serial "file:$W/serial.log" -pidfile "$W/qemu.pid" >"$W/qemu.out" 2>&1 &
@@ -52,7 +55,7 @@ start_fake_server() {
     python3 "$DIR/tools/release/fake-github.py" --root "$REL" --bind 127.0.0.1 --port $HTTP_PORT >"$W/fake.log" 2>&1 &
     sleep 1
 }
-REL="$W/releases"
+REL="$ROOTW/releases"
 
 set_crashpoint() {   # set_crashpoint NAME   (persisted in the guest's update.conf)
     SSH "sed -i '/^UPDATE_CRASHPOINT=/d' /etc/unitotem/update.conf; echo UPDATE_CRASHPOINT=$1 >> /etc/unitotem/update.conf; sync"
@@ -66,9 +69,9 @@ print('' if v is None else v)" "$1"; }
 prep() {
     local raw="$1"; REL="$2"
     log "prep: base0 da $raw"
-    qemu-img convert -f raw -O qcow2 "$raw" "$W/base0.qcow2"
-    cp "$OVMF_VARS" "$W/vars.keep"
-    : > "$W/serial.log"; vm_start "$W/base0.qcow2"; wait_ssh 200 || { echo "VM non raggiungibile"; return 1; }
+    qemu-img convert -f raw -O qcow2 "$raw" "$ROOTW/base0.qcow2"
+    cp "$OVMF_VARS" "$ROOTW/vars.keep"
+    : > "$W/serial.log"; vm_start "$ROOTW/base0.qcow2"; wait_ssh 200 || { echo "VM non raggiungibile"; return 1; }
     # Install the current update tool into slot A (it postdates the image), configure the fake release server.
     SSH 'mount -o remount,rw / ; true'
     _sshpass ssh "${SSH_OPTS[@]}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p $PORT root@127.0.0.1 'cat > /usr/sbin/unitotem-update.new && chmod 755 /usr/sbin/unitotem-update.new && mv /usr/sbin/unitotem-update.new /usr/sbin/unitotem-update' < "$DIR/kiosk/files/unitotem-update"
@@ -79,15 +82,15 @@ prep() {
 }
 
 fetched() {
-    REL="$W/releases"; start_fake_server
-    new_run "$W/base0.qcow2" fetched
+    REL="$ROOTW/releases"; start_fake_server
+    new_run "$ROOTW/base0.qcow2" fetched
     vm_start "$RUN"; wait_ssh 200 || return 1
     log "fetch completo (snapshot dopo il download)..."
     UU fetch --foreground | tee "$W/fetch.out"
     clean_shutdown
     cp "$RUN" "$W/base1-overlay.qcow2"
     # flatten: base1 = base0 + fetch
-    qemu-img convert -O qcow2 "$RUN" "$W/base1.qcow2"; rm -f "$RUN" "$W/base1-overlay.qcow2"
+    qemu-img convert -O qcow2 "$RUN" "$ROOTW/base1.qcow2"; rm -f "$RUN" "$W/base1-overlay.qcow2"
     echo "OK base1"
 }
 
@@ -127,7 +130,7 @@ final_complete() {   # final_complete NAME : bring the update to a confirmed slo
 
 scn_fetch() {   # scn_fetch POINT
     local pt="$1" n="fetch_${1#fetch_}"
-    crash_at "$W/base0.qcow2" "$n" "$pt" "unitotem-update --json fetch --foreground" || return
+    crash_at "$ROOTW/base0.qcow2" "$n" "$pt" "unitotem-update --json fetch --foreground" || return
     UU status >"$W/st.json"
     check "$n: dopo il taglio si e' sullo slot A" bash -c "[ \"\$(python3 -c \"import json;print(json.load(open('$W/st.json'))['slot'])\")\" = a ]"
     check "$n: il default resta A" bash -c "[ \"\$(python3 -c \"import json;print(json.load(open('$W/st.json'))['default_slot'])\")\" = a ]"
@@ -141,7 +144,7 @@ scn_fetch() {   # scn_fetch POINT
 }
 scn_apply() {
     local pt="$1" n="apply_${1#apply_}"
-    crash_at "$W/base1.qcow2" "$n" "$pt" "unitotem-update --json apply --reboot" || return
+    crash_at "$ROOTW/base1.qcow2" "$n" "$pt" "unitotem-update --json apply --reboot" || return
     UU status >"$W/st.json"
     local cur; cur=$(jfield slot < "$W/st.json")
     if [ "$pt" = apply_after_arm ]; then
@@ -153,7 +156,7 @@ scn_apply() {
 }
 scn_trial_boot_cut() {   # kill at DELAY seconds after the reboot into the trial slot begins
     local d="$1" n="boot_cut_${1}s"
-    new_run "$W/base1.qcow2" "$n"; vm_start "$RUN"; wait_ssh 200 || return
+    new_run "$ROOTW/base1.qcow2" "$n"; vm_start "$RUN"; wait_ssh 200 || return
     local before; before=$(serial_count 'Linux version')
     UU apply --reboot >/dev/null
     wait_serial 'Linux version' $((before+1)) 120 || { check "$n: nuovo avvio osservato" false; vm_kill; return; }
@@ -168,7 +171,7 @@ scn_trial_boot_cut() {   # kill at DELAY seconds after the reboot into the trial
 }
 scn_bootside() {   # scn_bootside POINT : crash inside boot-ok / confirm on the trial slot
     local pt="$1" n="b_${1}"
-    new_run "$W/base1.qcow2" "$n"; vm_start "$RUN"; wait_ssh 200 || return
+    new_run "$ROOTW/base1.qcow2" "$n"; vm_start "$RUN"; wait_ssh 200 || return
     set_crashpoint "$pt"
     UU apply --reboot >/dev/null
     if wait_serial "CRASHPOINT $pt" 1 240; then vm_kill; else check "$n: raggiunto $pt" false; vm_kill; return; fi
@@ -187,22 +190,22 @@ scn_bootside() {   # scn_bootside POINT : crash inside boot-ok / confirm on the 
 scn_rollback() {
     local pt="$1" n="rb_$1"
     # start from "B confirmed": need base2 (flatten of a completed update)
-    [ -f "$W/base2.qcow2" ] || make_base2 || return
-    crash_at "$W/base2.qcow2" "$n" "$pt" "unitotem-update --json rollback --reboot" || return
+    [ -f "$ROOTW/base2.qcow2" ] || make_base2 || return
+    crash_at "$ROOTW/base2.qcow2" "$n" "$pt" "unitotem-update --json rollback --reboot" || return
     UU status >"$W/st.json"; local cur; cur=$(jfield slot < "$W/st.json")
     if [ "$pt" = rollback_after_default ]; then check "$n: default gia' A -> riparte su A" test "$cur" = a
     else check "$n: default ancora B -> riparte su B" test "$cur" = b; fi
     vm_kill
 }
 make_base2() {
-    new_run "$W/base1.qcow2" base2; vm_start "$RUN"; wait_ssh 200 || return 1
+    new_run "$ROOTW/base1.qcow2" base2; vm_start "$RUN"; wait_ssh 200 || return 1
     UU apply --reboot >/dev/null; sleep 20; wait_ssh 240; sleep 30
     [ "$(slot)" = b ] || return 1
-    clean_shutdown; qemu-img convert -O qcow2 "$RUN" "$W/base2.qcow2"
+    clean_shutdown; qemu-img convert -O qcow2 "$RUN" "$ROOTW/base2.qcow2"
 }
 scn_torn_grubenv() {
     local n="torn_grubenv"
-    new_run "$W/base1.qcow2" "$n"; vm_start "$RUN"; wait_ssh 200 || return
+    new_run "$ROOTW/base1.qcow2" "$n"; vm_start "$RUN"; wait_ssh 200 || return
     # simulate a half-written environment block, then cut the power
     SSH 'dd if=/dev/zero of=/boot/efi/unitotem-grub/grub/grubenv bs=512 count=1 conv=notrunc 2>/dev/null; sync'
     vm_kill; : > "$W/serial.log"; vm_start "$RUN"; wait_ssh 240 || { check "$n: con grubenv illeggibile la VM riparte" false; return; }
@@ -226,7 +229,15 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
     prep) prep "$@" ;;
     fetched) fetched ;;
-    run) : > "$RESULTS"; REL="$W/releases"; start_fake_server
+    base2) make_base2 && echo "OK base2" ;;
+    par)   N="$1"; shift; names="$*"; [ "$names" = all ] && names="$ALL"
+           [ -f "$ROOTW/base2.qcow2" ] || { PC_ID=0 "$0" base2 || exit 1; }
+           REL="$ROOTW/releases"; start_fake_server
+           i=0; for s_ in $names; do i=$((i+1)); echo "$i $s_"; done \
+             | xargs -P "$N" -L1 bash -c 'PC_ID=$0 "'"$0"'" run "$1"' 
+           cat "$ROOTW"/job-*/results.txt | grep -E '^(PASS|FAIL)' | sort | uniq > "$ROOTW/all-results.txt"
+           echo; echo "totale: $(grep -c '^PASS' "$ROOTW/all-results.txt") passati, $(grep -c '^FAIL' "$ROOTW/all-results.txt") falliti"; grep '^FAIL' "$ROOTW/all-results.txt" ;;
+    run) : > "$RESULTS"; REL="$ROOTW/releases"; start_fake_server
          names="$*"; [ "$names" = all ] && names="$ALL"
          for s in $names; do log "=== $s ==="; run_one "$s"; vm_kill; done
          echo; echo "$pass passati, $failn falliti" | tee -a "$RESULTS"; [ "$failn" = 0 ] ;;
