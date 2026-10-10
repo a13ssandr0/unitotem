@@ -90,7 +90,7 @@ build_natively_on_pi() {
     # saying why.
     local envvars="ARCH=arm64 ROOTFS='${PI_BUILD_BASE}/rootfs' IMG_MNT='${PI_BUILD_BASE}/imgmnt'"
     local var
-    for var in RELEASE MIRROR KIOSK_HOSTNAME ROOT_PASSWORD KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE; do
+    for var in RELEASE MIRROR KIOSK_HOSTNAME ROOT_PASSWORD KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE; do
         [ -n "${!var:-}" ] && envvars="${envvars} ${var}='${!var}'"
     done
 
@@ -164,7 +164,7 @@ for ARCH in ${ARCHES}; do
 
     # Pass through optional config overrides
     for VAR in RELEASE MIRROR KIOSK_HOSTNAME ROOT_PASSWORD \
-               KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE; do
+               KIOSK_LOCALE KIOSK_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE; do
         [ -n "${!VAR:-}" ] && RUN_OPTS+=(-e "${VAR}=${!VAR}")
     done
 
@@ -196,6 +196,14 @@ for ARCH in ${ARCHES}; do
         # ota-engine.sh treated as an unconditional dependency of every
         # stage, editing it forced a full stage0 re-bootstrap (~150 packages
         # re-downloaded) with nothing in stage0 actually depending on it.
+        # stage2 bakes the layout in (root= on the cmdline, fstab, GRUB entries), and a
+        # timestamp comparison cannot see an environment variable change: without this a
+        # single-ROOT stage2 tarball would be reused for an A/B image, or the reverse.
+        if [ "$stage_num" = 2 ] && [ "$(cat "${DIR}/work/${ARCH}/stage2.layout" 2>/dev/null || echo 0)" != "${AB_LAYOUT:-0}" ]; then
+            echo "[${ARCH}] Stage 2: rebuild (AB_LAYOUT cambiato rispetto al tarball in cache)"
+            rm -f "${tarball}"
+            return 0
+        fi
         local extra_deps=()
         case "$stage_num" in
             1|2) extra_deps=("${DIR}/kiosk/files"/* "${DIR}/deploy/ota-engine.sh") ;;
@@ -257,6 +265,7 @@ for ARCH in ${ARCHES}; do
     if should_run 2; then
         echo "[${ARCH}] Stage 2: Configuring system..."
         ${DOCKER} run "${RUN_OPTS[@]}" kiosk-builder /kiosk/stage2-configure.sh
+        echo "${AB_LAYOUT:-0}" > "${DIR}/work/${ARCH}/stage2.layout"
     fi
 
     # Stage 3: Create disk image (always runs to produce fresh image)

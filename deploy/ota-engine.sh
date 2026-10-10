@@ -1371,14 +1371,25 @@ cmd_init_premount() {
         return
     fi
 
-    local root_dev
-    root_dev=$(blkid -L ROOT 2>/dev/null || true)
+    # The slot to validate is the one the bootloader chose, named in root= on the command line
+    # (A/B layout: ROOT_A or ROOT_B). Checking a fixed "ROOT" here sent every A/B boot straight
+    # into OTA mode. Single-ROOT images carry root=LABEL=ROOT, so this is the same lookup as before.
+    local root_label root_dev tries=0
+    root_label=$(cmdline_get root 2>/dev/null || true)
+    case "$root_label" in LABEL=*) root_label=${root_label#LABEL=} ;; *) root_label=ROOT ;; esac
+    root_dev=$(blkid -L "$root_label" 2>/dev/null || true)
+    while [ -z "$root_dev" ] && [ "$tries" -lt 5 ]; do
+        udevadm settle --timeout=2 2>/dev/null || true
+        sleep 1
+        root_dev=$(blkid -L "$root_label" 2>/dev/null || true)
+        tries=$((tries + 1))
+    done
     if [ -z "$root_dev" ]; then
-        cmd_serve_fallback --reason "partizione ROOT non trovata"
+        cmd_serve_fallback --reason "partizione $root_label non trovata"
         return
     fi
     if ! run_e2fsck "$root_dev" 2>/dev/null; then
-        cmd_serve_fallback --reason "e2fsck ha rilevato errori non corretti su ROOT"
+        cmd_serve_fallback --reason "e2fsck ha rilevato errori non corretti su $root_label"
         return
     fi
 
