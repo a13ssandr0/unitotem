@@ -329,9 +329,23 @@ def prepare_overlays(conf, new_slot, old_slot, new_root_mnt):
         for kind in ("upper", "work"):
             shutil.rmtree(os.path.join(data, kind, f"{d}.{new_slot}"), ignore_errors=True)
             os.makedirs(os.path.join(data, kind, f"{d}.{new_slot}"))
+    plist = os.path.join(new_root_mnt, "etc/unitotem/ota-preserve.list")
+    # Keep the new image's whitelist: `apply` runs without that slot mounted and re-imports with it.
+    try: shutil.copy2(plist, state_path(conf, "preserve.list"))
+    except OSError: pass
+    n = import_whitelist(conf, new_slot, old_slot, plist)
+    old_root = os.path.join(data, "upper", f"root.{old_slot}")
+    if os.path.isdir(old_root):
+        shutil.copytree(old_root, os.path.join(data, "upper", f"root.{new_slot}"), symlinks=True, dirs_exist_ok=True)
+    return n
+
+
+def import_whitelist(conf, new_slot, old_slot, plist):
+    """Copy the whitelisted /etc paths from the OLD slot's overlay upper into the NEW slot's. Run again at
+    `apply`, so settings changed between the download and the switch are not silently left behind."""
+    data = conf["UPDATE_DATA"]
     old_etc = os.path.join(data, "upper", f"etc.{old_slot}")
     new_etc = os.path.join(data, "upper", f"etc.{new_slot}")
-    plist = os.path.join(new_root_mnt, "etc/unitotem/ota-preserve.list")
     n = 0
     if os.path.isfile(plist):
         for line in open(plist):
@@ -342,16 +356,12 @@ def prepare_overlays(conf, new_slot, old_slot, new_root_mnt):
                 rel = os.path.relpath(src, old_etc)
                 dst = os.path.join(new_etc, rel)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                if os.path.lexists(dst):
-                    continue
                 if os.path.isdir(src) and not os.path.islink(src):
-                    shutil.copytree(src, dst, symlinks=True)
+                    shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
                 else:
+                    if os.path.lexists(dst): os.unlink(dst)
                     shutil.copy2(src, dst, follow_symlinks=False)
                 n += 1
-    old_root = os.path.join(data, "upper", f"root.{old_slot}")
-    if os.path.isdir(old_root):
-        shutil.copytree(old_root, os.path.join(data, "upper", f"root.{new_slot}"), symlinks=True, dirs_exist_ok=True)
     return n
 
 
@@ -484,6 +494,9 @@ def do_fetch(a, conf):
                 raise Fail("slot-mounted", f"{dev} e' montato: rifiuto di scriverci")
             # Point of no return for the old contents of the inactive slot: from here it is not a
             # valid rollback target until the write has been verified.
+            # The slot we are running from is by definition a system that boots: record it, so it is a
+            # legitimate rollback target after the update whether or not a boot-ok ever ran on it.
+            st[cur] = {"version": current_version(conf), "valid": True, "prepared": True, "confirmed": True}
             st[new] = {"version": None, "valid": False}
             write_state(conf, "slots.json", st)
             try: os.unlink(state_path(conf, "pending.json"))
@@ -570,7 +583,7 @@ def cmd_apply(a, conf):
     st = slots_state(conf)
     if not (st[new].get("valid") and st[new].get("prepared")):
         raise Fail("nothing-fetched", f"lo slot {new} non contiene una release verificata (eseguire fetch)")
-    write_state(conf, "pending.json", {"slot": new, "from": cur, "version": st[new]["version"],
+    write_state(conf, "pending.json", {"slot": new, "from": cur, "from_version": current_version(conf), "version": st[new]["version"],
                                        "armed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     # A Raspberry trial only exists for a boot requested with the tryboot flag, so arming without the
     # reboot would leave a tryboot.txt that nothing consumes: refuse instead of pretending it is armed.
@@ -578,6 +591,7 @@ def cmd_apply(a, conf):
         raise Fail("needs-reboot", "su Raspberry l'avvio di prova richiede il riavvio contestuale: usare apply --reboot")
     # One-shot: GRUB clears next_entry before booting it (Raspberry: the firmware reads tryboot.txt only on the
     # tryboot boot), so a crash/power cut during the trial lands back on the current slot with no software involved.
+    imported = import_whitelist(conf, new, cur, state_path(conf, "preserve.list"))
     be_arm_trial(conf, new)
     set_last_result(conf, op="apply", result="armed", version=st[new]["version"], slot=new)
     if a.reboot:
@@ -594,8 +608,11 @@ def confirm_now(conf):
     be_set_default(conf, cur)
     st = slots_state(conf)
     st[cur] = {"version": pend["version"], "valid": True, "prepared": True, "confirmed": True}
-    if pend.get("from") in st and st[pend["from"]].get("valid"):
-        st[pend["from"]]["confirmed"] = True
+    if pend.get("from") in st:
+        # It was running right before the switch, so it is a working system whatever bookkeeping said before.
+        prev = st[pend["from"]]
+        st[pend["from"]] = {"version": prev.get("version") or pend.get("from_version"), "valid": True,
+                            "prepared": True, "confirmed": True}
     write_state(conf, "slots.json", st)
     try: os.unlink(state_path(conf, "pending.json"))
     except OSError: pass
