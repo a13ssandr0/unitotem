@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Host-side release tooling: key generation, key-list signing, release assembly.
+
+Signatures are raw Ed25519 produced/checked with `openssl pkeyutl -rawin`, so the
+device needs nothing beyond the openssl it already ships. See AB-DESIGN.md,
+"Release e chiavi di firma su GitHub".
+
+  keygen      --dir D --name N            private key N.key (0600) + public N.pub
+  sign-keys   --root-key K --pub P [--pub P ...] --seq N --out keys.json
+  build       --parts DIR --version V --release-key K --keys-json F --out DIR [--channel stable|beta]
+"""
+import argparse, hashlib, json, os, shutil, subprocess, sys, time
+
+
+def run(*cmd):
+    subprocess.run(cmd, check=True)
+
+
+def sign(key, path):
+    run("openssl", "pkeyutl", "-sign", "-inkey", key, "-rawin", "-in", path, "-out", path + ".sig")
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def key_id(pub_pem_path):
+    der = subprocess.run(["openssl", "pkey", "-pubin", "-in", pub_pem_path, "-outform", "DER"],
+                         check=True, capture_output=True).stdout
+    return hashlib.sha256(der).hexdigest()[:16]
+
+
+def cmd_keygen(a):
+    os.makedirs(a.dir, exist_ok=True)
+    priv, pub = (os.path.join(a.dir, a.name + e) for e in (".key", ".pub"))
+    if os.path.exists(priv):
+        sys.exit(f"{priv} esiste già: non lo sovrascrivo")
+    old = os.umask(0o077)
+    try:
+        run("openssl", "genpkey", "-algorithm", "ED25519", "-out", priv)
+    finally:
+        os.umask(old)
+    run("openssl", "pkey", "-in", priv, "-pubout", "-out", pub)
+    print(f"{priv}\n{pub}  id={key_id(pub)}")
+
+
+def cmd_sign_keys(a):
+    keys = [{"id": key_id(p), "pub": open(p).read()} for p in a.pub]
+    doc = {"schema": 1, "seq": a.seq, "keys": keys}
+    with open(a.out, "w") as f:
+        json.dump(doc, f, indent=1, sort_keys=True)
+    sign(a.root_key, a.out)
+    print(f"{a.out} (+.sig), {len(keys)} chiavi, seq={a.seq}")
+
+
+def cmd_build(a):
+    tag = "v" + a.version
+    out = os.path.join(a.out, tag)
+    os.makedirs(out, exist_ok=True)
+    parts = []
+    for name in sorted(os.listdir(a.parts)):
+        src = os.path.join(a.parts, name)
+        if name == "SHA256SUMS" or not os.path.isfile(src):
+            continue
+        dst = os.path.join(out, name)
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
+        parts.append({"file": name, "size": os.path.getsize(dst), "sha256": sha256(dst)})
+    meta = dict(l.split("=", 1) for l in open(os.path.join(a.parts, "parts.manifest"))
+                if "=" in l and l.startswith("UNITOTEM_") and l.split("=")[0].count("_") >= 1)
+    manifest = {
+        "schema": 1, "version": a.version, "channel": a.channel,
+        "arch": meta.get("UNITOTEM_ARCH", "").strip(),
+        "layout": a.layout, "min_updater": 1,
+        "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "parts": parts,
+    }
+    mpath = os.path.join(out, "manifest.json")
+    with open(mpath, "w") as f:
+        json.dump(manifest, f, indent=1, sort_keys=True)
+    sign(a.release_key, mpath)
+    shutil.copy2(a.keys_json, os.path.join(out, "keys.json"))
+    shutil.copy2(a.keys_json + ".sig", os.path.join(out, "keys.json.sig"))
+    if a.channel != "stable":
+        open(os.path.join(out, "PRERELEASE"), "w").close()
+    print(f"{out}: {len(parts)} asset, {sum(p['size'] for p in parts)/1e6:.0f} MB")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp = ap.add_subparsers(required=True)
+    p = sp.add_parser("keygen"); p.add_argument("--dir", required=True); p.add_argument("--name", required=True); p.set_defaults(f=cmd_keygen)
+    p = sp.add_parser("sign-keys"); p.add_argument("--root-key", required=True); p.add_argument("--pub", action="append", required=True)
+    p.add_argument("--seq", type=int, required=True); p.add_argument("--out", required=True); p.set_defaults(f=cmd_sign_keys)
+    p = sp.add_parser("build"); p.add_argument("--parts", required=True); p.add_argument("--version", required=True)
+    p.add_argument("--release-key", required=True); p.add_argument("--keys-json", required=True); p.add_argument("--out", required=True)
+    p.add_argument("--channel", default="stable", choices=["stable", "beta"]); p.add_argument("--layout", type=int, default=1)
+    p.set_defaults(f=cmd_build)
+    a = ap.parse_args(); a.f(a)
+
+
+main()

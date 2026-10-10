@@ -1,0 +1,34 @@
+#!/bin/bash
+# Runs once per boot (see unitotem-persist-paths.service), before cron and the
+# manager: bind-mounts directories that hold user data from DATA over their
+# normal place under /var. /var is an overlay whose upper layer an OTA resets
+# (migrate-etc-overlay moves it to history/), so anything the manager writes
+# there is lost at the next update unless it lives on DATA itself.
+#
+# Whole directories, never single files: crontab(1) replaces its file with a
+# rename, which fails on a bind-mounted file.
+#
+# First boot on a DATA that has no copy yet: seed it from whatever is already
+# at the target, so a device updated from an image without this mechanism
+# keeps the content its /var overlay held.
+set -euo pipefail
+
+PERSIST=/mnt/data/unitotem/persist
+
+[ -d /mnt/data ] || { echo "unitotem-persist-paths: /mnt/data non montato, salto" >&2; exit 0; }
+
+# name | target | mode | group
+persist() {
+    local name=$1 target=$2 mode=$3 group=$4 src="$PERSIST/$1"
+    mkdir -p "$target"
+    if [ ! -d "$src" ]; then
+        mkdir -p "$src"
+        cp -a "$target"/. "$src"/ 2>/dev/null || true
+    fi
+    chown "root:$group" "$src"
+    chmod "$mode" "$src"
+    mountpoint -q "$target" || mount --bind "$src" "$target"
+}
+
+persist uploaded /var/lib/unitotem/uploaded 755 root
+persist crontabs /var/spool/cron/crontabs  1730 crontab

@@ -308,7 +308,7 @@ fi
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     python3-pip python3-apt python3-venv \
-    libopenjp2-7-dev openssl mediainfo haproxy rfkill alsa-utils
+    libopenjp2-7-dev openssl mediainfo haproxy rfkill alsa-utils cron
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y unitotem-manager
 
