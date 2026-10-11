@@ -1428,10 +1428,11 @@ cmd_serve_fallback() {
     # an intention with nothing enforcing it. A `||` context suppresses errexit
     # and the ERR trap for the whole function body, which makes it true: the
     # worst a broken UI can now do is not draw.
-    # "Deploy" when a host asked for it, "Recovery" when the device fell back by itself: the screen must say which
-    # of the two is happening (a deploy is not a recovery, and nothing is being "restored" in it).
-    local kind_title="OTA recovery mode"
-    [ "${ARG[kind]:-recovery}" = deploy ] && kind_title="OTA deploy mode"
+    # An update is the normal reason to be here, so it is the default: "OTA update mode". "Recovery" is reserved for the
+    # device having detected a fault by itself (missing/damaged root, repeated failed boots) - showing that word during an
+    # ordinary update would be a false alarm for whoever is standing in front of the screen.
+    local kind_title="OTA update mode"
+    [ "${ARG[kind]:-update}" = recovery ] && kind_title="OTA recovery mode"
     ota_ui_start "${kind_title}
 Reason: ${reason}
 Address: ${myip:-none}   Port: 2222" || true
@@ -1528,12 +1529,12 @@ cmd_init_premount() {
     if cmdline_get unitotem.ota >/dev/null 2>&1; then
         local mode; mode=$(cmdline_get unitotem.ota)
         [ "$mode" = "1" ] || [ "$mode" = "recover" ] || return 0
-        cmd_serve_fallback --reason "kernel command line unitotem.ota=$mode" --kind "$([ "$mode" = recover ] && echo recovery || echo deploy)" --idle-timeout "$([ "$mode" = recover ] && echo 0 || echo 1800)"
+        cmd_serve_fallback --reason "kernel command line unitotem.ota=$mode" --kind "$([ "$mode" = recover ] && echo recovery || echo update)" --idle-timeout "$([ "$mode" = recover ] && echo 0 || echo 1800)"
         return
     fi
 
     if check_flag_file FIRMWARE vfat || check_flag_file EFI vfat; then
-        cmd_serve_fallback --reason "deploy requested by the host" --kind deploy --idle-timeout 1800
+        cmd_serve_fallback --reason "update requested by the host" --kind update --idle-timeout 1800
         return
     fi
 
@@ -1551,11 +1552,11 @@ cmd_init_premount() {
         tries=$((tries + 1))
     done
     if [ -z "$root_dev" ]; then
-        cmd_serve_fallback --reason "partition $root_label not found"
+        cmd_serve_fallback --reason "partition $root_label not found" --kind recovery
         return
     fi
     if ! check_root_readonly "$root_dev"; then
-        cmd_serve_fallback --reason "unrepaired filesystem errors on $root_label"
+        cmd_serve_fallback --reason "unrepaired filesystem errors on $root_label" --kind recovery
         return
     fi
 
@@ -1582,7 +1583,7 @@ cmd_init_premount() {
         return 0
     fi
     if [ -z "$trial_reset" ] && check_bootcount; then
-        cmd_serve_fallback --reason "three consecutive boots without confirmation (unitotem-boot-ok)"
+        cmd_serve_fallback --reason "three consecutive boots without confirmation (unitotem-boot-ok)" --kind recovery
         return
     fi
 
@@ -1638,13 +1639,13 @@ cmd_local_bottom_verify() {
     if [ ! -x "$rootmnt/sbin/init" ] && [ ! -x "$rootmnt/usr/lib/systemd/systemd" ]; then
         warn "init assente su $rootmnt - passo in modalita' OTA"
         umount -lf "$rootmnt" 2>/dev/null || true
-        cmd_serve_fallback --reason "/sbin/init missing on the mounted filesystem"
+        cmd_serve_fallback --reason "/sbin/init missing on the mounted filesystem" --kind recovery
         return
     fi
     if [ ! -d "$rootmnt/etc/kiosk" ]; then
         warn "/etc/kiosk assente su $rootmnt - passo in modalita' OTA"
         umount -lf "$rootmnt" 2>/dev/null || true
-        cmd_serve_fallback --reason "/etc/kiosk missing on the mounted filesystem"
+        cmd_serve_fallback --reason "/etc/kiosk missing on the mounted filesystem" --kind recovery
         return
     fi
 }

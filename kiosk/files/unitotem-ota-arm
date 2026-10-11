@@ -55,6 +55,21 @@ fi
 
 echo "UNITOTEM_OTA_WIPE_DATA=${WIPE_DATA}" > "$mnt/unitotem-ota.request"
 
+# Raspberry with tryboot: enter the deploy screen at a LOW resolution. The screen is a text UI, seen on big 1080p/4K
+# monitors mounted high up, and at the display's native size its characters are a few pixels tall. The reboot goes through
+# tryboot.txt (a complete copy of config.txt plus a command line forcing 640x480 on both HDMI connectors), which the firmware
+# reads for ONE boot only: the normal config.txt and the slot's own cmdline.txt are never touched, so whatever happens
+# next - the deploy completes, is aborted, or the device loses power - the next plain boot is the normal one.
+TRYBOOT=0
+if [ -d /proc/device-tree/chosen/bootloader ] && [ -f "$mnt/config.txt" ]; then
+    prefix=$(sed -n 's/^os_prefix=//p' "$mnt/config.txt" | tail -1)
+    if [ -f "$mnt/${prefix}cmdline.txt" ]; then
+        { read -r base < "$mnt/${prefix}cmdline.txt"; printf '%s video=HDMI-A-1:640x480@60 video=HDMI-A-2:640x480@60\n' "$base" > "$mnt/${prefix}cmdline-ota.txt"; } \
+          && { cat "$mnt/config.txt"; printf '\n[all]\ncmdline=cmdline-ota.txt\n'; } > "$mnt/tryboot.txt.new" \
+          && mv -f "$mnt/tryboot.txt.new" "$mnt/tryboot.txt" && TRYBOOT=1
+    fi
+fi
+
 sync
 umount "$mnt" 2>/dev/null || true
 
@@ -78,5 +93,10 @@ sync
 # had fully succeeded - a false failure on every prepared-target deploy.
 # Sleeping inside the detached session instead lets this script exit, the SSH
 # session close cleanly, and only then does the machine go down.
-setsid nohup sh -c 'sleep 5; exec reboot' >/dev/null 2>&1 < /dev/null &
+if [ "$TRYBOOT" = 1 ]; then
+    # "0 tryboot" is what makes the firmware read tryboot.txt instead of config.txt on the next boot.
+    setsid nohup sh -c 'sleep 5; exec systemctl reboot --reboot-argument="0 tryboot"' >/dev/null 2>&1 < /dev/null &
+else
+    setsid nohup sh -c 'sleep 5; exec reboot' >/dev/null 2>&1 < /dev/null &
+fi
 sleep 1
