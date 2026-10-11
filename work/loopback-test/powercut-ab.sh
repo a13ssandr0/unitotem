@@ -221,6 +221,69 @@ scn_torn_grubenv() {
     vm_kill
 }
 
+
+# ---------------------------------------------------------------------------
+# stress BASE CYCLES MIN MAX [CHECK_EVERY] : repeated hard power cycling, the thunderstorm case. Boot the SAME disk,
+# let it run a random MIN..MAX seconds, kill -9, again. At checkpoints (and at the end) the disk is converted to raw
+# and every filesystem is checked offline - on COPIES, journal replayed first, because a journaled filesystem that
+# needs recovery after a cut is normal; what matters is that it is clean afterwards and that nothing needed more
+# than preen. The last step is a normal boot with no cut, which must reach a working slot.
+stress() {
+    local base="$1" cycles="$2" tmin="$3" tmax="$4" every="${5:-20}" n="stress" c
+    new_run "$base" "$n"
+    local log="$W/stress.log"; : > "$log"
+    local fallback=0 reached=0
+    for ((c=1;c<=cycles;c++)); do
+        local before; before=$(serial_count 'BdsDxe: starting')
+        vm_start "$RUN"
+        local hold=$(( tmin + RANDOM % (tmax - tmin + 1) ))
+        sleep "$hold"
+        # did this boot get far enough to accept ssh? (informational)
+        if SSH true 2>/dev/null; then reached=$((reached+1)); fi
+        tr -d '\033' < "$W/serial.log" | grep -a -q "Modalita. OTA" && fallback=$((fallback+1))
+        vm_kill
+        echo "ciclo $c: ${hold}s, ssh=$([ $reached -gt 0 ] && echo si-finora-$reached || echo no), fallback-visto=$fallback" >> "$log"
+        if (( c % every == 0 )); then stress_check "$n-$c" || true; fi
+    done
+    stress_check "$n-final" || true
+    # final: a normal boot must come up on a working slot
+    : > "$W/serial.log"; vm_start "$RUN"
+    if wait_ssh 300; then
+        local sl; sl=$(slot)
+        check "stress: avvio normale finale su uno slot funzionante (slot=$sl)" bash -c "[ '$sl' = a ] || [ '$sl' = b ]"
+        UU status >"$W/st.json" 2>/dev/null
+        check "stress: lo stato di aggiornamento e' leggibile" bash -c "python3 -c \"import json;json.load(open('$W/st.json'))\""
+        check "stress: grubenv valido" bash -c "$(declare -f SSH); SSH 'grub-editenv /boot/efi/unitotem-grub/grub/grubenv list' | grep -q '^saved_entry='"
+        check "stress: mai finito nel fallback in RAM durante i $cycles cicli (visto $fallback volte)" test "$fallback" -eq 0
+    else
+        check "stress: avvio normale finale: la VM non risponde (probabile fallback o disco danneggiato)" false
+    fi
+    vm_kill
+    echo "cicli=$cycles raggiunto-ssh=$reached fallback=$fallback" | tee -a "$log"
+}
+stress_check() {   # offline filesystem check of the current overlay, on copies
+    local tag="$1" raw="$W/ck.raw" part f s e name ok=1
+    qemu-img convert -O raw "$RUN" "$raw" 2>/dev/null || return 1
+    for part in 1 2 3 4; do
+        s=$(sgdisk -i $part "$raw" | awk '/First sector/{print $3}'); e=$(sgdisk -i $part "$raw" | awk '/Last sector/{print $3}')
+        name=$(sgdisk -i $part "$raw" | awk -F"'" '/Partition name/{print $2}')
+        f="$W/ck-$part.img"
+        dd if="$raw" of="$f" bs=512 skip="$s" count=$((e-s+1)) status=none 2>/dev/null
+        if [ "$part" = 1 ]; then
+            fsck.vfat -n "$f" >"$W/ck.out" 2>&1; local rc=$?
+            if [ $rc -eq 0 ]; then echo "PASS: $tag: $name (FAT) pulita" | tee -a "$RESULTS"; pass=$((pass+1))
+            else echo "FAIL: $tag: $name (FAT) fsck.vfat rc=$rc -- $(head -3 "$W/ck.out" | tr '\n' '|')" | tee -a "$RESULTS"; failn=$((failn+1)); fi
+        else
+            e2fsck -fp "$f" >"$W/ck.out" 2>&1; local r1=$?      # replay journal + preen
+            e2fsck -fn "$f" >"$W/ck2.out" 2>&1; local r2=$?     # must now be clean
+            if [ $r2 -eq 0 ] && [ $r1 -le 1 ]; then echo "PASS: $tag: $name pulita (preen rc=$r1)" | tee -a "$RESULTS"; pass=$((pass+1))
+            else echo "FAIL: $tag: $name preen rc=$r1, controllo rc=$r2 -- $(head -3 "$W/ck2.out" | tr '\n' '|')" | tee -a "$RESULTS"; failn=$((failn+1)); fi
+        fi
+        rm -f "$f"
+    done
+    rm -f "$raw"
+}
+
 ALL="fetch_after_invalidate fetch_mid_write fetch_after_write fetch_after_relabel fetch_before_valid fetch_after_valid apply_start apply_after_pending apply_after_arm boot_1 boot_3 boot_6 boot_10 boot_20 boot_40 bootok_health_wait confirm_start confirm_after_default rollback_start rollback_after_default torn_grubenv"
 run_one() {
     case "$1" in
@@ -237,6 +300,7 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
     prep) prep "$@" ;;
     fetched) fetched ;;
+    stress) : > "$RESULTS"; REL="$ROOTW/releases"; stress "$@"; echo; echo "$pass passati, $failn falliti" | tee -a "$RESULTS"; [ "$failn" = 0 ] ;;
     base2) make_base2 && echo "OK base2" ;;
     par)   N="$1"; shift; names="$*"; [ "$names" = all ] && names="$ALL"
            [ -f "$ROOTW/base2.qcow2" ] || { PC_ID=0 "$0" base2 || exit 1; }
