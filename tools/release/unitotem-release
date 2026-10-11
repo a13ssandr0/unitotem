@@ -140,7 +140,7 @@ def cmd_build_ab(a):
             run("mcopy", "-s", "-n", "-i", fat, "::slota", os.path.join(td, "x"))
             bf = os.path.join(out, "bootfiles.tar.xz")
             with open(bf, "wb") as f:
-                tr = subprocess.Popen(["tar", "-C", os.path.join(td, "x", "slota"), "-cf", "-", "."], stdout=subprocess.PIPE)
+                tr = subprocess.Popen(["tar", "--owner=0", "--group=0", "--numeric-owner", "-C", os.path.join(td, "x", "slota"), "-cf", "-", "."], stdout=subprocess.PIPE)
                 xz2 = subprocess.Popen(["xz", "-T0", "-6"], stdin=tr.stdout, stdout=f); tr.stdout.close()
                 if xz2.wait() or tr.wait():
                     sys.exit("tar/xz dei file di avvio fallito")
