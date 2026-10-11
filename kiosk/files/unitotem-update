@@ -590,7 +590,7 @@ def do_fetch(a, conf):
             pc = subprocess.Popen(["partclone.restore", "-C", "-s", "-", "-o", dev], stdin=xz.stdout,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             xz.stdout.close()
-            t0 = time.time(); last = 0
+            t0 = time.monotonic(); last = 0
             try:
                 with urllib.request.urlopen(base + part["file"], timeout=TIMEOUT) as r:
                     while True:
@@ -599,8 +599,8 @@ def do_fetch(a, conf):
                         h.update(chunk); done += len(chunk)
                         xz.stdin.write(chunk)
                         if done * 2 >= total: crashpoint(conf, "fetch_mid_write")
-                        if time.time() - last > 1:
-                            last = time.time()
+                        if time.monotonic() - last > 1:
+                            last = time.monotonic()
                             rate = done / max(last - t0, 1e-3)
                             progress(conf, op="fetch", phase="write", state="running",
                                      percent=int(done * 100 / total), bytes=done, total=total,
@@ -779,8 +779,11 @@ def cmd_boot_ok(a, conf):
                         version=pend.get("version"))
         return 0, {"trial": False, "rolled_back": True}
     crashpoint(conf, "bootok_health_wait")
-    deadline = time.time() + int(conf["UPDATE_HEALTH_TIMEOUT"])
-    while time.time() < deadline:
+    # monotonic, not wall clock: a Raspberry has no RTC, so its clock starts in the past and jumps forward by years
+    # the moment NTP answers - which, with time.time(), made a 180 s health deadline expire ~40 s after boot and
+    # rolled a healthy trial back (found on the first real Pi: "health-timeout" at 48 s of uptime).
+    deadline = time.monotonic() + int(conf["UPDATE_HEALTH_TIMEOUT"])
+    while time.monotonic() < deadline:
         if health_ok(conf):
             return 0, confirm_now(conf)
         time.sleep(3)
