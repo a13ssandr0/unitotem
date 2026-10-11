@@ -10,9 +10,12 @@
 xset -dpms
 xset s off
 xset s noblank
-# Same colour as the boot splash (Plymouth background), not black: until the viewer paints something the screen keeps
-# looking like the end of the boot animation instead of going dark.
-xsetroot -solid "#1e312a"
+# The root window is the placeholder screen ("BOOT OK - VIDEO OUTPUT WORKS", logo, manager state, address, slot, release): it is
+# what is seen whenever nothing covers it - above all when the manager is missing, not running or not showing anything. The
+# manager's viewer window hides it when it works. A plain colour first (instant, and the fallback if the program cannot run);
+# the program then paints the real thing and keeps its facts up to date.
+xsetroot -solid "#000000"
+/usr/sbin/unitotem-xbackground &
 
 # $XAUTHORITY is already the fixed /run/unitotem-x11.auth path here (see
 # start-xorg.service's Environment=) - both this X session and unitotem-

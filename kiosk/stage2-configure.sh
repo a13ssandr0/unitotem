@@ -217,8 +217,8 @@ done
 # from it. Remove it (and its temporary halves) and let each device generate its own on first boot.
 rm -f -- "${ROOTFS}/etc/ssl/unitotem.pem" "${ROOTFS}/etc/ssl/unitotem_crt.pem" "${ROOTFS}/etc/ssl/unitotem_key.pem"
 [ ! -e "${ROOTFS}/etc/ssl/unitotem.pem" ] || { echo "ERRORE: il certificato e' ancora nell'immagine" >&2; exit 1; }
-install -m 755 /kiosk/files/unitotem-placeholder "${ROOTFS}/usr/sbin/unitotem-placeholder"
-install -m 644 /kiosk/files/unitotem-placeholder.service "${ROOTFS}/etc/systemd/system/unitotem-placeholder.service"
+# The placeholder screen is the X background itself (started by /etc/kiosk/xinitrc): visible whenever nothing covers the root window.
+install -m 755 /kiosk/files/unitotem-xbackground "${ROOTFS}/usr/sbin/unitotem-xbackground"
 install -m 755 /kiosk/files/unitotem-first-boot-cert "${ROOTFS}/usr/sbin/unitotem-first-boot-cert"
 install -m 644 /kiosk/files/unitotem-first-boot-cert.service "${ROOTFS}/etc/systemd/system/unitotem-first-boot-cert.service"
 install -m 755 /kiosk/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
@@ -331,7 +331,6 @@ chroot "${ROOTFS}" systemctl enable \
     unitotem-ssh-hostkey \
     unitotem-persist-paths \
     unitotem-first-boot-cert \
-    unitotem-placeholder \
     unitotem-net-watchdog.timer
 
 # ---------- Disable unattended apt ----------
