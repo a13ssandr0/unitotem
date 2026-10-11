@@ -31,6 +31,8 @@ UU() { SSH "unitotem-update --json $*"; }
 VM_PID=""
 vm_start() {   # vm_start DISK.qcow2   (serial -> $W/serial.log, appended)
     local disk="$1"
+    # A foreign listener on our SSH port (another session's VM) would silently receive our commands: refuse.
+    if ss -ltn "sport = :$PORT" 2>/dev/null | grep -q LISTEN; then echo "porta $PORT gia' in uso da altri: rifiuto di avviare"; VM_PID=""; return 1; fi
     cp "$OVMF_VARS" "$W/vars.fd" 2>/dev/null || true
     [ -f "$ROOTW/vars.keep" ] && cp "$ROOTW/vars.keep" "$W/vars.fd"
     qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 2 -m 2048 \
@@ -38,9 +40,10 @@ vm_start() {   # vm_start DISK.qcow2   (serial -> $W/serial.log, appended)
         -drive file="$disk",format=qcow2,if=virtio -netdev user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22 -device virtio-net-pci,netdev=n0 \
         -device virtio-vga -display none -serial "file:$W/serial.log" -pidfile "$W/qemu.pid" >"$W/qemu.out" 2>&1 &
     sleep 1; VM_PID=$(cat "$W/qemu.pid" 2>/dev/null || echo "")
+    kill -0 "$VM_PID" 2>/dev/null || { echo "qemu non partito: $(cat "$W/qemu.out")"; VM_PID=""; return 1; }
 }
 vm_kill() { [ -n "$VM_PID" ] && kill -9 "$VM_PID" 2>/dev/null; sleep 1; VM_PID=""; }
-wait_ssh() { local n=${1:-150} i; for ((i=0;i<n;i+=3)); do SSH true 2>/dev/null && return 0; sleep 3; done; return 1; }
+wait_ssh() { local n=${1:-150} i; [ -n "$VM_PID" ] || return 1; for ((i=0;i<n;i+=3)); do SSH true 2>/dev/null && return 0; sleep 3; done; return 1; }
 serial_count() { tr -d '\033' < "$W/serial.log" | grep -a -c "$1"; }
 wait_serial() {   # wait_serial PATTERN COUNT_AT_LEAST TIMEOUT
     local i; for ((i=0;i<$3*2;i++)); do [ "$(serial_count "$1")" -ge "$2" ] && return 0; sleep 0.5; done; return 1
