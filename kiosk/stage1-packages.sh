@@ -369,7 +369,7 @@ if [ "$ARCH" = "arm64" ]; then
     echo ">>> removing (arm64): $(echo $REMOVE)"
     if [ -n "$REMOVE" ]; then
         # shellcheck disable=SC2086
-        chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -s purge $REMOVE | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'
+        { chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -s purge $REMOVE 2>&1 | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'; } || true   # informational only: must never stop the build
         # shellcheck disable=SC2086
         chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE
     fi
