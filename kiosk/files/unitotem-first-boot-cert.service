@@ -1,0 +1,15 @@
+[Unit]
+Description=UniTotem - generate the device TLS certificate on first boot
+# Nothing to do once it exists; and the manager must not start without it.
+ConditionPathExists=!/etc/ssl/unitotem.pem
+After=local-fs.target
+Before=unitotem-manager.service haproxy.service
+RequiresMountsFor=/etc /mnt/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-first-boot-cert
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

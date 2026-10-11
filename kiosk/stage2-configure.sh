@@ -213,6 +213,12 @@ for unit in emergency rescue; do
     sed "s/systemd-sulogin-shell emergency/systemd-sulogin-shell ${unit}/" /kiosk/files/emergency-dropin.conf \
         > "${ROOTFS}/etc/systemd/system/${unit}.service.d/unitotem.conf"
 done
+# The manager package's postinst created the TLS key while the image was built - the same private key on every device flashed
+# from it. Remove it (and its temporary halves) and let each device generate its own on first boot.
+rm -f -- "${ROOTFS}/etc/ssl/unitotem.pem" "${ROOTFS}/etc/ssl/unitotem_crt.pem" "${ROOTFS}/etc/ssl/unitotem_key.pem"
+[ ! -e "${ROOTFS}/etc/ssl/unitotem.pem" ] || { echo "ERRORE: il certificato e' ancora nell'immagine" >&2; exit 1; }
+install -m 755 /kiosk/files/unitotem-first-boot-cert "${ROOTFS}/usr/sbin/unitotem-first-boot-cert"
+install -m 644 /kiosk/files/unitotem-first-boot-cert.service "${ROOTFS}/etc/systemd/system/unitotem-first-boot-cert.service"
 install -m 755 /kiosk/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
 # Public half of the update root key only. The private keys live outside the repo
 # (tools/release/backup-keys.sh); losing them means no fielded device accepts an update again.
@@ -322,6 +328,7 @@ chroot "${ROOTFS}" systemctl enable \
     unitotem-boot-ok \
     unitotem-ssh-hostkey \
     unitotem-persist-paths \
+    unitotem-first-boot-cert \
     unitotem-net-watchdog.timer
 
 # ---------- Disable unattended apt ----------

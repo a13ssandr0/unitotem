@@ -1,0 +1,27 @@
+#!/bin/bash
+# Generates this device's own TLS certificate+key (/etc/ssl/unitotem.pem) on the first boot that finds it missing.
+#
+# It used to be created by the manager package's postinst, i.e. while the IMAGE was being built, so every device flashed from
+# one image carried the same private key - and that file is also used for the mutual authentication between client and server.
+# The image no longer contains it (stage 1 removes it, verify-image.sh checks it is gone); /etc is an overlay on DATA, so what is
+# written here persists across reboots, and the OTA whitelist (ssl/unitotem.pem) carries it across updates.
+#
+# Safe to run twice and to be cut off at any point: the pair is built in temporary files and moved into place with one rename,
+# so the file is either absent (the next boot generates it again) or complete. Same parameters as the package's postinst.
+set -euo pipefail
+umask 077
+DEST=/etc/ssl/unitotem.pem
+[ -s "$DEST" ] && exit 0
+
+T=$(mktemp -d /etc/ssl/.unitotem-cert.XXXXXX)
+trap 'rm -rf -- "$T"' EXIT
+openssl req -x509 -nodes -newkey rsa:2048 -keyout "$T/key.pem" -out "$T/crt.pem" -days 365000 \
+    -subj "/C=../ST=./L=./O=a13ssandr0/OU=UniTotem/CN=UniTotem/emailAddress=."
+cat "$T/crt.pem" "$T/key.pem" > "$T/unitotem.pem"
+chmod 0600 "$T/unitotem.pem"
+openssl x509 -in "$T/unitotem.pem" -noout        # the certificate part must parse
+openssl rsa  -in "$T/unitotem.pem" -check -noout # and so must the key
+sync
+mv -f "$T/unitotem.pem" "$DEST"
+sync
+echo "unitotem-first-boot-cert: generated $DEST"
