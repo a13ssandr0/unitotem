@@ -12,6 +12,7 @@ apt-get install -y -qq --no-install-recommends partclone xz-utils util-linux fdi
     gdisk parted socat procps dctrl-tools file >/dev/null
 
 REPO=/repo; PARTS=/work/parts; TARGET_IMG=/work/target.img
+ARCH="${ARCH:-amd64}"   # amd64 (UEFI, GRUB) or arm64 (Raspberry, tryboot)
 ENGINE=(bash "$REPO/deploy/ota-engine.sh")
 RESULTS=/work/results.txt; : > "$RESULTS"
 record() { echo "$1" | tee -a "$RESULTS"; }
@@ -42,27 +43,41 @@ BC=(); [ -f "$PARTS/bootcode.bin" ] && BC=(--bootcode-b64 "$(base64 -w0 < "$PART
 "${ENGINE[@]}" restore-table --disk "$LOOP" --table-b64 "$TABLE_B64" --tail-part "$DATA_PART" "${BC[@]}"
 ensure_partition_nodes
 
+BOOTFS_LABEL=EFI; [ "$ARCH" = arm64 ] && BOOTFS_LABEL=FIRMWARE
 VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "$PARTS/parts.manifest")
 check "il manifest registra il volid della partizione di boot" test -n "$VOLID"
-"${ENGINE[@]}" prepare-bootfs --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --fstype vfat --fresh 1 --label EFI --volid "$VOLID"
+"${ENGINE[@]}" prepare-bootfs --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --fstype vfat --fresh 1 --label "$BOOTFS_LABEL" --volid "$VOLID"
 check "il volid FAT e' stato preservato (GRUB lo cerca per UUID)" bash -c "[ \"\$(blkid -s UUID -o value ${LOOP}p${BOOTFS_PART})\" = '$VOLID' ]"
 
-"${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-vmlinuz --subdir unitotem < "$REPO/deploy/amd64/recovery-vmlinuz-amd64"
-"${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-initrd.img --subdir unitotem < "$REPO/deploy/amd64/recovery-initrd-amd64.img"
+if [ "$ARCH" = arm64 ]; then RNAME=recovery8.img; RSUB=(); else RNAME=recovery-vmlinuz; RSUB=(--subdir unitotem); fi
+"${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name "$RNAME" "${RSUB[@]}" < "$REPO/deploy/$ARCH/recovery-vmlinuz-$ARCH"
+"${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-initrd.img "${RSUB[@]}" < "$REPO/deploy/$ARCH/recovery-initrd-$ARCH.img"
 
 STREAM=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "$PARTS/parts.manifest")
 socat -u "FILE:$PARTS/$STREAM" "TCP-LISTEN:9700,reuseaddr" & NC=$!; sleep 0.5
-"${ENGINE[@]}" populate-bootfs --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --data-host 127.0.0.1 --data-port 9700
+"${ENGINE[@]}" populate-bootfs --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --data-host 127.0.0.1 --data-port 9700 --layout ab
 wait "$NC" 2>/dev/null || true
 
-"${ENGINE[@]}" set-default-recovery --disk "$LOOP" --firmware uefi --bootfs-part "$BOOTFS_PART" --layout ab
+"${ENGINE[@]}" set-default-recovery --disk "$LOOP" --firmware "$([ "$ARCH" = arm64 ] && echo rpi || echo uefi)" --bootfs-part "$BOOTFS_PART" --layout ab
 mkdir -p /mnt/esp; mount "${LOOP}p${BOOTFS_PART}" /mnt/esp
-GE=/mnt/esp/unitotem-grub/grub/grubenv
-check "grubenv: 1024 byte" bash -c "[ \$(stat -c %s $GE) = 1024 ]"
-check "grubenv: saved_entry=ota-recovery dopo lo stage 1" grep -q '^saved_entry=ota-recovery$' "$GE"
-check "grub.cfg contiene la voce ota-recovery" grep -q -- '--id ota-recovery' /mnt/esp/unitotem-grub/grub/grub.cfg
-check "BOOTX64.EFI presente" test -f /mnt/esp/EFI/BOOT/BOOTX64.EFI
-check "i file di recovery sono sopravvissuti al populate" test -f /mnt/esp/unitotem/recovery-initrd.img
+if [ "$ARCH" = arm64 ]; then
+    check "config.txt punta al fallback dopo lo stage 1" grep -q '^kernel=recovery8.img$' /mnt/esp/config.txt
+    check "slota/kernel8.img presente (il populate ha portato la directory dello slot)" test -s /mnt/esp/slota/kernel8.img
+    check "slota/initramfs8 presente" test -s /mnt/esp/slota/initramfs8
+    check "slota/cmdline.txt sopravvissuto agli exclude di tar" test -s /mnt/esp/slota/cmdline.txt
+    check "slota/cmdline.txt: root=LABEL=ROOT_A e slot=a" bash -c "grep -q 'root=LABEL=ROOT_A' /mnt/esp/slota/cmdline.txt && grep -q 'unitotem.slot=a' /mnt/esp/slota/cmdline.txt"
+    check "cmdline.txt di primo livello e' quello del fallback (non quello dello slot)" grep -q 'unitotem.ota=1' /mnt/esp/cmdline.txt
+    check "slota/dtb presenti" bash -c "ls /mnt/esp/slota/bcm2711-rpi-4-b.dtb"
+    check "il firmware condiviso e' al primo livello (start4.elf)" test -f /mnt/esp/start4.elf
+    check "i file di recovery sono sopravvissuti al populate" test -s /mnt/esp/recovery-initrd.img
+else
+    GE=/mnt/esp/unitotem-grub/grub/grubenv
+    check "grubenv: 1024 byte" bash -c "[ \$(stat -c %s $GE) = 1024 ]"
+    check "grubenv: saved_entry=ota-recovery dopo lo stage 1" grep -q '^saved_entry=ota-recovery$' "$GE"
+    check "grub.cfg contiene la voce ota-recovery" grep -q -- '--id ota-recovery' /mnt/esp/unitotem-grub/grub/grub.cfg
+    check "BOOTX64.EFI presente" test -f /mnt/esp/EFI/BOOT/BOOTX64.EFI
+    check "i file di recovery sono sopravvissuti al populate" test -f /mnt/esp/unitotem/recovery-initrd.img
+fi
 umount /mnt/esp
 
 log "=== Stage 2 ==="
@@ -91,7 +106,7 @@ done < "$PARTS/parts.manifest"
 process_block
 check "ROOT_A individuata" test -n "$ROOT_PART"
 
-"${ENGINE[@]}" mount-target --disk "$LOOP" --arch amd64 --root-part "$ROOT_PART" --bootfs-part "$BOOTFS_PART" --data-part "$DATA_PART"
+"${ENGINE[@]}" mount-target --disk "$LOOP" --arch "$ARCH" --root-part "$ROOT_PART" --bootfs-part "$BOOTFS_PART" --data-part "$DATA_PART"
 check "ROOT_A montata ha systemd" test -x /mnt/newroot/usr/lib/systemd/systemd
 check "release-version presente nell'immagine" test -s /mnt/newroot/usr/share/unitotem/release-version
 check "chiave radice reale installata" test -s /mnt/newroot/usr/share/unitotem/update-keys/root.pub
@@ -107,10 +122,19 @@ check "migrate --slot a: l'overlay dello slot B obsoleto e' stato azzerato" bash
 check "migrate --slot a: pending.json obsoleto rimosso" bash -c "! test -e '$D/unitotem/update/pending.json'"
 check "migrate --slot a: nessun upper/etc senza suffisso creato" bash -c "! test -e '$D/upper/etc'"
 
-"${ENGINE[@]}" set-trial-boot --firmware uefi --target /mnt/newroot --layout ab
-GE=/mnt/newroot/boot/efi/unitotem-grub/grub/grubenv
-check "trial: saved_entry resta sul fallback" grep -q '^saved_entry=ota-recovery$' "$GE"
-check "trial: next_entry=slot-a (one-shot)" grep -q '^next_entry=slot-a$' "$GE"
+if [ "$ARCH" = arm64 ]; then
+    "${ENGINE[@]}" set-trial-boot --firmware rpi-tryboot --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --target /mnt/newroot --layout ab
+    TB=/mnt/newroot/boot/firmware/tryboot.txt
+    check "trial rpi: tryboot.txt con os_prefix=slota/" grep -q '^os_prefix=slota/$' "$TB"
+    check "trial rpi: tryboot.txt e' una config completa (kernel + initramfs)" bash -c "grep -q '^kernel=kernel8.img$' $TB && grep -q '^initramfs initramfs8 followkernel$' $TB"
+    check "trial rpi: config.txt resta sul fallback" grep -q '^kernel=recovery8.img$' /mnt/newroot/boot/firmware/config.txt
+    check "trial rpi: nessun cmdline=: la cmdline viene dallo slot via os_prefix" bash -c "! grep -q '^cmdline=' $TB"
+else
+    "${ENGINE[@]}" set-trial-boot --firmware uefi --target /mnt/newroot --layout ab
+    GE=/mnt/newroot/boot/efi/unitotem-grub/grub/grubenv
+    check "trial: saved_entry resta sul fallback" grep -q '^saved_entry=ota-recovery$' "$GE"
+    check "trial: next_entry=slot-a (one-shot)" grep -q '^next_entry=slot-a$' "$GE"
+fi
 check "trial: pending.json scritto sullo slot a" grep -q '"slot": "a"' "$D/unitotem/update/pending.json"
 check "trial: slots.json scritto" test -s "$D/unitotem/update/slots.json"
 "${ENGINE[@]}" umount-target

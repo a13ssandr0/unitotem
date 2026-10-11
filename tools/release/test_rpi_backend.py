@@ -78,6 +78,14 @@ with tempfile.TemporaryDirectory() as td:
     time.sleep(0.3)
     check("rollback: riavvio normale (non tryboot)", open(reboots).read().strip().splitlines()[-1] == "trial=0")
 
+    # first deploy: config.txt is still the FALLBACK's, tryboot.txt is the only full description of slot A
+    open(bf + "/config.txt", "w").write("arm_64bit=1\nenable_uart=1\nkernel=recovery8.img\ninitramfs recovery-initrd.img followkernel\n")
+    open(bf + "/tryboot.txt", "w").write("[all]\narm_64bit=1\nenable_uart=1\nos_prefix=slota/\nkernel=kernel8.img\ninitramfs initramfs8 followkernel\n")
+    uu.be_set_default(conf, "a")
+    cfg = open(bf + "/config.txt").read()
+    check("promozione primo deploy: config.txt diventa la config completa dello slot", "kernel=kernel8.img" in cfg and "os_prefix=slota/" in cfg and "recovery8.img" not in cfg, cfg)
+    check("promozione primo deploy: tryboot.txt rimosso", not os.path.exists(bf + "/tryboot.txt"))
+
     # whitelist import is repeatable: a change made between fetch and apply must reach the new slot
     data = conf["UPDATE_DATA"]; os.makedirs(data + "/upper/etc.a/unitotem"); os.makedirs(data + "/upper/etc.b")
     open(data + "/upper/etc.a/unitotem/update.conf", "w").write("v1\n")

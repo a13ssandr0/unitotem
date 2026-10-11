@@ -526,14 +526,19 @@ cmd_populate_bootfs() {
 
     log "Popolo il contenuto file-level della partizione di boot da ${ARG[data-host]}:${ARG[data-port]}..."
     exec 4<>"/dev/tcp/${ARG[data-host]}/${ARG[data-port]}"
-    unxz -dc <&4 | tar -C "$mnt" -xf - \
-        --exclude='recovery8.img' --exclude='recovery-vmlinuz' --exclude='recovery-initrd.img' \
-        --exclude='recovery.sha256' --exclude='unitotem/*' \
-        --exclude='unitotem-ota.conf' --exclude='unitotem-ota.state' --exclude='unitotem-ota.request' \
-        --exclude='unitotem-ota.bootcount' --exclude='unitotem-ota.last' \
-        --exclude='tryboot.txt' --exclude='cmdline-trial.txt' \
-        --exclude='config.txt' --exclude='cmdline.txt' \
-        --exclude='*.unitotem-bak' \
+    # tar's default exclude matching is unanchored: 'cmdline.txt' also drops slota/cmdline.txt, which an A/B image
+    # needs (os_prefix makes the firmware read it from there). With --layout ab the names are anchored to the top
+    # of the archive ("./name"), so only the real top-level files are protected.
+    local anch="" pre=""
+    if [ "${ARG[layout]:-1}" = ab ]; then anch="--anchored"; pre="./"; fi
+    unxz -dc <&4 | tar -C "$mnt" -xf - $anch \
+        --exclude="${pre}recovery8.img" --exclude="${pre}recovery-vmlinuz" --exclude="${pre}recovery-initrd.img" \
+        --exclude="${pre}recovery.sha256" --exclude="${pre}unitotem/*" \
+        --exclude="${pre}unitotem-ota.conf" --exclude="${pre}unitotem-ota.state" --exclude="${pre}unitotem-ota.request" \
+        --exclude="${pre}unitotem-ota.bootcount" --exclude="${pre}unitotem-ota.last" \
+        --exclude="${pre}tryboot.txt" --exclude="${pre}cmdline-trial.txt" \
+        --exclude="${pre}config.txt" --exclude="${pre}cmdline.txt" \
+        --exclude="${pre}*.unitotem-bak" \
         || fail "estrazione bootfs fallita"
     exec 4<&-
     sync
@@ -633,6 +638,19 @@ append_config_extra() {
     [ -f "$extra_file" ] && cat "$extra_file" >> "$dest"
 }
 
+# ab_write_pending TARGET_ROOT : the update bookkeeping for a first deploy, identical to what `unitotem-update apply`
+# leaves behind, so the boot-ok / confirm path is the same for a fresh install and for every later update.
+ab_write_pending() {
+    local t="$1" ver ud now
+    ver=$(cat "$t/usr/share/unitotem/release-version" 2>/dev/null || echo unknown)
+    ud="$t/mnt/data/unitotem/update"
+    TZ=UTC0 printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+    mkdir -p "$ud"
+    printf '{"slot": "a", "from": null, "version": "%s", "armed_at": "%s"}\n' "$ver" "$now" > "$ud/pending.json"
+    printf '{"a": {"version": "%s", "valid": true, "prepared": true}, "b": {"version": null, "valid": false}}\n' "$ver" > "$ud/slots.json"
+    sync
+}
+
 cmd_set_trial_boot() {
     ota_status_set "Preparazione avvio di prova"
     parse_args "$@"
@@ -646,12 +664,7 @@ cmd_set_trial_boot() {
                 # Trial = one-shot next_entry; saved_entry stays on the fallback until unitotem-boot-ok
                 # confirms. The same state unitotem-update writes for an in-place update, so the boot-ok
                 # path is identical for a first deploy and for every later one.
-                local ver; ver=$(cat "$t/usr/share/unitotem/release-version" 2>/dev/null || echo unknown)
-                local ud="$t/mnt/data/unitotem/update" now
-                TZ=UTC0 printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
-                mkdir -p "$ud"
-                printf '{"slot": "a", "from": null, "version": "%s", "armed_at": "%s"}\n' "$ver" "$now" > "$ud/pending.json"
-                printf '{"a": {"version": "%s", "valid": true, "prepared": true}, "b": {"version": null, "valid": false}}\n' "$ver" > "$ud/slots.json"
+                ab_write_pending "$t"
                 grubenv_write "$ge" "saved_entry=ota-recovery" "next_entry=slot-a"
                 sync
                 echo "UNITOTEM_TRIAL_ARMED=1"
@@ -689,6 +702,31 @@ EOF
             ;;
         rpi-tryboot)
             need disk; need bootfs-part
+            if [ "${ARG[layout]:-1}" = ab ]; then
+                need target
+                local t="${ARG[target]}"
+                local disk; disk=$(resolve_disk "${ARG[disk]}")
+                local bootfs_dev; bootfs_dev=$(pdev_target "$disk" "${ARG[bootfs-part]}")
+                local mnt=/tmp/ota-bootfs
+                ota_mount_bootfs_rw "$bootfs_dev" "$mnt"
+                # The trial config is a COMPLETE config (the firmware reads tryboot.txt instead of config.txt, never
+                # both): slot A's kernel/initramfs/dtbs/cmdline come from slota/ through os_prefix. config.txt keeps
+                # pointing at the fallback until unitotem-boot-ok confirms - a power cut, a hang or an unbootable
+                # slot all end on the fallback at the next plain boot.
+                {
+                    echo "[all]"
+                    echo "arm_64bit=1"
+                    echo "enable_uart=1"
+                    echo "os_prefix=slota/"
+                    echo "kernel=kernel8.img"
+                    echo "initramfs initramfs8 followkernel"
+                } > "$mnt/tryboot.txt"
+                append_config_extra "$t/etc/unitotem/config-extra.txt" "$mnt/tryboot.txt"
+                sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
+                ab_write_pending "$t"
+                echo "UNITOTEM_TRIAL_ARMED=1"
+                return 0
+            fi
             local disk; disk=$(resolve_disk "${ARG[disk]}")
             local bootfs_dev; bootfs_dev=$(pdev_target "$disk" "${ARG[bootfs-part]}")
             local mnt=/tmp/ota-bootfs
