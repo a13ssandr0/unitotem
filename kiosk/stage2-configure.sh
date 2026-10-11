@@ -236,6 +236,14 @@ install -m 600 /kiosk/files/nm-fallback.nmconnection \
 mkdir -p "${ROOTFS}/etc/unitotem"
 install -m 644 /kiosk/files/ota-preserve.list "${ROOTFS}/etc/unitotem/ota-preserve.list"
 install -m 644 /kiosk/files/net-watchdog.conf "${ROOTFS}/etc/unitotem/net-watchdog.conf"
+# unitotem-update's boot-ok waits for the manager's /health before confirming a trial slot. The 2.x manager that the
+# repository ships (and every arm64 image so far) has no /health endpoint - and cannot even run on a read-only root - so
+# with the default URL every trial would sit out the full timeout and roll back. Only a build that carries a local 3.x
+# manager .deb (work/extra-debs/<arch>/, which provides /health) keeps the health gate.
+if [ "$AB_LAYOUT" = 1 ] && ! ls /work/extra-debs/${ARCH}/*.deb >/dev/null 2>&1; then
+    printf '%s\n' '# no manager with /health in this image: confirm a trial without the health gate' 'UPDATE_HEALTH_URL=' \
+        > "${ROOTFS}/etc/unitotem/update.conf"
+fi
 if [ "$ARCH" = "arm64" ]; then
     install -m 644 /kiosk/files/config-extra.txt "${ROOTFS}/etc/unitotem/config-extra.txt"
 fi
