@@ -63,12 +63,14 @@ chk "persistent-paths service installed" test -x "$R/usr/sbin/unitotem-persist-p
 chk "boot-ok service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-boot-ok.service"
 chk "DATA overlay hook is in the image" test -e "$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays"
 
-echo "== Placeholder screen (boot OK / video works, when the manager shows nothing)"
-chk "placeholder script installed" test -x "$R/usr/sbin/unitotem-placeholder"
-chk "console fonts for the placeholder (large DejaVu Bold sizes) in the image" bash -c "test -s $R/usr/share/consolefonts/Lat15-DejaVuBold59x32.psf.gz && test -s $R/usr/share/consolefonts/Lat15-DejaVuBold118x64.psf.gz"
-chk "setfont available for the placeholder" test -x "$R/usr/bin/setfont"
-chk "placeholder service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-placeholder.service"
-chk "placeholder text is English and says BOOT OK / VIDEO OUTPUT WORKS" bash -c "grep -q 'BOOT OK  -  VIDEO OUTPUT WORKS' $R/usr/sbin/unitotem-placeholder && ! grep -iE 'avvio|schermo|funziona' $R/usr/sbin/unitotem-placeholder"
+echo "== Placeholder screen = the X background (boot OK / video works, whenever the manager is missing or shows nothing)"
+chk "X background program installed" test -x "$R/usr/sbin/unitotem-xbackground"
+chk "the X session starts it (xinitrc)" file_has "$R/etc/kiosk/xinitrc" 'unitotem-xbackground &'
+chk "python3 present for the X background" test -x "$R/usr/bin/python3"
+chk "console fonts for its text (large DejaVu Bold sizes)" bash -c "test -s $R/usr/share/consolefonts/Lat15-DejaVuBold59x32.psf.gz && test -s $R/usr/share/consolefonts/Lat15-DejaVuBold118x64.psf.gz"
+chk "its text is English and says BOOT OK / VIDEO OUTPUT WORKS" bash -c "grep -q 'BOOT OK  -  VIDEO OUTPUT WORKS' $R/usr/sbin/unitotem-xbackground && ! grep -iE 'avvio|schermo|funziona' $R/usr/sbin/unitotem-xbackground"
+chk "it also covers the manager-not-installed case" file_has "$R/usr/sbin/unitotem-xbackground" 'manager is not installed'
+chk "no console-switching placeholder left" bash -c "! test -e $R/usr/sbin/unitotem-placeholder && ! test -e $R/etc/systemd/system/unitotem-placeholder.service"
 
 echo "== Device identity (nothing secret may be shared by every device flashed from one image)"
 chk "no TLS private key in the image (it is generated on first boot)" bash -c "! test -e $R/etc/ssl/unitotem.pem && ! test -e $R/etc/ssl/unitotem_key.pem"
