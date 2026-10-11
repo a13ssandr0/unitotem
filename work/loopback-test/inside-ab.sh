@@ -60,9 +60,14 @@ pi_config_bootable() {   # pi_config_bootable MNT CONFIGFILE
     done
     return $ok
 }
+# Reproduce the flag-file fallback: init-premount leaves the boot partition mounted ro on /boot-ota, and prepare-bootfs
+# used to die in mkfs.fat ("contains a mounted filesystem") - found on the first real Pi deploy.
+mkfs.fat -F32 "${LOOP}p${BOOTFS_PART}" >/dev/null 2>&1
+mkdir -p /boot-ota; mount -t vfat -o ro "${LOOP}p${BOOTFS_PART}" /boot-ota
 VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "$PARTS/parts.manifest")
 check "il manifest registra il volid della partizione di boot" test -n "$VOLID"
 "${ENGINE[@]}" prepare-bootfs --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --fstype vfat --fresh 1 --label "$BOOTFS_LABEL" --volid "$VOLID"
+check "prepare-bootfs ha rilasciato /boot-ota prima di formattare" bash -c '! mountpoint -q /boot-ota'
 check "il volid FAT e' stato preservato (GRUB lo cerca per UUID)" bash -c "[ \"\$(blkid -s UUID -o value ${LOOP}p${BOOTFS_PART})\" = '$VOLID' ]"
 
 if [ "$ARCH" = arm64 ]; then RNAME=recovery8.img; RSUB=(); else RNAME=recovery-vmlinuz; RSUB=(--subdir unitotem); fi
