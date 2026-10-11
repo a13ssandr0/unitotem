@@ -298,6 +298,10 @@ fi
 # - CEF's X11-only embedding would have forced an X server underneath it
 # anyway, so the compositor bought nothing and cost a moving part.
 
+# Screen control in the manager (DDC/CI, CEC): ddcutil >= 2.0 (trixie has 2.1), cec-ctl comes from v4l-utils (installed
+# above on arm64 only, so named here for both), i2c-tools; the i2c-dev module is loaded at boot (stage2).
+apt_install ddcutil v4l-utils i2c-tools
+
 apt_install \
     xserver-xorg xserver-xorg-video-all xserver-xorg-input-all \
     xinit x11-xserver-utils kbd \
@@ -344,6 +348,50 @@ fi
 rm -f "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
 # Unmount the cache BEFORE apt-get clean: clean empties the archive directory, which would wipe the cache.
 mountpoint -q "${ROOTFS}/var/cache/apt/archives" && umount "${ROOTFS}/var/cache/apt/archives"
+
+# ---------- Remove what the shipped system does not need ----------
+# Approved by the user (2026-10-11): Chromium and the compilers. Updates are whole images now, nothing is built or
+# upgraded in place at runtime, so the DKMS rebuild rationale for keeping the toolchain no longer applies.
+#
+# Chromium (arm64 only - amd64 never had it): pulled in as a RECOMMENDED dependency of the 2.x manager package, whose
+# viewer is Qt + CEF; ~500 MB. The compilers come in through python3-pip -> build-essential (arm64) and dkms ->
+# build-essential (amd64).
+#
+# What is removed is printed first (the dry run is in the build log) and the module that matters is asserted after.
+purge_list() { # names from $@ that are actually installed
+    local p; for p in "$@"; do chroot "${ROOTFS}" dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' && echo "$p"; done
+}
+if [ "$ARCH" = "arm64" ]; then
+    REMOVE=$(purge_list chromium chromium-browser chromium-common chromium-l10n rpi-chromium-mods \
+                        build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 \
+                        gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cpp-aarch64-linux-gnu \
+                        gcc-14-aarch64-linux-gnu g++-14-aarch64-linux-gnu cpp-14-aarch64-linux-gnu)
+    echo ">>> removing (arm64): $(echo $REMOVE)"
+    if [ -n "$REMOVE" ]; then
+        # shellcheck disable=SC2086
+        chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -s purge $REMOVE | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'
+        # shellcheck disable=SC2086
+        chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE
+    fi
+    # the manager must still be there: apt may have taken it along if it had a hard dependency on any of the above
+    chroot "${ROOTFS}" dpkg-query -W -f='${Status}' unitotem-manager | grep -q 'ok installed' \
+        || { echo "ERRORE: la rimozione di Chromium/compilatori ha portato via unitotem-manager" >&2; exit 1; }
+else
+    # dkms (and nvidia-kernel-dkms, which needs it) depend on the compilers, so apt would remove them too and their
+    # prerm would delete the built NVIDIA module. dpkg --force-depends removes only the compilers and leaves the
+    # module and the dkms packages alone; the price is an unmet-dependency note on dkms in `dpkg --audit`, which is
+    # harmless on an image that never builds anything (and is why this is not done with apt).
+    REMOVE=$(purge_list build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 \
+                        gcc-x86-64-linux-gnu g++-x86-64-linux-gnu cpp-x86-64-linux-gnu \
+                        gcc-14-x86-64-linux-gnu g++-14-x86-64-linux-gnu cpp-14-x86-64-linux-gnu)
+    echo ">>> removing (amd64, dpkg --force-depends): $(echo $REMOVE)"
+    # shellcheck disable=SC2086
+    [ -z "$REMOVE" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $REMOVE
+    KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
+    chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
+        || { echo "ERRORE: il modulo NVIDIA e' sparito rimuovendo i compilatori" >&2; exit 1; }
+fi
+echo ">>> installed size of / after removal: $(du -sxm "${ROOTFS}" | cut -f1) MiB"
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get clean
 rm -rf "${ROOTFS}/var/lib/apt/lists/"*

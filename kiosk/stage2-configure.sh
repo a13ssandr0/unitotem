@@ -204,6 +204,10 @@ install -m 755 /kiosk/files/unitotem-ssh-hostkey "${ROOTFS}/usr/sbin/unitotem-ss
 install -m 644 /kiosk/files/unitotem-ssh-hostkey.service \
     "${ROOTFS}/etc/systemd/system/unitotem-ssh-hostkey.service"
 
+# DDC/CI needs /dev/i2c-*; without the module the manager reports DDC and CEC as "unavailable".
+mkdir -p "${ROOTFS}/etc/modules-load.d"
+echo i2c-dev > "${ROOTFS}/etc/modules-load.d/unitotem-i2c.conf"
+
 for unit in emergency rescue; do
     mkdir -p "${ROOTFS}/etc/systemd/system/${unit}.service.d"
     sed "s/systemd-sulogin-shell emergency/systemd-sulogin-shell ${unit}/" /kiosk/files/emergency-dropin.conf \
@@ -342,6 +346,10 @@ chroot "${ROOTFS}" systemctl mask apt-daily.timer apt-daily-upgrade.timer \
 
 # ---------- Regenerate initramfs ----------
 
+# The initramfs carries a copy of the OTA engine, and its deploy/recovery SCREEN (texts, wording) is that copy's. stage1
+# installed an engine into the rootfs, but a stage1 tarball can be older than deploy/ota-engine.sh; refreshing it here,
+# right before the initramfs is regenerated, makes a stage 2 + 3 rebuild enough to pick up an engine change.
+install -m 755 /kiosk/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 chroot "${ROOTFS}" update-initramfs -u -k all
 
 # ---------- arm64: populate FIRMWARE with the real system's boot files ----------
