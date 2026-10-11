@@ -10,7 +10,9 @@
 xset -dpms
 xset s off
 xset s noblank
-xsetroot -solid black
+# Same colour as the boot splash (Plymouth background), not black: until the viewer paints something the screen keeps
+# looking like the end of the boot animation instead of going dark.
+xsetroot -solid "#1e312a"
 
 # $XAUTHORITY is already the fixed /run/unitotem-x11.auth path here (see
 # start-xorg.service's Environment=) - both this X session and unitotem-

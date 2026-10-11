@@ -685,7 +685,9 @@ cmd_set_trial_boot() {
                 ab_write_pending "$t"
                 grubenv_write "$ge" "saved_entry=ota-recovery" "next_entry=slot-a"
                 sync
-                echo "UNITOTEM_TRIAL_ARMED=1"
+                ota_final_status
+                ota_final_status
+    echo "UNITOTEM_TRIAL_ARMED=1"
                 return 0
             fi
             # This runs inside the fallback/recovery environment, not on the
@@ -742,7 +744,9 @@ EOF
                 append_config_extra "$t/etc/unitotem/config-extra.txt" "$mnt/tryboot.txt"
                 sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
                 ab_write_pending "$t"
-                echo "UNITOTEM_TRIAL_ARMED=1"
+                ota_final_status
+                ota_final_status
+    echo "UNITOTEM_TRIAL_ARMED=1"
                 return 0
             fi
             local disk; disk=$(resolve_disk "${ARG[disk]}")
@@ -782,6 +786,7 @@ EOF
             ;;
         *) fail "modalita' trial-boot sconosciuta: ${ARG[firmware]}" ;;
     esac
+    ota_final_status
     echo "UNITOTEM_TRIAL_ARMED=1"
 }
 
@@ -1385,10 +1390,39 @@ ota_idle_watchdog() {
     reboot -f
 }
 
+# ota_splash TITLE LINE : paint the console right away - a logo, what is happening and what to expect - so the screen is
+# never an empty black rectangle while the network comes up (about ten seconds) before the progress screen can start. Plain
+# text on tty1 (fbcon draws it on the framebuffer), best effort: no tty, no splash, and nothing else depends on it.
+ota_splash() {
+    [ -w /dev/tty1 ] || return 0
+    {
+        printf '\033[2J\033[H\033[?25l\033[1;36m'
+        printf '\n\n\n'
+        printf '      _   _       _ _____       _\n'
+        printf '     | | | |_ __ (_)_   _|__ __| |_ ___ _ __ ___\n'
+        printf '     | | | | '"'"'_ \| | | |/ _ \ _|  _/ _ \ '"'"'_ ` _ \\\n'
+        printf '     | |_| | | | | | | | (_) | |_| ||  __/ | | | | |\n'
+        printf '      \___/|_| |_|_| |_|\___/ \__|\__\___|_| |_| |_|\n'
+        printf '\033[0m\n\n     %s\n\n     %s\n' "${1:-}" "${2:-}"
+    } > /dev/tty1 2>/dev/null || true
+}
+
+# The last thing an update shows before the machine restarts: say so, at 100%, instead of leaving the previous step on
+# screen until the screen goes dark.
+ota_final_status() {
+    ota_status_set "Update written. Restarting into the new system..."
+    echo 100 > "$OTA_PCT_FILE" 2>/dev/null || true
+}
+
 cmd_serve_fallback() {
     parse_args "$@"
     local reason="${ARG[reason]:-requested explicitly}"
-    log "Modalita' OTA: $reason"
+    log "OTA mode: $reason"
+    if [ "${ARG[kind]:-update}" = recovery ]; then
+        ota_splash "OTA recovery mode" "A fault was detected: $reason. Starting the network, please wait..."
+    else
+        ota_splash "OTA update mode" "Starting the network, please wait..."
+    fi
     # Automatic triggers wait 10 minutes for a host, requested ones 30 (the deploy that asked for it connects within
     # a minute or two), `recover` forever. Overridable per call.
     ( ota_idle_watchdog "${ARG[idle-timeout]:-600}" ) </dev/null >/dev/null 2>&1 &
