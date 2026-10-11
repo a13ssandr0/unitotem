@@ -49,9 +49,10 @@ copy_file file /etc/group /etc/group
 copy_file file /usr/lib/unitotem/ota-engine.sh /usr/lib/unitotem/ota-engine.sh
 # the logo shown on the framebuffer by the deploy/recovery screen (see ota_logo in ota-engine.sh)
 # the rounded frame around the progress dialog (see ota_frame in ota-engine.sh)
-for _frame in top bottom stripe; do
-    for _ext in bgrx rgb565; do
-        copy_file file "/usr/lib/unitotem/unitotem-frame-${_frame}.${_ext}" "/usr/lib/unitotem/unitotem-frame-${_frame}.${_ext}"
+for _ext in bgrx bgr24 rgb565; do
+    copy_file file "/usr/lib/unitotem/unitotem-frame-line.${_ext}" "/usr/lib/unitotem/unitotem-frame-line.${_ext}"
+    for _r in 12 16 24 32 48 64; do
+        copy_file file "/usr/lib/unitotem/unitotem-frame-corners-${_r}.${_ext}" "/usr/lib/unitotem/unitotem-frame-corners-${_r}.${_ext}"
     done
 done
 for _logo in unitotem-logo-256x73.bgrx unitotem-logo-640x182.bgrx unitotem-logo-256x73.rgb565 unitotem-logo-640x182.rgb565; do
@@ -67,7 +68,7 @@ for bin in \
     xz unxz pv whiptail \
     dropbear dropbearkey dbclient scp \
     wpa_supplicant wpa_passphrase \
-    sha256sum base64 awk cut paste readlink mkfifo cp grep head tail \
+    sha256sum base64 awk cut paste readlink mkfifo cp grep head tail stty \
     rm chmod tar \
     ip udevadm \
     setsid \
