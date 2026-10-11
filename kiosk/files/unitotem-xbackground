@@ -155,7 +155,7 @@ def main():
         txt = Text(scr, os.path.join(FONT_DIR, "Lat15-DejaVuBold%dx%d.psf.gz" % (ch, cw)))
     except Exception as e:
         raise SystemExit("unitotem-xbackground: no usable font (%s)" % e)
-    lw, lh = (1280, 364) if scr.w >= 3000 else ((640, 182) if scr.w >= 1500 else (256, 73))
+    lw, lh = (1280, 365) if scr.w >= 3000 else ((640, 182) if scr.w >= 1500 else (256, 73))
     logo_y = txt.gh
     try:
         blob = open(os.path.join(LOGO_DIR, "unitotem-logo-%dx%d.bgrx" % (lw, lh)), "rb").read()

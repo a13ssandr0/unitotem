@@ -46,7 +46,7 @@ chk "cron present (manager timers)" installed cron
 for p in libxcb-icccm4 libxcb-shape0; do chk "package $p installed (the Qt viewer aborts without it)" installed "$p"; done
 
 echo "== Logo and manager"
-for f in unitotem-logo-256x73.bgrx unitotem-logo-640x182.bgrx unitotem-logo-1280x364.bgrx unitotem-logo-256x73.rgb565 unitotem-logo-640x182.rgb565 unitotem-logo-1280x364.rgb565; do
+for f in unitotem-logo-256x73.bgrx unitotem-logo-640x182.bgrx unitotem-logo-1280x365.bgrx unitotem-logo-256x73.rgb565 unitotem-logo-640x182.rgb565 unitotem-logo-1280x365.rgb565; do
     chk "framebuffer logo $f in the image" test -s "$R/usr/lib/unitotem/$f"
 done
 for e in bgrx bgr24 rgb565; do
