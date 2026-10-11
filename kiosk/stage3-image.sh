@@ -411,6 +411,13 @@ bash /kiosk/files/unitotem-ota-changes baseline \
     --root "${IMG_MNT}" --out "${IMG_MNT}/usr/lib/unitotem/baseline" \
     || boot_assert_fail "generazione della baseline fallita"
 
+# ---------- Rules every image must satisfy ----------
+# All of them run against the finished tree (see kiosk/verify-image.sh for the list and the reasons); a violation fails the
+# build instead of shipping. The boot FAT is mounted under ${IMG_MNT}/boot/{efi,firmware} at this point.
+echo "Verifying the image against the project rules..."
+bash /kiosk/verify-image.sh "${IMG_MNT}" "${ARCH}" "${AB_LAYOUT}" \
+    || boot_assert_fail "l'immagine viola una o piu' regole (vedi sopra)"
+
 # ---------- Unmount ----------
 
 sync
