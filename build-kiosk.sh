@@ -80,6 +80,12 @@ build_natively_on_pi() {
     _pi_rsync -r --delete "${DIR}/kiosk/" "${PI_HOST}:${PI_BUILD_BASE}/kiosk/"
     _pi_rsync "${DIR}/deploy/ota-engine.sh" "${PI_HOST}:${PI_BUILD_BASE}/kiosk/files/ota-engine.sh"
     _pi_rsync "${DIR}/deploy/parts-lib.sh" "${PI_HOST}:${PI_BUILD_BASE}/kiosk/deploy-parts-lib.sh" 2>/dev/null || true
+    # Locally supplied packages (work/extra-debs/<arch>/*.deb) - the manager package among them - are inputs of stage 1 and
+    # must be on the Pi too; the arm64 manager package is generated there from the amd64 one.
+    if [ -d "${DIR}/work/extra-debs" ]; then
+        _pi_ssh "mkdir -p '${PI_BUILD_BASE}/work/extra-debs'" && \
+            _pi_rsync -r --delete "${DIR}/work/extra-debs/" "${PI_HOST}:${PI_BUILD_BASE}/work/extra-debs/"
+    fi
 
     # Both paths are moved off their container-friendly defaults, each after
     # failing here for its own reason: /tmp on the Pi is a 256 MB tmpfs mounted

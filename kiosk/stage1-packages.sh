@@ -158,6 +158,9 @@ apt_install --no-install-recommends \
 mkdir -p "${ROOTFS}/usr/lib/unitotem"
 install -m 755 /kiosk/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
+# framebuffer logo of the deploy/recovery screen (pre-rendered by tools/gen-logo.py)
+install -m 644 /kiosk/files/unitotem-logo-256x73.bgrx /kiosk/files/unitotem-logo-640x182.bgrx \
+    /kiosk/files/unitotem-logo-256x73.rgb565 /kiosk/files/unitotem-logo-640x182.rgb565 "${ROOTFS}/usr/lib/unitotem/"
 
 install -m 755 /kiosk/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
 mkdir -p "${ROOTFS}/etc/unitotem"
@@ -326,18 +329,37 @@ apt_install \
     python3-pip python3-apt python3-venv \
     libopenjp2-7-dev openssl mediainfo rfkill alsa-utils cron libxcb-icccm4 libxcb-shape0
 
-apt_install unitotem-manager
+# arm64 has no hand-built manager package, but the manager is Python: when only the amd64 .deb is supplied, an arm64 one is made
+# from it (same files, venv rebuilt natively; see kiosk/files/build-manager-arm64.sh). It lives in work/extra-debs-gen/arm64,
+# a directory this script owns and wipes, so a stale generated package can never sit next to a newer one.
+LOCAL_DEB_DIR=/work/extra-debs/${ARCH}
+if [ "$ARCH" = "arm64" ] && ! ls /work/extra-debs/arm64/*.deb >/dev/null 2>&1; then
+    SRC_AMD64=$(ls -t /work/extra-debs/amd64/unitotem-manager_*_amd64.deb 2>/dev/null | head -1 || true)
+    if [ -n "$SRC_AMD64" ]; then
+        echo ">>> generating the arm64 manager package from $SRC_AMD64"
+        rm -rf -- /work/extra-debs-gen/arm64
+        bash /kiosk/files/build-manager-arm64.sh "${ROOTFS}" "$SRC_AMD64" /work/extra-debs-gen/arm64
+        LOCAL_DEB_DIR=/work/extra-debs-gen/arm64
+    fi
+fi
+
+# With a local manager package the repository's 2.x one is not installed at all: it drags in haproxy and, as a recommended
+# package, Chromium, both of which would only have to be removed again.
+if ! ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
+    apt_install unitotem-manager
+fi
 
 # Local override: any .deb in work/extra-debs/<arch>/ is installed over what the apt repository provided. This is how
 # an image gets a manager build that is not published yet (e.g. one with the /health endpoint the A/B update
 # gate waits for). Empty/absent directory = nothing happens.
-if ls /work/extra-debs/${ARCH}/*.deb >/dev/null 2>&1; then
+if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
     mkdir -p "${ROOTFS}/tmp/extra-debs"
-    cp /work/extra-debs/${ARCH}/*.deb "${ROOTFS}/tmp/extra-debs/"
-    chroot "${ROOTFS}" sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades /tmp/extra-debs/*.deb"
+    printf 'local .deb installed: %s\n' "$LOCAL_DEB_DIR"/*.deb
+    cp "$LOCAL_DEB_DIR"/*.deb "${ROOTFS}/tmp/extra-debs/"
+    chroot "${ROOTFS}" sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --allow-downgrades /tmp/extra-debs/*.deb"
     # The 2.x manager package pulled haproxy in as a dependency (it forwarded 80/443 to the app); the 3.x one binds
     # those ports itself, and a still-enabled haproxy answers them with a 503 instead. Only when a local 3.x .deb
-    # replaced the repository package - the arm64 image still runs the repository 2.x manager.
+    # replaced the repository package.
     if chroot "${ROOTFS}" dpkg -s haproxy >/dev/null 2>&1; then
         chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y haproxy
     fi

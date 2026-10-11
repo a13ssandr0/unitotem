@@ -47,6 +47,10 @@ copy_file file /etc/group /etc/group
 # stage1-packages.sh points at it - what the init-premount/local-bottom
 # wrappers below and every SSH-driven subcommand actually invoke.
 copy_file file /usr/lib/unitotem/ota-engine.sh /usr/lib/unitotem/ota-engine.sh
+# the logo shown on the framebuffer by the deploy/recovery screen (see ota_logo in ota-engine.sh)
+for _logo in unitotem-logo-256x73.bgrx unitotem-logo-640x182.bgrx unitotem-logo-256x73.rgb565 unitotem-logo-640x182.rgb565; do
+    copy_file file "/usr/lib/unitotem/${_logo}" "/usr/lib/unitotem/${_logo}"
+done
 mkdir -p "${DESTDIR}/usr/sbin"
 ln -sf /usr/lib/unitotem/ota-engine.sh "${DESTDIR}/usr/sbin/unitotem-ota-engine"
 
