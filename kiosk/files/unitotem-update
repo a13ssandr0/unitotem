@@ -277,10 +277,15 @@ def be_set_default(conf, slot):
         grubenv(conf, "unset", "next_entry")
         return
     bf = conf["UPDATE_BOOTFS"]
-    cfg = open(os.path.join(bf, "config.txt")).read()
+    # Promote FROM the trial config when there is one: after a first deploy config.txt is still the fallback's
+    # (kernel=recovery8.img) and tryboot.txt is the only complete description of the real system; in steady state
+    # tryboot.txt is config.txt plus the new os_prefix, so the result is the same either way.
+    trial = os.path.join(bf, "tryboot.txt")
+    src = trial if os.path.exists(trial) else os.path.join(bf, "config.txt")
+    cfg = open(src).read()
     with bootfs_rw(bf):
         _atomic_write(os.path.join(bf, "config.txt"), _rpi_prefix(cfg, slot))
-        try: os.unlink(os.path.join(bf, "tryboot.txt"))
+        try: os.unlink(trial)
         except OSError: pass
 
 

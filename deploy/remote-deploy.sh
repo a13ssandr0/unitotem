@@ -483,7 +483,9 @@ populate_bootfs_step() {
     [ -n "$bootfs_tar" ] || return 0
     local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
     wait_port_bound "$OPT_PORT" 10 || die "listener dati non pronto (bootfs)"
-    ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
+    local lay=""; [ "${P_LAYOUT:-1}" = 2 ] && lay="--layout ab"
+    # shellcheck disable=SC2086
+    ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}' ${lay}"
     wait "$pid" 2>/dev/null || true
 }
 
@@ -620,7 +622,8 @@ run_ota_sequence() {
     # shellcheck disable=SC2086
     ota_ssh "$host" "unitotem-ota-engine mount-target ${mount_args}"
 
-    if [ "$ARCH" = arm64 ]; then
+    if [ "$ARCH" = arm64 ] && [ "${P_LAYOUT:-1}" != 2 ]; then
+        # (A/B images already carry their kernel, initramfs and dtbs in slota/ on the boot partition.)
         log "Popolo kernel/initrd/dtb del sistema reale sulla partizione di boot..."
         ota_ssh "$host" "unitotem-ota-engine populate-real-kernel"
     fi
@@ -647,7 +650,9 @@ run_ota_sequence() {
 
     local trial_mode="$FIRMWARE"
     [ "$FIRMWARE" = rpi ] && trial_mode=$([ "$TRYBOOT_CAPABLE" = 1 ] && echo rpi-tryboot || echo rpi-legacy)
-    if [ "$FIRMWARE" = rpi ]; then
+    if [ "$FIRMWARE" = rpi ] && [ "${P_LAYOUT:-1}" = 2 ]; then
+        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --disk '${disk}' --bootfs-part '${bootfs_part}' --target /mnt/newroot --layout ab"
+    elif [ "$FIRMWARE" = rpi ]; then
         ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --disk '${disk}' --bootfs-part '${bootfs_part}'"
     elif [ "${P_LAYOUT:-1}" = 2 ]; then
         ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --target /mnt/newroot --layout ab"
@@ -705,8 +710,8 @@ cmd_deploy() {
     P_LAYOUT=$(awk -F= '/^UNITOTEM_LAYOUT=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
     P_LAYOUT="${P_LAYOUT:-1}"
     if [ "$P_LAYOUT" = 2 ]; then
-        [ "$ARCH" = amd64 ] && [ "$FIRMWARE" = uefi ] \
-            || die "il layout A/B e' implementato solo per amd64/UEFI (target: ${ARCH}/${FIRMWARE}); BIOS legacy e Raspberry Pi non ancora"
+        { [ "$ARCH" = amd64 ] && [ "$FIRMWARE" = uefi ]; } || { [ "$ARCH" = arm64 ] && [ "$FIRMWARE" = rpi ] && [ "$TRYBOOT_CAPABLE" = 1 ]; } \
+            || die "il layout A/B e' implementato per amd64/UEFI e per Raspberry con tryboot (target: ${ARCH}/${FIRMWARE}, tryboot=${TRYBOOT_CAPABLE:-0}); BIOS legacy e Raspberry senza tryboot non ancora"
         P_ROOT_PART=$(part_num_for_label ROOT_A)
     else
         P_ROOT_PART=$(part_num_for_label ROOT)
