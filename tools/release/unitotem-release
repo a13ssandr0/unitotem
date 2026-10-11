@@ -118,6 +118,10 @@ def cmd_build_ab(a):
         # `search --label` may then pick the half-written copy. A neutral label that nothing boots by closes
         # that window; unitotem-update gives the slot its real label and a fresh UUID once the write verified.
         import uuid
+        # tune2fs -U refuses a filesystem that was not freshly checked (an image straight out of the build was
+        # mounted after its last check). The extracted copy is ours: check it (exit 1 = fixed, which is fine).
+        if subprocess.run(["e2fsck", "-fp", raw], capture_output=True).returncode > 1:
+            sys.exit("e2fsck dell'immagine ROOT_A fallito")
         run("tune2fs", "-L", "ROOT_NEW", "-U", str(uuid.uuid4()), raw)
         dst = os.path.join(out, "root.ext4.pc.xz")
         with open(dst, "wb") as f:
