@@ -204,6 +204,11 @@ install -m 755 /kiosk/files/unitotem-ssh-hostkey "${ROOTFS}/usr/sbin/unitotem-ss
 install -m 644 /kiosk/files/unitotem-ssh-hostkey.service \
     "${ROOTFS}/etc/systemd/system/unitotem-ssh-hostkey.service"
 
+for unit in emergency rescue; do
+    mkdir -p "${ROOTFS}/etc/systemd/system/${unit}.service.d"
+    sed "s/systemd-sulogin-shell emergency/systemd-sulogin-shell ${unit}/" /kiosk/files/emergency-dropin.conf \
+        > "${ROOTFS}/etc/systemd/system/${unit}.service.d/unitotem.conf"
+done
 install -m 755 /kiosk/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
 # Public half of the update root key only. The private keys live outside the repo
 # (tools/release/backup-keys.sh); losing them means no fielded device accepts an update again.

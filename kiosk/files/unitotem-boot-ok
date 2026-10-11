@@ -14,7 +14,10 @@ set -euo pipefail
 BOOTFS_LABEL=FIRMWARE
 [ -d /sys/firmware/efi ] && BOOTFS_LABEL=EFI
 
-BOOTFS_DEV=$(blkid -L "$BOOTFS_LABEL" -o device 2>/dev/null || true)
+# A/B images keep no boot counter on the FAT (see ota-engine.sh, cmd_init_premount): nothing to clear, and not
+# touching that partition on a normal boot is the point.
+BOOTFS_DEV=""
+grep -q 'unitotem.slot=' /proc/cmdline || BOOTFS_DEV=$(blkid -L "$BOOTFS_LABEL" -o device 2>/dev/null || true)
 if [ -n "$BOOTFS_DEV" ]; then
     mnt=/run/unitotem-bootfs
     mkdir -p "$mnt"
@@ -38,6 +41,7 @@ if [ -n "$BOOTFS_DEV" ]; then
         rm -f "$mnt/unitotem-ota.bootcount"
         sync
         umount "$mnt" 2>/dev/null || true
+        [ -n "${existing:-}" ] && mount -o remount,ro "$existing" 2>/dev/null || true
     fi
 fi
 
