@@ -479,6 +479,15 @@ cmd_prepare_bootfs() {
     local disk; disk=$(resolve_disk "${ARG[disk]}")
     local bootfs_dev; bootfs_dev=$(pdev_target "$disk" "${ARG[bootfs-part]}")
     if [ "${ARG[fresh]:-0}" = 1 ]; then
+        # When the fallback was entered through the flag file, init-premount left this very partition mounted
+        # read-only on /boot-ota (it keeps it for the whole session), and mkfs.fat refuses a mounted device:
+        # "contains a mounted filesystem" - after sfdisk had already rewritten the table. Let go of it first.
+        # (Other mounts of the device are released too; ota_mount_bootfs_rw mounts it afresh when needed.)
+        umount /boot-ota 2>/dev/null || true
+        local m
+        while m=$(awk -v d="$bootfs_dev" '$1==d{print $2; exit}' /proc/mounts) && [ -n "$m" ]; do
+            umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || break
+        done
         log "Formatto la partizione di boot ($bootfs_dev, ${ARG[fstype]})..."
         # --volid: the FAT serial of the image's own boot partition. GRUB's EFI/BIOS images locate the
         # directory holding grub.cfg by that serial (search.fs_uuid), so a freshly formatted partition
