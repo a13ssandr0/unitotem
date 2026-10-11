@@ -299,7 +299,10 @@ cmd_restore_table() {
             print line
         }')
 
-    log "Ripristino la tabella delle partizioni su $disk (settori totali: $disk_sectors)..."
+    # The boot partition is mounted read-only at /boot-ota for the whole fallback session; rewriting the table under a
+    # mounted partition makes the kernel keep the OLD geometry (the re-read fails with EBUSY) when the new table moves it.
+    umount /boot-ota 2>/dev/null || true
+    log "Writing the partition table on $disk (total sectors: $disk_sectors)..."
     printf '%s\n' "$patched" | sfdisk --force --no-reread "$disk" || fail "sfdisk restore fallito"
     mark_point_of_no_return
 

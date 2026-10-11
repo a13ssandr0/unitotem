@@ -31,13 +31,13 @@ arm64 (era: FIRMWARE 1G, ROOT 8G, DATA resto):
 | # | label | fs | note |
 |---|---|---|---|
 | 1 | `FIRMWARE` | FAT32 1 GiB | firmware Pi condiviso + `slota/` `slotb/` + `recovery*` |
-| 2 | `ROOT_A` | ext4 5 GiB | |
-| 3 | `ROOT_B` | ext4 5 GiB | |
+| 2 | `ROOT_A` | ext4 6 GiB | |
+| 3 | `ROOT_B` | ext4 6 GiB | |
 | 4 | `DATA` | ext4 resto | |
 
 amd64: `EFI`, `BOOT` (può restare per recovery), `ROOT_A`, `ROOT_B`, `DATA`, `BIOS` (ef02).
 
-Dimensione slot: ROOT usa oggi 2.93 GiB. 5 GiB lasciano margine di crescita; **la dimensione dello slot è
+Dimensione slot: 6 GiB (era 5, scelta dell'utente 2026-10-11: con il manager 3.0 la ROOT amd64 arrivava al 95% di 5 GiB; nota: un dispositivo gia' distribuito con slot da 5 GiB non puo' ricevere un'immagine da 6 GiB senza ripartizionare). Il margine di crescita non e' una scelta neutra: **la dimensione dello slot è
 l'unico vincolo davvero rigido del sistema**, perché ridimensionarla dopo significa ripartizionare e
 spostare DATA. Totale immagine 8 → 11 GiB circa (`IMAGE_SIZE` ~14 GiB).
 
