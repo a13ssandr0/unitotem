@@ -501,7 +501,9 @@ def rpi_install_bootfiles(conf, cur, new, manifest, base):
     os.makedirs(tmp)
     h = hashlib.sha256(); done = 0
     xz = subprocess.Popen(["xz", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    tar = subprocess.Popen(["tar", "-C", tmp, "-xf", "-"], stdin=xz.stdout)
+    # --no-same-owner/-permissions: the destination is a FAT, which has no owners; tar as root otherwise fails every
+    # file with "Cannot change ownership" and exits 2 (found on the first real in-place update on a Pi).
+    tar = subprocess.Popen(["tar", "--no-same-owner", "--no-same-permissions", "-C", tmp, "-xf", "-"], stdin=xz.stdout)
     xz.stdout.close()
     try:
         with urllib.request.urlopen(base + part["file"], timeout=TIMEOUT) as r:
