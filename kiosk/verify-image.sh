@@ -45,6 +45,14 @@ chk "i2c-dev loaded at boot" file_has "$R/etc/modules-load.d/unitotem-i2c.conf" 
 chk "cron present (manager timers)" installed cron
 for p in libxcb-icccm4 libxcb-shape0; do chk "package $p installed (the Qt viewer aborts without it)" installed "$p"; done
 
+echo "== Logo and manager"
+for f in unitotem-logo-256x73.bgrx unitotem-logo-640x182.bgrx unitotem-logo-256x73.rgb565 unitotem-logo-640x182.rgb565; do
+    chk "framebuffer logo $f in the image" test -s "$R/usr/lib/unitotem/$f"
+done
+chk "OTA hook carries the logo into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-logo-'
+chk "manager is 3.x on this architecture" bash -c "awk 'BEGIN{RS=\"\";FS=\"\\n\"} \$1==\"Package: unitotem-manager\"{for(i=1;i<=NF;i++) if(\$i ~ /^Version: 3\\./) f=1} END{exit !f}' $R/var/lib/dpkg/status"
+chk "manager venv is for this architecture" bash -c "d=\$(ls $R/var/unitotem-venv/lib/python3.13/site-packages/cefpython3/*.so 2>/dev/null | head -1); [ -n \"\$d\" ] && file \"\$d\" | grep -q '$([ "$ARCH" = arm64 ] && echo aarch64 || echo x86-64)'"
+
 echo "== Mount and boot robustness"
 chk "boot FAT is ro,nofail in fstab" file_has "$R/etc/fstab" '^LABEL=(EFI|FIRMWARE)[[:space:]].*ro,nofail'
 chk "emergency mode reboots instead of waiting forever" file_has "$R/etc/systemd/system/emergency.service.d/unitotem.conf" 'reboot'

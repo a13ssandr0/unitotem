@@ -1393,18 +1393,48 @@ ota_idle_watchdog() {
 # ota_splash TITLE LINE : paint the console right away - a logo, what is happening and what to expect - so the screen is
 # never an empty black rectangle while the network comes up (about ten seconds) before the progress screen can start. Plain
 # text on tty1 (fbcon draws it on the framebuffer), best effort: no tty, no splash, and nothing else depends on it.
+# The logo is the UniTotem wordmark of the manager's Plymouth theme, pre-rendered (tools/gen-logo.py) to raw 32-bit pixels and
+# written straight to the framebuffer: this initramfs has no image decoder. Returns 1 if there is no usable framebuffer or
+# logo, so the caller can fall back to text.
+OTA_LOGO_DIR=/usr/lib/unitotem
+ota_logo() {
+    local fb=/sys/class/graphics/fb0 W H bpp stride logo lw lh y0 x0 r
+    [ -w /dev/fb0 ] && [ -r "$fb/virtual_size" ] && [ -r "$fb/bits_per_pixel" ] && [ -r "$fb/stride" ] || return 1
+    IFS=, read -r W H < "$fb/virtual_size"; read -r bpp < "$fb/bits_per_pixel"; read -r stride < "$fb/stride"
+    # 32 bpp: the KMS framebuffer (real system); 16 bpp: the firmware framebuffer of the resident Pi fallback (RGB565)
+    local ext bytes
+    case "$bpp" in 32) ext=bgrx; bytes=4 ;; 16) ext=rgb565; bytes=2 ;; *) return 1 ;; esac
+    # two sizes: a small one for the 640x480 update screen, a large one for native-resolution screens
+    if [ "$W" -le 800 ]; then logo=$OTA_LOGO_DIR/unitotem-logo-256x73.$ext; lw=256; lh=73
+    else logo=$OTA_LOGO_DIR/unitotem-logo-640x182.$ext; lw=640; lh=182; fi
+    [ -r "$logo" ] && [ "$W" -ge "$lw" ] && [ "$H" -ge $((lh + 40)) ] || return 1
+    x0=$(( (W - lw) / 2 )); y0=32
+    for ((r = 0; r < lh; r++)); do
+        dd if="$logo" of=/dev/fb0 bs=$((lw * bytes)) skip=$r count=1 seek=$(( (y0 + r) * stride + x0 * bytes )) \
+           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
+    done
+    return 0
+}
+
 ota_splash() {
     [ -w /dev/tty1 ] || return 0
-    {
-        printf '\033[2J\033[H\033[?25l\033[1;36m'
-        printf '\n\n\n'
-        printf '      _   _       _ _____       _\n'
-        printf '     | | | |_ __ (_)_   _|__ __| |_ ___ _ __ ___\n'
-        printf '     | | | | '"'"'_ \| | | |/ _ \ _|  _/ _ \ '"'"'_ ` _ \\\n'
-        printf '     | |_| | | | | | | | (_) | |_| ||  __/ | | | | |\n'
-        printf '      \___/|_| |_|_| |_|\___/ \__|\__\___|_| |_| |_|\n'
-        printf '\033[0m\n\n     %s\n\n     %s\n' "${1:-}" "${2:-}"
-    } > /dev/tty1 2>/dev/null || true
+    printf '\033[2J\033[H\033[?25l' > /dev/tty1 2>/dev/null || true
+    local row=2
+    if ota_logo; then
+        row=12     # below the bitmap (16 px text rows at 640x480; the logo spans rows 2..7 there, 2..13 at native size)
+        printf '\033[%d;1H' "$row" > /dev/tty1 2>/dev/null || true
+    else
+        {
+            printf '\033[1;36m\n\n\n'
+            printf '      _   _       _ _____       _\n'
+            printf '     | | | |_ __ (_)_   _|__ __| |_ ___ _ __ ___\n'
+            printf '     | | | | '"'"'_ \| | | |/ _ \ _|  _/ _ \ '"'"'_ ` _ \\\n'
+            printf '     | |_| | | | | | | | (_) | |_| ||  __/ | | | | |\n'
+            printf '      \___/|_| |_|_| |_|\___/ \__|\__\___|_| |_| |_|\n'
+            printf '\033[0m'
+        } > /dev/tty1 2>/dev/null || true
+    fi
+    printf '\n\n     %s\n\n     %s\n' "${1:-}" "${2:-}" > /dev/tty1 2>/dev/null || true
 }
 
 # The last thing an update shows before the machine restarts: say so, at 100%, instead of leaving the previous step on
@@ -1473,6 +1503,8 @@ cmd_serve_fallback() {
     ota_ui_start "${kind_title}
 Reason: ${reason}
 Address: ${myip:-none}   Port: 2222" || true
+    # the progress screen clears the console when it starts: put the logo back above it once it is up
+    ( sleep 2; ota_logo ) </dev/null >/dev/null 2>&1 &
 
     if [ -f /boot-ota/unitotem-ota.conf ]; then
         read_kv_lines < /boot-ota/unitotem-ota.conf
