@@ -208,12 +208,19 @@ fi
 if [ "$ARCH" = "arm64" ] && [ "$AB_LAYOUT" = 1 ]; then
     FW=${IMG_MNT}/boot/firmware
     mkdir -p "$FW/slota"
-    for f in kernel8.img initramfs8 cmdline.txt overlays; do
+    for f in kernel8.img initramfs8 cmdline.txt; do
         [ -e "$FW/$f" ] && mv "$FW/$f" "$FW/slota/$f"
     done
-    for f in "$FW"/*.dtb; do [ -e "$f" ] && mv "$f" "$FW/slota/"; done
+    # dtbs and overlays are COPIED, not moved: slot A boots through os_prefix=slota/ and finds its own, but the
+    # resident fallback (config.txt without os_prefix: kernel=recovery8.img) loads its device tree from the TOP of the
+    # partition. Moving them left the fallback with no dtb, and a Pi that boots a kernel without one stops at the rainbow
+    # screen - the safety net itself was unbootable (found on the first real Pi deploy).
+    cp -r "$FW/overlays" "$FW/slota/overlays" 2>/dev/null || true
+    for f in "$FW"/*.dtb; do [ -e "$f" ] && cp "$f" "$FW/slota/"; done
     sed -i '0,/^\[all\]/s//[all]\nos_prefix=slota\//' "$FW/config.txt"
     grep -q '^os_prefix=slota/' "$FW/config.txt" || { echo "config.txt: os_prefix non inserito" >&2; exit 1; }
+    # the fallback's device tree must stay where its config.txt (no os_prefix) looks for it
+    [ -s "$FW/bcm2711-rpi-4-b.dtb" ] || { echo "BOOT-ABILITY: manca bcm2711-rpi-4-b.dtb al primo livello: il fallback non potrebbe avviarsi" >&2; exit 1; }
 fi
 
 # ---------- Install bootloader (amd64 only) ----------
