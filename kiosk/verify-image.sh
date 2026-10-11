@@ -49,7 +49,12 @@ echo "== Logo and manager"
 for f in unitotem-logo-256x73.bgrx unitotem-logo-640x182.bgrx unitotem-logo-1280x364.bgrx unitotem-logo-256x73.rgb565 unitotem-logo-640x182.rgb565 unitotem-logo-1280x364.rgb565; do
     chk "framebuffer logo $f in the image" test -s "$R/usr/lib/unitotem/$f"
 done
-for f in top bottom stripe; do for e in bgrx rgb565; do chk "framebuffer frame piece unitotem-frame-$f.$e in the image" test -s "$R/usr/lib/unitotem/unitotem-frame-$f.$e"; done; done
+for e in bgrx bgr24 rgb565; do
+    chk "frame line blob ($e) in the image" test -s "$R/usr/lib/unitotem/unitotem-frame-line.$e"
+    for rad in 12 16 24 32 48 64; do chk "frame corners r=$rad ($e) in the image" test -s "$R/usr/lib/unitotem/unitotem-frame-corners-$rad.$e"; done
+done
+chk "stty is in the initramfs hook list (the frame geometry comes from the console size)" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" ' stty'
+chk "the frame works at any resolution (no fixed-geometry guard left in ota_frame)" bash -c "! grep -q 'W\" = 640' $R/usr/lib/unitotem/ota-engine.sh"
 chk "OTA hook carries the frame into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-frame-'
 chk "the engine draws the rounded frame and blanks whiptail's own border" bash -c "grep -q 'ota_frame' $R/usr/lib/unitotem/ota-engine.sh && grep -q 'First blank whiptail' $R/usr/lib/unitotem/ota-engine.sh"
 chk "OTA hook carries the logo into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-logo-'

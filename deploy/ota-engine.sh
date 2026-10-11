@@ -1398,7 +1398,7 @@ ota_idle_watchdog() {
 # The logo is the UniTotem wordmark of the manager's Plymouth theme, pre-rendered (tools/gen-logo.py) to raw 32-bit pixels and
 # written straight to the framebuffer: this initramfs has no image decoder. Returns 1 if there is no usable framebuffer or
 # logo, so the caller can fall back to text.
-OTA_LOGO_DIR=/usr/lib/unitotem
+OTA_LOGO_DIR=${OTA_LOGO_DIR:-/usr/lib/unitotem}
 ota_logo() {
     local fb=/sys/class/graphics/fb0 W H bpp stride logo lw lh y0 x0 r
     [ -w /dev/fb0 ] && [ -r "$fb/virtual_size" ] && [ -r "$fb/bits_per_pixel" ] && [ -r "$fb/stride" ] || return 1
@@ -1418,34 +1418,86 @@ ota_logo() {
     return 0
 }
 
-# A rounded frame around the progress dialog, drawn on the framebuffer in the margin and in the (blank) outer ring of the dialog
-# - never on its interior, which belongs to whiptail. Pieces are pre-rendered by tools/gen-frame.py for the one geometry the
-# update screen has: 640x480, 80x30 text cells of 8x16 px, dialog 72x14 cells at x 32..608, y 128..352; frame x 24..616, y 116..364.
-# Anything else (another resolution): no frame, whiptail's own box stays - returns 1 so callers can tell.
+# A rounded frame around the progress dialog, drawn on the framebuffer for WHATEVER resolution the screen has. whiptail draws its
+# own border at any size, so the replacement must too: nothing here is tied to one geometry.
+#
+# The geometry comes from the console itself: columns/rows from the tty (stty), cell size = framebuffer size / console size, and
+# the dialog is where newt centers it - 72x14 cells (as many as fit on a small screen) in the middle. Around it:
+#   1. whiptail's own border (the outer ring of its cells) is painted black - it is drawn once and whiptail only redraws cells that
+#      change, so what is painted over it stays;
+#   2. the frame is laid out in the margin outside the dialog: radius from the cell height (the nearest pre-rendered one that fits,
+#      thickness following it), four pre-rendered anti-aliased corners, and straight edges cut from a solid-colour line blob.
+# Only the frame's own pixels and the blank ring are ever written - never the dialog interior, which belongs to whiptail.
+# Formats: 32, 24 and 16 bits per pixel. Returns 1 (and says why on stderr) only if there is no usable framebuffer at all.
 ota_frame() {
-    local fb=/sys/class/graphics/fb0 W H bpp stride ext bytes x0=24 y0=116 fw=592 fh=248 rad=16 t=3 y
-    [ -w /dev/fb0 ] && [ -r "$fb/virtual_size" ] || return 1
+    # OTA_FB_DEV / OTA_FB_SYS / OTA_CONSOLE_SIZE ("rows cols") replace the real devices: the layout is tested on fake framebuffers
+    # of many sizes and depths (work/loopback-test/test-frame.sh), because only one of them can be on a screen at a time.
+    local fb=${OTA_FB_SYS:-/sys/class/graphics/fb0} fbdev=${OTA_FB_DEV:-/dev/fb0} W H bpp stride ext bytes rows cols cw ch
+    [ -w "$fbdev" ] && [ -r "$fb/virtual_size" ] || { echo "ota_frame: no framebuffer" >&2; return 1; }
     IFS=, read -r W H < "$fb/virtual_size"; read -r bpp < "$fb/bits_per_pixel"; read -r stride < "$fb/stride"
-    [ "$W" = 640 ] && [ "$H" = 480 ] || return 1
-    case "$bpp" in 32) ext=bgrx; bytes=4 ;; 16) ext=rgb565; bytes=2 ;; *) return 1 ;; esac
-    local d=$OTA_LOGO_DIR black
-    # First blank whiptail's own border: the ring of text cells around its 72x14 dialog (8x16 px cells, dialog x 32..608, y 128..352).
-    # It is drawn once and whiptail only redraws cells that change, so what is painted over it stays.
-    black() { dd if=/dev/zero of=/dev/fb0 bs=$3 count=1 seek=$(( $2 * stride + $1 * bytes )) oflag=seek_bytes conv=notrunc status=none 2>/dev/null; }
-    for ((y = 128; y < 144; y++)); do black 32 $y $((576 * bytes)); black 32 $((y + 208)) $((576 * bytes)); done
-    for ((y = 144; y < 336; y++)); do black 32 $y $((8 * bytes)); black 600 $y $((8 * bytes)); done
-    [ -r "$d/unitotem-frame-top.$ext" ] && [ -r "$d/unitotem-frame-bottom.$ext" ] && [ -r "$d/unitotem-frame-stripe.$ext" ] || return 1
-    for ((y = 0; y < rad; y++)); do
-        dd if="$d/unitotem-frame-top.$ext" of=/dev/fb0 bs=$((fw * bytes)) skip=$y count=1 seek=$(( (y0 + y) * stride + x0 * bytes )) \
-           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
-        dd if="$d/unitotem-frame-bottom.$ext" of=/dev/fb0 bs=$((fw * bytes)) skip=$y count=1 seek=$(( (y0 + fh - rad + y) * stride + x0 * bytes )) \
-           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
+    case "$bpp" in
+        32) ext=bgrx; bytes=4 ;; 24) ext=bgr24; bytes=3 ;; 16) ext=rgb565; bytes=2 ;;
+        *) echo "ota_frame: unsupported framebuffer depth $bpp" >&2; return 1 ;;
+    esac
+    if read -r rows cols < <(if [ -n "${OTA_CONSOLE_SIZE:-}" ]; then echo "$OTA_CONSOLE_SIZE"; else stty -F /dev/tty1 size 2>/dev/null; fi) \
+        && [ "${cols:-0}" -gt 0 ] && [ "${rows:-0}" -gt 0 ]; then
+        cw=$((W / cols)); ch=$((H / rows))
+    else                                   # no stty: the usual fbcon fonts, 8x16 and 16x32 on large screens
+        cw=8; ch=16; [ "$W" -gt 1024 ] && { cw=16; ch=32; }
+        cols=$((W / cw)); rows=$((H / ch))
+    fi
+    [ "$cw" -ge 4 ] && [ "$ch" -ge 8 ] || { echo "ota_frame: implausible cell size ${cw}x${ch}" >&2; return 1; }
+
+    # the dialog (ota_ui_start asks for 72x14 cells; newt shrinks it on a small console and centers it)
+    local dw=72 dh=14 dx0 dy0 dx1 dy1
+    [ "$cols" -ge $((dw + 4)) ] || dw=$((cols - 4)); [ "$rows" -ge $((dh + 2)) ] || dh=$((rows - 2))
+    dx0=$(( (cols - dw) / 2 * cw )); dy0=$(( (rows - dh) / 2 * ch )); dx1=$((dx0 + dw * cw)); dy1=$((dy0 + dh * ch))
+
+    wr() { # wr SRC_FILE SKIP_BYTES X Y LEN_BYTES : copy LEN bytes of SRC (from SKIP) to pixel (X,Y)
+        dd if="$1" iflag=skip_bytes skip="$2" of="$fbdev" bs="$5" count=1 seek=$(( $4 * stride + $3 * bytes )) \
+           oflag=seek_bytes conv=notrunc status=none 2>/dev/null
+    }
+    local y
+    # 1. blank whiptail's own border: the ring of cells around the dialog
+    for ((y = dy0; y < dy0 + ch; y++)); do wr /dev/zero 0 "$dx0" "$y" $(( (dx1 - dx0) * bytes )) || return 1; done
+    for ((y = dy1 - ch; y < dy1; y++)); do wr /dev/zero 0 "$dx0" "$y" $(( (dx1 - dx0) * bytes )) || return 1; done
+    for ((y = dy0 + ch; y < dy1 - ch; y++)); do
+        wr /dev/zero 0 "$dx0" "$y" $((cw * bytes)) || return 1
+        wr /dev/zero 0 $((dx1 - cw)) "$y" $((cw * bytes)) || return 1
     done
-    for ((y = y0 + rad; y < y0 + fh - rad; y++)); do
-        dd if="$d/unitotem-frame-stripe.$ext" of=/dev/fb0 bs=$((t * bytes)) count=1 seek=$(( y * stride + x0 * bytes )) \
-           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
-        dd if="$d/unitotem-frame-stripe.$ext" of=/dev/fb0 bs=$((t * bytes)) count=1 seek=$(( y * stride + (x0 + fw - t) * bytes )) \
-           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
+
+    # 2. the frame, in the margin outside the dialog
+    local r t m fx0 fy0 fx1 fy1 d=$OTA_LOGO_DIR
+    r=12; t=2
+    local cand
+    for cand in 64:13 48:10 32:6 24:5 16:3 12:2; do
+        [ "${cand%%:*}" -le "$ch" ] && { r=${cand%%:*}; t=${cand##*:}; break; }
+    done
+    m=$(( cw * 3 / 4 )); [ "$m" -ge 4 ] || m=4
+    fx0=$((dx0 - m)); fy0=$((dy0 - m)); fx1=$((dx1 + m)); fy1=$((dy1 + m))
+    [ "$fx0" -ge 0 ] && [ "$fy0" -ge 0 ] && [ "$fx1" -le "$W" ] && [ "$fy1" -le "$H" ] \
+        || { echo "ota_frame: the frame does not fit the screen" >&2; return 1; }
+    local cf="$d/unitotem-frame-corners-$r.$ext" lf="$d/unitotem-frame-line.$ext" rb=$((r * bytes)) csz=$((r * r * bytes))
+    [ -r "$cf" ] && [ -r "$lf" ] || { echo "ota_frame: frame pieces missing in $d" >&2; return 1; }
+    for ((y = 0; y < r; y++)); do
+        wr "$cf" $((0 * csz + y * rb)) "$fx0"        $((fy0 + y))       "$rb" || return 1     # top-left
+        wr "$cf" $((1 * csz + y * rb)) $((fx1 - r))  $((fy0 + y))       "$rb" || return 1     # top-right
+        wr "$cf" $((2 * csz + y * rb)) "$fx0"        $((fy1 - r + y))   "$rb" || return 1     # bottom-left
+        wr "$cf" $((3 * csz + y * rb)) $((fx1 - r))  $((fy1 - r + y))   "$rb" || return 1     # bottom-right
+    done
+    local len=$((fx1 - fx0 - 2 * r)) x done_len chunk
+    for ((y = 0; y < t; y++)); do                      # top and bottom edges, in chunks of at most 4096 px (the line blob)
+        x=$((fx0 + r)); done_len=0
+        while [ "$done_len" -lt "$len" ]; do
+            chunk=$((len - done_len)); [ "$chunk" -le 4096 ] || chunk=4096
+            wr "$lf" 0 "$x" $((fy0 + y)) $((chunk * bytes)) || return 1
+            wr "$lf" 0 "$x" $((fy1 - t + y)) $((chunk * bytes)) || return 1
+            x=$((x + chunk)); done_len=$((done_len + chunk))
+        done
+    done
+    for ((y = fy0 + r; y < fy1 - r; y++)); do          # left and right edges
+        wr "$lf" 0 "$fx0" "$y" $((t * bytes)) || return 1
+        wr "$lf" 0 $((fx1 - t)) "$y" $((t * bytes)) || return 1
     done
     return 0
 }

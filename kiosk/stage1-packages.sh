@@ -159,9 +159,10 @@ mkdir -p "${ROOTFS}/usr/lib/unitotem"
 install -m 755 /kiosk/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
 # framebuffer frame of the deploy/recovery screen's progress dialog (pre-rendered by tools/gen-frame.py)
-install -m 644 /kiosk/files/unitotem-frame-top.bgrx /kiosk/files/unitotem-frame-top.rgb565 \
-    /kiosk/files/unitotem-frame-bottom.bgrx /kiosk/files/unitotem-frame-bottom.rgb565 \
-    /kiosk/files/unitotem-frame-stripe.bgrx /kiosk/files/unitotem-frame-stripe.rgb565 "${ROOTFS}/usr/lib/unitotem/"
+for _f in /kiosk/files/unitotem-frame-line.* /kiosk/files/unitotem-frame-corners-*; do
+    [ -s "$_f" ] || { echo "ERRORE: pezzo del riquadro mancante: $_f" >&2; exit 1; }
+    install -m 644 "$_f" "${ROOTFS}/usr/lib/unitotem/"
+done
 # framebuffer logo of the deploy/recovery screen (pre-rendered by tools/gen-logo.py)
 install -m 644 /kiosk/files/unitotem-logo-256x73.bgrx /kiosk/files/unitotem-logo-640x182.bgrx \
     /kiosk/files/unitotem-logo-256x73.rgb565 /kiosk/files/unitotem-logo-640x182.rgb565 \
