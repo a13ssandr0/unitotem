@@ -258,7 +258,9 @@ stress() {
         check "stress: avvio normale finale su uno slot funzionante (slot=$sl)" bash -c "[ '$sl' = a ] || [ '$sl' = b ]"
         UU status >"$W/st.json" 2>/dev/null
         check "stress: lo stato di aggiornamento e' leggibile" bash -c "python3 -c \"import json;json.load(open('$W/st.json'))\""
-        check "stress: grubenv valido" bash -c "$(declare -f SSH); SSH 'grub-editenv /boot/efi/unitotem-grub/grub/grubenv list' | grep -q '^saved_entry='"
+        SSH 'grub-editenv /boot/efi/unitotem-grub/grub/grubenv list; findmnt -no OPTIONS /boot/efi' >"$W/grubenv.out" 2>&1
+        check "stress: grubenv valido (saved_entry presente)" grep -q '^saved_entry=' "$W/grubenv.out"
+        check "stress: la ESP e' montata in sola lettura" grep -qE '(^|,)ro(,|$)' "$W/grubenv.out"
         check "stress: mai finito nel fallback in RAM durante i $cycles cicli (visto $fallback volte)" test "$fallback" -eq 0
     else
         check "stress: avvio normale finale: la VM non risponde (probabile fallback o disco danneggiato)" false
