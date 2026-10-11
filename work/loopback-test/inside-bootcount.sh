@@ -226,6 +226,42 @@ check "4g: fallback se lo slot A nominato in root= non esiste (anche se ROOT_B c
     grep -q 'partizione ROOT_A non trovata' /tmp/premount.out
 e2label "${LOOP}p2" ROOT
 
+# --- A/B: nessun contatore, nessuna scrittura sul FAT -------------------------
+log "=== 4h: layout A/B -> il contatore non si usa e non si tocca ==="
+set_count 5
+set_cmdline "console=tty1 root=LABEL=ROOT ro quiet unitotem.slot=a"
+run_init_premount
+check "4h: A/B non cade nel fallback a contatore alto" bash -c '! grep -q "tre avvii" /tmp/premount.out'
+check "4h: A/B: init-premount ritorna 0" grep -q 'exit=0' /tmp/premount.out
+c=$(get_count); record "4h: contatore dopo l'avvio A/B = $c (atteso 5, intatto)"
+check "4h: A/B: il FAT non e' stato scritto (contatore invariato)" bash -c "[ '$c' = 5 ]"
+check "4h: A/B: /boot-ota smontato" bash -c '! mountpoint -q /boot-ota'
+
+# --- il controllo della ROOT non deve scrivere ---------------------------------
+log "=== 4i: il controllo della ROOT e' in sola lettura ==="
+set_count none
+set_cmdline "console=tty1 root=LABEL=ROOT ro quiet"
+before=$(dumpe2fs -h "${LOOP}p2" 2>/dev/null | grep -E 'Last checked|Last write time|Filesystem state' | md5sum)
+run_init_premount
+after=$(dumpe2fs -h "${LOOP}p2" 2>/dev/null | grep -E 'Last checked|Last write time|Filesystem state' | md5sum)
+check "4i: il superblocco della ROOT non e' cambiato dopo init-premount (prima e' -fy lo riscriveva)" bash -c "[ '$before' = '$after' ]"
+
+# --- watchdog del fallback --------------------------------------------------
+log "=== 4j: il fallback senza host si riavvia da solo ==="
+rm -f /tmp/reboot-called
+cat > /usr/local/bin/reboot << 'EOS'
+#!/bin/sh
+echo "$@" > /tmp/reboot-called
+EOS
+chmod +x /usr/local/bin/reboot
+drop_bootota
+timeout 25 "${ENGINE[@]}" serve-fallback --reason "prova" --idle-timeout 10 > /tmp/idle.out 2>&1 || true
+# In this container dropbear does not exist, so serve-fallback returns at once; the watchdog it started in the
+# background is what is being tested, and it needs its 10 s.
+for _ in $(seq 1 20); do [ -f /tmp/reboot-called ] && break; sleep 1; done
+check "4j: nessun host connesso -> reboot richiesto dopo l'attesa" test -f /tmp/reboot-called
+rm -f /tmp/reboot-called /usr/local/bin/reboot
+
 echo
 log "=== RISULTATI ==="
 cat "$RESULTS"

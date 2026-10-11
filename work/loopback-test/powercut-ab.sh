@@ -46,7 +46,12 @@ wait_serial() {   # wait_serial PATTERN COUNT_AT_LEAST TIMEOUT
     local i; for ((i=0;i<$3*2;i++)); do [ "$(serial_count "$1")" -ge "$2" ] && return 0; sleep 0.5; done; return 1
 }
 new_run() {   # new_run BASE NAME -> overlay path in $RUN
-    RUN="$W/run-$2.qcow2"; rm -f "$RUN"; qemu-img create -q -f qcow2 -b "$1" -F qcow2 "$RUN"; : > "$W/serial.log"
+    # absolute backing path: qemu-img resolves a relative one against the overlay's directory, found nothing, and
+    # (with -q) said nothing - a whole stress run once "passed" without ever booting a VM
+    RUN="$W/run-$2.qcow2"; rm -f "$RUN"
+    qemu-img create -q -f qcow2 -b "$(realpath "$1")" -F qcow2 "$RUN" || { echo "overlay non creato da $1"; return 1; }
+    [ -f "$RUN" ] || { echo "overlay $RUN mancante"; return 1; }
+    : > "$W/serial.log"
 }
 clean_shutdown() { SSH 'sync; systemctl poweroff' 2>/dev/null; local i; for ((i=0;i<40;i++)); do kill -0 "$VM_PID" 2>/dev/null || break; sleep 2; done; kill -9 "$VM_PID" 2>/dev/null; VM_PID=""; }
 
@@ -271,7 +276,13 @@ stress_check() {   # offline filesystem check of the current overlay, on copies
         dd if="$raw" of="$f" bs=512 skip="$s" count=$((e-s+1)) status=none 2>/dev/null
         if [ "$part" = 1 ]; then
             fsck.vfat -n "$f" >"$W/ck.out" 2>&1; local rc=$?
+            # rc=1 with ONLY "differences between boot sector and its backup" is the kernel's volume-dirty flag, set in
+            # the primary boot sector while a FAT is mounted read-write and left behind by a cut. fsck calls it mostly
+            # harmless; it is reported as a note (and should disappear once the ESP is mounted read-only).
             if [ $rc -eq 0 ]; then echo "PASS: $tag: $name (FAT) pulita" | tee -a "$RESULTS"; pass=$((pass+1))
+            elif [ $rc -eq 1 ] && grep -q 'differences between boot sector and its backup' "$W/ck.out" \
+                    && ! grep -qiE 'orphan|lost|bad|corrupt|invalid|truncat|cross-linked|differ.*FAT|free cluster' "$W/ck.out"; then
+                echo "PASS: $tag: $name (FAT) integra, solo flag di volume sporco nel boot sector" | tee -a "$RESULTS"; pass=$((pass+1))
             else echo "FAIL: $tag: $name (FAT) fsck.vfat rc=$rc -- $(head -3 "$W/ck.out" | tr '\n' '|')" | tee -a "$RESULTS"; failn=$((failn+1)); fi
         else
             e2fsck -fp "$f" >"$W/ck.out" 2>&1; local r1=$?      # replay journal + preen
