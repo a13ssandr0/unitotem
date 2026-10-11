@@ -46,7 +46,7 @@ chk "cron present (manager timers)" installed cron
 for p in libxcb-icccm4 libxcb-shape0; do chk "package $p installed (the Qt viewer aborts without it)" installed "$p"; done
 
 echo "== Logo and manager"
-for f in unitotem-logo-256x73.bgrx unitotem-logo-640x182.bgrx unitotem-logo-256x73.rgb565 unitotem-logo-640x182.rgb565; do
+for f in unitotem-logo-256x73.bgrx unitotem-logo-640x182.bgrx unitotem-logo-1280x364.bgrx unitotem-logo-256x73.rgb565 unitotem-logo-640x182.rgb565 unitotem-logo-1280x364.rgb565; do
     chk "framebuffer logo $f in the image" test -s "$R/usr/lib/unitotem/$f"
 done
 chk "OTA hook carries the logo into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-logo-'
@@ -62,6 +62,13 @@ chk "rescue mode reboots instead of waiting forever" file_has "$R/etc/systemd/sy
 chk "persistent-paths service installed" test -x "$R/usr/sbin/unitotem-persist-paths"
 chk "boot-ok service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-boot-ok.service"
 chk "DATA overlay hook is in the image" test -e "$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays"
+
+echo "== Placeholder screen (boot OK / video works, when the manager shows nothing)"
+chk "placeholder script installed" test -x "$R/usr/sbin/unitotem-placeholder"
+chk "console fonts for the placeholder (large DejaVu Bold sizes) in the image" bash -c "test -s $R/usr/share/consolefonts/Lat15-DejaVuBold59x32.psf.gz && test -s $R/usr/share/consolefonts/Lat15-DejaVuBold118x64.psf.gz"
+chk "setfont available for the placeholder" test -x "$R/usr/bin/setfont"
+chk "placeholder service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-placeholder.service"
+chk "placeholder text is English and says BOOT OK / VIDEO OUTPUT WORKS" bash -c "grep -q 'BOOT OK  -  VIDEO OUTPUT WORKS' $R/usr/sbin/unitotem-placeholder && ! grep -iE 'avvio|schermo|funziona' $R/usr/sbin/unitotem-placeholder"
 
 echo "== Device identity (nothing secret may be shared by every device flashed from one image)"
 chk "no TLS private key in the image (it is generated on first boot)" bash -c "! test -e $R/etc/ssl/unitotem.pem && ! test -e $R/etc/ssl/unitotem_key.pem"

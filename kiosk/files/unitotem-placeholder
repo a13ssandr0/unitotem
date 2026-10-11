@@ -1,0 +1,100 @@
+#!/bin/bash
+# Placeholder screen: shown while the UniTotem manager is not up (or not answering), so that "the board booted and the display
+# works" can be told apart from every other screen - the boot animation, the OTA update/recovery screen, a black X session.
+# Deliberately unmistakable: the UniTotem logo and a green reverse-video banner "BOOT OK - VIDEO OUTPUT WORKS", plus the facts
+# one needs on site: manager state, health, IP addresses, slot, release, uptime.
+#
+# Mechanism: the kiosk (X) runs on VT 8 and the manager's viewer covers it when it works. When the manager does not answer
+# /health the console on VT 1 is painted and the display switched to it; when it answers again the display goes back to VT 8.
+# Only for a 3.x manager (it has /health); with an older one this service does nothing. Meant for 1080p and 4K monitors seen from
+# a distance: the console font is picked from the framebuffer width so the text always spans about 60 columns.
+set -uo pipefail
+GRACE=${PLACEHOLDER_GRACE:-30}       # seconds after boot before it may appear (the manager needs a moment)
+POLL=${PLACEHOLDER_POLL:-5}
+HEALTH_URL=${PLACEHOLDER_HEALTH_URL:-https://localhost/health}
+LOGO_DIR=${PLACEHOLDER_LOGO_DIR:-/usr/lib/unitotem}
+KIOSK_VT=8
+TTY=${PLACEHOLDER_TTY:-/dev/tty1}
+
+ver=$(dpkg-query -W -f='${Version}' unitotem-manager 2>/dev/null || true)
+[ "${PLACEHOLDER_FORCE:-0}" = 1 ] || case "$ver" in 3.*) ;; *) exit 0 ;; esac   # FORCE is for testing on a 2.x image
+
+FB=/sys/class/graphics/fb0
+fb_w=$(cut -d, -f1 $FB/virtual_size 2>/dev/null || echo 1920); fb_h=$(cut -d, -f2 $FB/virtual_size 2>/dev/null || echo 1080)
+# console font: DejaVu Bold, cell WxH from the table; the widest cell that still leaves >= 56 columns (the longest line)
+fontsize=16; fonth=30
+for pair in 16:30 20:36 24:43 28:51 32:59 40:74 48:89 64:118; do
+    w=${pair%%:*}; h=${pair##*:}
+    [ $(( fb_w / w )) -ge 56 ] && { fontsize=$w; fonth=$h; }
+done
+FONT=/usr/share/consolefonts/Lat15-DejaVuBold${fonth}x${fontsize}.psf.gz
+# logo: the largest pre-rendered size that fits the width with margin
+if   [ "$fb_w" -ge 3000 ]; then LOGO=unitotem-logo-1280x364; lw=1280; lh=364
+elif [ "$fb_w" -ge 1500 ]; then LOGO=unitotem-logo-640x182;  lw=640;  lh=182
+else                            LOGO=unitotem-logo-256x73;   lw=256;  lh=73; fi
+LOGO_Y=$(( fonth ))                                      # one text row below the top edge
+TEXT_ROW=$(( (LOGO_Y + lh) / fonth + 3 ))                # first text row, below the bitmap
+COLS=$(( fb_w / fontsize ))
+
+paint_logo() {   # same method as ota_logo in ota-engine.sh: pre-rendered pixels dd'd straight to the framebuffer
+    local bpp stride ext bytes x0 r
+    [ -w /dev/fb0 ] || return 1
+    read -r bpp < $FB/bits_per_pixel; read -r stride < $FB/stride
+    case "$bpp" in 32) ext=bgrx; bytes=4 ;; 16) ext=rgb565; bytes=2 ;; *) return 1 ;; esac
+    [ -r "$LOGO_DIR/$LOGO.$ext" ] || return 1
+    x0=$(( (fb_w - lw) / 2 ))
+    for ((r = 0; r < lh; r++)); do
+        dd if="$LOGO_DIR/$LOGO.$ext" of=/dev/fb0 bs=$((lw * bytes)) skip=$r count=1 seek=$(( (LOGO_Y + r) * stride + x0 * bytes )) \
+           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
+    done
+}
+
+line() { # line ROW "text" [SGR] : centered text on a row, erasing what was there
+    local t="$2" pad
+    pad=$(( (COLS - ${#t}) / 2 )); [ "$pad" -lt 0 ] && pad=0
+    printf '\033[%d;1H\033[2K%*s\033[%sm%s\033[0m' "$1" "$pad" '' "${3:-0}" "$t"
+}
+
+static_screen() {  # drawn once when the placeholder takes over: nothing here changes while it is shown
+    {
+        setfont -C "$TTY" "$FONT" 2>/dev/null
+        printf '\033[0m\033[2J\033[H\033[?25l'
+        printf '\033[9;0]\033[14;0]'                     # never blank the console, never power the display down
+    } > "$TTY" 2>/dev/null
+    # the banner row is a full-width green bar with the text on it
+    local r=$TEXT_ROW t="BOOT OK  -  VIDEO OUTPUT WORKS" pad
+    pad=$(( (COLS - ${#t}) / 2 ))
+    { printf '\033[%d;1H\033[1;97;42m%*s%s%*s\033[0m' "$r" "$pad" '' "$t" $(( COLS - pad - ${#t} )) ''
+      line $((r + 2)) "The system started correctly and the display works." 1
+      line $((r + 3)) "The UniTotem manager is not showing anything yet." 1
+    } > "$TTY" 2>/dev/null
+    paint_logo
+}
+
+dynamic_lines() {  # redrawn every poll, in place, no clear: nothing flickers
+    local state="$1" health="$2" ip slot rel up r=$((TEXT_ROW + 5))
+    ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/,"",$4); printf "%s ", $4}'); ip=${ip:-none}
+    slot=$(grep -o 'unitotem.slot=.' /proc/cmdline | cut -d= -f2); rel=$(cat /usr/share/unitotem/release-version 2>/dev/null || echo "?")
+    up=$(awk '{printf "%d", $1}' /proc/uptime)
+    {
+        line $r       "manager: ${state}    health: ${health}"
+        line $((r+1)) "address: ${ip}"
+        line $((r+2)) "slot ${slot:-?}    release ${rel}    uptime ${up}s"
+    } > "$TTY" 2>/dev/null
+}
+
+on_placeholder=0
+cleanup() { [ "$on_placeholder" = 1 ] && chvt "$KIOSK_VT" 2>/dev/null; exit 0; }
+trap cleanup TERM INT
+
+sleep "$GRACE"
+while :; do
+    state=$(systemctl is-active unitotem-manager 2>/dev/null || true)
+    if curl -sk -m 4 -o /dev/null -w '%{http_code}' "$HEALTH_URL" 2>/dev/null | grep -q '^200$'; then
+        if [ "$on_placeholder" = 1 ]; then chvt "$KIOSK_VT" 2>/dev/null; on_placeholder=0; fi
+    else
+        if [ "$on_placeholder" = 0 ]; then chvt 1 2>/dev/null; static_screen; on_placeholder=1; fi
+        dynamic_lines "${state:-unknown}" "no answer"
+    fi
+    sleep "$POLL"
+done
