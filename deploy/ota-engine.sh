@@ -81,6 +81,19 @@ ota_umount_bootfs_rw() {
     [ -n "$existing" ] && mount -o remount,ro "$existing" 2>/dev/null || true
 }
 
+# The root slot is mounted read-only and nothing is supposed to write it, so the boot-time check must not write
+# either: the old `e2fsck -fy` rewrote the superblock (and "fixed" whatever it saw, unattended) on every boot, which
+# is one more write in flight each time the power drops. Look first; only if that finds something let preen make
+# the repairs that are safe, then judge again. Anything still wrong goes to the fallback, where a person decides.
+check_root_readonly() {
+    local dev="$1" rc=0
+    e2fsck -fn "$dev" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    warn "controllo in sola lettura di $dev: rc=$rc, provo la riparazione sicura (preen)"
+    e2fsck -fp "$dev" >/dev/null 2>&1 || true
+    e2fsck -fn "$dev" >/dev/null 2>&1
+}
+
 run_e2fsck() {
     local rc=0
     e2fsck -fy "$1" || rc=$?
@@ -1300,10 +1313,29 @@ ota_led_maintenance() {
     return 0
 }
 
+# ota_idle_watchdog SECONDS : leave the fallback by rebooting if no host ever connects to dropbear (port 2222 =
+# 0x08AE in /proc/net/tcp*) within SECONDS. The fallback used to wait forever, which turned every transient trigger
+# (a few cut-short boots, a flaky read) into a device that stays dark until somebody with a laptop arrives. Once a
+# host HAS connected the watchdog stands down for good: whoever is repairing the device is in control. 0 = never.
+ota_idle_watchdog() {
+    local limit="${1:-0}" waited=0
+    [ "$limit" -gt 0 ] 2>/dev/null || return 0
+    while [ "$waited" -lt "$limit" ]; do
+        sleep 5; waited=$((waited + 5))
+        grep -qE ':08AE [0-9A-F]+:[0-9A-F]+ 01 ' /proc/net/tcp /proc/net/tcp6 2>/dev/null && return 0
+    done
+    log "nessun host si e' collegato entro ${limit}s: riavvio per ritentare l'avvio normale"
+    sync
+    reboot -f
+}
+
 cmd_serve_fallback() {
     parse_args "$@"
     local reason="${ARG[reason]:-richiesta esplicita}"
     log "Modalita' OTA: $reason"
+    # Automatic triggers wait 10 minutes for a host, requested ones 30 (the deploy that asked for it connects within
+    # a minute or two), `recover` forever. Overridable per call.
+    ( ota_idle_watchdog "${ARG[idle-timeout]:-600}" ) </dev/null >/dev/null 2>&1 &
 
     ota_led_maintenance
 
@@ -1439,12 +1471,12 @@ cmd_init_premount() {
     if cmdline_get unitotem.ota >/dev/null 2>&1; then
         local mode; mode=$(cmdline_get unitotem.ota)
         [ "$mode" = "1" ] || [ "$mode" = "recover" ] || return 0
-        cmd_serve_fallback --reason "cmdline unitotem.ota=$mode"
+        cmd_serve_fallback --reason "cmdline unitotem.ota=$mode" --idle-timeout "$([ "$mode" = recover ] && echo 0 || echo 1800)"
         return
     fi
 
     if check_flag_file FIRMWARE vfat || check_flag_file EFI vfat; then
-        cmd_serve_fallback --reason "flag file unitotem-ota.request"
+        cmd_serve_fallback --reason "flag file unitotem-ota.request" --idle-timeout 1800
         return
     fi
 
@@ -1465,7 +1497,7 @@ cmd_init_premount() {
         cmd_serve_fallback --reason "partizione $root_label non trovata"
         return
     fi
-    if ! run_e2fsck "$root_dev" 2>/dev/null; then
+    if ! check_root_readonly "$root_dev"; then
         cmd_serve_fallback --reason "e2fsck ha rilevato errori non corretti su $root_label"
         return
     fi
@@ -1484,6 +1516,14 @@ cmd_init_premount() {
     # actually boots fine.
     local trial_reset=""
     cmdline_get unitotem.ota.bootcount >/dev/null 2>&1 && trial_reset=1
+    # A/B images (unitotem.slot= on the command line) do not use the boot counter at all. Their safety net for a
+    # bad update is the one-shot trial plus the health gate, which need no FAT write; and the counter cannot tell
+    # a broken system from a supply that browns out: three boots cut short by a storm sent the device into the RAM
+    # fallback to wait for a host, and every boot also wrote the FAT that holds the bootloader.
+    if cmdline_get unitotem.slot >/dev/null 2>&1; then
+        umount /boot-ota 2>/dev/null || true
+        return 0
+    fi
     if [ -z "$trial_reset" ] && check_bootcount; then
         cmd_serve_fallback --reason "tre avvii consecutivi senza conferma (unitotem-boot-ok)"
         return

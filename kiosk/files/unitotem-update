@@ -21,6 +21,7 @@ CONF_DEFAULTS = {
     "UPDATE_STATE_DIR": "/mnt/data/unitotem/update",
     "UPDATE_VERSION_FILE": "/usr/share/unitotem/release-version",
     "UPDATE_GRUBENV": "/boot/efi/unitotem-grub/grub/grubenv",
+    "UPDATE_ESP_MOUNT": "/boot/efi",                         # amd64: where the ESP (grubenv) is mounted
     "UPDATE_BOOTFS": "/boot/firmware",                       # Raspberry Pi: the FAT partition the firmware reads
     "UPDATE_BACKEND": "",                                    # "grub" | "rpi"; empty = detect
     "UPDATE_DT_BOOTLOADER": "/proc/device-tree/chosen/bootloader",  # exists on boards with the EEPROM bootloader (tryboot)
@@ -266,7 +267,8 @@ def be_arm_trial(conf, slot):
         return
     bf = conf["UPDATE_BOOTFS"]
     cfg = open(os.path.join(bf, "config.txt")).read()
-    _atomic_write(os.path.join(bf, "tryboot.txt"), _rpi_prefix(cfg, slot))
+    with bootfs_rw(bf):
+        _atomic_write(os.path.join(bf, "tryboot.txt"), _rpi_prefix(cfg, slot))
 
 
 def be_set_default(conf, slot):
@@ -276,9 +278,10 @@ def be_set_default(conf, slot):
         return
     bf = conf["UPDATE_BOOTFS"]
     cfg = open(os.path.join(bf, "config.txt")).read()
-    _atomic_write(os.path.join(bf, "config.txt"), _rpi_prefix(cfg, slot))
-    try: os.unlink(os.path.join(bf, "tryboot.txt"))
-    except OSError: pass
+    with bootfs_rw(bf):
+        _atomic_write(os.path.join(bf, "config.txt"), _rpi_prefix(cfg, slot))
+        try: os.unlink(os.path.join(bf, "tryboot.txt"))
+        except OSError: pass
 
 
 def be_reboot(conf, trial=False, delay=3):
@@ -291,7 +294,30 @@ def be_reboot(conf, trial=False, delay=3):
     subprocess.Popen(["systemd-run", f"--on-active={delay}", "--quiet"] + cmd)
 
 
+class bootfs_rw:
+    """The boot FAT is mounted read-only (fstab), so every write goes through here: remount rw, do the write, sync,
+    remount ro. A no-op where PATH is not a mount point (tests; a system whose fstab predates the ro mount)."""
+    def __init__(self, path):
+        self.path = path; self.on = False
+
+    def __enter__(self):
+        if os.path.ismount(self.path):
+            r = subprocess.run(["mount", "-o", "remount,rw", self.path], capture_output=True, text=True)
+            if r.returncode:
+                raise Fail("bootfs-rw", f"impossibile rimontare {self.path} in scrittura: {r.stderr.strip()}")
+            self.on = True
+        return self
+
+    def __exit__(self, *e):
+        if self.on:
+            subprocess.run(["sync"])
+            subprocess.run(["mount", "-o", "remount,ro", self.path], capture_output=True)
+
+
 def grubenv(conf, op, *kv):
+    if op in ("set", "unset"):
+        with bootfs_rw(conf["UPDATE_ESP_MOUNT"]):
+            return run_out("grub-editenv", conf["UPDATE_GRUBENV"], op, *kv)
     return run_out("grub-editenv", conf["UPDATE_GRUBENV"], op, *kv)
 
 
@@ -599,7 +625,8 @@ def do_fetch(a, conf):
                     raise Fail("bad-image", "systemd assente nello slot scritto")
                 progress(conf, op="fetch", phase="arm", state="running", percent=100)
                 if backend(conf) == "rpi":
-                    rpi_install_bootfiles(conf, cur, new, m, base)
+                    with bootfs_rw(conf["UPDATE_BOOTFS"]):
+                        rpi_install_bootfiles(conf, cur, new, m, base)
                 imported = prepare_overlays(conf, new, cur, mnt)
             finally:
                 subprocess.run(["umount", mnt]); os.rmdir(mnt)

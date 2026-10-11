@@ -7,7 +7,10 @@
 # mount, a different context from the initramfs's copy (already fixed
 # separately via manual_add_modules in kiosk/files/ota-hook, which only
 # covers the initramfs module set, not this).
-LABEL=FIRMWARE /boot/firmware vfat  defaults,noatime,iocharset=iso8859-1 0 2
+# ro + nofail: the FAT holds the firmware and bootloader and is the one partition without a journal, so it is not
+# mounted writable at runtime (the tools that must write it - unitotem-update, unitotem-boot-ok, unitotem-ota-arm -
+# remount it rw for the moment they need), and a damaged one must not stop the boot: the kiosk does not need it to run.
+LABEL=FIRMWARE /boot/firmware vfat  defaults,noatime,ro,nofail,x-systemd.device-timeout=15s,iocharset=iso8859-1 0 2
 LABEL=ROOT     /              ext4  defaults,noatime,ro                 0 1
 tmpfs          /tmp           tmpfs defaults,noatime,nosuid,nodev,size=256M  0 0
 tmpfs          /run           tmpfs defaults,noatime,nosuid,nodev,mode=0755  0 0

@@ -3,7 +3,8 @@
 # real on arm64 (kiosk/files/fstab-arm64 has the full incident detail);
 # not yet observed here, but the same latent gap applies equally to amd64's
 # EFI mount, so fixed preemptively rather than waiting to hit it live.
-LABEL=EFI   /boot/efi  vfat  defaults,noatime,iocharset=iso8859-1        0 2
+# ro + nofail: see kiosk/files/fstab-arm64 (same reasoning for the ESP).
+LABEL=EFI   /boot/efi  vfat  defaults,noatime,ro,nofail,x-systemd.device-timeout=15s,iocharset=iso8859-1        0 2
 LABEL=BOOT  /boot      ext4  defaults,noatime                           0 2
 LABEL=ROOT  /          ext4  defaults,noatime,ro                        0 1
 tmpfs       /tmp       tmpfs defaults,noatime,nosuid,nodev,size=256M    0 0
