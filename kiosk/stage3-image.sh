@@ -376,6 +376,20 @@ fi
 [ "$BOOTFS_FREE" -ge $((64 * 1024 * 1024)) ] \
     || boot_assert_fail "meno di 64MiB liberi sulla partizione di boot dopo tutte le copie ($((BOOTFS_FREE / 1024 / 1024))MiB)"
 
+# ---------- Security-module logging rule ----------
+# Either AppArmor is absent from the image, or auditd is installed to take its log. With AppArmor profiles loaded and no
+# audit daemon, every denial is printed by the kernel and lands in dmesg, burying the messages that matter (user rule,
+# 2026-10-11). The kernel merely containing AppArmor is not the issue - without the `apparmor` package no profile is ever
+# loaded - so the check is on packages. `apparmor=0` on the kernel command line would also satisfy "disabled", but
+# nothing here sets it, so it is not accepted silently.
+pkg_installed() { grep -A8 "^Package: $1\$" "${IMG_MNT}/var/lib/dpkg/status" 2>/dev/null | grep -q '^Status: install ok installed'; }
+if pkg_installed apparmor; then
+    pkg_installed auditd || boot_assert_fail "il pacchetto apparmor e' installato ma auditd no: le violazioni finirebbero tutte in dmesg (installare auditd e configurarlo, oppure togliere apparmor)"
+    echo "apparmor presente, auditd presente: ok"
+else
+    echo "apparmor assente dall'immagine: ok (nessun profilo verra' mai caricato)"
+fi
+
 # ---------- Release version ----------
 # What unitotem-update compares against the manifest, and what `fetch` re-reads from a freshly written
 # slot to make sure it contains the release it was asked for. Written before the baseline below so it
