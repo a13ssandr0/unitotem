@@ -152,7 +152,7 @@ set_cmdline "console=tty1 root=LABEL=ROOT ro quiet"
 run_init_premount
 cat /tmp/premount.out
 check "4a: fallback innescato dai tre avvii non confermati" \
-    grep -q 'tre avvii consecutivi senza conferma' /tmp/premount.out
+    grep -q 'three consecutive boots without confirmation' /tmp/premount.out
 
 # ---------------------------------------------------------------------------
 log "=== 4b: boot di trial con contatore gia' alto -> deve avviarsi lo stesso ==="
@@ -163,7 +163,7 @@ set_cmdline "console=tty1 root=LABEL=ROOT ro quiet unitotem.ota.bootcount=1"
 run_init_premount
 cat /tmp/premount.out
 check "4b: nessun fallback su boot di trial" \
-    bash -c "! grep -q 'tre avvii consecutivi' /tmp/premount.out"
+    bash -c "! grep -q 'three consecutive boots' /tmp/premount.out"
 check "4b: init-premount ritorna 0 (mountroot prosegue)" \
     grep -q 'exit=0' /tmp/premount.out
 c=$(get_count); record "4b: contatore dopo il trial = $c (atteso 1, non 8)"
@@ -175,7 +175,7 @@ set_count 2
 set_cmdline "console=tty1 root=LABEL=ROOT ro quiet"
 run_init_premount
 check "4c: nessun fallback a quota 2" \
-    bash -c "! grep -q 'tre avvii consecutivi' /tmp/premount.out"
+    bash -c "! grep -q 'three consecutive boots' /tmp/premount.out"
 check "4c: init-premount ritorna 0" grep -q 'exit=0' /tmp/premount.out
 c=$(get_count); record "4c: contatore dopo l'avvio = $c (atteso 3)"
 check "4c: contatore incrementato, non azzerato" test "$c" = "3"
@@ -208,7 +208,7 @@ e2label "${LOOP}p2" NOTROOT
 udevadm settle --timeout=10 2>/dev/null || true
 run_init_premount
 check "4f: fallback quando la partizione ROOT non esiste" \
-    grep -q 'partizione ROOT non trovata' /tmp/premount.out
+    grep -q 'partition ROOT not found' /tmp/premount.out
 e2label "${LOOP}p2" ROOT
 
 # A/B: the slot to validate is the one named in root=, not a fixed "ROOT".
@@ -219,11 +219,11 @@ rm -f /boot-ota/unitotem-ota.bootcount 2>/dev/null || true
 set_cmdline "console=tty1 root=LABEL=ROOT_B ro quiet unitotem.slot=b"
 run_init_premount
 check "4g: nessun fallback se lo slot B nominato in root= esiste" \
-    bash -c '! grep -q "non trovata\|e2fsck" /tmp/premount.out'
+    bash -c '! grep -q "not found\|filesystem errors" /tmp/premount.out'
 set_cmdline "console=tty1 root=LABEL=ROOT_A ro quiet unitotem.slot=a"
 run_init_premount
 check "4g: fallback se lo slot A nominato in root= non esiste (anche se ROOT_B c'e')" \
-    grep -q 'partizione ROOT_A non trovata' /tmp/premount.out
+    grep -q 'partition ROOT_A not found' /tmp/premount.out
 e2label "${LOOP}p2" ROOT
 
 # --- A/B: nessun contatore, nessuna scrittura sul FAT -------------------------
@@ -231,7 +231,7 @@ log "=== 4h: layout A/B -> il contatore non si usa e non si tocca ==="
 set_count 5
 set_cmdline "console=tty1 root=LABEL=ROOT ro quiet unitotem.slot=a"
 run_init_premount
-check "4h: A/B non cade nel fallback a contatore alto" bash -c '! grep -q "tre avvii" /tmp/premount.out'
+check "4h: A/B non cade nel fallback a contatore alto" bash -c '! grep -q "three consecutive" /tmp/premount.out'
 check "4h: A/B: init-premount ritorna 0" grep -q 'exit=0' /tmp/premount.out
 c=$(get_count); record "4h: contatore dopo l'avvio A/B = $c (atteso 5, intatto)"
 check "4h: A/B: il FAT non e' stato scritto (contatore invariato)" bash -c "[ '$c' = 5 ]"

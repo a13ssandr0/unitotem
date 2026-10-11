@@ -169,7 +169,7 @@ fail() {
     fi
     if past_point_of_no_return; then
         log "Errore dopo la scrittura della tabella delle partizioni: non riavvio su un disco a meta'."
-        cmd_serve_fallback --reason "errore: $*"
+        cmd_serve_fallback --reason "error: $*"
         exit 1
     fi
     log "Errore prima di scrivere sul disco: nessuna modifica persistente da annullare."
@@ -266,7 +266,7 @@ cmd_probe() {
 # round-trip otherwise).
 # ---------------------------------------------------------------------------
 cmd_restore_table() {
-    ota_status_set "Ricostruzione tabella delle partizioni"
+    ota_status_set "Writing the partition table"
     parse_args "$@"
     need disk; need table-b64; need tail-part
     local disk; disk=$(resolve_disk "${ARG[disk]}")
@@ -371,7 +371,7 @@ cmd_restore_part() {
     # progress indicator destroyed the data path it was meant to report on.
     # Progress is a nicety; the restore is not, and it must never depend on
     # something optional being present.
-    ota_status_set "Ripristino partizione ${ARG[part]} (${ARG[cloner]})"
+    ota_status_set "Writing partition ${ARG[part]} (${ARG[cloner]})"
     local have_pv=0
     command -v pv >/dev/null 2>&1 && have_pv=1
     case "${ARG[comp]:-xz}" in
@@ -391,7 +391,7 @@ cmd_restore_part() {
             ;;
         *)    fail "compressione sconosciuta: ${ARG[comp]:-}" ;;
     esac || fail "restore fallito su $part_dev"
-    ota_status_set "Verifica filesystem partizione ${ARG[part]}..."
+    ota_status_set "Checking the filesystem of partition ${ARG[part]}..."
     exec 4<&-
 
     if [ "${ARG[cloner]}" != dd ]; then
@@ -525,7 +525,7 @@ cmd_prepare_bootfs() {
 # touch it. (No-op on amd64: grub.cfg lives on the ext4 BOOT partition
 # there, never on the FAT ESP this tar covers.)
 cmd_populate_bootfs() {
-    ota_status_set "Copia file di avvio (firmware, dtb, overlay)"
+    ota_status_set "Copying boot files (firmware, dtb, overlays)"
     parse_args "$@"
     need disk; need bootfs-part; need data-host; need data-port
     local disk; disk=$(resolve_disk "${ARG[disk]}")
@@ -582,9 +582,15 @@ cmd_set_default_recovery() {
 
     case "${ARG[firmware]}" in
         rpi)
+            # hdmi_group=2 hdmi_mode=4 is the DMT 640x480@60 mode: the deploy/recovery screen is a text UI, and on a large
+            # high-resolution monitor seen from a distance (the real case) 80 columns at 640x480 are readable where
+            # the same text at 1080p/4K is a few pixels high. DMT 640x480 is accepted by essentially every display.
+            # Only the resident fallback has it; the real system's own config.txt is untouched.
             cat > "$mnt/config.txt" << 'EOF'
 arm_64bit=1
 enable_uart=1
+hdmi_group=2
+hdmi_mode=4
 kernel=recovery8.img
 initramfs recovery-initrd.img followkernel
 EOF
@@ -661,7 +667,7 @@ ab_write_pending() {
 }
 
 cmd_set_trial_boot() {
-    ota_status_set "Preparazione avvio di prova"
+    ota_status_set "Preparing the trial boot"
     parse_args "$@"
     need firmware
     case "${ARG[firmware]}" in
@@ -821,7 +827,7 @@ EOF
 # runs - this only handles the disk being deployed onto.
 # ---------------------------------------------------------------------------
 cmd_mount_target() {
-    ota_status_set "Montaggio sistema ripristinato"
+    ota_status_set "Mounting the newly written system"
     parse_args "$@"
     need disk
     local disk; disk=$(resolve_disk "${ARG[disk]}")
@@ -876,7 +882,7 @@ cmd_umount_target() {
 # on the restored BOOT ext4 partition, and GRUB's trial-boot entry already
 # points at /mnt/newroot's own /vmlinuz,/initrd.img symlinks.
 cmd_populate_real_kernel() {
-    ota_status_set "Installazione kernel del sistema"
+    ota_status_set "Installing the system kernel"
     parse_args "$@"
     [ -d /mnt/newroot/boot/firmware ] || { echo "UNITOTEM_KERNEL_POPULATED=skip"; return 0; }
     # No `ls` here on purpose: this initrd's `ls` doesn't parse options at
@@ -899,7 +905,7 @@ cmd_populate_real_kernel() {
 # whitelist is reintroduced.
 # ---------------------------------------------------------------------------
 cmd_migrate_etc_overlay() {
-    ota_status_set "Migrazione configurazione da DATA"
+    ota_status_set "Migrating configuration from DATA"
     parse_args "$@"
     need root-mnt; need data-mnt
     local root="${ARG[root-mnt]}" data="${ARG[data-mnt]}"
@@ -1111,7 +1117,7 @@ ota_ui_feed() {
         # Header (3 lines) + a blank separator + the phase = 5 lines, which is
         # exactly what ota_ui_start sizes the text area for. Keep the two in
         # step: anything beyond that height is silently dropped, not wrapped.
-        printf 'XXX\n%s\n%s\n\n%s\nXXX\n' "$pct" "${OTA_UI_HEADER:-}" "${phase:-In attesa di comandi via SSH...}"
+        printf 'XXX\n%s\n%s\n\n%s\nXXX\n' "$pct" "${OTA_UI_HEADER:-}" "${phase:-Waiting for commands over SSH...}"
         sleep 1
     done
 }
@@ -1378,7 +1384,7 @@ ota_idle_watchdog() {
 
 cmd_serve_fallback() {
     parse_args "$@"
-    local reason="${ARG[reason]:-richiesta esplicita}"
+    local reason="${ARG[reason]:-requested explicitly}"
     log "Modalita' OTA: $reason"
     # Automatic triggers wait 10 minutes for a host, requested ones 30 (the deploy that asked for it connects within
     # a minute or two), `recover` forever. Overridable per call.
@@ -1422,9 +1428,13 @@ cmd_serve_fallback() {
     # an intention with nothing enforcing it. A `||` context suppresses errexit
     # and the ERR trap for the whole function body, which makes it true: the
     # worst a broken UI can now do is not draw.
-    ota_ui_start "Modalita' di recupero OTA
-Motivo: ${reason}
-Indirizzo: ${myip:-<nessuno>}   Porta: 2222" || true
+    # "Deploy" when a host asked for it, "Recovery" when the device fell back by itself: the screen must say which
+    # of the two is happening (a deploy is not a recovery, and nothing is being "restored" in it).
+    local kind_title="OTA recovery mode"
+    [ "${ARG[kind]:-recovery}" = deploy ] && kind_title="OTA deploy mode"
+    ota_ui_start "${kind_title}
+Reason: ${reason}
+Address: ${myip:-none}   Port: 2222" || true
 
     if [ -f /boot-ota/unitotem-ota.conf ]; then
         read_kv_lines < /boot-ota/unitotem-ota.conf
@@ -1518,12 +1528,12 @@ cmd_init_premount() {
     if cmdline_get unitotem.ota >/dev/null 2>&1; then
         local mode; mode=$(cmdline_get unitotem.ota)
         [ "$mode" = "1" ] || [ "$mode" = "recover" ] || return 0
-        cmd_serve_fallback --reason "cmdline unitotem.ota=$mode" --idle-timeout "$([ "$mode" = recover ] && echo 0 || echo 1800)"
+        cmd_serve_fallback --reason "kernel command line unitotem.ota=$mode" --kind "$([ "$mode" = recover ] && echo recovery || echo deploy)" --idle-timeout "$([ "$mode" = recover ] && echo 0 || echo 1800)"
         return
     fi
 
     if check_flag_file FIRMWARE vfat || check_flag_file EFI vfat; then
-        cmd_serve_fallback --reason "flag file unitotem-ota.request" --idle-timeout 1800
+        cmd_serve_fallback --reason "deploy requested by the host" --kind deploy --idle-timeout 1800
         return
     fi
 
@@ -1541,11 +1551,11 @@ cmd_init_premount() {
         tries=$((tries + 1))
     done
     if [ -z "$root_dev" ]; then
-        cmd_serve_fallback --reason "partizione $root_label non trovata"
+        cmd_serve_fallback --reason "partition $root_label not found"
         return
     fi
     if ! check_root_readonly "$root_dev"; then
-        cmd_serve_fallback --reason "e2fsck ha rilevato errori non corretti su $root_label"
+        cmd_serve_fallback --reason "unrepaired filesystem errors on $root_label"
         return
     fi
 
@@ -1572,7 +1582,7 @@ cmd_init_premount() {
         return 0
     fi
     if [ -z "$trial_reset" ] && check_bootcount; then
-        cmd_serve_fallback --reason "tre avvii consecutivi senza conferma (unitotem-boot-ok)"
+        cmd_serve_fallback --reason "three consecutive boots without confirmation (unitotem-boot-ok)"
         return
     fi
 
@@ -1628,13 +1638,13 @@ cmd_local_bottom_verify() {
     if [ ! -x "$rootmnt/sbin/init" ] && [ ! -x "$rootmnt/usr/lib/systemd/systemd" ]; then
         warn "init assente su $rootmnt - passo in modalita' OTA"
         umount -lf "$rootmnt" 2>/dev/null || true
-        cmd_serve_fallback --reason "/sbin/init assente sul filesystem montato"
+        cmd_serve_fallback --reason "/sbin/init missing on the mounted filesystem"
         return
     fi
     if [ ! -d "$rootmnt/etc/kiosk" ]; then
         warn "/etc/kiosk assente su $rootmnt - passo in modalita' OTA"
         umount -lf "$rootmnt" 2>/dev/null || true
-        cmd_serve_fallback --reason "/etc/kiosk assente sul filesystem montato"
+        cmd_serve_fallback --reason "/etc/kiosk missing on the mounted filesystem"
         return
     fi
 }
