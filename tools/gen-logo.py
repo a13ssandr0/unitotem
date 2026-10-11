@@ -13,7 +13,7 @@ ring = Image.open(os.path.join(here, "assets", "unitotem-ring.png")).convert("RG
 ring = ring.resize((ring.width // 2, ring.height // 2), Image.LANCZOS)
 cx, cy = round(src.width * 0.5179), round(src.height * 0.5734)
 src.alpha_composite(ring, (cx - ring.width // 2, cy - ring.height // 2))
-for width in (256, 640):
+for width in (256, 640, 1280):
     h = round(src.height * width / src.width)
     im = src.resize((width, h), Image.LANCZOS)
     bg = Image.new("RGBA", im.size, (0, 0, 0, 255)); bg.alpha_composite(im)

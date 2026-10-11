@@ -160,7 +160,8 @@ install -m 755 /kiosk/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine
 ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
 # framebuffer logo of the deploy/recovery screen (pre-rendered by tools/gen-logo.py)
 install -m 644 /kiosk/files/unitotem-logo-256x73.bgrx /kiosk/files/unitotem-logo-640x182.bgrx \
-    /kiosk/files/unitotem-logo-256x73.rgb565 /kiosk/files/unitotem-logo-640x182.rgb565 "${ROOTFS}/usr/lib/unitotem/"
+    /kiosk/files/unitotem-logo-256x73.rgb565 /kiosk/files/unitotem-logo-640x182.rgb565 \
+    /kiosk/files/unitotem-logo-1280x364.bgrx /kiosk/files/unitotem-logo-1280x364.rgb565 "${ROOTFS}/usr/lib/unitotem/"   # the largest is for the placeholder on 4K; the real system'"'"'s KMS framebuffer can be 16 OR 32 bpp (16 on the Pi 4 test unit)
 
 install -m 755 /kiosk/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
 mkdir -p "${ROOTFS}/etc/unitotem"

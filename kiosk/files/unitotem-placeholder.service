@@ -1,0 +1,12 @@
+[Unit]
+Description=UniTotem - placeholder screen while the manager is not up
+After=multi-user.target start-xorg.service
+# a 3.x manager only (the script itself exits for older ones)
+
+[Service]
+ExecStart=/usr/sbin/unitotem-placeholder
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
