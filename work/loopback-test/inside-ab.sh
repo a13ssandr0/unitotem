@@ -44,6 +44,22 @@ BC=(); [ -f "$PARTS/bootcode.bin" ] && BC=(--bootcode-b64 "$(base64 -w0 < "$PART
 ensure_partition_nodes
 
 BOOTFS_LABEL=EFI; [ "$ARCH" = arm64 ] && BOOTFS_LABEL=FIRMWARE
+
+# The property that matters is "the firmware can boot this config", not "the files I expect are there": for a Pi
+# config (config.txt or tryboot.txt) every file it makes the firmware load - kernel, initramfs, the device tree of the
+# board, cmdline.txt - must exist under the directory os_prefix selects. A fallback with no dtb passed every earlier
+# check and left a real Pi on the rainbow screen.
+pi_config_bootable() {   # pi_config_bootable MNT CONFIGFILE
+    local mnt="$1" cfg="$2" prefix k i
+    prefix=$(sed -n 's/^os_prefix=//p' "$mnt/$cfg" | tail -1)
+    k=$(sed -n 's/^kernel=//p' "$mnt/$cfg" | tail -1); k=${k:-kernel8.img}
+    i=$(sed -n 's/^initramfs \([^ ]*\) followkernel.*/\1/p' "$mnt/$cfg" | tail -1)
+    local d="$mnt/$prefix" ok=0 f
+    for f in "$k" ${i:+"$i"} bcm2711-rpi-4-b.dtb cmdline.txt; do
+        if [ ! -s "$d$f" ]; then echo "MANCA: ${prefix}${f}" >&2; ok=1; fi
+    done
+    return $ok
+}
 VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "$PARTS/parts.manifest")
 check "il manifest registra il volid della partizione di boot" test -n "$VOLID"
 "${ENGINE[@]}" prepare-bootfs --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --fstype vfat --fresh 1 --label "$BOOTFS_LABEL" --volid "$VOLID"
@@ -70,6 +86,7 @@ if [ "$ARCH" = arm64 ]; then
     check "slota/dtb presenti" bash -c "ls /mnt/esp/slota/bcm2711-rpi-4-b.dtb"
     check "il firmware condiviso e' al primo livello (start4.elf)" test -f /mnt/esp/start4.elf
     check "i file di recovery sono sopravvissuti al populate" test -s /mnt/esp/recovery-initrd.img
+    check "BOOT PROPERTY: il fallback (config.txt) ha tutto cio' che il firmware carica (kernel, initramfs, dtb, cmdline)" pi_config_bootable /mnt/esp config.txt
 else
     GE=/mnt/esp/unitotem-grub/grub/grubenv
     check "grubenv: 1024 byte" bash -c "[ \$(stat -c %s $GE) = 1024 ]"
@@ -129,6 +146,8 @@ if [ "$ARCH" = arm64 ]; then
     check "trial rpi: tryboot.txt e' una config completa (kernel + initramfs)" bash -c "grep -q '^kernel=kernel8.img$' $TB && grep -q '^initramfs initramfs8 followkernel$' $TB"
     check "trial rpi: config.txt resta sul fallback" grep -q '^kernel=recovery8.img$' /mnt/newroot/boot/firmware/config.txt
     check "trial rpi: nessun cmdline=: la cmdline viene dallo slot via os_prefix" bash -c "! grep -q '^cmdline=' $TB"
+    check "BOOT PROPERTY: la prova (tryboot.txt) ha tutto cio' che il firmware carica" pi_config_bootable /mnt/newroot/boot/firmware tryboot.txt
+    check "BOOT PROPERTY: il fallback resta avviabile dopo la prova (config.txt)" pi_config_bootable /mnt/newroot/boot/firmware config.txt
 else
     "${ENGINE[@]}" set-trial-boot --firmware uefi --target /mnt/newroot --layout ab
     GE=/mnt/newroot/boot/efi/unitotem-grub/grub/grubenv
