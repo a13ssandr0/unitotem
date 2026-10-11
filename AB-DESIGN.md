@@ -263,3 +263,11 @@ Il deploy da host A/B e' implementato solo per amd64/UEFI.
   scritture, ne' un taglio dentro una singola scrittura di blocco.
 - Migrazione di un dispositivo a ROOT singolo verso il layout A/B (DATA cambia posizione).
 - `--accept-changes` e' accettato e ignorato: lo slot corrente non viene distrutto dall'aggiornamento.
+
+## Raspberry Pi 4 reale (osservato il 2026-10-11)
+Pi 4 Model B rev 1.5, EEPROM 2026/05/17, immagine arm64 A/B 2026.10.6/10.7 (manager 2.x del repository, health gate disattivato).
+- Primo deploy da host in A/B (tabella ricreata, FAT riformattata, fallback in RAM, ROOT_A, ROOT_B vuota, DATA): ha richiesto la correzione di `prepare-bootfs` (mkfs.fat con la FAT montata su /boot-ota).
+- `os_prefix=slota/` e `tryboot` FUNZIONANO sul Pi 4: avvio di prova da `slota/`, conferma automatica, `config.txt` promosso a `os_prefix=slota/` + `kernel8.img`, `tryboot.txt` rimosso.
+- Aggiornamento in sede A->B (fetch di 744 MB dal finto GitHub, scrittura di ROOT_B, bootfiles in `slotb/`, `apply --reboot` con tryboot, conferma) e rollback manuale B->A: riusciti.
+- Errori trovati solo sull'hardware: dtb/overlays spostati invece che copiati (fallback senza device tree = arcobaleno), scadenza della verifica di salute su orologio di sistema (nessun RTC), tar con chown su vfat (rc=2).
+- NON verificato: nessun taglio di corrente sul Pi (vietato); HDMI: il kernel segnala HDMI-A-1/2 `disconnected` e la cattura e' nera, quindi nessuna immagine vista; manager 2.x non utilizzabile come kiosk su root in sola lettura; Pi 3/Zero 2 (senza tryboot) non coperti.
