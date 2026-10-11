@@ -1176,6 +1176,8 @@ ota_ui_start() {
     # phase. Five lines is what ota_ui_feed sends (3 header + blank + phase);
     # change one and change the other.
     local placeholder=$' \n \n \n \n '
+    # (NEWT_COLORS was tried to hide whiptail's own "+---+" border and has no effect on this whiptail: ota_frame paints that ring of
+    # cells black on the framebuffer instead.)
     setsid -c sh -c "TERM=linux TERMINFO=/lib/terminfo exec whiptail \
             --backtitle 'UniTotem OTA' --gauge '$placeholder' 14 72 0 < '$OTA_UI_FIFO'" \
         < /dev/tty1 > /dev/tty1 2>/dev/null &
@@ -1416,6 +1418,38 @@ ota_logo() {
     return 0
 }
 
+# A rounded frame around the progress dialog, drawn on the framebuffer in the margin and in the (blank) outer ring of the dialog
+# - never on its interior, which belongs to whiptail. Pieces are pre-rendered by tools/gen-frame.py for the one geometry the
+# update screen has: 640x480, 80x30 text cells of 8x16 px, dialog 72x14 cells at x 32..608, y 128..352; frame x 24..616, y 116..364.
+# Anything else (another resolution): no frame, whiptail's own box stays - returns 1 so callers can tell.
+ota_frame() {
+    local fb=/sys/class/graphics/fb0 W H bpp stride ext bytes x0=24 y0=116 fw=592 fh=248 rad=16 t=3 y
+    [ -w /dev/fb0 ] && [ -r "$fb/virtual_size" ] || return 1
+    IFS=, read -r W H < "$fb/virtual_size"; read -r bpp < "$fb/bits_per_pixel"; read -r stride < "$fb/stride"
+    [ "$W" = 640 ] && [ "$H" = 480 ] || return 1
+    case "$bpp" in 32) ext=bgrx; bytes=4 ;; 16) ext=rgb565; bytes=2 ;; *) return 1 ;; esac
+    local d=$OTA_LOGO_DIR black
+    # First blank whiptail's own border: the ring of text cells around its 72x14 dialog (8x16 px cells, dialog x 32..608, y 128..352).
+    # It is drawn once and whiptail only redraws cells that change, so what is painted over it stays.
+    black() { dd if=/dev/zero of=/dev/fb0 bs=$3 count=1 seek=$(( $2 * stride + $1 * bytes )) oflag=seek_bytes conv=notrunc status=none 2>/dev/null; }
+    for ((y = 128; y < 144; y++)); do black 32 $y $((576 * bytes)); black 32 $((y + 208)) $((576 * bytes)); done
+    for ((y = 144; y < 336; y++)); do black 32 $y $((8 * bytes)); black 600 $y $((8 * bytes)); done
+    [ -r "$d/unitotem-frame-top.$ext" ] && [ -r "$d/unitotem-frame-bottom.$ext" ] && [ -r "$d/unitotem-frame-stripe.$ext" ] || return 1
+    for ((y = 0; y < rad; y++)); do
+        dd if="$d/unitotem-frame-top.$ext" of=/dev/fb0 bs=$((fw * bytes)) skip=$y count=1 seek=$(( (y0 + y) * stride + x0 * bytes )) \
+           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
+        dd if="$d/unitotem-frame-bottom.$ext" of=/dev/fb0 bs=$((fw * bytes)) skip=$y count=1 seek=$(( (y0 + fh - rad + y) * stride + x0 * bytes )) \
+           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
+    done
+    for ((y = y0 + rad; y < y0 + fh - rad; y++)); do
+        dd if="$d/unitotem-frame-stripe.$ext" of=/dev/fb0 bs=$((t * bytes)) count=1 seek=$(( y * stride + x0 * bytes )) \
+           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
+        dd if="$d/unitotem-frame-stripe.$ext" of=/dev/fb0 bs=$((t * bytes)) count=1 seek=$(( y * stride + (x0 + fw - t) * bytes )) \
+           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
+    done
+    return 0
+}
+
 ota_splash() {
     [ -w /dev/tty1 ] || return 0
     printf '\033[2J\033[H\033[?25l' > /dev/tty1 2>/dev/null || true
@@ -1504,7 +1538,7 @@ cmd_serve_fallback() {
 Reason: ${reason}
 Address: ${myip:-none}   Port: 2222" || true
     # the progress screen clears the console when it starts: put the logo back above it once it is up
-    ( sleep 2; ota_logo ) </dev/null >/dev/null 2>&1 &
+    ( sleep 2; ota_logo; ota_frame ) </dev/null >/dev/null 2>&1 &
 
     if [ -f /boot-ota/unitotem-ota.conf ]; then
         read_kv_lines < /boot-ota/unitotem-ota.conf
