@@ -63,6 +63,13 @@ chk "persistent-paths service installed" test -x "$R/usr/sbin/unitotem-persist-p
 chk "boot-ok service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-boot-ok.service"
 chk "DATA overlay hook is in the image" test -e "$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays"
 
+echo "== Device identity (nothing secret may be shared by every device flashed from one image)"
+chk "no TLS private key in the image (it is generated on first boot)" bash -c "! test -e $R/etc/ssl/unitotem.pem && ! test -e $R/etc/ssl/unitotem_key.pem"
+chk "first-boot certificate generator installed" test -x "$R/usr/sbin/unitotem-first-boot-cert"
+chk "first-boot certificate service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-first-boot-cert.service"
+chk "the generator runs before the manager" file_has "$R/etc/systemd/system/unitotem-first-boot-cert.service" 'Before=.*unitotem-manager.service'
+chk "no SSH host key in the image's /etc/ssh is relied on (unitotem-ssh-hostkey regenerates)" test -x "$R/usr/sbin/unitotem-ssh-hostkey"
+
 echo "== Update machinery"
 chk "unitotem-update installed" test -x "$R/usr/sbin/unitotem-update"
 chk "update root key installed" test -s "$R/usr/share/unitotem/update-keys/root.pub"
