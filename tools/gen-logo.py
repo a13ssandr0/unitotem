@@ -10,6 +10,14 @@ src = Image.open(os.path.join(here, "assets", "unitotem-wordmark.png")).convert(
 # the way plymouth/unitotem/unitotem.script does - centre at 0.5179 x width / 0.5734 x height of the wordmark, drawn at half
 # the size of the 2x-oversampled spinner image - and keep it still.
 ring = Image.open(os.path.join(here, "assets", "unitotem-ring.png")).convert("RGBA")
+# The orange arc is the SPINNER: on a still logo it would read as a stuck loading indicator, so the still logo gets a plain white
+# ring. Orange pixels (strong red, little green/blue) become white; their alpha and the anti-aliased edges are kept.
+px = ring.load()
+for yy in range(ring.height):
+    for xx in range(ring.width):
+        r_, g_, b_, a_ = px[xx, yy]
+        if r_ > 150 and r_ - g_ > 60 and r_ - b_ > 60:
+            px[xx, yy] = (255, 255, 255, a_)
 ring = ring.resize((ring.width // 2, ring.height // 2), Image.LANCZOS)
 cx, cy = round(src.width * 0.5179), round(src.height * 0.5734)
 src.alpha_composite(ring, (cx - ring.width // 2, cy - ring.height // 2))
@@ -19,6 +27,9 @@ for width in (256, 640, 1280):
     bg = Image.new("RGBA", im.size, (0, 0, 0, 255)); bg.alpha_composite(im)
     r, g, b, _ = bg.split()
     raw = Image.merge("RGBA", (b, g, r, Image.new("L", im.size, 0))).tobytes()   # B,G,R,X per pixel (XRGB8888, little endian)
+    # guard: no orange (spinner) pixel may reach a still logo
+    rgb = bg.convert("RGB").tobytes()
+    assert not any(rgb[i] > 150 and rgb[i] - rgb[i + 1] > 60 and rgb[i] - rgb[i + 2] > 60 for i in range(0, len(rgb), 3)), "orange pixel in the still logo"
     out = os.path.join(here, "..", "kiosk", "files", f"unitotem-logo-{width}x{h}.bgrx")
     open(out, "wb").write(raw)
     print(out, width, h, len(raw), "bytes")
