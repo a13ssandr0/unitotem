@@ -56,7 +56,7 @@ done
 chk "stty is in the initramfs hook list (the frame geometry comes from the console size)" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" ' stty'
 chk "the frame works at any resolution (no fixed-geometry guard left in ota_frame)" bash -c "! grep -q 'W\" = 640' $R/usr/lib/unitotem/ota-engine.sh"
 chk "OTA hook carries the frame into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-frame-'
-chk "the engine draws the rounded frame and blanks whiptail's own border" bash -c "grep -q 'ota_frame' $R/usr/lib/unitotem/ota-engine.sh && grep -q 'First blank whiptail' $R/usr/lib/unitotem/ota-engine.sh"
+chk "the engine draws the rounded frame and blanks whiptail's own border" bash -c "grep -q 'ota_frame' $R/usr/lib/unitotem/ota-engine.sh && grep -q 'blank whiptail' $R/usr/lib/unitotem/ota-engine.sh"
 chk "OTA hook carries the logo into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-logo-'
 chk "manager is 3.x on this architecture" bash -c "awk 'BEGIN{RS=\"\";FS=\"\\n\"} \$1==\"Package: unitotem-manager\"{for(i=1;i<=NF;i++) if(\$i ~ /^Version: 3\\./) f=1} END{exit !f}' $R/var/lib/dpkg/status"
 want=3e; [ "$ARCH" = arm64 ] && want=b7   # ELF e_machine: 0x3e x86-64, 0xb7 aarch64 (no `file` needed: it is not on every build host)
