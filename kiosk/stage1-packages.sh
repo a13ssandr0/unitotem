@@ -344,10 +344,13 @@ if [ "$ARCH" = "arm64" ] && ! ls /work/extra-debs/arm64/*.deb >/dev/null 2>&1; t
     fi
 fi
 
-# With a local manager package the repository's 2.x one is not installed at all: it drags in haproxy and, as a recommended
-# package, Chromium, both of which would only have to be removed again.
+# There is no image without the 3.x manager: the repository's 2.x package is NOT a fallback. An image that boots into nothing
+# (or into a manager that cannot run on a read-only root) is not a degraded image, it is a wrong one, and building it only
+# hides that the package was not supplied. Fail here, early, instead of finding out on the device.
 if ! ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
-    apt_install unitotem-manager
+    echo "ERRORE: nessun pacchetto unitotem-manager 3.x fornito (work/extra-debs/${ARCH}/ oppure, per arm64, work/extra-debs/amd64/)." >&2
+    echo "        Un'immagine senza il manager 3.x non va costruita." >&2
+    exit 1
 fi
 
 # Local override: any .deb in work/extra-debs/<arch>/ is installed over what the apt repository provided. This is how
