@@ -158,6 +158,8 @@ chmod 600 "${ROOTFS}/etc/netplan/00-default.yaml"
 
 mkdir -p "${ROOTFS}/etc/kiosk"
 install -m 755 /kiosk/files/xinitrc "${ROOTFS}/etc/kiosk/xinitrc"
+mkdir -p "${ROOTFS}/etc/X11/xorg.conf.d"
+install -m 644 /kiosk/files/10-unitotem-noblank.conf "${ROOTFS}/etc/X11/xorg.conf.d/10-unitotem-noblank.conf"
 
 install -m 755 /kiosk/files/kiosk-update "${ROOTFS}/usr/local/bin/kiosk-update"
 

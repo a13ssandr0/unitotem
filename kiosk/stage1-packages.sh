@@ -422,17 +422,24 @@ purge_list() { # names from $@ that are actually installed
     local p; for p in "$@"; do chroot "${ROOTFS}" dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' && echo "$p"; done
 }
 if [ "$ARCH" = "arm64" ]; then
-    REMOVE=$(purge_list chromium chromium-browser chromium-common chromium-l10n rpi-chromium-mods \
-                        build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 \
-                        gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cpp-aarch64-linux-gnu \
-                        gcc-14-aarch64-linux-gnu g++-14-aarch64-linux-gnu cpp-14-aarch64-linux-gnu)
-    echo ">>> removing (arm64): $(echo $REMOVE)"
+    REMOVE=$(purge_list chromium chromium-browser chromium-common chromium-l10n rpi-chromium-mods)
+    echo ">>> removing (arm64, apt): $(echo $REMOVE)"
     if [ -n "$REMOVE" ]; then
         # shellcheck disable=SC2086
         { chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -s purge $REMOVE 2>&1 | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'; } || true   # informational only: must never stop the build
         # shellcheck disable=SC2086
         chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE
     fi
+    # The compilers go with dpkg --force-depends, NOT with apt: x11-xserver-utils (xset, xsetroot, xrandr - the manager's screen
+    # control and the kiosk's DPMS-off all need them) depends on cpp, so `apt-get purge cpp` silently took it along and the
+    # 2026.10.10/.11 arm64 images had no xset: DPMS stayed at its 10-minute default and the screen went black after 10 minutes.
+    # The price is an unmet-dependency note on x11-xserver-utils in `dpkg --audit`, harmless on an image that never runs apt.
+    REMOVE_CC=$(purge_list build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 \
+                           gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cpp-aarch64-linux-gnu \
+                           gcc-14-aarch64-linux-gnu g++-14-aarch64-linux-gnu cpp-14-aarch64-linux-gnu)
+    echo ">>> removing (arm64, dpkg --force-depends): $(echo $REMOVE_CC)"
+    # shellcheck disable=SC2086
+    [ -z "$REMOVE_CC" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $REMOVE_CC
     # the manager must still be there: apt may have taken it along if it had a hard dependency on any of the above
     chroot "${ROOTFS}" dpkg-query -W -f='${Status}' unitotem-manager | grep -q 'ok installed' \
         || { echo "ERRORE: la rimozione di Chromium/compilatori ha portato via unitotem-manager" >&2; exit 1; }
@@ -451,6 +458,10 @@ else
     chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
         || { echo "ERRORE: il modulo NVIDIA e' sparito rimuovendo i compilatori" >&2; exit 1; }
 fi
+# What the kiosk needs from x11-xserver-utils must have survived the removal above, on every architecture (see the arm64 note).
+for t in xset xsetroot xrandr; do
+    chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERRORE: $t e' sparito con la rimozione dei compilatori/Chromium (x11-xserver-utils)" >&2; exit 1; }
+done
 echo ">>> installed size of / after removal: $(du -sxm "${ROOTFS}" | cut -f1) MiB"
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get clean
