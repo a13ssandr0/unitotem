@@ -98,6 +98,10 @@ if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
     chk "the initramfs carries the unitotem theme and the script plugin (${INITRD##*/})" bash -c "l=\$(lsinitramfs '$INITRD' 2>/dev/null) && printf '%s\n' \"\$l\" | grep -q 'plymouth/themes/unitotem/unitotem.script' && printf '%s\n' \"\$l\" | grep -q 'plymouth/script.so'"
 fi
 
+echo "== Module-signing key"
+chk "no DKMS private signing key in the image (it would be shared by every device; mok.pub stays for enrolment)" bash -c "[ ! -e '$R/var/lib/dkms/mok.key' ]"
+[ "$ARCH" = amd64 ] && chk "the public certificate for a MOK enrolment is there (/var/lib/dkms/mok.pub)" test -s "$R/var/lib/dkms/mok.pub"
+
 echo "== Mount and boot robustness"
 chk "boot FAT is ro,nofail in fstab" file_has "$R/etc/fstab" '^LABEL=(EFI|FIRMWARE)[[:space:]].*ro,nofail'
 chk "emergency mode reboots instead of waiting forever" file_has "$R/etc/systemd/system/emergency.service.d/unitotem.conf" 'reboot'
