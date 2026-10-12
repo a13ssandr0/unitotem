@@ -157,7 +157,6 @@ chmod 600 "${ROOTFS}/etc/netplan/00-default.yaml"
 # ---------- Kiosk config (X11, no window manager) ----------
 
 mkdir -p "${ROOTFS}/etc/kiosk"
-install -m 755 /kiosk/files/xinitrc "${ROOTFS}/etc/kiosk/xinitrc"
 mkdir -p "${ROOTFS}/etc/X11/xorg.conf.d"
 install -m 644 /kiosk/files/10-unitotem-noblank.conf "${ROOTFS}/etc/X11/xorg.conf.d/10-unitotem-noblank.conf"
 
@@ -170,6 +169,9 @@ install -m 755 /kiosk/files/kiosk-update "${ROOTFS}/usr/local/bin/kiosk-update"
 # (stage2/04-unitotem/files/start-xorg.service).
 install -m 644 /kiosk/files/start-xorg.service \
     "${ROOTFS}/etc/systemd/system/start-xorg.service"
+# The placeholder screen is a service of its own (its output goes to the journal, Restart= keeps it up); there is no xinitrc.
+install -m 644 /kiosk/files/unitotem-xbackground.service \
+    "${ROOTFS}/etc/systemd/system/unitotem-xbackground.service"
 
 # ---------- OverlayFS initramfs hook ----------
 
@@ -219,7 +221,7 @@ done
 # from it. Remove it (and its temporary halves) and let each device generate its own on first boot.
 rm -f -- "${ROOTFS}/etc/ssl/unitotem.pem" "${ROOTFS}/etc/ssl/unitotem_crt.pem" "${ROOTFS}/etc/ssl/unitotem_key.pem"
 [ ! -e "${ROOTFS}/etc/ssl/unitotem.pem" ] || { echo "ERRORE: il certificato e' ancora nell'immagine" >&2; exit 1; }
-# The placeholder screen is the X background itself (started by /etc/kiosk/xinitrc): visible whenever nothing covers the root window.
+# The placeholder screen is the X background itself (started by unitotem-xbackground.service): visible whenever nothing covers the root window.
 install -m 755 /kiosk/files/unitotem-xbackground "${ROOTFS}/usr/sbin/unitotem-xbackground"
 install -m 755 /kiosk/files/unitotem-first-boot-cert "${ROOTFS}/usr/sbin/unitotem-first-boot-cert"
 install -m 644 /kiosk/files/unitotem-first-boot-cert.service "${ROOTFS}/etc/systemd/system/unitotem-first-boot-cert.service"
@@ -329,6 +331,7 @@ chroot "${ROOTFS}" systemctl enable \
     iptables-firewall \
     kiosk-update-mode \
     start-xorg \
+    unitotem-xbackground \
     unitotem-boot-ok \
     unitotem-ssh-hostkey \
     unitotem-persist-paths \

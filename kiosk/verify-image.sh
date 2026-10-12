@@ -72,7 +72,17 @@ chk "the venv stays below 1.2 GB (it was 3.1 GB)" bash -c "[ \$(du -sk '$R/var/u
 echo "== Screen must never go black by itself"
 for t in xset xsetroot xrandr; do chk "$t is installed (x11-xserver-utils survived the compiler removal)" bash -c "test -x '$R/usr/bin/$t'"; done
 chk "X server never blanks/powers down on its own (ServerFlags timeouts 0)" bash -c "grep -q 'BlankTime.*\"0\"' '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf' && grep -q 'OffTime.*\"0\"' '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf'"
-chk "xinitrc also turns DPMS and the screensaver off" bash -c "grep -q 'xset -dpms' '$R/etc/kiosk/xinitrc' && grep -q 'xset s off' '$R/etc/kiosk/xinitrc'"
+chk "no xinitrc is left (the X session is not started through startx/xinit any more)" bash -c "! test -e '$R/etc/kiosk/xinitrc'"
+
+echo "== X server is a plain systemd unit (Xorg run directly), with a log"
+XU="$R/etc/systemd/system/start-xorg.service"
+chk "start-xorg.service runs Xorg directly (no startx/xinit)" bash -c "grep -qE '^ExecStart=/usr/bin/Xorg :0 vt8 ' '$XU' && ! grep -qE '^ExecStart=.*(startx|xinit)' '$XU'"
+chk "X starts without clearing the screen and without listening on TCP" bash -c "grep -E '^ExecStart=' '$XU' | grep -q -- '-background none' && grep -E '^ExecStart=' '$XU' | grep -q -- '-nolisten tcp'"
+chk "X keeps its log (no -logfile /dev/null): /var/log/Xorg.0.log" bash -c "! grep -E '^ExecStart=' '$XU' | grep -q -- '-logfile'"
+chk "the X cookie is created before X starts (xauth + mcookie installed)" bash -c "grep -q 'xauth' '$XU' && grep -q 'mcookie' '$XU' && test -x '$R/usr/bin/xauth' && test -x '$R/usr/bin/mcookie'"
+chk "X starts once Plymouth has released the display (After=plymouth-quit.service)" file_has "$XU" '^After=plymouth-quit.service'
+chk "X authority file is the one the manager reads" file_has "$XU" '^Environment=XAUTHORITY=/run/unitotem-x11.auth'
+chk "start-xorg service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/start-xorg.service"
 
 echo "== Mount and boot robustness"
 chk "boot FAT is ro,nofail in fstab" file_has "$R/etc/fstab" '^LABEL=(EFI|FIRMWARE)[[:space:]].*ro,nofail'
@@ -84,7 +94,8 @@ chk "DATA overlay hook is in the image" test -e "$R/etc/initramfs-tools/scripts/
 
 echo "== Placeholder screen = the X background (boot OK / video works, whenever the manager is missing or shows nothing)"
 chk "X background program installed" test -x "$R/usr/sbin/unitotem-xbackground"
-chk "the X session starts it (xinitrc)" file_has "$R/etc/kiosk/xinitrc" 'unitotem-xbackground &'
+chk "it runs as its own service after X, restarted with it" bash -c "grep -q '^After=start-xorg.service' '$R/etc/systemd/system/unitotem-xbackground.service' && grep -q '^PartOf=start-xorg.service' '$R/etc/systemd/system/unitotem-xbackground.service' && grep -q '^ExecStart=.*unitotem-xbackground' '$R/etc/systemd/system/unitotem-xbackground.service'"
+chk "the placeholder service is enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-xbackground.service"
 chk "python3 present for the X background" test -x "$R/usr/bin/python3"
 chk "console fonts for its text (large DejaVu Bold sizes)" bash -c "test -s $R/usr/share/consolefonts/Lat15-DejaVuBold59x32.psf.gz && test -s $R/usr/share/consolefonts/Lat15-DejaVuBold118x64.psf.gz"
 chk "its text is English and says BOOT OK / VIDEO OUTPUT WORKS" bash -c "grep -q 'BOOT OK  -  VIDEO OUTPUT WORKS' $R/usr/sbin/unitotem-xbackground && ! grep -iE 'avvio|schermo|funziona' $R/usr/sbin/unitotem-xbackground"
@@ -133,6 +144,7 @@ echo "== amd64 boot"
     chk "recovery kernel and initrd on the ESP" bash -c "test -s $FAT/unitotem/recovery-vmlinuz && test -s $FAT/unitotem/recovery-initrd.img"
     chk "Secure Boot chain staged on the ESP (shim, MokManager, signed GRUB, stub grub.cfg, unsigned GRUB kept)" bash -c "for f in shimx64.efi mmx64.efi grubx64.efi grub-unsigned.efi grub.cfg; do test -s $FAT/EFI/unitotem-sb/\$f || exit 1; done"
     chk "the staged chain is NOT active by default (EFI/BOOT/BOOTX64.EFI is the plain GRUB; the deploy activates shim only on request)" bash -c "cmp -s $FAT/EFI/BOOT/BOOTX64.EFI $FAT/EFI/unitotem-sb/grub-unsigned.efi && ! cmp -s $FAT/EFI/BOOT/BOOTX64.EFI $FAT/EFI/unitotem-sb/shimx64.efi"
+    chk "grub-unsigned.efi really is the plain GRUB (not the shim, not the Debian-signed GRUB) and EFI/BOOT holds no chain leftovers" bash -c "! cmp -s $FAT/EFI/unitotem-sb/grub-unsigned.efi $FAT/EFI/unitotem-sb/shimx64.efi && ! cmp -s $FAT/EFI/unitotem-sb/grub-unsigned.efi $FAT/EFI/unitotem-sb/grubx64.efi && ! test -e $FAT/EFI/BOOT/grubx64.efi && ! test -e $FAT/EFI/BOOT/mmx64.efi"
     chk "the stub hands over to the real grub.cfg on the ESP" bash -c "grep -q 'unitotem-grub/grub/grub.cfg' $FAT/EFI/unitotem-sb/grub.cfg"
     chk "the OTA entries are low resolution (unitotem_lowres + nomodeset)" bash -c "grep -q 'unitotem_lowres' $FAT/unitotem-grub/grub/grub.cfg && grep -c nomodeset $FAT/unitotem-grub/grub/grub.cfg | grep -q '^4\$'"
 fi

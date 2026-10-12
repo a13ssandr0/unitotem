@@ -5,7 +5,7 @@ nothing to start: the manager's viewer window simply hides it when it works.
 
 It is unmistakable on purpose (the UniTotem logo and a green banner "BOOT OK - VIDEO OUTPUT WORKS", then the facts one needs on
 site: manager state, health, addresses, slot, release, uptime) so that "the board booted and the display works" cannot be
-confused with the boot animation, the OTA screen or a black screen. Started by /etc/kiosk/xinitrc.
+confused with the boot animation, the OTA screen or a black screen. Started by unitotem-xbackground.service.
 
 Standard library only: libX11 through ctypes, the pre-rendered logo blobs (tools/gen-logo.py), and the console PSF fonts for the
 text (DejaVu Bold, picked from the screen width so the text spans ~60 columns on 1080p and 4K alike).

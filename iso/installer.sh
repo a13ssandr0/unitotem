@@ -553,7 +553,6 @@ install -m 644 "$KIOSK_FILES/grub-default" "$TARGET/etc/default/grub"
 
 # Kiosk config (X11, no window manager)
 mkdir -p "$TARGET/etc/kiosk"
-install -m 755 "$KIOSK_FILES/xinitrc"                "$TARGET/etc/kiosk/xinitrc"
 install -m 644 "$KIOSK_FILES/chromium-flags-amd64"   "$TARGET/etc/kiosk/chromium-flags"
 cat > "$TARGET/usr/local/bin/chromium-kiosk" << 'SCRIPT'
 #!/bin/bash
