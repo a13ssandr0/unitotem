@@ -8,7 +8,7 @@
 set -euo pipefail
 ROOTFS="$1"; SRC="$2"; OUT="$3"
 CEF_RELEASE_REPO="${CEF_RELEASE_REPO:-a13ssandr0/cefpython}"
-CEF_RELEASE_TAG="${CEF_RELEASE_TAG:-v147.0.0-arm64}"
+CEF_RELEASE_TAG="${CEF_RELEASE_TAG:-v147.0.0-arm64-stripped}"   # the wheel built with the strip in cefpython CMake (libcef.so 241 MB instead of 1980 MB); the strip below is then a no-op
 
 # Not in /tmp: on the build Pi that is a 256 MB tmpfs, and the Pi's own disk is small too, so never unpack the amd64 venv at all
 # (it is >2 GB and is thrown away) and move, not copy, the native venv into the package.
