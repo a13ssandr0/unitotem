@@ -17,6 +17,7 @@
 #                                     [--port N] [--wipe-data]
 #                                     [--console STR] [--debug] [--yes]
 #                                     [--accept-changes DIGEST]
+#                                     [--secure-boot shim|noshim|abort]
 #   ./deploy/remote-deploy.sh disarm  root@host
 #
 # See API-OTA.md for the machine-readable contract behind `changes` and
@@ -57,6 +58,9 @@ OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
 # serial for arm64 - matching every other cmdline.txt this project writes),
 # and still honors an explicit --console override when one is given.
 OPT_CONSOLE="" OPT_DEBUG=0 OPT_YES=0
+# What to do when the target has Secure Boot enabled (amd64/UEFI): shim | noshim | abort. Empty = ask (or refuse, when
+# non-interactive). See secure_boot_gate.
+OPT_SECURE_BOOT="" SB_MODE=""
 # Non-interactive confirmation of a known change set. Carries the digest the
 # operator was actually shown, so a UI-driven deploy cannot proceed over a
 # different set of changes than the one that was approved - see cmd_changes.
@@ -73,6 +77,8 @@ while [ $# -gt 0 ]; do
         --yes)        OPT_YES=1; shift ;;
         --accept-changes) OPT_ACCEPT_CHANGES="$2"; shift 2 ;;
         --json)       OPT_JSON=1; shift ;;
+        --secure-boot) OPT_SECURE_BOOT="$2"; shift 2
+                       case "$OPT_SECURE_BOOT" in shim|noshim|abort) ;; *) die "--secure-boot: valori ammessi shim, noshim, abort" ;; esac ;;
         *) die "Opzione sconosciuta: $1" ;;
     esac
 done
@@ -134,6 +140,15 @@ BLTS=0
 [ -r /proc/device-tree/chosen/bootloader/build-timestamp ] \
     && BLTS=$(od -An -tu4 --endian=big /proc/device-tree/chosen/bootloader/build-timestamp 2>/dev/null | tr -d ' ')
 echo "BOOTLOADER_TS: ${BLTS:-0}"
+# Secure Boot: the SecureBoot EFI variable (4 attribute bytes, then 1 = enabled, 0 = disabled). Readable only on a UEFI boot;
+# "unknown" when it cannot be read (legacy BIOS, no efivarfs), never guessed.
+SBV=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+SB=unknown
+if [ -r "$SBV" ]; then
+    v=$(od -An -tu1 -j4 -N1 "$SBV" 2>/dev/null | tr -d ' ')
+    case "$v" in 0|1) SB=$v ;; esac
+fi
+echo "SECUREBOOT: $SB"
 command -v grub-reboot >/dev/null 2>&1 && echo "GRUB_REBOOT: 1" || echo "GRUB_REBOOT: 0"
 command -v update-grub >/dev/null 2>&1 && echo "UPDATE_GRUB: 1" || echo "UPDATE_GRUB: 0"
 command -v systemctl >/dev/null 2>&1 && echo "SYSTEMD: 1" || echo "SYSTEMD: 0"
@@ -286,6 +301,13 @@ print_probe() {
         echo "Modalita' boot di prova      : $([ "${TRYBOOT_CAPABLE}" = 1 ] && echo 'rpi-tryboot (protezione a livello firmware)' || echo 'rpi-legacy (swap config.txt + boot counter)')"
     else
         echo "Firmware                     : ${FIRMWARE}  (tryboot: ${TRYBOOT_CAPABLE})"
+    fi
+    if [ "${FIRMWARE}" = uefi ]; then
+        case "${P[SECUREBOOT]:-unknown}" in
+            1) echo "Secure Boot                  : ATTIVO (il deploy chiedera' come procedere: vedi --secure-boot)" ;;
+            0) echo "Secure Boot                  : disattivato" ;;
+            *) echo "Secure Boot                  : non rilevabile" ;;
+        esac
     fi
     echo "Gia' UniTotem                : ${P[HAVE_UNITOTEM]}"
     echo "DATA presente                : ${P[HAVE_DATA]}  (UUID: ${P[DATA_UUID]:-n/d})"
@@ -484,6 +506,7 @@ populate_bootfs_step() {
     local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
     wait_port_bound "$OPT_PORT" 10 || die "listener dati non pronto (bootfs)"
     local lay=""; [ "${P_LAYOUT:-1}" = 2 ] && lay="--layout ab"
+    [ "$SB_MODE" = shim ] && lay="$lay --secure-boot shim"
     # shellcheck disable=SC2086
     ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}' ${lay}"
     wait "$pid" 2>/dev/null || true
@@ -724,6 +747,7 @@ cmd_deploy() {
     echo "Disco target: ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE"))"
     echo "Target      : $([ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && echo 'gia'\'' UniTotem (percorso preparato)' || echo 'sistema legacy (push del fallback)')"
 
+    secure_boot_gate
     changes_gate
 
     if [ "$OPT_YES" != 1 ]; then
@@ -763,6 +787,17 @@ cmd_deploy() {
 
     wait_ota_reachable "$target_ip"
     run_ota_sequence "$target_ip" "$TARGET_DISK_BYID"
+
+    if [ "$SB_MODE" = noshim ]; then
+        echo ""
+        echo "=============================================================="
+        echo " INSTALLAZIONE COMPLETATA, MA IL SISTEMA NON PARTIRA' DA SOLO"
+        echo "=============================================================="
+        echo " Secure Boot e' attivo e hai scelto di installare senza shim: al riavvio il firmware mostra 'Security Violation'."
+        echo " Serve un INTERVENTO FISICO: entra nel setup del firmware e disattiva Secure Boot, poi riavvia."
+        echo "=============================================================="
+        return 0
+    fi
 
     # The account to check afterwards is root@, NOT whatever we logged in as:
     # the machine that comes back is the freshly deployed UniTotem, whose only
@@ -839,6 +874,69 @@ cmd_changes() {
         *)   die "controllo delle modifiche fallito sul target: ${CHANGES_OUT}" ;;
     esac
     return "$CHANGES_RC"
+}
+
+# Secure Boot (amd64/UEFI). The firmware refuses to run anything not signed by a key it trusts. UniTotem's own GRUB is unsigned, so
+# there are two ways in and the operator must pick one explicitly: boot through Debian's Microsoft-signed shim (the chain is staged in
+# the image and activated by populate-bootfs --secure-boot shim), or install as-is and fix the firmware afterwards. The choice is
+# never made silently, because both can need someone standing at the machine.
+secure_boot_gate() {
+    [ "$ARCH" = amd64 ] && [ "$FIRMWARE" = uefi ] || return 0
+    case "${P[SECUREBOOT]:-unknown}" in
+        0) [ -z "$OPT_SECURE_BOOT" ] || warn "--secure-boot ${OPT_SECURE_BOOT}: ignorato, Secure Boot non e' attivo sul target"; return 0 ;;
+        1) ;;
+        *) warn "stato di Secure Boot non rilevabile sul target: procedo come se fosse disattivato (se e' attivo, il sistema installato non partira')"; return 0 ;;
+    esac
+
+    # An UniTotem already running with Secure Boot on is booting through some trusted path: keep the shim chain.
+    if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ -z "$OPT_SECURE_BOOT" ]; then
+        log "Secure Boot attivo e il target e' gia' UniTotem: mantengo la catena shim"
+        SB_MODE=shim; return 0
+    fi
+
+    if [ -z "$OPT_SECURE_BOOT" ]; then
+        [ "$OPT_YES" != 1 ] \
+            || die "Secure Boot e' ATTIVO sul target: scegli esplicitamente --secure-boot shim | noshim (oppure disattivalo nel firmware e rilancia)"
+        echo ""
+        echo "=============================================================="
+        echo " SECURE BOOT e' ATTIVO sul target"
+        echo "=============================================================="
+        echo " Il firmware accetta solo programmi di avvio firmati con una chiave che conosce."
+        echo " Il GRUB di UniTotem non e' firmato. Come procedo?"
+        echo ""
+        echo "  1) INSTALLA CON SHIM"
+        echo "     L'avvio passa da shim (firmato Microsoft) -> GRUB e kernel firmati Debian: parte senza toccare il firmware."
+        echo "     ATTENZIONE, puo' servire un INTERVENTO FISICO sulla macchina:"
+        echo "       - con una GPU NVIDIA il driver proprietario e' un modulo non firmato: va registrata una chiave (MOK)"
+        echo "         dalla console al primo avvio, altrimenti niente driver video accelerato;"
+        echo "       - se il firmware non si fida della CA Microsoft UEFI (Secure Boot personalizzato) shim e' rifiutato."
+        echo "     Se il sistema attuale non e' Debian, il primo passaggio (voce GRUB una tantum) puo' fallire: il suo shim"
+        echo "     rifiuta il kernel Debian (\"bad shim signature\") e la macchina si ferma al prompt di GRUB."
+        echo ""
+        echo "  2) INSTALLA SENZA SHIM"
+        echo "     L'installazione termina, ma al riavvio il firmware rifiutera' il GRUB non firmato (\"Security Violation\")."
+        echo "     Un INTERVENTO FISICO e' NECESSARIO per forza: disattivare Secure Boot dal firmware (o registrarne l'hash)."
+        echo ""
+        echo "  3) ANNULLA"
+        echo "     Non viene toccato nulla. Disattiva Secure Boot nel firmware e rilancia il deploy."
+        echo "=============================================================="
+        local c
+        read -rp "Scelta [1/2/3]: " c
+        case "$c" in 1) OPT_SECURE_BOOT=shim ;; 2) OPT_SECURE_BOOT=noshim ;; *) OPT_SECURE_BOOT=abort ;; esac
+    fi
+
+    case "$OPT_SECURE_BOOT" in
+        abort)  die "annullato: Secure Boot e' attivo sul target. Disattivalo nel firmware (o scegli --secure-boot shim|noshim) e rilancia" ;;
+        shim)
+            [ "${P_LAYOUT:-1}" = 2 ] || die "la catena shim e' staged solo nelle immagini A/B: questo parts set non la contiene (usa un'immagine A/B o --secure-boot noshim)"
+            SB_MODE=shim
+            warn "Secure Boot: installo con shim. Se il target ha una GPU NVIDIA servira' registrare la chiave MOK dalla console (intervento fisico)."
+            ;;
+        noshim)
+            SB_MODE=noshim
+            warn "Secure Boot: installo SENZA shim. Al riavvio il firmware mostrera' 'Security Violation': serve un intervento fisico (disattivare Secure Boot)."
+            ;;
+    esac
 }
 
 changes_gate() {

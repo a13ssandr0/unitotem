@@ -108,6 +108,12 @@ if [ "$ARCH" = "amd64" ]; then
         grub-efi-amd64 \
         grub-pc-bin \
         efibootmgr
+    # Secure Boot chain, only STAGED in the image (stage 3 copies the signed binaries to EFI/unitotem-sb/ on the ESP; the deploy
+    # activates them when the target has Secure Boot on and the operator chose "with shim"): shim-signed (Microsoft-signed shim,
+    # dual-signed with the 2011 and 2023 UEFI CAs; embeds the Debian CA), grub-efi-amd64-signed (GRUB signed by the Debian CA)
+    # and shim-helpers-amd64-signed (MokManager). The kernel is already Debian-signed. mokutil is for the physical-intervention
+    # paths (MOK enrolment of the NVIDIA module's key).
+    apt_install --no-install-recommends shim-signed grub-efi-amd64-signed mokutil
 
 elif [ "$ARCH" = "arm64" ]; then
     # linux-image-rpi-v8, not the generic Debian linux-image-arm64: the
