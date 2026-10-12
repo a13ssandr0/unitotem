@@ -253,6 +253,29 @@ if [ "$ARCH" = "amd64" ]; then
         --boot-directory="${GRUB_BOOTDIR}" \
         "${LOOP}"
 
+    # Secure Boot chain, staged but NOT active: EFI/BOOT/BOOTX64.EFI stays the unsigned GRUB (grub-install --removable above), which
+    # is what a machine without Secure Boot needs. The deploy swaps in this chain (shim as BOOTX64.EFI) only when the target has
+    # Secure Boot enabled and the operator chose "install with shim" (ota-engine populate-bootfs --secure-boot shim). The signed
+    # GRUB has a fixed prefix and cannot be pointed elsewhere at install time, so it finds only grub.cfg stubs, which hand over to
+    # the real configuration (grub.cfg + grubenv, unitotem-grub/ on this same partition).
+    if [ "$AB_LAYOUT" = 1 ]; then
+        SBDIR=${IMG_MNT}/boot/efi/EFI/unitotem-sb
+        mkdir -p "$SBDIR"
+        cp "${IMG_MNT}/usr/lib/shim/shimx64.efi.signed"                      "$SBDIR/shimx64.efi"
+        cp "${IMG_MNT}/usr/lib/shim/mmx64.efi.signed"                        "$SBDIR/mmx64.efi"
+        cp "${IMG_MNT}/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"    "$SBDIR/grubx64.efi"
+        cp "${IMG_MNT}/boot/efi/EFI/BOOT/BOOTX64.EFI"                        "$SBDIR/grub-unsigned.efi"
+        cat > "$SBDIR/grub.cfg" << 'SBEOF'
+# UniTotem Secure Boot stub: hands over to the real GRUB configuration on this ESP.
+search --no-floppy --label --set=root EFI
+set prefix=($root)/unitotem-grub/grub
+configfile ($root)/unitotem-grub/grub/grub.cfg
+SBEOF
+        for f in shimx64.efi mmx64.efi grubx64.efi grub-unsigned.efi grub.cfg; do
+            [ -s "$SBDIR/$f" ] || boot_assert_fail "catena Secure Boot: $f assente in EFI/unitotem-sb"
+        done
+    fi
+
     if [ "$AB_LAYOUT" = 1 ]; then
         chroot ${IMG_MNT} grub-mkconfig -o "${GRUB_BOOTDIR}/grub/grub.cfg"
         chroot ${IMG_MNT} grub-editenv "${GRUB_BOOTDIR}/grub/grubenv" set saved_entry=slot-a

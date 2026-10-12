@@ -554,6 +554,25 @@ cmd_populate_bootfs() {
         || fail "estrazione bootfs fallita"
     exec 4<&-
     sync
+    # --secure-boot shim: the image only STAGES the signed chain (EFI/unitotem-sb/, see kiosk/stage3-image.sh); this activates it.
+    # Everything the chain needs is copied first and BOOTX64.EFI - the one file the firmware loads - is replaced last, through a
+    # temporary name and a rename, so a cut leaves either the old loader or the complete new chain, never a half-written shim.
+    if [ "${ARG[secure-boot]:-}" = shim ]; then
+        local sb="$mnt/EFI/unitotem-sb" bt="$mnt/EFI/BOOT" f
+        for f in shimx64.efi mmx64.efi grubx64.efi grub.cfg; do
+            [ -s "$sb/$f" ] || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: $f assente in EFI/unitotem-sb (immagine senza catena firmata?)"; }
+        done
+        mkdir -p "$bt" "$mnt/EFI/debian"
+        cp "$sb/grubx64.efi" "$bt/grubx64.efi" && cp "$sb/mmx64.efi" "$bt/mmx64.efi" \
+            && cp "$sb/grub.cfg" "$bt/grub.cfg" && cp "$sb/grub.cfg" "$mnt/EFI/debian/grub.cfg" \
+            || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: copia della catena fallita"; }
+        sync
+        cp "$sb/shimx64.efi" "$bt/BOOTX64.EFI.new" && sync && mv -f "$bt/BOOTX64.EFI.new" "$bt/BOOTX64.EFI" \
+            || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: installazione dello shim fallita"; }
+        cmp -s "$sb/shimx64.efi" "$bt/BOOTX64.EFI" || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: lo shim scritto non coincide"; }
+        echo shim > "$sb/active"; sync
+        echo "UNITOTEM_SECURE_BOOT=shim"
+    fi
     ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
     echo "UNITOTEM_BOOTFS_POPULATED=1"
 }

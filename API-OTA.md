@@ -125,6 +125,27 @@ tastiera, non una scorciatoia per saltarla.
 3. l'utente conferma → `deploy --accept-changes <digest>`
 4. se il deploy si ferma per digest non corrispondente, tornare al passo 1: il sistema è cambiato
 
+## Secure Boot (target amd64/UEFI)
+
+`remote-deploy.sh probe` riporta una riga `Secure Boot : ATTIVO | disattivato | non rilevabile` (letta dalla variabile EFI
+`SecureBoot`, mai indovinata). Se è **attivo**, `deploy` non procede da solo: il firmware rifiuta il GRUB non firmato di UniTotem e
+ci sono due strade, entrambe con un possibile intervento fisico. La scelta è esplicita:
+
+```
+./deploy/remote-deploy.sh deploy root@host --parts DIR --secure-boot shim|noshim|abort
+```
+
+| valore | cosa fa | intervento fisico |
+|---|---|---|
+| `shim` | attiva la catena firmata già presente nell'immagine (`EFI/unitotem-sb/`): shim firmato Microsoft → GRUB e kernel firmati Debian | solo con GPU NVIDIA (modulo non firmato: registrare la chiave MOK dalla console) o firmware che non si fida della CA Microsoft UEFI; se il sistema di partenza non è Debian il primo passaggio può fallire ("bad shim signature") |
+| `noshim` | installa e basta | **sempre**: al riavvio "Security Violation", va disattivato Secure Boot dal firmware |
+| `abort` | non tocca nulla | disattivare Secure Boot e rilanciare |
+
+Senza `--secure-boot` un deploy interattivo mostra le tre scelte; uno non interattivo (`--yes`, `--accept-changes`) **si rifiuta**
+di partire (exit ≠ 0, messaggio che elenca i valori). Un target già UniTotem che parte con Secure Boot attivo mantiene `shim`.
+`shim` richiede un parts set A/B (la catena è "staged" solo lì). Una UI deve quindi: leggere lo stato dal probe, mostrare le tre
+scelte con le avvertenze sopra, e passare la scelta con `--secure-boot`.
+
 ## Installare pacchetti sul dispositivo
 
 Root è read-only. Il varco è:
