@@ -69,6 +69,11 @@ chk "no unused PySide6 wheels in the manager venv (WebEngine/Addons/Pdf)" bash -
 chk "the Qt modules the manager imports are still there (PySide6-Essentials)" test -e "$SP/PySide6/QtWidgets.abi3.so"
 chk "the venv stays below 1.2 GB (it was 3.1 GB)" bash -c "[ \$(du -sk '$R/var/unitotem-venv' | cut -f1) -lt 1258291 ]"
 
+echo "== Screen must never go black by itself"
+for t in xset xsetroot xrandr; do chk "$t is installed (x11-xserver-utils survived the compiler removal)" bash -c "test -x '$R/usr/bin/$t'"; done
+chk "X server never blanks/powers down on its own (ServerFlags timeouts 0)" bash -c "grep -q 'BlankTime.*\"0\"' '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf' && grep -q 'OffTime.*\"0\"' '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf'"
+chk "xinitrc also turns DPMS and the screensaver off" bash -c "grep -q 'xset -dpms' '$R/etc/kiosk/xinitrc' && grep -q 'xset s off' '$R/etc/kiosk/xinitrc'"
+
 echo "== Mount and boot robustness"
 chk "boot FAT is ro,nofail in fstab" file_has "$R/etc/fstab" '^LABEL=(EFI|FIRMWARE)[[:space:]].*ro,nofail'
 chk "emergency mode reboots instead of waiting forever" file_has "$R/etc/systemd/system/emergency.service.d/unitotem.conf" 'reboot'

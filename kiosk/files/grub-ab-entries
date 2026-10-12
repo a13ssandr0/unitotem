@@ -6,6 +6,18 @@ exec tail -n +3 "$0"
 # /etc/grub.d/10_unitotem_ab. 'saved_entry' in grubenv picks the default; grub-reboot sets a
 # one-shot trial entry that GRUB clears before booting it, so a power cut or a crash during a
 # trial returns to the default slot with no software involved.
+# Low resolution for every OTA entry (the screens must be readable from far away on 1080p/4K monitors): GRUB switches the
+# firmware framebuffer (UEFI GOP / BIOS VBE) to the first mode of gfxmode that exists and gfxpayload=keep hands exactly that to
+# the kernel; nomodeset stops the DRM drivers (i915, amdgpu, nouveau, ...) from taking over at the monitor's native size, so
+# the console and /dev/fb0 stay at that mode. The OTA environment needs only a console and the network. 640x480 first, so a
+# firmware without it lands on the next smallest instead of the native mode.
+function unitotem_lowres {
+    insmod all_video
+    insmod gfxterm
+    set gfxmode=640x480x32,640x480,800x600x32,800x600,1024x768x32,1024x768,auto
+    terminal_output gfxterm
+    set gfxpayload=keep
+}
 menuentry 'UniTotem slot A' --id slot-a {
     insmod part_gpt
     insmod ext2
@@ -23,15 +35,17 @@ menuentry 'UniTotem slot B' --id slot-b {
 menuentry 'UniTotem slot A (OTA recovery)' --id slot-a-recover {
     insmod part_gpt
     insmod ext2
+    unitotem_lowres
     search --no-floppy --set=root --label ROOT_A
-    linux /vmlinuz root=LABEL=ROOT_A ro quiet unitotem.ota=recover unitotem.slot=a
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet nomodeset unitotem.ota=recover unitotem.slot=a
     initrd /initrd.img
 }
 menuentry 'UniTotem slot B (OTA recovery)' --id slot-b-recover {
     insmod part_gpt
     insmod ext2
+    unitotem_lowres
     search --no-floppy --set=root --label ROOT_B
-    linux /vmlinuz root=LABEL=ROOT_B ro quiet unitotem.ota=recover unitotem.slot=b
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet nomodeset unitotem.ota=recover unitotem.slot=b
     initrd /initrd.img
 }
 # The resident fallback on the ESP. Deliberately LAST: when grubenv is unreadable (a torn write) GRUB
@@ -41,7 +55,8 @@ menuentry 'UniTotem slot B (OTA recovery)' --id slot-b-recover {
 menuentry 'UniTotem OTA fallback' --id ota-recovery {
     insmod part_gpt
     insmod fat
+    unitotem_lowres
     search --no-floppy --set=root --label EFI
-    linux /unitotem/recovery-vmlinuz unitotem.ota=1 console=tty0 console=ttyS0,115200
+    linux /unitotem/recovery-vmlinuz nomodeset unitotem.ota=1 console=tty0 console=ttyS0,115200
     initrd /unitotem/recovery-initrd.img
 }
