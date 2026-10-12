@@ -9,4 +9,4 @@ PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case "$1" in prereqs) prereqs; exit 0 ;; esac
 
-exec /usr/sbin/unitotem-ota-engine serve-fallback --reason "avvio da immagine di fallback residente"
+exec /usr/sbin/unitotem-ota-engine serve-fallback --reason "booted from the resident fallback image"
