@@ -439,6 +439,14 @@ else
     chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
         || { echo "ERRORE: il modulo NVIDIA e' sparito rimuovendo i compilatori" >&2; exit 1; }
 fi
+# The NVIDIA module (amd64) is signed at build time with a key DKMS generated inside this build: /var/lib/dkms/mok.key (private) and
+# mok.pub. The private half is the SAME in every device flashed from the image, and once a device has enrolled mok.pub (mokutil --import,
+# needed under Secure Boot) anyone holding the image could sign modules that device accepts. Nothing at runtime needs it: updates are whole
+# images, DKMS never rebuilds anything on a device. Keep only the public certificate, which is what an enrolment needs.
+if [ "$ARCH" = "amd64" ] && [ -e "${ROOTFS}/var/lib/dkms/mok.key" ]; then
+    rm -f "${ROOTFS}/var/lib/dkms/mok.key"
+    echo ">>> removed the DKMS module-signing private key from the image (mok.pub kept)"
+fi
 # What the kiosk needs from x11-xserver-utils must have survived the removal above, on every architecture (see the arm64 note).
 for t in xset xsetroot xrandr; do
     chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERRORE: $t e' sparito con la rimozione dei compilatori/Chromium (x11-xserver-utils)" >&2; exit 1; }
