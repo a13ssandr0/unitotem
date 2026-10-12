@@ -93,9 +93,7 @@ chk "update root key installed" test -s "$R/usr/share/unitotem/update-keys/root.
 chk "release-version present" test -s "$R/usr/share/unitotem/release-version"
 chk "unitotem-update uses the monotonic clock for deadlines" bash -c "grep -q 'time.monotonic' $R/usr/sbin/unitotem-update && ! grep -q 'deadline = time.time()' $R/usr/sbin/unitotem-update"
 chk "OTA whitelist keeps the manager cert and unitotem* config" bash -c "grep -q '^ssl/unitotem.pem$' $R/etc/unitotem/ota-preserve.list && grep -q '^unitotem\\*$' $R/etc/unitotem/ota-preserve.list"
-if [ ! -e "$R/var/unitotem-venv/bin/python3" ] || [ "$ARCH" = arm64 ]; then
-    chk "image without a /health manager has the health gate disabled (UPDATE_HEALTH_URL empty)" file_has "$R/etc/unitotem/update.conf" '^UPDATE_HEALTH_URL=$'
-fi
+chk "the health gate is on (the 3.x manager provides /health; update.conf does not blank UPDATE_HEALTH_URL)" bash -c "! grep -q '^UPDATE_HEALTH_URL=\$' $R/etc/unitotem/update.conf 2>/dev/null"
 
 if [ "$AB" = 1 ]; then
 echo "== A/B layout"
