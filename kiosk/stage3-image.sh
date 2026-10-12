@@ -241,6 +241,7 @@ if [ "$ARCH" = "amd64" ]; then
         --boot-directory="${GRUB_BOOTDIR}" \
         --bootloader-id=debian \
         --no-nvram \
+        --no-uefi-secure-boot \
         --removable
 
     # BIOS: embeds core.img into the ef02 partition carved out above and
@@ -253,6 +254,9 @@ if [ "$ARCH" = "amd64" ]; then
         --boot-directory="${GRUB_BOOTDIR}" \
         "${LOOP}"
 
+    # (--no-uefi-secure-boot above matters: with shim-signed and grub-efi-amd64-signed installed, Debian's grub-install otherwise puts
+    # shim at EFI/BOOT/BOOTX64.EFI and the signed GRUB beside it by itself, which is not the "plain GRUB by default" this relies on;
+    # found by the verify-image check below on the 2026-10-12 build.)
     # Secure Boot chain, staged but NOT active: EFI/BOOT/BOOTX64.EFI stays the unsigned GRUB (grub-install --removable above), which
     # is what a machine without Secure Boot needs. The deploy swaps in this chain (shim as BOOTX64.EFI) only when the target has
     # Secure Boot enabled and the operator chose "install with shim" (ota-engine populate-bootfs --secure-boot shim). The signed
