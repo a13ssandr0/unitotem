@@ -38,6 +38,26 @@ WHL="$ROOTFS/tmp/$(basename "$URL")"
 curl -fL -o "$WHL" "$URL"
 chroot "$ROOTFS" /var/unitotem-venv/bin/pip3 install --no-cache-dir "/tmp/$(basename "$URL")"
 rm -f -- "$WHL" "$ROOTFS/tmp/manager-requirements.txt"
+
+# Slimming (the venv was 3.1 GB, 2.2 GB of it cefpython3; the slot is 6 GiB and was 94% full):
+#  1. the aarch64 CEF wheel ships libcef.so with 1.7 GB of debug info + symbol tables (1980 MB file, 243 MB of real code); same for
+#     libvk_swiftshader.so and libGLESv2.so. `strip --unneeded` keeps .dynsym (everything dlopen/linking needs).
+#  2. the manager imports only QtCore/QtGui/QtWidgets (the page is shown by CEF, not QtWebEngine), but requirements.txt pulls the
+#     whole PySide6 meta package: WebEngine (257 MB), Addons (161 MB), Pdf (6 MB) are removed, PySide6-Essentials + shiboken6 stay.
+#  3. pip is not needed at runtime.
+CEFDIR=/var/unitotem-venv/lib/python3.13/site-packages/cefpython3
+for f in libcef.so libvk_swiftshader.so libGLESv2.so libEGL.so; do
+    before=$(stat -c %s "$ROOTFS$CEFDIR/$f")
+    chroot "$ROOTFS" strip --strip-unneeded "$CEFDIR/$f"
+    echo ">>> stripped $f: $((before / 1048576)) MB -> $(( $(stat -c %s "$ROOTFS$CEFDIR/$f") / 1048576 )) MB"
+done
+chroot "$ROOTFS" /var/unitotem-venv/bin/pip3 uninstall -y PySide6 PySide6-Addons PySide6-WebEngine PySide6-Pdf pip
+# the venv must still do its job after the slimming: CEF (the only thing that shows the page) and the three Qt modules the manager uses
+chroot "$ROOTFS" /var/unitotem-venv/bin/python3 -c "
+from cefpython3 import cefpython as cef
+from PySide6 import QtCore, QtGui, QtWidgets
+import shiboken6
+print('venv slimmed: cefpython', cef.GetVersion()['cef_version'], '| PySide6', QtCore.__version__)"
 # sanity: the native venv really holds aarch64 binaries
 [ "$(chroot "$ROOTFS" /var/unitotem-venv/bin/python3 -c 'import platform; print(platform.machine())')" = aarch64 ] \
     || { echo "ERRORE: il venv non e' aarch64" >&2; exit 1; }

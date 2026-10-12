@@ -63,6 +63,12 @@ want=3e; [ "$ARCH" = arm64 ] && want=b7   # ELF e_machine: 0x3e x86-64, 0xb7 aar
 cefso=$(ls "$R"/var/unitotem-venv/lib/python3.13/site-packages/cefpython3/*.so 2>/dev/null | head -1)
 chk "manager venv binaries are for this architecture (${cefso##*/})" bash -c "[ -n '$cefso' ] && [ \"\$(od -An -tx1 -j18 -N1 '$cefso' | tr -d ' ')\" = $want ]"
 
+SP="$R/var/unitotem-venv/lib/python3.13/site-packages"
+chk "CEF libraries are stripped (libcef.so < 600 MB; the unstripped arm64 wheel's is 1980 MB)" bash -c "[ -s '$SP/cefpython3/libcef.so' ] && [ \$(stat -c %s '$SP/cefpython3/libcef.so') -lt 629145600 ]"
+chk "no unused PySide6 wheels in the manager venv (WebEngine/Addons/Pdf)" bash -c "! ls -d '$SP'/pyside6_webengine-*.dist-info '$SP'/pyside6_addons-*.dist-info '$SP'/pyside6_pdf-*.dist-info >/dev/null 2>&1 && [ ! -e '$SP/PySide6/Qt/lib/libQt6WebEngineCore.so.6' ]"
+chk "the Qt modules the manager imports are still there (PySide6-Essentials)" test -e "$SP/PySide6/QtWidgets.abi3.so"
+chk "the venv stays below 1.2 GB (it was 3.1 GB)" bash -c "[ \$(du -sk '$R/var/unitotem-venv' | cut -f1) -lt 1258291 ]"
+
 echo "== Mount and boot robustness"
 chk "boot FAT is ro,nofail in fstab" file_has "$R/etc/fstab" '^LABEL=(EFI|FIRMWARE)[[:space:]].*ro,nofail'
 chk "emergency mode reboots instead of waiting forever" file_has "$R/etc/systemd/system/emergency.service.d/unitotem.conf" 'reboot'
