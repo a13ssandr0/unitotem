@@ -14,22 +14,16 @@ echo ">>> ESP at byte $esp_off"
 mdir -i "$RAW@@$esp_off" ::unitotem-grub/grub >/dev/null
 mcopy -n -i "$RAW@@$esp_off" ::unitotem-grub/grub/grub.cfg "$W/grub.orig"
 python3 - "$W/grub.orig" "$W/grub.base" "$W/grub.low" "$DIR/kiosk/files/grub-ab-entries" <<'PY'
-import sys,re
+import sys
 orig=open(sys.argv[1]).read()
-entries=open(sys.argv[4]).read()
-func=entries[entries.index("function unitotem_lowres"):]; func=func[:func.index("\n}\n")+3]
-# the real file's patched lines are exactly what grub-mkconfig copies into grub.cfg from the entries file
-ent=entries.split("\n")
-new_a=[l for l in ent if "label ROOT_A ro quiet nomodeset" in l][0].strip()
-old_a=new_a.replace(" nomodeset","")
-assert old_a in orig, "grub.cfg as built does not contain the OTA recover line"
-base=orig+"\nset default=slot-a-recover\nset timeout=0\n"
-low=orig.replace(old_a,"unitotem_lowres\n    "+new_a if False else new_a)
-# insert the function call before 'search' of the recover entry
-i=low.index(new_a); j=low.rindex("search --no-floppy",0,i)
-low=low[:j]+"unitotem_lowres\n    "+low[j:]
-low=func+low+"\nset default=slot-a-recover\nset timeout=0\n"
-open(sys.argv[2],"w").write(base); open(sys.argv[3],"w").write(low)
+entries=open(sys.argv[4]).read().split("\n",2)[2]      # drop the 'exec tail -n +3' header: what grub-mkconfig copies
+begin="### BEGIN /etc/grub.d/10_unitotem_ab ###\n"; end="### END /etc/grub.d/10_unitotem_ab ###"
+assert begin in orig and "function unitotem_lowres" in entries and "=ROOT_A ro quiet nomodeset" in entries
+tail="\nset default=slot-a-recover\nset timeout=0\n"
+# baseline: the grub.cfg exactly as built; low: its entries section replaced by the current kiosk/files/grub-ab-entries
+a=orig.index(begin)+len(begin); z=orig.index(end)
+low=orig[:a]+entries+("" if entries.endswith("\n") else "\n")+orig[z:]
+open(sys.argv[2],"w").write(orig+tail); open(sys.argv[3],"w").write(low+tail)
 PY
 run_vm() { # run_vm NAME GRUBCFG -> prints framebuffer size of the screendump after the OTA environment is up
     local name="$1" cfg="$2" img="$W/$1.img"; cp --sparse=always "$RAW" "$img"
@@ -40,7 +34,7 @@ run_vm() { # run_vm NAME GRUBCFG -> prints framebuffer size of the screendump af
         -drive file="$img",format=raw,if=virtio -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
         -device virtio-vga -display none -serial "file:$W/$name.serial" -monitor "unix:$W/$name.sock,server,nowait" -pidfile "$W/$name.pid" &
     sleep 2
-    local i; for i in $(seq 1 60); do grep -aq "OTA\|ota" "$W/$name.serial" 2>/dev/null && break; sleep 3; done
+    local i; for i in $(seq 1 15); do grep -aq "OTA\|ota" "$W/$name.serial" 2>/dev/null && break; sleep 3; done
     sleep 25
     python3 -I - "$W/$name.sock" "$W/$name.ppm" <<'PY'
 import socket,sys,time

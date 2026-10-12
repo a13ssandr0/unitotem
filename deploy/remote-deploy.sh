@@ -889,7 +889,8 @@ secure_boot_gate() {
     esac
 
     # An UniTotem already running with Secure Boot on is booting through some trusted path: keep the shim chain.
-    if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ -z "$OPT_SECURE_BOOT" ]; then
+    # (only with an A/B parts set: the shim chain is staged only in those images; with another layout fall through to the choice)
+    if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ "${P_LAYOUT:-1}" = 2 ] && [ -z "$OPT_SECURE_BOOT" ]; then
         log "Secure Boot attivo e il target e' gia' UniTotem: mantengo la catena shim"
         SB_MODE=shim; return 0
     fi
