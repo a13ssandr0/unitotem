@@ -379,6 +379,15 @@ if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
         chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y haproxy
     fi
     rm -rf "${ROOTFS}/tmp/extra-debs"
+    # CEF starts its helper process by exec'ing cefpython3/subprocess. 3.0.0~dev5 of python3-cefpython3 shipped it as 0644 (the wheel is a zip
+    # and loses the exec bit): CEF then dies with "failed to execvp ... Cannot communicate with zygote" (SIGTRAP) and the manager restart-loops.
+    # dpkg-statoverride is the Debian way to fix a packaged file's mode without editing the package; a fixed package makes this a no-op.
+    CEFSUB=/usr/lib/python3/dist-packages/cefpython3/subprocess
+    if [ ! -x "${ROOTFS}${CEFSUB}" ]; then
+        echo ">>> WARNING: ${CEFSUB} is not executable in the package: applying a dpkg-statoverride 0755 (fix python3-cefpython3)"
+        chroot "${ROOTFS}" dpkg-statoverride --update --add root root 0755 "${CEFSUB}"
+    fi
+    [ -x "${ROOTFS}${CEFSUB}" ] || { echo "ERRORE: ${CEFSUB} non e' eseguibile" >&2; exit 1; }
     for pkg in unitotem unitotem-manager unitotem-node unitotem-viewer python3-cefpython3 plymouth-theme-unitotem; do
         v=$(chroot "${ROOTFS}" dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
         case "$v" in 3.*) ;; *) echo "ERRORE: $pkg non e' installato alla versione 3.x (trovato: '${v}')" >&2; exit 1 ;; esac

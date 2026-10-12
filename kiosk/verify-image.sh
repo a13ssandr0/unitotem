@@ -65,6 +65,7 @@ want=3e; [ "$ARCH" = arm64 ] && want=b7   # ELF e_machine: 0x3e x86-64, 0xb7 aar
 CEFD="$R/usr/lib/python3/dist-packages/cefpython3"
 cefso="$CEFD/cefpython_py313.so"
 chk "CEF binaries are for this architecture (${cefso##*/})" bash -c "[ -s '$cefso' ] && [ \"\$(od -An -tx1 -j18 -N1 '$cefso' | tr -d ' ')\" = $want ]"
+chk "CEF's helper process is executable (a 0644 'subprocess' makes CEF abort with SIGTRAP: Cannot communicate with zygote)" test -x "$CEFD/subprocess"
 chk "libcef.so is the same architecture too" bash -c "[ \"\$(od -An -tx1 -j18 -N1 '$CEFD/libcef.so' | tr -d ' ')\" = $want ]"
 chk "CEF libraries are stripped (libcef.so < 600 MB; an unstripped aarch64 build is 1980 MB)" bash -c "[ -s '$CEFD/libcef.so' ] && [ \$(stat -c %s '$CEFD/libcef.so') -lt 629145600 ]"
 chk "no virtualenv left (the manager runs on the system Python since 3.0.0~dev5)" bash -c "[ ! -e '$R/var/unitotem-venv' ]"
