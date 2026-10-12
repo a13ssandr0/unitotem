@@ -380,6 +380,35 @@ rm -f "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
 # Unmount the cache BEFORE apt-get clean: clean empties the archive directory, which would wipe the cache.
 mountpoint -q "${ROOTFS}/var/cache/apt/archives" && umount "${ROOTFS}/var/cache/apt/archives"
 
+# ---------- Slim the manager's virtualenv (any architecture; idempotent) ----------
+# The venv was 3.1 GB on arm64 and the 6 GiB root slot 94% full. See kiosk/files/build-manager-arm64.sh for the measurements:
+# strip the CEF libraries (debug info + symbol tables, the arm64 wheel's libcef.so is 1980 MB for 243 MB of code) and drop the
+# PySide6 wheels the manager never imports (WebEngine/Addons/Pdf: it uses QtCore/QtGui/QtWidgets, the page is shown by CEF).
+# arm64 already got this when the package was generated; this is the same step for a package that was supplied ready-made
+# (amd64: the manager's own .deb) and a safety net for the day the manager package slims itself, when it becomes a no-op.
+VENV=/var/unitotem-venv
+if [ -x "${ROOTFS}${VENV}/bin/python3" ]; then
+    CEFDIR=$VENV/lib/python3.13/site-packages/cefpython3
+    for f in libcef.so libvk_swiftshader.so libGLESv2.so libEGL.so; do
+        [ -e "${ROOTFS}${CEFDIR}/$f" ] || continue
+        if chroot "${ROOTFS}" readelf -SW "$CEFDIR/$f" | grep -qE '\.symtab|\.debug_'; then
+            before=$(stat -c %s "${ROOTFS}${CEFDIR}/$f")
+            chroot "${ROOTFS}" strip --strip-unneeded "$CEFDIR/$f"
+            echo ">>> stripped $f: $((before / 1048576)) MB -> $(( $(stat -c %s "${ROOTFS}${CEFDIR}/$f") / 1048576 )) MB"
+        fi
+    done
+    EXTRA=$(chroot "${ROOTFS}" $VENV/bin/python3 -m pip list --format=freeze 2>/dev/null | cut -d= -f1 | grep -iE '^(PySide6|PySide6[-_]Addons|PySide6[-_]WebEngine|PySide6[-_]Pdf)$' | tr '\n' ' ' || true)
+    if [ -n "$EXTRA" ]; then
+        echo ">>> removing the unused PySide6 wheels from the manager venv: $EXTRA"
+        # shellcheck disable=SC2086
+        chroot "${ROOTFS}" $VENV/bin/python3 -m pip uninstall -y $EXTRA
+    fi
+    chroot "${ROOTFS}" $VENV/bin/python3 -c "
+from PySide6 import QtCore, QtGui, QtWidgets
+import shiboken6
+print('manager venv: PySide6', QtCore.__version__, 'ok')"
+fi
+
 # ---------- Remove what the shipped system does not need ----------
 # Approved by the user (2026-10-11): Chromium and the compilers. Updates are whole images now, nothing is built or
 # upgraded in place at runtime, so the DKMS rebuild rationale for keeping the toolchain no longer applies.
