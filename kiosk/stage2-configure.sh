@@ -250,9 +250,9 @@ install -m 644 /kiosk/files/ota-preserve.list "${ROOTFS}/etc/unitotem/ota-preser
 install -m 644 /kiosk/files/net-watchdog.conf "${ROOTFS}/etc/unitotem/net-watchdog.conf"
 # unitotem-update's boot-ok waits for the manager's /health before confirming a trial slot. The 2.x manager that the
 # repository ships (and every arm64 image so far) has no /health endpoint - and cannot even run on a read-only root - so
-# with the default URL every trial would sit out the full timeout and roll back. Only a build that carries a local 3.x
-# manager .deb (work/extra-debs/<arch>/, which provides /health) keeps the health gate.
-if [ "$AB_LAYOUT" = 1 ] && ! ls /work/extra-debs/${ARCH}/*.deb >/dev/null 2>&1; then
+# with the default URL every trial would sit out the full timeout and roll back. Only an image that carries the 3.x
+# manager (its venv is in the rootfs; it provides /health) keeps the health gate.
+if [ "$AB_LAYOUT" = 1 ] && [ ! -e "${ROOTFS}/var/unitotem-venv/bin/python3" ]; then   # no 3.x manager venv in the rootfs
     printf '%s\n' '# no manager with /health in this image: confirm a trial without the health gate' 'UPDATE_HEALTH_URL=' \
         > "${ROOTFS}/etc/unitotem/update.conf"
 fi
