@@ -35,7 +35,7 @@ for p in chromium chromium-browser chromium-common chromium-l10n build-essential
     installed "$p" && bad "package $p must not be installed" || ok "package $p absent"
 done
 [ "$ARCH" = amd64 ] && chk "NVIDIA module still present after removing the compilers" bash -c "ls $R/lib/modules/*/updates/dkms/nvidia-current.ko* >/dev/null 2>&1"
-if [ -e "$R/var/unitotem-venv/bin/python3" ] && [ "$(ls "$R"/var/unitotem-venv/lib 2>/dev/null)" = python3.13 ] && [ -e "$R/usr/share/unitotem-manager/screenctl.py" ]; then
+if installed unitotem-manager; then
     installed haproxy && bad "haproxy installed alongside a 3.x manager (it would hold ports 80/443)" || ok "haproxy absent with the 3.x manager"
 fi
 
@@ -58,16 +58,20 @@ chk "the frame works at any resolution (no fixed-geometry guard left in ota_fram
 chk "OTA hook carries the frame into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-frame-'
 chk "the engine draws the rounded frame and blanks whiptail's own border" bash -c "grep -q 'ota_frame' $R/usr/lib/unitotem/ota-engine.sh && grep -q 'blank whiptail' $R/usr/lib/unitotem/ota-engine.sh"
 chk "OTA hook carries the logo into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-logo-'
-chk "manager is 3.x on this architecture" bash -c "awk 'BEGIN{RS=\"\";FS=\"\\n\"} \$1==\"Package: unitotem-manager\"{for(i=1;i<=NF;i++) if(\$i ~ /^Version: 3\\./) f=1} END{exit !f}' $R/var/lib/dpkg/status"
+for pkg in unitotem unitotem-manager unitotem-node unitotem-viewer python3-cefpython3 plymouth-theme-unitotem; do
+    chk "package $pkg is installed at 3.x" bash -c "awk -v p='$pkg' 'BEGIN{RS=\"\";FS=\"\\n\"} \$1==\"Package: \"p{for(i=1;i<=NF;i++) if(\$i ~ /^Version: 3\\./) f=1} END{exit !f}' $R/var/lib/dpkg/status"
+done
 want=3e; [ "$ARCH" = arm64 ] && want=b7   # ELF e_machine: 0x3e x86-64, 0xb7 aarch64 (no `file` needed: it is not on every build host)
-cefso=$(ls "$R"/var/unitotem-venv/lib/python3.13/site-packages/cefpython3/*.so 2>/dev/null | head -1)
-chk "manager venv binaries are for this architecture (${cefso##*/})" bash -c "[ -n '$cefso' ] && [ \"\$(od -An -tx1 -j18 -N1 '$cefso' | tr -d ' ')\" = $want ]"
-
-SP="$R/var/unitotem-venv/lib/python3.13/site-packages"
-chk "CEF libraries are stripped (libcef.so < 600 MB; the unstripped arm64 wheel's is 1980 MB)" bash -c "[ -s '$SP/cefpython3/libcef.so' ] && [ \$(stat -c %s '$SP/cefpython3/libcef.so') -lt 629145600 ]"
-chk "no unused PySide6 wheels in the manager venv (WebEngine/Addons/Pdf)" bash -c "! ls -d '$SP'/pyside6_webengine-*.dist-info '$SP'/pyside6_addons-*.dist-info '$SP'/pyside6_pdf-*.dist-info >/dev/null 2>&1 && [ ! -e '$SP/PySide6/Qt/lib/libQt6WebEngineCore.so.6' ]"
-chk "the Qt modules the manager imports are still there (PySide6-Essentials)" test -e "$SP/PySide6/QtWidgets.abi3.so"
-chk "the venv stays below 1.2 GB (it was 3.1 GB)" bash -c "[ \$(du -sk '$R/var/unitotem-venv' | cut -f1) -lt 1258291 ]"
+CEFD="$R/usr/lib/python3/dist-packages/cefpython3"
+cefso="$CEFD/cefpython_py313.so"
+chk "CEF binaries are for this architecture (${cefso##*/})" bash -c "[ -s '$cefso' ] && [ \"\$(od -An -tx1 -j18 -N1 '$cefso' | tr -d ' ')\" = $want ]"
+chk "libcef.so is the same architecture too" bash -c "[ \"\$(od -An -tx1 -j18 -N1 '$CEFD/libcef.so' | tr -d ' ')\" = $want ]"
+chk "CEF libraries are stripped (libcef.so < 600 MB; an unstripped aarch64 build is 1980 MB)" bash -c "[ -s '$CEFD/libcef.so' ] && [ \$(stat -c %s '$CEFD/libcef.so') -lt 629145600 ]"
+chk "no virtualenv left (the manager runs on the system Python since 3.0.0~dev5)" bash -c "[ ! -e '$R/var/unitotem-venv' ]"
+chk "the viewer's Qt comes from Debian packages (python3-pyside6.qtwidgets)" installed python3-pyside6.qtwidgets
+chk "the manager unit is Type=notify (the viewer sends READY after its first frame)" bash -c "grep -q '^Type=notify' '$R/usr/lib/systemd/system/unitotem-manager.service'"
+chk "the manager waits for X (drop-in)" bash -c "grep -q 'start-xorg.service' '$R/etc/systemd/system/unitotem-manager.service.d/20-unitotem-x.conf'"
+chk "DISPLAY/XAUTHORITY drop-in of unitotem-node matches the X cookie path of start-xorg.service" bash -c "grep -q 'XAUTHORITY=/run/unitotem-x11.auth' '$R/usr/lib/systemd/system/unitotem-manager.service.d/10-x11.conf' && grep -q 'unitotem-x11.auth' '$R/etc/systemd/system/start-xorg.service'"
 
 echo "== Screen must never go black by itself"
 for t in xset xsetroot xrandr; do chk "$t is installed (x11-xserver-utils survived the compiler removal)" bash -c "test -x '$R/usr/bin/$t'"; done

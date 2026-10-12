@@ -337,32 +337,32 @@ fi
 
 # ---------- UniTotem packages ----------
 
+# The manager (3.0.0~dev5 onwards) runs on the system Python with Debian's own packages: no virtualenv, so no pip/venv/-dev libraries
+# (python3-pip used to drag build-essential into the arm64 image only to have it purged again).
 apt_install \
-    python3-pip python3-apt python3-venv \
-    libopenjp2-7-dev openssl mediainfo rfkill alsa-utils cron libxcb-icccm4 libxcb-shape0
+    python3-apt \
+    openssl mediainfo rfkill alsa-utils cron libxcb-icccm4 libxcb-shape0
 
-# arm64 has no hand-built manager package, but the manager is Python: when only the amd64 .deb is supplied, an arm64 one is made
-# from it (same files, venv rebuilt natively; see kiosk/files/build-manager-arm64.sh). It lives in work/extra-debs-gen/arm64,
-# a directory this script owns and wipes, so a stale generated package can never sit next to a newer one.
+# The packages come from the manager's own build (its tools/build-debs.sh), one directory per architecture:
+#   work/extra-debs/<arch>/  unitotem (metapackage), unitotem-manager, unitotem-node, unitotem-viewer, plymouth-theme-unitotem (all arch-all,
+#   identical on both architectures), python3-cefpython3 (the only binary one: amd64 or arm64), and the two libraries Debian does not ship
+#   (python3-fastapi-login, python3-sdbus-networkmanager). apt resolves everything else from Debian trixie (and the Raspberry Pi repository).
 LOCAL_DEB_DIR=/work/extra-debs/${ARCH}
-if [ "$ARCH" = "arm64" ] && ! ls /work/extra-debs/arm64/*.deb >/dev/null 2>&1; then
-    SRC_AMD64=$(ls -t /work/extra-debs/amd64/unitotem-manager_*_amd64.deb 2>/dev/null | head -1 || true)
-    if [ -n "$SRC_AMD64" ]; then
-        echo ">>> generating the arm64 manager package from $SRC_AMD64"
-        rm -rf -- /work/extra-debs-gen/arm64
-        bash /kiosk/files/build-manager-arm64.sh "${ROOTFS}" "$SRC_AMD64" /work/extra-debs-gen/arm64
-        LOCAL_DEB_DIR=/work/extra-debs-gen/arm64
-    fi
-fi
-
 # There is no image without the 3.x manager: the repository's 2.x package is NOT a fallback. An image that boots into nothing
 # (or into a manager that cannot run on a read-only root) is not a degraded image, it is a wrong one, and building it only
 # hides that the package was not supplied. Fail here, early, instead of finding out on the device.
 if ! ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
-    echo "ERRORE: nessun pacchetto unitotem-manager 3.x fornito (work/extra-debs/${ARCH}/ oppure, per arm64, work/extra-debs/amd64/)." >&2
+    echo "ERRORE: nessun pacchetto unitotem 3.x fornito (work/extra-debs/${ARCH}/)." >&2
     echo "        Un'immagine senza il manager 3.x non va costruita." >&2
     exit 1
 fi
+# ...and the SET must be complete: a missing binary package would otherwise surface as an apt dependency error far from the cause.
+for pkg in unitotem_ unitotem-manager_ unitotem-node_ unitotem-viewer_ plymouth-theme-unitotem_ "python3-cefpython3_" python3-fastapi-login_ python3-sdbus-networkmanager_; do
+    ls "$LOCAL_DEB_DIR"/${pkg}*.deb >/dev/null 2>&1 \
+        || { echo "ERRORE: manca ${pkg}*.deb in work/extra-debs/${ARCH}/ (serve il set completo del manager: vedi il commento sopra)" >&2; exit 1; }
+done
+ls "$LOCAL_DEB_DIR"/python3-cefpython3_*_${ARCH}.deb >/dev/null 2>&1 \
+    || { echo "ERRORE: python3-cefpython3 per ${ARCH} non e' in work/extra-debs/${ARCH}/ (un .deb di un'altra architettura non si installa)" >&2; exit 1; }
 
 # Local override: any .deb in work/extra-debs/<arch>/ is installed over what the apt repository provided. This is how
 # an image gets a manager build that is not published yet (e.g. one with the /health endpoint the A/B update
@@ -379,41 +379,16 @@ if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
         chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y haproxy
     fi
     rm -rf "${ROOTFS}/tmp/extra-debs"
+    for pkg in unitotem unitotem-manager unitotem-node unitotem-viewer python3-cefpython3 plymouth-theme-unitotem; do
+        v=$(chroot "${ROOTFS}" dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
+        case "$v" in 3.*) ;; *) echo "ERRORE: $pkg non e' installato alla versione 3.x (trovato: '${v}')" >&2; exit 1 ;; esac
+    done
 fi
 
 # ---------- Clean up ----------
 rm -f "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
 # Unmount the cache BEFORE apt-get clean: clean empties the archive directory, which would wipe the cache.
 mountpoint -q "${ROOTFS}/var/cache/apt/archives" && umount "${ROOTFS}/var/cache/apt/archives"
-
-# ---------- Slim the manager's virtualenv (any architecture; idempotent) ----------
-# The venv was 3.1 GB on arm64 and the 6 GiB root slot 94% full. See kiosk/files/build-manager-arm64.sh for the measurements:
-# strip the CEF libraries (debug info + symbol tables, the arm64 wheel's libcef.so is 1980 MB for 243 MB of code) and drop the
-# PySide6 wheels the manager never imports (WebEngine/Addons/Pdf: it uses QtCore/QtGui/QtWidgets, the page is shown by CEF).
-# arm64 already got this when the package was generated; this is the same step for a package that was supplied ready-made
-# (amd64: the manager's own .deb) and a safety net for the day the manager package slims itself, when it becomes a no-op.
-VENV=/var/unitotem-venv
-if [ -x "${ROOTFS}${VENV}/bin/python3" ]; then
-    CEFDIR=$VENV/lib/python3.13/site-packages/cefpython3
-    for f in libcef.so libvk_swiftshader.so libGLESv2.so libEGL.so; do
-        [ -e "${ROOTFS}${CEFDIR}/$f" ] || continue
-        if chroot "${ROOTFS}" readelf -SW "$CEFDIR/$f" | grep -qE '\.symtab|\.debug_'; then
-            before=$(stat -c %s "${ROOTFS}${CEFDIR}/$f")
-            chroot "${ROOTFS}" strip --strip-unneeded "$CEFDIR/$f"
-            echo ">>> stripped $f: $((before / 1048576)) MB -> $(( $(stat -c %s "${ROOTFS}${CEFDIR}/$f") / 1048576 )) MB"
-        fi
-    done
-    EXTRA=$(chroot "${ROOTFS}" $VENV/bin/python3 -m pip list --format=freeze 2>/dev/null | cut -d= -f1 | grep -iE '^(PySide6|PySide6[-_]Addons|PySide6[-_]WebEngine|PySide6[-_]Pdf)$' | tr '\n' ' ' || true)
-    if [ -n "$EXTRA" ]; then
-        echo ">>> removing the unused PySide6 wheels from the manager venv: $EXTRA"
-        # shellcheck disable=SC2086
-        chroot "${ROOTFS}" $VENV/bin/python3 -m pip uninstall -y $EXTRA
-    fi
-    chroot "${ROOTFS}" $VENV/bin/python3 -c "
-from PySide6 import QtCore, QtGui, QtWidgets
-import shiboken6
-print('manager venv: PySide6', QtCore.__version__, 'ok')"
-fi
 
 # ---------- Remove what the shipped system does not need ----------
 # Approved by the user (2026-10-11): Chromium and the compilers. Updates are whole images now, nothing is built or
