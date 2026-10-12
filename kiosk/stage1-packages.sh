@@ -307,7 +307,7 @@ fi
 # window to exact fullscreen geometry with no decorations on its own, and CEF
 # only supports X11 embedding anyway (see manager/webview/window.py), so a
 # bare Xorg session (no WM) is all this image needs. The session itself is
-# kiosk/files/start-xorg.service + kiosk/files/xinitrc.
+# kiosk/files/start-xorg.service (Xorg run directly, no startx/xinitrc) + kiosk/files/unitotem-xbackground.service.
 #
 # Historical note: a compositor-based session was evaluated first and dropped
 # - CEF's X11-only embedding would have forced an X server underneath it

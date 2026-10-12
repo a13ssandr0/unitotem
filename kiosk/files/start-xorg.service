@@ -1,25 +1,35 @@
 [Unit]
-Description=X11 session (kiosk)
-After=multi-user.target
+Description=X11 server (kiosk)
+# Start the X server as soon as Plymouth has let go of the display, not after multi-user.target: Plymouth's DRM renderer and X
+# cannot both own the display, and plymouth-quit.service is what releases it. Measured on the Pi 4 (2026-10-12): X is up at ~16 s
+# instead of ~22 s, and the placeholder screen is painted ~9 s earlier. Same ordering as sddm.service
+# ("If using tty1 and plymouth, sddm will fail till plymouth stops ... After=plymouth-quit.service").
+After=plymouth-quit.service
 
 [Service]
+Type=simple
+# X runs on its own VT, not Plymouth's/getty's tty1 (see ExecStartPre=chvt and vt8 below).
 TTYPath=/dev/tty8
 StandardInput=tty
 StandardOutput=journal
+StandardError=journal
 UnsetEnvironment=TERM
-# startx/xinit only fall back to $HOME/.Xauthority when $XAUTHORITY isn't
-# already set - and $HOME/.Xauthority is unwritable on this image's
-# read-only root, which made xinit retry X connections forever with no
-# valid cookie and never launch xinitrc (start-xorg.service looked
-# "active" the whole time - only unitotem-manager.service, unable to
-# connect, crash-looped with SIGABRT). Pointing XAUTHORITY at this fixed
-# tmpfs path makes xinit populate it directly; it's the same path
-# unitotem-manager.service's own Environment=XAUTHORITY= reads (see
-# unitotem-manager.service and xinitrc), so no copy step is needed.
+# The X authority file is a fixed tmpfs path shared with unitotem-manager.service (its Environment=XAUTHORITY= reads the same
+# file), so there is no copy step. $HOME/.Xauthority is not usable here: the root filesystem is read-only.
 Environment=XAUTHORITY=/run/unitotem-x11.auth
 
 ExecStartPre=/usr/bin/chvt 8
-ExecStart=/usr/bin/startx /etc/kiosk/xinitrc -- vt8 -keeptty -nocursor -verbose 3 -logfile /dev/null
+# A fresh cookie at every start (what startx/xinit did). "add :0" stores it for the local host name, which is what a client on the
+# unix socket looks up.
+ExecStartPre=/bin/sh -c 'install -m 600 /dev/null "$XAUTHORITY" && xauth -q -f "$XAUTHORITY" add :0 . "$(mcookie)"'
+# Replaces `startx /etc/kiosk/xinitrc -- vt8 ...` (startx -> xinit -> X plus a client that, in our case, only ran `sleep infinity`).
+#   -nolisten tcp   what /etc/X11/xinit/xserverrc adds under startx
+#   -nocursor       the kiosk shows no pointer
+#   -background none  do not paint the root window black at start (the old display contents stay until something paints)
+# No `-logfile /dev/null`: Xorg then writes its normal log, /var/log/Xorg.0.log (/var is persistent on this image), and keeps the
+# previous boot's as Xorg.0.log.old. (`-verbose N` to stderr printed nothing here, so the journal route does not work.)
+# Screen blanking/DPMS is switched off by /etc/X11/xorg.conf.d/10-unitotem-noblank.conf (ServerFlags), not by xset.
+ExecStart=/usr/bin/Xorg :0 vt8 -auth /run/unitotem-x11.auth -keeptty -nocursor -nolisten tcp -background none
 Restart=always
 RestartSec=3
 
