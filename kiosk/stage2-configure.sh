@@ -170,6 +170,9 @@ install -m 755 /kiosk/files/kiosk-update "${ROOTFS}/usr/local/bin/kiosk-update"
 install -m 644 /kiosk/files/start-xorg.service \
     "${ROOTFS}/etc/systemd/system/start-xorg.service"
 # The placeholder screen is a service of its own (its output goes to the journal, Restart= keeps it up); there is no xinitrc.
+# It is installed but NOT enabled any more: since unitotem-viewer 3.0.0~dev5 ships unitotem-splash.service (a tiny process that paints the
+# wordmark ~0.2 s after X is up, then hands over to the manager's own splash), the banner would only flash for a second before it. It stays
+# on the image as a diagnostic tool (systemctl start unitotem-xbackground) and is easy to delete for good when the user decides to.
 install -m 644 /kiosk/files/unitotem-xbackground.service \
     "${ROOTFS}/etc/systemd/system/unitotem-xbackground.service"
 
@@ -333,7 +336,6 @@ chroot "${ROOTFS}" systemctl enable \
     iptables-firewall \
     kiosk-update-mode \
     start-xorg \
-    unitotem-xbackground \
     unitotem-boot-ok \
     unitotem-ssh-hostkey \
     unitotem-persist-paths \
