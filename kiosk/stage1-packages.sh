@@ -410,6 +410,9 @@ mountpoint -q "${ROOTFS}/var/cache/apt/archives" && umount "${ROOTFS}/var/cache/
 # What is removed is printed first (the dry run is in the build log) and the module that matters is asserted after.
 purge_list() { # names from $@ that are actually installed
     local p; for p in "$@"; do chroot "${ROOTFS}" dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' && echo "$p"; done
+    # Always succeed: the loop's own status is that of the LAST name, so with set -e an image where the last package is absent (arm64 since
+    # 3.0.0~dev5 has neither Chromium nor compilers) silently killed the build right after the package install, with no message.
+    return 0
 }
 if [ "$ARCH" = "arm64" ]; then
     REMOVE=$(purge_list chromium chromium-browser chromium-common chromium-l10n rpi-chromium-mods)
