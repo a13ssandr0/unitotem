@@ -69,6 +69,7 @@ for bin in \
     dropbear dropbearkey dbclient scp \
     wpa_supplicant wpa_passphrase \
     sha256sum base64 awk cut paste readlink mkfifo cp grep head tail stty \
+    tr cmp lsblk partprobe \
     rm chmod tar \
     ip udevadm \
     setsid \
