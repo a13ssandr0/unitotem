@@ -103,6 +103,11 @@ echo "== Module-signing key"
 chk "no DKMS private signing key in the image (it would be shared by every device; mok.pub stays for enrolment)" bash -c "[ ! -e '$R/var/lib/dkms/mok.key' ]"
 [ "$ARCH" = amd64 ] && chk "the public certificate for a MOK enrolment is there (/var/lib/dkms/mok.pub)" test -s "$R/var/lib/dkms/mok.pub"
 
+echo "== The recovery environment carries every command the OTA engine runs"
+RINIT="$FAT/unitotem/recovery-initrd.img"; [ "$ARCH" = arm64 ] && RINIT="$FAT/recovery-initrd.img"
+chk "recovery initrd has every external command ota-engine.sh runs (tr and cmp were missing: amd64 set-default-recovery and --secure-boot shim died mid-deploy)" \
+    bash "$(dirname "${BASH_SOURCE[0]}")/check-recovery-commands.sh" "$R" "$RINIT" "$ENG"
+
 echo "== Mount and boot robustness"
 chk "boot FAT is ro,nofail in fstab" file_has "$R/etc/fstab" '^LABEL=(EFI|FIRMWARE)[[:space:]].*ro,nofail'
 chk "emergency mode reboots instead of waiting forever" file_has "$R/etc/systemd/system/emergency.service.d/unitotem.conf" 'reboot'
