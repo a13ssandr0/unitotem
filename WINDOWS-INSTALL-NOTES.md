@@ -31,6 +31,7 @@ Le fonti secondarie (forum, snippet di ricerca) sono dichiarate come tali accant
 12. [Stima, rischi, ordine di lavoro, punti di decisione](#12-stima-rischi-ordine-di-lavoro-punti-di-decisione)
 13. [Cosa NON ho potuto verificare](#13-cosa-non-ho-potuto-verificare)
 14. [Fonti](#14-fonti)
+15. [Risultati del laboratorio (Windows 11 + OVMF Secure Boot, 2026-10-13)](#15-risultati-del-laboratorio-windows-11--ovmf-secure-boot-2026-10-13)
 
 ---
 
@@ -86,7 +87,7 @@ Tutto **[V]** sul repo salvo dove indicato.
   - (Nota: `kiosk/stage1-packages.sh` installa `firmware-linux-nonfree`, `firmware-misc-nonfree`, `firmware-brcm80211` nell'**immagine**, ma questi firmware NON finiscono nell'initrd di recovery. **[V]**)
 - **Catena Secure Boot** (commit `748ed61`, `kiosk/stage3-image.sh` righe ~256-281, `deploy/ota-engine.sh` righe ~557-575): l'immagine porta in `EFI/unitotem-sb/` `shimx64.efi`, `mmx64.efi`, `grubx64.efi` (firmati), `grub-unsigned.efi` e uno `grub.cfg` "stub"
   (`search --no-floppy --label --set=root EFI` poi `configfile .../unitotem-grub/grub/grub.cfg`). `populate-bootfs --secure-boot shim` copia gli stub in `EFI/BOOT` **e** `EFI/debian`, e sostituisce `BOOTX64.EFI` con lo shim per ultimo, via rename. Il commento nel codice: *"The signed GRUB has a fixed prefix and cannot be pointed elsewhere"*. **[V]**
-  - I binari firmati in `work/sb-test/signed/` (altro agente, solo lettura): `shimx64.efi.signed` 1.036.152 B con **due firme** (Microsoft Windows UEFI Driver Publisher <- Microsoft Corporation UEFI CA 2011; e Microsoft UEFI CA 2023 signer <- Microsoft UEFI CA 2023), `grubx64.efi.signed` 2.684.352 B e `mmx64.efi.signed` 873.904 B firmati "Debian Secure Boot Signer 2022". Totale catena ~4,6 MB. **[V]** (`sbverify --list`); che quei file coincidano con quelli dell'immagine finale **non l'ho verificato** (**[I]**: stessi nomi/origine).
+  - I binari firmati in `work/sb-test/signed/` (altro agente, solo lettura): `shimx64.efi.signed` 1.036.152 B con **due firme** (Microsoft Windows UEFI Driver Publisher <- Microsoft Corporation UEFI CA 2011; e Microsoft UEFI CA 2023 signer <- Microsoft UEFI CA 2023), `grubx64.efi.signed` 2.684.352 B e `mmx64.efi.signed` 873.904 B firmati "Debian Secure Boot Signer 2022". Totale catena ~4,6 MB. **[V]** (`sbverify --list`); che quei file coincidano con quelli dell'immagine finale: **[V]** (laboratorio 2026-10-13: `sha256sum` identici a quelli estratti da `work/sb-test/built2.img`).
   - Test gia' fatto dall'altro agente (`work/sb-test/STATE.md`): l'immagine senza shim sotto OVMF con chiavi Microsoft viene rifiutata ("Access Denied -- rejected probably by Secure Boot"). **[V]** (file di stato letto).
   - Il gate dice gia': *"Se il sistema attuale non e' Debian, il primo passaggio (voce GRUB una tantum) puo' fallire: il suo shim rifiuta il kernel Debian ('bad shim signature')"*. Su Windows **non c'e' un GRUB di partenza**: la catena nostra (shim->GRUB->kernel) viene avviata *direttamente dal firmware*, quindi quel problema non esiste, ma ne nasce un altro (par. 6). **[V]** per la frase, **[I]** per la conseguenza.
 
@@ -154,7 +155,7 @@ bcdedit /set {GUID} device partition=S:                   :: S: = ESP montata (v
 bcdedit /set {GUID} path \EFI\unitotem-ota\shimx64.efi    :: shim se Secure Boot ON, grubx64.efi se OFF (indicazione del manutentore wubiuefi)   [V, forum]
 
 :: 2a. one-shot (consigliato per noi)
-bcdedit /set {fwbootmgr} bootsequence {GUID}              :: forma {fwbootmgr}: NON documentata da MS (solo post di forum)             [R]
+bcdedit /set {fwbootmgr} bootsequence {GUID}              :: forma {fwbootmgr}: NON documentata da MS; PROVATA nel laboratorio: scrive BootNext [V, lab 2026-10-13]
 ::     la doc MS di /bootsequence ("sets the one-time boot sequence to be used by the boot manager") descrive solo la forma generica [V: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/bcdedit--bootsequence]
 :: 2b. persistente (come win32-loader: AppendFwBootEntry)
 bcdedit /set {fwbootmgr} displayorder {GUID} /addfirst    :: forma documentata nell'esempio MS con {bootmgr}                               [V: MS BCD UEFI]
@@ -211,7 +212,7 @@ Conseguenze per il design **[I]**:
 ### 5.3 Leggere da NTFS (come `win32-loader`)
 
 - `win32-loader` tiene kernel+initrd su C: e li fa leggere a GRUB; sulla ESP mette solo shim+GRUB+`grub.cfg` (con `search --fs-uuid` di C:). **[V]**
-- Per noi: richiede il modulo `ntfs` nel GRUB firmato di Debian (**non verificato** se presente nell'immagine monolitica: **[R]**, va controllato con `strings`/`grub-mkstandalone --list` o provando), e **non funziona con BitLocker** (C: cifrato illeggibile da GRUB). **[I]**
+- Per noi: **RIFIUTATO [V, lab]**: il modulo `ntfs` c'e' nel GRUB firmato ma `ls` risponde `unknown filesystem` su tutti i volumi NTFS provati; inoltre **non funziona con BitLocker** (C: cifrato illeggibile da GRUB). **[I]**
 - Pro: sulla ESP bastano ~5 MB. Contro: dipende da BitLocker e da `Fast Startup` (NTFS "sporco" dopo uno shutdown ibrido -> GRUB legge comunque, ma i file scritti da Windows potrebbero non essere ancora flushati **[R]**).
 - **Raccomandazione [I]**: ESP se `libero >= 115 MB` (o ~75 MB con initrd slim); altrimenti nuova partizione FAT32; NTFS solo come terza scelta e mai con BitLocker.
 
@@ -246,8 +247,8 @@ Conseguenze per il design **[I]**:
 |---|---|---|
 | Secure Boot attivo? | `Confirm-SecureBootUEFI` (True/False; errore su BIOS/non supportato) | cmdlet del modulo `SecureBoot`; richiede amministratore. **[V]** (stesso modulo: [Get-SecureBootUEFI](https://learn.microsoft.com/en-us/powershell/module/secureboot/get-securebootuefi): su BIOS stampa `Cmdlet not supported on this platform.`, senza privilegi `Unable to set proper privileges. Access was denied.`) |
 | Variabili grezze | `Get-SecureBootUEFI -Name SecureBoot\|SetupMode\|PK\|KEK\|db\|dbx\|dbDefault ...` | Nomi accettati elencati nella doc. **[V]** |
-| CA di terze parti in `db`? | `[Text.Encoding]::ASCII.GetString((Get-SecureBootUEFI db).Bytes) -match 'Microsoft Corporation UEFI CA 2011'` (e `-match 'Microsoft UEFI CA 2023'`) | Tecnica diffusa (stringa X.509 in chiaro nell'elenco firme). **[R]**, non provata; il match sulla stringa e' euristico (dimensione `db` ~4 KB; potrebbe esserci solo l'hash). |
-| UEFI vs BIOS | `bcdedit /enum {current}` -> `path \Windows\system32\winload.efi` (UEFI) / `winload.exe` (BIOS) **[V parziale]** MS BCD UEFI: il path UEFI e' `winload.efi`; oppure registro `HKLM\SYSTEM\CurrentControlSet\Control` `PEFirmwareType` (1=BIOS, 2=UEFI) **[R]**; oppure `SetFirmwareEnvironmentVariable` con nome vuoto (par. 4.3) **[V]**. |
+| CA di terze parti in `db`? | `[Text.Encoding]::ASCII.GetString((Get-SecureBootUEFI db).Bytes) -match 'Microsoft Corporation UEFI CA 2011'` (e `-match 'Microsoft UEFI CA 2023'`) | Il match sulla stringa e' euristico; meglio decodificare le EFI_SIGNATURE_LIST e leggere i subject con `X509Certificate2`: fatto e **provato [V, lab]** in `tools/win-lab/probe-windows.ps1`. |
+| UEFI vs BIOS | `bcdedit /enum {current}` -> `path \Windows\system32\winload.efi` (UEFI) / `winload.exe` (BIOS) **[V parziale]** MS BCD UEFI: il path UEFI e' `winload.efi`; oppure registro `PEFirmwareType`: **RIFIUTATO [V, lab]**, il valore esiste solo in WinPE e manca su Windows 11; oppure `SetFirmwareEnvironmentVariable` con nome vuoto (par. 4.3) **[V]**. |
 | `msinfo32` | "BIOS Mode: UEFI", "Secure Boot State: On", "Device Encryption Support" | `msinfo32.exe` e' nominato nella doc BitLocker per "Device Encryption Support: Meets prerequisites". **[V]** |
 | Aggiornamento CA 2023 applicato | registro `...\Control\SecureBoot\Servicing` (es. `UEFICA2023Status`) e task `\Microsoft\Windows\PI\Secure-Boot-Update` | da terzi (checker/WAPT); la doc MS non e' stata aperta su questo. **[R]** |
 
@@ -511,13 +512,12 @@ Comportamento dei firmware OEM (che e' il rischio n.1), la gestione reale di `Bo
 
 ## 13. Cosa NON ho potuto verificare
 
-- **Il comportamento di `bcdedit /set {fwbootmgr} bootsequence {GUID}`** su Windows reale/firmware reali (nessuna pagina MS lo documenta per `{fwbootmgr}`; solo forum). Nessuna macchina Windows, nessuna VM Windows toccata (vincolo della sessione).
-- **Dove cerca `grub.cfg` il GRUB firmato di Debian** quando e' avviato da una cartella diversa da `EFI/BOOT`/`EFI/debian` (la wiki Debian non lo dice; il commento nel nostro codice dice "fixed prefix").
-- **Se il GRUB firmato include il modulo `ntfs`** (serve solo all'opzione 5.3).
+- **Il comportamento di `bcdedit ... bootsequence` su firmware reali** (provato solo su OVMF nel laboratorio, par. 15; nessuna pagina MS lo documenta per `{fwbootmgr}`).
+- ~~Dove cerca `grub.cfg` il GRUB firmato~~: risolto [V, lab]: lo cerca nella propria cartella (`\EFI\unitotem\`), senza bisogno di `EFI/debian`.
+- ~~Se il GRUB firmato include il modulo `ntfs`~~: risolto nel laboratorio (par. 15): c'e', ma non monta i volumi NTFS provati.
 - **Frequenza reale** dei firmware che ignorano voci BCD; stato di default della 3rd-party CA per Dell/HP/Lenovo/ASUS/Acer (nessuna fonte primaria trovata).
 - **Contenuto reale delle `db`** sui PC (la tecnica `-match` sulle stringhe e' ricordata, non provata), nonche' i valori di registro per lo stato dell'aggiornamento CA 2023 (la pagina KB aperta non li riporta).
-- **Esito BitLocker dopo un abort** (analisi PCR basata su ricordo; non verificata).
-- **Se i file di `work/sb-test/signed/` coincidono con quelli dell'immagine.**
+- **Esito BitLocker dopo un abort** (E6 non eseguito; nel laboratorio C: risulta gia' cifrato con chiave in chiaro).
 - **Dimensione effettiva dell'initrd slim**, **spazio libero tipico delle ESP**, **dimensione ISO di Windows evaluation**: stime/ricordi.
 - **Pagine non aperte**: Grub2Win, iVentoy, WDS/MDT, Intel AMT, Rufus (solo ricordi, marcati [R]); la ricerca per Grub2Win non ha trovato documentazione.
 - Un'ulteriore ricerca dedicata ai post di forum citati (Arch/Lemmy/Fedora) non e' stata fatta oltre agli snippet: li tratto come indizi, non come prove.
@@ -562,3 +562,74 @@ Secondarie (forum, giornali, snippet di ricerca; indizi):
 - Kexec Windows (inverso): https://www.phoronix.com/news/Google-Kexec-Windows-Linux
 
 Nel repo: `deploy/remote-deploy.sh`, `deploy/ota-engine.sh`, `deploy/lib.sh`, `kiosk/files/unitotem-ota-arm`, `kiosk/stage3-image.sh`, `kiosk/stage1-packages.sh`, `AB-DESIGN.md`, `API-OTA.md`, `work/sb-test/{STATE.md,vm.sh,signed/}`, `work/windows-research/STATE.md`.
+
+---
+
+## 15. Risultati del laboratorio (Windows 11 + OVMF Secure Boot, 2026-10-13)
+
+Laboratorio: dominio libvirt `win11-lab` = clone di un Windows 11 Pro 24H2 (italiano, build 26200), OVMF con Secure Boot attivo e chiavi Microsoft, swtpm, NIC e1000e,
+disco SATA 64 GB (ESP 100 MB). Helper e istruzioni: `tools/win-lab/` (README). Log grezzo con orari: `work/win-lab/STATE.md`; screenshot: `work/win-lab/shots/`;
+log seriali: `work/win-lab/logs/`. Marche: **[V]** osservato qui (con il come), **[I]** inferenza, **[R]** ricordo. **Limite generale: OVMF non e' un firmware OEM**: quanto segue vale per il
+comportamento UEFI standard e non dice nulla su HP/Dell/Lenovo/Surface.
+
+### 15.1 E0 - gli snapshot libvirt NON ripristinano l'NVRAM (raw)
+- **[V]** Scritto da Windows (`SetFirmwareEnvironmentVariableEx`, `tools/win-lab/nvram-var.ps1`) un `BootOrder` diverso e una variabile `LabMarker`; spento, `snapshot-revert base-ssh`, riavviato: **entrambi erano ancora li'**. Con NVRAM `raw` il revert lascia voci di boot e variabili MOK. (Il test `bcdedit /copy` fatto prima era inconcludente: quella voce vive nel file BCD sull'ESP.)
+- **[V]** Correzione: `<nvram format='qcow2'>` su un file creato con `qemu-img convert -f raw -O qcow2` dal template (libvirt 12 rifiuta la conversione automatica: "conversione del template nvram in un altro formato target non e' supportata"). Nuovo baseline `base-nvram`; stesso test ripetuto: marker assente, `BootOrder` originale. Procedura in `tools/win-lab/README.md`.
+- **Stato del TPM (swtpm)**: non e' negli snapshot. **[I]** Per BitLocker: il disco torna indietro, il TPM no; i protettori sigillati sotto la SRK restano utilizzabili, ma indici NV e contatori sono quelli "di adesso". Non provato (E6 non eseguito).
+
+### 15.2 E1 - sonda Windows (`tools/win-lab/probe-windows.ps1`)
+**[V]** Output completo in `work/win-lab/probe-baseline.txt`. Punti salienti: Secure Boot attivo (`Confirm-SecureBootUEFI`), `SetupMode=0`; PK/KEK = Ubuntu OVMF + Microsoft KEK 2011 e 2023; `db` = Windows Production PCA 2011, Windows UEFI CA 2023, **Microsoft Corporation UEFI CA 2011, Microsoft UEFI CA 2023**, Option ROM CA 2023 (`SB_3RDPARTY_CA: both`); `dbx` 431 hash. ESP 100 MB con 64,6 MB liberi; C: 63 GB (34 GB liberi); NIC "Intel 82574L" (e1000e) in DHCP; RAM 8 GB.
+Scoperte che correggono le note: (1) `PEFirmwareType` nel registro **non esiste su Windows 11** (solo WinPE): per UEFI/BIOS si usa il path `winload.efi` in `bcdedit /enum {current}` (indipendente dalla lingua); (2) **C: risulta `FullyEncrypted`, protezione disattivata, nessun protettore** (device encryption con chiave in chiaro) anche con un account locale: BitLocker e' la norma, non l'eccezione; (3) la decodifica dei subject dalle EFI_SIGNATURE_LIST funziona, il match su stringa non serve.
+
+### 15.3 E2 - voce di boot per la catena firmata, creata da Windows
+Comandi (tutti **[V]**, `work/win-lab/logs/e2-*.txt`):
+```
+mountvol S: /S                                   :: monta la ESP
+(copia di shimx64.efi, mmx64.efi, grubx64.efi firmati + grub.cfg in S:\EFI\unitotem\ : 4,6 MB, hash verificati)
+bcdedit /copy {bootmgr} /d "UniTotem OTA"        :: -> {GUID}
+bcdedit /set {GUID} device partition=S:
+bcdedit /set {GUID} path \EFI\unitotem\shimx64.efi
+bcdedit /set {fwbootmgr} displayorder {GUID} /addfirst     :: persistente
+bcdedit /set {fwbootmgr} bootsequence {GUID}               :: one-shot
+```
+- **[V]** `/copy {bootmgr}` crea una **vera `Boot0005` in NVRAM** (letta con `nvram-var.ps1 -Boot`: "UniTotem OTA", path `\EFI\unitotem\shimx64.efi`). `bootsequence` scrive **`BootNext=0005`**; `displayorder {GUID} /remove` toglie la voce da `BootOrder` ma la lascia in NVRAM.
+- **[V]** One-shot confermato: dopo l'uso `BootNext` sparisce e Windows riparte da solo (anche dopo panic del kernel + reset).
+- **[V]** Con `shutdown /r`, OVMF (Secure Boot ON) avvia **shim -> GRUB firmato -> kernel**: seriale `EFI stub: UEFI Secure Boot is enabled`, `Kernel is locked down from EFI Secure Boot`, `Loaded X.509 cert 'Debian Secure Boot CA'` (`logs/e2-serial.log`, `shots/e2-kernel-panic-secureboot-chain.png`; il panic e' atteso: nessun initrd in questa prova).
+- **[V] Risolta l'incognita del "prefix fisso"**: il GRUB firmato legge `grub.cfg` dalla **propria cartella** (`\EFI\unitotem\`); non serve `EFI/debian`. Lo stub dell'immagine (`search --label EFI`) non va usato su Windows: `grub.cfg` proprio con `search --no-floppy --file|--label`.
+
+### 15.4 E3 - dove mettere kernel+initrd (101,5 MiB; la ESP ha 61,6 MiB liberi)
+- **(a) NTFS letto dal GRUB firmato: NON funziona [V].** `lsmod` mostra `ntfs` gia' dentro (con fat, ext2, xfs, btrfs, f2fs, zfs, iso9660, jfs, hfsplus, luks/luks2, lvm; **non** ntfscomp ne' exfat: `insmod` -> `file not found`), ma `ls (hd0,gptN)/` risponde `unknown filesystem` su entrambi i volumi NTFS provati (uno creato da Windows 11 e decifrato, e la partizione WinRE), che Linux (`blkid`) riconosce come ntfs. Causa non indagata. `insmod` di un `.mod` non firmato dalla ESP -> **`error: prohibited by secure boot policy`** (`logs/e3c-serial.log`). **C: e' comunque BitLocker** (GRUB: `unknown filesystem`).
+- **(b) Restringere C: e creare una FAT32: funziona [V]** (`logs/e3-part.txt`): `Resize-Partition -DriveLetter C -Size <-400MB>` online in pochi secondi anche con C: cifrato (`SizeMin` 37,8 GB); `New-Partition` + `Format-Volume -FileSystem FAT32`; il GRUB firmato legge la FAT32 e `search --label` la trova. **Trappola [V]**: Windows 11 24H2 ha **cifrato con BitLocker la nuova partizione** appena creata (`-FVE-FS-` nel primo settore, visto con `cat (hd0,gpt4)+1` da GRUB): GRUB vede "unknown filesystem". Serve `manage-bde -off X:` (pochi secondi su 256 MB) prima di copiare i file (impedire l'auto-cifratura con `PreventDeviceEncryption`: **non provato**). GRUB numera le partizioni per posizione, Windows per ordine di creazione: usare le etichette.
+- **(c) initrd slim**: non ricostruito (come richiesto). **[I]** Per stare nei 61,6 MiB liberi servirebbero kernel+initrd <= ~55 MiB, cioe' initrd <= ~43 MiB; togliere amdgpu (81,5 MB non compressi) porta alla stima precedente di ~50-60 MB (da misurare): **al limite, non garantito**. Con ESP da 260/500 MB basta; altrimenti partizione FAT32 (b).
+
+### 15.5 E4 - ambiente OTA avviato da Windows con Secure Boot attivo
+- **[V]** Kernel+initrd dalla FAT32 (`linux ($root)/vmlinuz unitotem.ota=1 nomodeset console=tty0 console=ttyS0,115200`, `initrd ($root)/initrd.img`) attraverso la catena firmata: l'ambiente OTA parte, prende DHCP sulla e1000e (**stesso IP 192.168.122.88 di Windows**, stesso MAC), schermo: `OTA update mode / Reason: booted from the resident fallback image / Address / Port: 2222 / Waiting for commands over SSH...` (`shots/e4-ota-screen-from-windows-esp-secureboot.png`, bassa risoluzione).
+- **[V]** Dall'host `ota_ssh` su 2222 risponde; `dmesg`: `Kernel is locked down from EFI Secure Boot`; `unitotem-ota-engine probe` ok (`UNITOTEM_EFI=1`). Il percorso "legacy" (`unitotem.ota=1`) usa DHCP, come dedotto.
+- **STRETCH [V]: installazione completa.** `deploy/make-parts.sh --arch amd64 --image deploy/amd64/kiosk-2026-10-12-amd64.img.xz` (docker, utente normale, ~18 min; ha ignorato `--out` e scritto in `deploy/amd64/kiosk-2026-10-12-amd64.parts`). `cmd_recover` e' **solo uno stub** (si ferma con un messaggio): ho scritto `tools/win-lab/recover-driver.sh`, che esegue le vere `run_ota_sequence()`/`populate_bootfs_step()` estratte da `remote-deploy.sh` con `SB_MODE=shim`. Esito: GPT riscritta, ESP+ROOT_A+ROOT_B+DATA ripristinate, catena attivata (`EFI/BOOT/BOOTX64.EFI`=shim), riavvio: **UniTotem parte con Secure Boot attivo** (`shots/e4-unitotem-booted-under-secureboot.png`; via ssh: `Kernel is locked down from EFI Secure Boot`, efivar `SecureBoot`=1; `BootCurrent`=0002 = voce auto-creata da OVMF). La voce orfana `Boot0005 "UniTotem OTA"` resta in NVRAM; le voci Windows erano gia' sparite dal `BootOrder`.
+- **BUG TROVATO [V]** (`work/win-lab/logs/e4-install-attempt1.log`): la prima installazione e' fallita a meta' (disco con tabella nuova) perche' l'initrd di recovery amd64 (sha256 `4967187009a0...`, build 01:32 del 13/10) **non contiene `tr` ne' `cmp`**, usati da `deploy/ota-engine.sh:432` (padding del grubenv: `tr ' ' '#'` -> "scrittura grubenv fallita") e `:572` (`cmp -s` sullo shim -> "lo shim scritto non coincide"). `lsinitramfs`: ci sono cat/cp/dd/mv/sha256sum/sync, mancano tr e cmp. Aggirato **solo nel laboratorio** copiando in RAM il busybox statico dell'host come `tr`/`cmp`; **nessuna modifica al repo**: da correggere (aggiungere `tr` e `cmp` all'initrd, o riscrivere i due punti). Senza, ne' `set-default-recovery` (A/B) ne' `populate-bootfs --secure-boot shim` funzionano.
+
+### 15.6 E5 - controlli negativi e altre strade
+- **(i) GRUB non firmato [V]**: voce su `\EFI\unitotem\grub-unsigned.efi`: seriale `BdsDxe: failed to load Boot0006 ... Access Denied -- rejected probably by Secure Boot`, poi OVMF passa da solo alla voce successiva (Windows) (`logs/e5i-serial.log`). Nessun danno. OVMF non mostra nulla a schermo (su firmware reali di solito compare una schermata "Security Violation": **non verificato**).
+- **(ii) NVRAM senza la CA terze parti [V]** (`pip install virt-firmware` in un venv funziona; `virt-fw-vars -i OVMF_VARS_4M.fd --enroll-microsoft --microsoft-db win+rom23 --microsoft-kek 2023 --sb` -> `db` = solo Windows UEFI CA 2023 + Option ROM CA 2023): con UniTotem gia' installato (shim in `EFI/BOOT/BOOTX64.EFI`) il firmware risponde `failed to load Boot0002 ... Access Denied -- rejected probably by Secure Boot`, `No bootable option or device was found`, `Press any key to enter the Boot Manager Menu` (`logs/e5ii-serial.log`, `shots/e5ii-shim-rejected-no-3rdparty-ca.png`). L'utente vede una macchina che non parte. Vie d'uscita: tutte dal setup firmware (abilitare "Microsoft & 3rd party CA", aggiungere hash/cert a `db`, o spegnere Secure Boot) = **presenza fisica**; **non provate**. (Provato sul disco gia' installato, non dal Windows originale: per Windows la conseguenza e' quella di (i), la voce viene scartata e riparte Windows.)
+- **(iii) Un amministratore puo' arruolare chiavi senza il setup firmware? No per `db`; per MOK solo con console [V]**: `Set-SecureBootUEFI -Name db` con payload non firmato -> `Dati di autenticazione non corretti: 0xC0000022`, `db` invariato (`logs/e5-setsb.txt`); servirebbe un payload autenticato firmato con la chiave KEK. Scrivere da Windows la variabile `MokNew` di shim (certificato self-signed in EFI_SIGNATURE_LIST, attributi NV|BS) **funziona** e al boot successivo shim lancia MokManager: `Press any key to perform MOK management / Booting in 10 seconds` (`logs/e5iii-serial.log`): serve un tasto sulla console entro 10 s (+ conferma). **Non l'ho premuto**: la conferma finale non e' provata. **[I]** Per la nostra catena il MOK non serve (shim contiene la CA Debian) e non aiuta se shim non parte.
+- **(iv) Tutte le strade per avviare il nostro kernel con Secure Boot ON**
+
+| # | Strada | Presenza fisica | Si basa su | Stato |
+|---|---|---|---|---|
+| 1 | Voce firmware da Windows (`bcdedit`) -> shim (MS) -> GRUB firmato -> kernel; file su ESP + FAT32 ricavata da C: | **No** (se la 3rd-party CA e' in `db`) | Microsoft UEFI CA 2011/2023 in `db`; firmware che onora la voce/BootNext | **Provata** (OVMF), installazione completa compresa |
+| 2 | Come 1 con kernel/initrd su ESP capiente (>= ~110 MB liberi) | No | idem + ESP grande | Parziale: catena+kernel provati, initrd su ESP no (qui 61 MB liberi) |
+| 3 | Kernel/initrd su NTFS letto da GRUB | - | modulo ntfs del GRUB firmato | **Non funziona** (unknown filesystem); C: e' BitLocker |
+| 4 | Sostituire `\EFI\BOOT\BOOTX64.EFI` / `bootmgfw.efi` | No | - | Non provata (sconsigliata: Windows Update la ripristina, rompe l'abort) |
+| 5 | Spegnere Secure Boot nel setup firmware | **Si** | setup firmware (con BitLocker: sospendere prima, [R]) | Non provata |
+| 6 | Abilitare "Microsoft & 3rd party CA" (Surface e simili) | **Si** | toggle OEM | Non provata; senza, shim e' rifiutato (provato in E5ii) |
+| 7 | Arruolare hash/cert in `db` dal setup | **Si** | UI firmware | Non provata; da Windows `Set-SecureBootUEFI` e' rifiutato (E5iii) |
+| 8 | MOK: `MokNew` scritta da Windows + MokManager | **Si** (console, tasto entro 10 s) | shim gia' avviabile | Richiesta provata, conferma no; non aiuta se shim non parte |
+| 9 | Tool OEM da Windows (Dell Command Configure, HP BCU, Lenovo WMI, Surface SEMM) per cambiare SB/CA | Forse no | tool e modello specifici | Non provata [R] |
+| 10 | Boot di rete (PXE/HTTP) con shim firmato | Dipende | firmware con voce di rete + infrastruttura | Non provata [R] |
+| 11 | GRUB o kernel non firmati | - | - | **Rifiutati** dal firmware (E5i) |
+
+### 15.7 Verdetto e stima: cosa cambia
+- "Fattibile" **si rafforza**: Windows -> `bcdedit` -> shim -> GRUB firmato -> OTA -> installazione completa -> UniTotem con Secure Boot e' stato percorso fino in fondo (su OVMF), senza azioni fisiche quando la 3rd-party CA e' in `db`.
+- Restano da fare: `grub.cfg` per Windows (cartella propria), spazio (ESP da 100 MB con 61 MB liberi **non basta**: partizione FAT32 ricavata da C: **con `manage-bde -off`** subito dopo la creazione, oppure initrd slim), correggere `tr`/`cmp` nell'initrd, implementare davvero `recover` (oggi stub).
+- Stima: MVP invariato (8-12 giorni); **+1 giorno** per gestire bene la partizione temporanea (ridimensionamento, decifratura, ripristino di C: nel disarm); l'incognita "GRUB legge NTFS" e' chiusa in negativo.
+- **Non fatto**: E6 (BitLocker con protettore TPM, `Suspend-BitLocker -RebootCount`, chiave di ripristino dopo cambio di catena): restano [R]/[I] nei par. 7.2-7.3.
