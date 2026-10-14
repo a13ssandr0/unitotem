@@ -108,6 +108,14 @@ RINIT="$FAT/unitotem/recovery-initrd.img"; [ "$ARCH" = arm64 ] && RINIT="$FAT/re
 chk "recovery initrd has every external command ota-engine.sh runs (tr and cmp were missing: amd64 set-default-recovery and --secure-boot shim died mid-deploy)" \
     bash "$(dirname "${BASH_SOURCE[0]}")/check-recovery-commands.sh" "$R" "$RINIT" "$ENG"
 
+echo "== Ports and logs of the 3.0.0~dev5 manager"
+chk "firewall opens 4443/tcp (paired nodes' mutual-TLS link) on IPv4 and IPv6" bash -c "grep -q 'iptables -A INPUT -p tcp --dport 4443 -j ACCEPT' '$R/sbin/iptables-firewall.sh' && grep -q 'ip6tables -A INPUT -p tcp --dport 4443 -j ACCEPT' '$R/sbin/iptables-firewall.sh'"
+chk "journald stores INFO (the manager's stderr is INFO: at 'warning' its logs never reached the journal)" file_has "$R/etc/systemd/journald.conf.d/kiosk.conf" '^MaxLevelStore=info'
+echo "== Device identity: nothing a node generates for itself may be baked into the image"
+for f in etc/unitotem/users.json etc/unitotem/remote.json var/lib/unitotem/claim-code etc/ssl/unitotem.pem; do
+    chk "no $f in the image (users, the node's private key, the claim code, the TLS key are created on the device)" bash -c "[ ! -e '$R/$f' ]"
+done
+
 echo "== Mount and boot robustness"
 chk "boot FAT is ro,nofail in fstab" file_has "$R/etc/fstab" '^LABEL=(EFI|FIRMWARE)[[:space:]].*ro,nofail'
 chk "emergency mode reboots instead of waiting forever" file_has "$R/etc/systemd/system/emergency.service.d/unitotem.conf" 'reboot'
