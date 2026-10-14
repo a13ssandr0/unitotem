@@ -339,9 +339,12 @@ fi
 
 # The manager (3.0.0~dev5 onwards) runs on the system Python with Debian's own packages: no virtualenv, so no pip/venv/-dev libraries
 # (python3-pip used to drag build-essential into the arm64 image only to have it purged again).
+# tigervnc-scraping-server: unitotem-node only RECOMMENDS it (VNC of the screen on demand, through a root-only UNIX socket, no TCP port) and the
+# local debs are installed with --no-install-recommends, so it is asked for here (0.6 MB plus libraries the image mostly has already).
 apt_install \
     python3-apt \
-    openssl mediainfo rfkill alsa-utils cron libxcb-icccm4 libxcb-shape0
+    openssl mediainfo rfkill alsa-utils cron libxcb-icccm4 libxcb-shape0 \
+    tigervnc-scraping-server
 
 # The packages come from the manager's own build (its tools/build-debs.sh), one directory per architecture:
 #   work/extra-debs/<arch>/  unitotem (metapackage), unitotem-manager, unitotem-node, unitotem-viewer, plymouth-theme-unitotem (all arch-all,

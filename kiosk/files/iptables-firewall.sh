@@ -17,6 +17,7 @@ firewall_start() {
   iptables -A INPUT -p tcp --dport 22 -j ACCEPT                           # Accept incoming SSH
   iptables -A INPUT -p tcp --dport 80  -j ACCEPT                          # Accept incoming HTTP/S
   iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+  iptables -A INPUT -p tcp --dport 4443 -j ACCEPT                         # Paired nodes: the manager's mutual-TLS server<->client link (3.0.0~dev5)
   iptables -A INPUT -p udp --dport 5353 -j ACCEPT                         # Accept incoming avahi/zeroconf
 
   # IPv6, mirroring the rules above. Previously absent entirely, which meant
@@ -40,6 +41,7 @@ firewall_start() {
   ip6tables -A INPUT -p tcp --dport 22 -j ACCEPT
   ip6tables -A INPUT -p tcp --dport 80  -j ACCEPT
   ip6tables -A INPUT -p tcp --dport 443 -j ACCEPT
+  ip6tables -A INPUT -p tcp --dport 4443 -j ACCEPT
   ip6tables -A INPUT -p udp --dport 5353 -j ACCEPT
 }
 
