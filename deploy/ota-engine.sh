@@ -1707,7 +1707,12 @@ cmd_init_premount() {
         return
     fi
 
-    if check_flag_file FIRMWARE vfat || check_flag_file EFI vfat; then
+    # Only the boot partition that exists on THIS board is looked for: a Pi has FIRMWARE and no EFI, a PC the reverse, and
+    # check_flag_file retries a missing label for ~5 s (blkid can race udev). Asking for the absent one as well cost every
+    # Pi boot 5 s of black screen before the root was even mounted (measured 2026-10-17: root mounted at 9.5 s, SD ready at 1.9 s).
+    local bootfs_label=FIRMWARE
+    grep -qs 'Raspberry Pi' /proc/device-tree/model || bootfs_label=EFI   # amd64 images (UEFI or BIOS boot) carry the EFI partition
+    if check_flag_file "$bootfs_label" vfat; then
         cmd_serve_fallback --reason "update requested by the host" --kind update --idle-timeout 1800
         return
     fi
