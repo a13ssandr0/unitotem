@@ -22,14 +22,14 @@ menuentry 'UniTotem slot A' --id slot-a {
     insmod part_gpt
     insmod ext2
     search --no-floppy --set=root --label ROOT_A
-    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false unitotem.slot=a
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=a
     initrd /initrd.img
 }
 menuentry 'UniTotem slot B' --id slot-b {
     insmod part_gpt
     insmod ext2
     search --no-floppy --set=root --label ROOT_B
-    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false unitotem.slot=b
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=b
     initrd /initrd.img
 }
 menuentry 'UniTotem slot A (OTA recovery)' --id slot-a-recover {
