@@ -369,6 +369,16 @@ chroot "${ROOTFS}" systemctl mask apt-daily.timer apt-daily-upgrade.timer \
 # right before the initramfs is regenerated, makes a stage 2 + 3 rebuild enough to pick up an engine change.
 install -m 755 /kiosk/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 chroot "${ROOTFS}" update-initramfs -u -k all
+# arm64: the firmware loads kernel+initramfs from the SD at ~5 MB/s (measured), so shrink the initramfs: no hwdb.bin, only the Wi-Fi
+# firmware of Raspberry Pi chips (see kiosk/slim-initramfs.py). Measured on a Pi 4: -14 MB = -2.4 s before the kernel starts.
+if [ "$ARCH" = "arm64" ]; then
+    install -m 755 /kiosk/slim-initramfs.py "${ROOTFS}/tmp/slim-initramfs.py"
+    for _initrd in "${ROOTFS}"/boot/initrd.img-*; do
+        chroot "${ROOTFS}" python3 /tmp/slim-initramfs.py "/boot/$(basename "$_initrd")" "/tmp/slim.img" --arch arm64
+        cat "${ROOTFS}/tmp/slim.img" > "$_initrd"
+    done
+    rm -f "${ROOTFS}/tmp/slim-initramfs.py" "${ROOTFS}/tmp/slim.img"
+fi
 
 # ---------- arm64: populate FIRMWARE with the real system's boot files ----------
 # Now that stage1 installs the real linux-image-rpi-v8 (not generic Debian

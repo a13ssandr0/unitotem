@@ -175,6 +175,9 @@ install -m 644 /kiosk/files/unitotem-logo-256x73.bgrx /kiosk/files/unitotem-logo
     /kiosk/files/unitotem-logo-1280x365.bgrx /kiosk/files/unitotem-logo-1280x365.rgb565 "${ROOTFS}/usr/lib/unitotem/"   # the largest is for the placeholder on 4K; the real system'"'"'s KMS framebuffer can be 16 OR 32 bpp (16 on the Pi 4 test unit)
 
 install -m 755 /kiosk/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
+# zstd -19 instead of the gzip that mkinitramfs falls back to when zstd is missing in the chroot: ~25% smaller, the Pi kernel has CONFIG_RD_ZSTD.
+mkdir -p "${ROOTFS}/etc/initramfs-tools/conf.d"
+printf 'COMPRESS=zstd\nCOMPRESSLEVEL=19\n' > "${ROOTFS}/etc/initramfs-tools/conf.d/unitotem-compress"
 mkdir -p "${ROOTFS}/etc/unitotem"
 
 # ---------- Base system ----------
@@ -186,7 +189,7 @@ apt_install \
     iproute2 iputils-ping net-tools \
     htop nano less \
     util-linux udev e2fsprogs \
-    lsb-release initramfs-tools apt-utils \
+    lsb-release initramfs-tools apt-utils zstd \
     dbus dbus-user-session libpam-systemd \
     systemd-timesyncd \
     network-manager netplan.io \
@@ -196,8 +199,11 @@ apt_install \
 
 # ---------- Plymouth ----------
 
+# plymouth-label (pango/cairo/X11/harfbuzz/..., ~4 MB of initramfs) and plymouth-themes are NOT installed: the UniTotem theme is built
+# from pre-rendered PNGs and draws no text (plymouth-theme-unitotem depends on plymouth only). The firmware reads the initramfs
+# at ~5 MB/s, so every MB of it is ~0.2 s of black screen at boot.
 apt_install \
-    plymouth plymouth-themes plymouth-label libplymouth5
+    plymouth libplymouth5
 
 # ---------- GPU libraries (common) ----------
 

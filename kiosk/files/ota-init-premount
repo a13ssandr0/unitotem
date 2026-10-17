@@ -5,8 +5,15 @@
 # - never lets mountroot/local-bottom/switch_root happen at all (see
 # deploy/ota-engine.sh's serve-fallback, which blocks in the foreground on
 # dropbear rather than returning).
-PREREQ=""
+# plymouth first: this script can take seconds (udev settle, fsck of the root slot) and the boot splash must already be on
+# screen while it runs - without this the initramfs ran it BEFORE plymouthd was started (measured: splash only at ~10 s).
+PREREQ="plymouth"
 prereqs() { echo "$PREREQ"; }
 case "$1" in prereqs) prereqs; exit 0 ;; esac
 
-exec /usr/sbin/unitotem-ota-engine init-premount
+# kernel-log breadcrumbs (dmesg timestamps) so the cost of this step shows up in boot-time measurements
+echo "unitotem-initramfs: ota init-premount start" > /dev/kmsg 2>/dev/null || true
+/usr/sbin/unitotem-ota-engine init-premount
+rc=$?
+echo "unitotem-initramfs: ota init-premount end rc=$rc" > /dev/kmsg 2>/dev/null || true
+exit $rc

@@ -96,6 +96,11 @@ if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
     INITRD=""
     if [ "$ARCH" = arm64 ]; then INITRD="$FAT/initramfs8"; [ "$AB" = 1 ] && INITRD="$FAT/slota/initramfs8"
     else INITRD=$(ls -t "$R"/boot/initrd.img-* 2>/dev/null | head -1); fi
+    if [ "$ARCH" = arm64 ]; then
+        # the Pi firmware reads the initramfs at ~5 MB/s: 40 MB was 8 s of black screen (measured 2026-10-17); slimmed it is ~26 MB
+        chk "the Pi initramfs is slim (< 32 MB, no hwdb.bin; kiosk/slim-initramfs.py)" bash -c "[ \$(stat -c %s '$INITRD') -lt 33554432 ] && ! lsinitramfs '$INITRD' | grep -q 'udev/hwdb.bin'"
+        chk "the Pi initramfs has no plymouth label plugin (pango/cairo/X11 ~4 MB)" bash -c "! lsinitramfs '$INITRD' | grep -q 'plymouth/label'"
+    fi
     chk "the initramfs carries the unitotem theme and the script plugin (${INITRD##*/})" bash -c "l=\$(lsinitramfs '$INITRD' 2>/dev/null) && printf '%s\n' \"\$l\" | grep -q 'plymouth/themes/unitotem/unitotem.script' && printf '%s\n' \"\$l\" | grep -q 'plymouth/script.so'"
 fi
 
