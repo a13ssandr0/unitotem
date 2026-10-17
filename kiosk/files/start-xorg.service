@@ -1,15 +1,18 @@
 [Unit]
 Description=X11 server (kiosk)
-# Start the X server as soon as Plymouth has let go of the display, not after multi-user.target: Plymouth's DRM renderer and X
-# cannot both own the display, and plymouth-quit.service is what releases it. Measured on the Pi 4 (2026-10-12): X is up at ~16 s
-# instead of ~22 s, and the placeholder screen is painted ~9 s earlier. Same ordering as sddm.service
-# ("If using tty1 and plymouth, sddm will fail till plymouth stops ... After=plymouth-quit.service").
-After=plymouth-quit.service
+# Plymouth keeps its last frame on screen while X starts, and only quits once X is up (ExecStartPost). Measured on the Pi 4
+# (2026-10-17, capture of the HDMI output): `plymouth quit` blanks the screen at once, `plymouth deactivate` does not (it only stops drawing
+# and gives up the DRM master, so X can take it, and the last frame stays scanned out). The ~2 s that X needs to initialise (glamor, modules)
+# are therefore covered by the Plymouth frame and the black gap before the first X frame drops from ~3.2 s to ~0.6 s (the modeset).
+# Same idea as sddm's "plymouth quit after the greeter is up", but with deactivate so the frame is not wiped.
+# X goes on VT1, Plymouth's own VT: switching to another VT (chvt 8) blocks while Plymouth is deactivated (it still owns VT switching).
+# getty@tty1 is masked by the image (stage 2): a login prompt must not sit under X on the same VT; VT2..6 still get their gettys on demand.
+After=plymouth-start.service
 
 [Service]
 Type=simple
-# X runs on its own VT, not Plymouth's/getty's tty1 (see ExecStartPre=chvt and vt8 below).
-TTYPath=/dev/tty8
+# X runs on VT1, the VT Plymouth is on (see the comment above).
+TTYPath=/dev/tty1
 StandardInput=tty
 StandardOutput=journal
 StandardError=journal
@@ -18,18 +21,24 @@ UnsetEnvironment=TERM
 # file), so there is no copy step. $HOME/.Xauthority is not usable here: the root filesystem is read-only.
 Environment=XAUTHORITY=/run/unitotem-x11.auth
 
-ExecStartPre=/usr/bin/chvt 8
+# stop Plymouth drawing and release the display, WITHOUT blanking it (leading '-': fine when there is no splash on the command line)
+ExecStartPre=-/usr/bin/plymouth deactivate
 # A fresh cookie at every start (what startx/xinit did). "add :0" stores it for the local host name, which is what a client on the
 # unix socket looks up.
 ExecStartPre=/bin/sh -c 'install -m 600 /dev/null "$XAUTHORITY" && xauth -q -f "$XAUTHORITY" add :0 . "$(mcookie)"'
 # Replaces `startx /etc/kiosk/xinitrc -- vt8 ...` (startx -> xinit -> X plus a client that, in our case, only ran `sleep infinity`).
 #   -nolisten tcp   what /etc/X11/xinit/xserverrc adds under startx
 #   -nocursor       the kiosk shows no pointer
-#   -background none  do not paint the root window black at start (the old display contents stay until something paints)
+#   -br             black root window: with `-background none` the root shows whatever the new framebuffer held (measured on the Pi 4 after
+#                   the Plymouth hand-over: stale boot-console text for ~9 s until the viewer's window covered it)
 # No `-logfile /dev/null`: Xorg then writes its normal log, /var/log/Xorg.0.log (/var is persistent on this image), and keeps the
 # previous boot's as Xorg.0.log.old. (`-verbose N` to stderr printed nothing here, so the journal route does not work.)
 # Screen blanking/DPMS is switched off by /etc/X11/xorg.conf.d/10-unitotem-noblank.conf (ServerFlags), not by xset.
-ExecStart=/usr/bin/Xorg :0 vt8 -auth /run/unitotem-x11.auth -keeptty -nocursor -nolisten tcp -background none
+ExecStart=/usr/bin/Xorg :0 vt1 -auth /run/unitotem-x11.auth -keeptty -nocursor -nolisten tcp -br
+# once X really answers (a client handshake works: the socket file exists long before the server serves it), remove Plymouth WITHOUT `plymouth quit`: quit puts the VT back into text mode, which makes the kernel console repaint over
+# X (measured: ~9 s of stale boot text on screen until something forced X to flip again). The daemon is already deactivated (no drawing, no
+# DRM master), so killing it only drops the process (the kernel then restores the fbdev console framebuffer for an instant, which still holds the last boot-console text: VT buffer and /dev/fb0 are cleared first); plymouth-quit.service later finds no daemon and does nothing.
+ExecStartPost=-/bin/sh -c 'i=0; until DISPLAY=:0 XAUTHORITY=/run/unitotem-x11.auth xset q >/dev/null 2>&1 || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done; printf "\\033[H\\033[2J\\033[3J" > /dev/tty1; cat /dev/zero > /dev/fb0 2>/dev/null; pkill -KILL -x plymouthd'
 Restart=always
 RestartSec=3
 

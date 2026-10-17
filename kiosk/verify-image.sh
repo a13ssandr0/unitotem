@@ -85,7 +85,9 @@ chk "start-xorg.service runs Xorg directly (no startx/xinit)" bash -c "grep -qE 
 chk "X starts without clearing the screen and without listening on TCP" bash -c "grep -E '^ExecStart=' '$XU' | grep -q -- '-background none' && grep -E '^ExecStart=' '$XU' | grep -q -- '-nolisten tcp'"
 chk "X keeps its log (no -logfile /dev/null): /var/log/Xorg.0.log" bash -c "! grep -E '^ExecStart=' '$XU' | grep -q -- '-logfile'"
 chk "the X cookie is created before X starts (xauth + mcookie installed)" bash -c "grep -q 'xauth' '$XU' && grep -q 'mcookie' '$XU' && test -x '$R/usr/bin/xauth' && test -x '$R/usr/bin/mcookie'"
-chk "X starts once Plymouth has released the display (After=plymouth-quit.service)" file_has "$XU" '^After=plymouth-quit.service'
+chk "X takes over from a deactivated Plymouth (no blanking quit): deactivate before X, Plymouth removed once X answers" bash -c "grep -q '^ExecStartPre=-/usr/bin/plymouth deactivate' '$XU' && grep -q 'xset q' '$XU' && grep -q 'pkill -KILL -x plymouthd' '$XU' && grep -q '^After=plymouth-start.service' '$XU' && ! grep -q 'chvt' '$XU'"
+chk "X runs on VT1 and getty@tty1 is masked (nothing may share Plymouth's VT)" bash -c "grep -q 'vt1' '$XU' && test \$(readlink '$R/etc/systemd/system/getty@tty1.service') = /dev/null"
+chk "the kernel command line silences systemd status text (it would be repainted on the console during the hand-over)" bash -c "grep -rq 'systemd.show_status=false' '$R/boot/firmware/cmdline.txt' 2>/dev/null || grep -rq 'systemd.show_status=false' '$R/etc/default/grub.d' '$R/etc/default/grub' '$R/boot/grub/grub.cfg' 2>/dev/null"
 chk "X authority file is the one the manager reads" file_has "$XU" '^Environment=XAUTHORITY=/run/unitotem-x11.auth'
 chk "start-xorg service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/start-xorg.service"
 
@@ -134,7 +136,7 @@ chk "X background program installed" test -x "$R/usr/sbin/unitotem-xbackground"
 chk "it runs as its own service after X, restarted with it" bash -c "grep -q '^After=start-xorg.service' '$R/etc/systemd/system/unitotem-xbackground.service' && grep -q '^PartOf=start-xorg.service' '$R/etc/systemd/system/unitotem-xbackground.service' && grep -q '^ExecStart=.*unitotem-xbackground' '$R/etc/systemd/system/unitotem-xbackground.service'"
 chk "the placeholder is NOT enabled by default (the viewer's splash replaces it; it stays installed as a diagnostic tool)" bash -c "[ ! -e '$R/etc/systemd/system/multi-user.target.wants/unitotem-xbackground.service' ]"
 chk "the viewer's splash service is enabled (unitotem-viewer ships and enables it)" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-splash.service"
-chk "the splash starts after X and waits for it" bash -c "grep -q 'start-xorg.service' '$R/usr/lib/systemd/system/unitotem-splash.service' && grep -q '^Type=notify' '$R/usr/lib/systemd/system/unitotem-splash.service'"
+chk "the splash is Type=notify (ready at its first frame) and waits for X's socket itself (no After=start-xorg: it warms up in parallel)" bash -c "grep -q '^Type=notify' '$R/usr/lib/systemd/system/unitotem-splash.service' && ! grep -q '^After=.*start-xorg' '$R/usr/lib/systemd/system/unitotem-splash.service'"
 chk "the splash script is in the image" test -s "$R/usr/share/unitotem-manager/plugins/unitotem_viewer/splash.py"
 chk "python3 present for the X background" test -x "$R/usr/bin/python3"
 chk "console fonts for its text (large DejaVu Bold sizes)" bash -c "test -s $R/usr/share/consolefonts/Lat15-DejaVuBold59x32.psf.gz && test -s $R/usr/share/consolefonts/Lat15-DejaVuBold118x64.psf.gz"

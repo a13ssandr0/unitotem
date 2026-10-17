@@ -101,7 +101,7 @@ if [ "$ARCH" = "arm64" ]; then
     # Still needs enable_uart=1 in config.txt (the mini-UART derives its baud
     # from the VPU core clock, and enable_uart=1 is what pins that clock).
     AB_SLOT_ARG=""; [ "$AB_LAYOUT" = 1 ] && AB_SLOT_ARG=" unitotem.slot=a"
-    echo "console=tty1 console=ttyS0,115200 root=LABEL=${ROOT_LABEL} rootfstype=ext4 rootwait ro quiet splash loglevel=3 rd.systemd.show_status=false plymouth.ignore-serial-consoles${AB_SLOT_ARG}" \
+    echo "console=tty1 console=ttyS0,115200 root=LABEL=${ROOT_LABEL} rootfstype=ext4 rootwait ro quiet splash loglevel=3 rd.systemd.show_status=false systemd.show_status=false plymouth.ignore-serial-consoles${AB_SLOT_ARG}" \
         > "${ROOTFS}/boot/firmware/cmdline.txt"
 
     cat > "${ROOTFS}/etc/modules-load.d/rpi-gpu.conf" << 'EOF'
@@ -169,6 +169,8 @@ install -m 755 /kiosk/files/kiosk-update "${ROOTFS}/usr/local/bin/kiosk-update"
 # (stage2/04-unitotem/files/start-xorg.service).
 install -m 644 /kiosk/files/start-xorg.service \
     "${ROOTFS}/etc/systemd/system/start-xorg.service"
+# X runs on VT1 (Plymouth's VT, see start-xorg.service): no login prompt may sit on it
+ln -sf /dev/null "${ROOTFS}/etc/systemd/system/getty@tty1.service"
 # The placeholder screen is a service of its own (its output goes to the journal, Restart= keeps it up); there is no xinitrc.
 # It is installed but NOT enabled any more: since unitotem-viewer 3.0.0~dev5 ships unitotem-splash.service (a tiny process that paints the
 # wordmark ~0.2 s after X is up, then hands over to the manager's own splash), the banner would only flash for a second before it. It stays
