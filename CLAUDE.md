@@ -62,3 +62,22 @@ sulla SD prima che qualcuno se ne accorgesse. Regole, valide per ogni sessione/a
 - I passi di uno script che aspettano un comando remoto devono essere limitati nel tempo (ssh con
   `ServerAliveInterval`, cicli con massimo) e controllare il budget di scritture (`/sys/block/mmcblk0/stat`, campo 7 × 512).
 - Controllare i job lunghi a intervalli; a fine lavoro riportare all'utente i byte scritti sulla SD.
+
+## Disco e cartella di lavoro: tenere in ordine, eliminare il vecchio
+
+Il 2026-10-17 `work/` e `deploy/` occupavano ~450 GB (immagini di prova, qcow2, build giornaliere, `.prev*`). Regole per
+ogni sessione e agente di questo repo (e della sessione del manager):
+
+- **Una prova = una cartella sotto `work/<nome>/`**, con una riga in `work/README.md` (scopo, data, "eliminabile quando"). Niente
+  immagini sciolte nella radice di `work/` o `deploy/`.
+- **Conservare solo l'ultimo risultato utile.** Per le build: l'ultima `kiosk-*.img.xz` e l'ultima `*.parts` per architettura, più
+  la release servita al Pi. Le copie `.prevNN`, le `*.parts` vecchie, le release intermedie e le immagini di prova si eliminano
+  appena la prova è conclusa, non "più avanti".
+- **Alla fine di ogni prova/round: pulire.** Elencare cosa è stato prodotto (`du -sh`), cancellare ciò che è rigenerabile con percorsi
+  letterali (mai glob/variabili in `rm`; vedi regole sul `rm`), annotare in `work/pi-test/STATE.md` lo spazio liberato.
+- **Grandi file di test = sparsi e temporanei.** `qcow2`/`.img` di VM e di taglio di corrente: creare con overlay/backing file (non
+  copie intere), cancellarli quando la prova passa; tenere solo i report (`REPORT.md`) e i log.
+- **Directory create da Docker sono di root** e non si cancellano senza sudo: creare le uscite con `chown` all'utente (o `--user`),
+  così restano eliminabili.
+- **Controllo di spazio:** prima di una build o di una serie di prove, `df -h /home`; sotto i 150 GB liberi, pulire prima di
+  iniziare. Mai lasciare un job che scrive senza limite (vedi sezione SD).
