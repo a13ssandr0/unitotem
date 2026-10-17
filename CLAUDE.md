@@ -77,7 +77,14 @@ ogni sessione e agente di questo repo (e della sessione del manager):
   letterali (mai glob/variabili in `rm`; vedi regole sul `rm`), annotare in `work/pi-test/STATE.md` lo spazio liberato.
 - **Grandi file di test = sparsi e temporanei.** `qcow2`/`.img` di VM e di taglio di corrente: creare con overlay/backing file (non
   copie intere), cancellarli quando la prova passa; tenere solo i report (`REPORT.md`) e i log.
-- **Directory create da Docker sono di root** e non si cancellano senza sudo: creare le uscite con `chown` all'utente (o `--user`),
-  così restano eliminabili.
+- **Directory create da Docker sono di root**: si eliminano con Docker stesso (`docker run --rm -v <cartella-madre>:/w <immagine
+  già presente> rm -rf -- /w/<nome letterale>`), mai con sudo; meglio ancora crearle con `--user $(id -u):$(id -g)`.
 - **Controllo di spazio:** prima di una build o di una serie di prove, `df -h /home`; sotto i 150 GB liberi, pulire prima di
   iniziare. Mai lasciare un job che scrive senza limite (vedi sezione SD).
+
+## Priorità durante le build
+
+Durante una build (soprattutto quella nativa sul Pi) la build ha la priorità massima e i servizi UniTotem la minima; a build finita
+si ripristina tutto com'era. Salvare prima i valori attuali (nice, `CPUWeight` di unitotem-manager/splash/start-xorg e dei
+sottoprocessi CEF), applicare `systemctl set-property --runtime … CPUWeight=1` / `renice 19` ai servizi e `nice -n -20` alla build,
+e fare il ripristino in un `trap … EXIT` (così un'interruzione ripristina comunque). Valori solo runtime: spariscono al riavvio.
