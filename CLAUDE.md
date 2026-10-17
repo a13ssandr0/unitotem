@@ -47,3 +47,18 @@ Pi non è raggiungibile, procedere con la build Docker+qemu-aarch64 attuale come
 — è ancora un passo manuale/procedurale da seguire quando si avvia una build arm64, non (ancora) codificato
 nello script. Prima di rifarlo un'ennesima volta a mano, vale la pena implementarlo come parte dello script
 stesso.
+
+## SD reale del Pi di prova: mai scritture senza limite
+
+L'SD del Raspberry Pi di prova è una risorsa che costa soldi all'utente. Il 2026-10-17 un generatore di carico lanciato
+con `ssh … 'nohup … &'` è rimasto in esecuzione 14,7 ore (ssh mai tornato, script in attesa) e ha scritto ~475 GiB
+sulla SD prima che qualcuno se ne accorgesse. Regole, valide per ogni sessione/agente:
+
+- Ogni job che scrive sul Pi ha un **limite duro incorporato** (durata o byte massimi) e parte con
+  `systemd-run --collect -p RuntimeMaxSec=N …`. Mai un processo lungo avviato con `ssh host 'cmd &'`.
+- Stimare i byte scritti prima di avviare; se > ~1 GiB, dirlo all'utente.
+- Affiancare ai job di scrittura `tools/pi-sd-guard.sh SECONDI` (staccato): ferma `pwr-writer`/`*-testload.service`
+  sopra 300 MiB/min e scrive `SDGUARD` in `work/pi-test/STATE.md`.
+- I passi di uno script che aspettano un comando remoto devono essere limitati nel tempo (ssh con
+  `ServerAliveInterval`, cicli con massimo) e controllare il budget di scritture (`/sys/block/mmcblk0/stat`, campo 7 × 512).
+- Controllare i job lunghi a intervalli; a fine lavoro riportare all'utente i byte scritti sulla SD.
