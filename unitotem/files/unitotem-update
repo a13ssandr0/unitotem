@@ -937,7 +937,7 @@ def do_repair(a, conf):
             progress(conf, op="repair", phase="write", state="running", percent=10)
             # partclone copies only the used blocks; label and UUID travel with them and are reset below like in fetch
             with tempfile.TemporaryFile() as serr_f, tempfile.TemporaryFile() as derr_f:
-                src = subprocess.Popen(["partclone.extfs", "-c", "-s", cdev, "-o", "-"], stdout=subprocess.PIPE, stderr=serr_f)
+                src = subprocess.Popen(["partclone.extfs", "-c", "-F", "-s", cdev, "-o", "-"], stdout=subprocess.PIPE, stderr=serr_f)
                 dst = subprocess.Popen(["partclone.restore", "-C", "-s", "-", "-o", ndev], stdin=src.stdout,
                                        stdout=subprocess.DEVNULL, stderr=derr_f)
                 src.stdout.close()
