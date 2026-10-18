@@ -57,7 +57,7 @@ OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
 # an arch-appropriate console when this is unset (tty0 for amd64, tty1 +
 # serial for arm64 - matching every other cmdline.txt this project writes),
 # and still honors an explicit --console override when one is given.
-OPT_CONSOLE="" OPT_DEBUG=0 OPT_YES=0
+OPT_CONSOLE="" OPT_DEBUG=0 OPT_YES=0 OPT_FALLBACK_ONLY=0
 # What to do when the target has Secure Boot enabled (amd64/UEFI): shim | noshim | abort. Empty = ask (or refuse, when
 # non-interactive). See secure_boot_gate.
 OPT_SECURE_BOOT="" SB_MODE=""
@@ -75,6 +75,7 @@ while [ $# -gt 0 ]; do
         --console)    OPT_CONSOLE="$2"; shift 2 ;;
         --debug)      OPT_DEBUG=1; shift ;;
         --yes)        OPT_YES=1; shift ;;
+        --fallback-only) OPT_FALLBACK_ONLY=1; shift ;;
         --accept-changes) OPT_ACCEPT_CHANGES="$2"; shift 2 ;;
         --json)       OPT_JSON=1; shift ;;
         --secure-boot) OPT_SECURE_BOOT="$2"; shift 2
@@ -397,7 +398,9 @@ build_legacy_cmdline() {
     if [ -z "$console" ]; then
         [ "$ARCH" = arm64 ] && console="tty1 console=ttyS0,115200" || console="tty0"
     fi
-    echo "unitotem.ota=1 quiet loglevel=3 console=${console}"
+    # fbcon=font:TER16x32: the firmware framebuffer is often the monitor's native size (a 1080p screen with the 8x16 default font gets a 240x67
+    # console of tiny text); the 16x32 terminus font doubles every glyph (ignored by a kernel that lacks it).
+    echo "unitotem.ota=1 quiet loglevel=3 fbcon=font:TER16x32 console=${console}"
 }
 
 arm_grub() {
@@ -478,7 +481,9 @@ REMOTE_EOF
 
 do_reboot() {
     log "Riavvio il target..."
-    ssh_t "sync; nohup reboot >/dev/null 2>&1 &" || true
+    # systemd-run first: a reboot started as a background child of the ssh/sudo session was silently lost on a KDE neon desktop target
+    # (the session was torn down first), the target stayed up and the whole deploy waited for a fallback that never came.
+    ssh_t "sync; systemd-run --on-active=3s --no-block systemctl reboot >/dev/null 2>&1 || nohup reboot >/dev/null 2>&1 &" || true
 }
 
 # ---------------------------------------------------------------------------
@@ -486,14 +491,44 @@ do_reboot() {
 # already-armed target to answer it (prepared path - same wait, just no
 # push/arm beforehand).
 # ---------------------------------------------------------------------------
+# The fallback gets its address by DHCP on whichever wired port has the cable, which is not necessarily the port (and address) the running
+# system used - a two-NIC mini PC came up on a different address than the one this script was waiting on. After a minute without an answer
+# the local subnet is scanned for a dropbear on port 2222: exactly one hit is taken as the fallback (OTA_FOUND_HOST), several are listed.
+discover_fallback() {
+    local src prefix h open=() ban
+    src=$(ip -o route get "$1" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+    [ -n "$src" ] || return 1
+    prefix="${src%.*}"
+    log "Nessuna risposta all'indirizzo atteso: cerco il fallback (dropbear, porta 2222) nella rete ${prefix}.0/24..."
+    for h in $(seq 1 254); do
+        ( ban=$(timeout 2 bash -c "exec 3<>/dev/tcp/${prefix}.${h}/2222 && head -c 20 <&3" 2>/dev/null || true)
+          case "$ban" in SSH-2.0-dropbear*) echo "${prefix}.${h}" >> "$OTA_SCAN_FILE" ;; esac ) &
+        [ $((h % 64)) -eq 0 ] && wait
+    done
+    wait
+    mapfile -t open < <(sort -u "$OTA_SCAN_FILE" 2>/dev/null)
+    case ${#open[@]} in
+        0) return 1 ;;
+        1) OTA_FOUND_HOST="${open[0]}"; log "Fallback trovato a ${OTA_FOUND_HOST} (indirizzo diverso da quello atteso: la scheda di rete con il cavo non e' quella del sistema precedente)."; return 0 ;;
+        *) warn "piu' di un dropbear sulla porta 2222: ${open[*]}"; return 1 ;;
+    esac
+}
+
 wait_ota_reachable() {
-    local host="$1" waited=0
+    local host="$1" waited=0 scanned=0
+    OTA_FOUND_HOST=""; OTA_SCAN_FILE=$(mktemp)
     log "Attendo che ${host} risponda sulla sessione OTA (porta 2222, fino a 10 minuti)..."
     sleep 15
     while ! ota_ssh "$host" true 2>/dev/null; do
         sleep 10; waited=$((waited + 10))
-        [ "$waited" -lt 600 ] || die "il target non e' entrato in modalita' OTA entro 10 minuti"
+        if [ "$waited" -ge 60 ] && [ "$scanned" -eq 0 ]; then
+            scanned=1
+            if discover_fallback "$host"; then host="$OTA_FOUND_HOST"; continue; fi
+        fi
+        [ "$waited" -lt 600 ] || { rm -f "$OTA_SCAN_FILE"; die "il target non e' entrato in modalita' OTA entro 10 minuti"; }
     done
+    rm -f "$OTA_SCAN_FILE"
+    [ -z "$OTA_FOUND_HOST" ] || log "Sessione OTA raggiunta su ${OTA_FOUND_HOST}."
 }
 
 # ---------------------------------------------------------------------------
@@ -793,6 +828,11 @@ cmd_deploy() {
     fi
 
     wait_ota_reachable "$target_ip"
+    target_ip="${OTA_FOUND_HOST:-$target_ip}"
+    if [ "$OPT_FALLBACK_ONLY" = 1 ]; then
+        log "Fallback pronto a ${target_ip}:2222. Nessuna scrittura sul disco (--fallback-only)."
+        return 0
+    fi
     run_ota_sequence "$target_ip" "$TARGET_DISK_BYID"
 
     if [ "$SB_MODE" = noshim ]; then
@@ -818,12 +858,12 @@ cmd_deploy() {
     log "Sequenza OTA inviata. Attendo che ${post} torni raggiungibile sul sistema reale (fino a 10 minuti)..."
     local waited=0
     sleep 30
-    while ! _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" true 2>/dev/null; do
+    while ! OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" true 2>/dev/null; do
         sleep 10; waited=$((waited + 10))
         [ "$waited" -lt 600 ] || { warn "il target non e' tornato raggiungibile entro 10 minuti - verificare manualmente (potrebbe essere ancora in stage 2, o nel fallback in attesa)"; return 0; }
     done
 
-    if _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" "[ -d /etc/kiosk ]" 2>/dev/null; then
+    if OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" "[ -d /etc/kiosk ]" 2>/dev/null; then
         log "Deploy completato: ${post} e' raggiungibile sul nuovo sistema."
     else
         warn "${post} e' raggiungibile ma non sembra il sistema nuovo - potrebbe essere ancora il fallback in attesa di comandi."

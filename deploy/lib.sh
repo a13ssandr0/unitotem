@@ -76,6 +76,10 @@ bytes_human() {
 # simpler and was already proven working before any of the key machinery
 # was added.
 OTA_PASSWORD="${OTA_PASSWORD:-unitotem}"
+# The password of root in the FALLBACK (initramfs dropbear) and of the freshly installed UniTotem system: fixed by the image, NOT the login
+# password of the machine being adopted. OTA_PASSWORD may be that machine's own user password (e.g. a desktop PC reached as tv@host); using it
+# for the fallback made the deploy wait forever for a session that was up (authentication silently refused).
+OTA_FALLBACK_PASSWORD="${OTA_FALLBACK_PASSWORD:-unitotem}"
 
 # NON_INTERACTIVE_SSH_ASKPASS_REQUIRE=never + `env -u DISPLAY -u SSH_ASKPASS`
 # is load-bearing, not decoration: without it, ssh can fall back to a
@@ -232,7 +236,7 @@ OTA_SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
 # pipe payloads, which is exactly why the two are separate functions.
 ota_ssh() {
     local host="$1"; shift
-    _sshpass ssh -n "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
+    OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
 }
 
 ota_ssh_send() {
@@ -241,7 +245,7 @@ ota_ssh_send() {
     # control channel (small, one-shot files; bulk partition data always
     # goes over the plain-netcat DATA channel instead, see restore-part).
     local host="$1"; shift
-    _sshpass ssh "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
+    OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
 }
 
 # Wait until something is listening on $2/tcp on this host, up to $3
