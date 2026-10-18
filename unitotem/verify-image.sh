@@ -90,6 +90,7 @@ if [ "$ARCH" = amd64 ]; then
     chk "Intel graphics firmware is installed (i915 DMC/GuC/HuC; without it VA-API cannot initialise)" bash -c "ls '$R'/lib/firmware/i915/adlp_dmc* >/dev/null 2>&1 || ls '$R'/usr/lib/firmware/i915/adlp_dmc* >/dev/null 2>&1"
     chk "the NVIDIA units do not fail the boot on PCs without an NVIDIA GPU" bash -c "test -s '$R/etc/systemd/system/nvidia-persistenced.service.d/unitotem-only-with-nvidia.conf' && test -s '$R/etc/systemd/system/systemd-modules-load.service.d/unitotem-nvidia-optional.conf'"
 fi
+chk "root lingers (session D-Bus /run/user/0/bus from boot) and dbus-user-session is installed" bash -c "test -e '$R/var/lib/systemd/linger/root' && test -e '$R/usr/lib/systemd/user/dbus.socket'"
 chk "X keeps its log (no -logfile /dev/null): /var/log/Xorg.0.log" bash -c "! grep -E '^ExecStart=' '$XU' | grep -q -- '-logfile'"
 chk "the X cookie is created before X starts (xauth + mcookie installed)" bash -c "grep -q 'xauth' '$XU' && grep -q 'mcookie' '$XU' && test -x '$R/usr/bin/xauth' && test -x '$R/usr/bin/mcookie'"
 chk "X takes over from a deactivated Plymouth (no blanking quit): deactivate before X, Plymouth removed once X answers" bash -c "grep -q '^ExecStartPre=-/usr/bin/plymouth deactivate' '$XU' && grep -q 'xset q' '$XU' && grep -q 'pkill -KILL -x plymouthd' '$XU' && grep -q '^After=plymouth-start.service' '$XU' && ! grep -qE '^ExecStartPre=.*chvt' '$XU'"
