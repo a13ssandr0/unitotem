@@ -57,6 +57,6 @@ menuentry 'UniTotem OTA fallback' --id ota-recovery {
     insmod fat
     unitotem_lowres
     search --no-floppy --set=root --label EFI
-    linux /unitotem/recovery-vmlinuz nomodeset unitotem.ota=1 console=tty0 console=ttyS0,115200
+    linux /unitotem/recovery-vmlinuz nomodeset quiet loglevel=3 unitotem.ota=1 console=tty0 console=ttyS0,115200
     initrd /unitotem/recovery-initrd.img
 }
