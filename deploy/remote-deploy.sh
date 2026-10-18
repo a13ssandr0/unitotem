@@ -397,7 +397,7 @@ build_legacy_cmdline() {
     if [ -z "$console" ]; then
         [ "$ARCH" = arm64 ] && console="tty1 console=ttyS0,115200" || console="tty0"
     fi
-    echo "unitotem.ota=1 console=${console}"
+    echo "unitotem.ota=1 quiet loglevel=3 console=${console}"
 }
 
 arm_grub() {

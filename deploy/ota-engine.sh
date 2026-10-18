@@ -29,7 +29,9 @@ set -Eeuo pipefail
 # into the captured value. Confirmed happening for real: a network warning
 # during configure_networking_ota ended up as cmd_serve_fallback's "myip",
 # shown as the address in the OTA whiptail screen instead of any real IP.
-log()  { echo "unitotem-ota: $*" >&2; echo "unitotem-ota: $*" > /dev/kmsg 2>/dev/null || true; }
+# kmsg LINE: into the kernel log at debug level (<7>): readable with dmesg, never printed on the console/screen.
+kmsg() { printf '<7>%s\n' "$*" > /dev/kmsg 2>/dev/null || true; }
+log()  { echo "unitotem-ota: $*" >&2; kmsg "unitotem-ota: $*"; }
 warn() { log "WARNING: $*"; }
 
 # ---------------------------------------------------------------------------
@@ -1275,7 +1277,7 @@ configure_one_iface() {
             # indistinguishable from every other source writing there.
             ( IP=dhcp DEVICE="$iface" configure_networking 2>&1 \
                 | while IFS= read -r cn_line; do
-                      printf 'unitotem-ota/net: %s\n' "$cn_line" > /dev/kmsg 2>/dev/null || true
+                      kmsg "unitotem-ota/net: $cn_line"
                   done ) &
             cn_pid=$!
             while kill -0 "$cn_pid" 2>/dev/null && [ "$cn_waited" -lt "$cn_budget" ]; do
@@ -1373,8 +1375,9 @@ configure_networking_ota() {
     for i in $ifs; do case " $first " in *" $i "*) ;; *) first="$first $i" ;; esac; done   # no-carrier ones last, as a final resort
     for i in $first; do
         addr=$(configure_one_iface "$i")
+        addr=${addr%%$'\n'*}
         if [ -n "$addr" ]; then
-            printf 'unitotem-ota/net: address %s on %s\n' "$addr" "$i" > /dev/kmsg 2>/dev/null || true
+            kmsg "unitotem-ota/net: address $addr on $i"
             printf '%s\n' "$addr"
             return 0
         fi
@@ -1598,6 +1601,10 @@ ota_final_status() {
 
 cmd_serve_fallback() {
     parse_args "$@"
+    # The screen is the progress dialog: kernel messages only for emergencies, and this process's own stdout/stderr (log lines, library chatter)
+    # go to a file instead of the console (they stay in the kernel log at debug level, see kmsg/log).
+    echo "1 4 1 7" > /proc/sys/kernel/printk 2>/dev/null || true
+    exec >> /run/ota-serve.log 2>&1
     local reason="${ARG[reason]:-requested explicitly}"
     log "OTA mode: $reason"
     if [ "${ARG[kind]:-update}" = recovery ]; then
@@ -1680,9 +1687,11 @@ Address: ${myip:-none}   Port: 2222" || true
     # dropbear is started with -F and is never meant to return; if it ever
     # does, park here instead of letting the caller fall through into a
     # normal boot - not falling through is the entire point of the fallback.
+    # The console belongs to the progress screen: dropbear's log goes to a file and to the kernel log at debug level, never to the screen.
     dropbear -F -E -p 2222 -r /run/dropbear_ed25519_host_key 2>&1 \
         | while IFS= read -r line; do
-              printf 'dropbear: %s\n' "${line#\[*\] }"
+              printf 'dropbear: %s\n' "${line#\[*\] }" >> /run/ota-dropbear.log
+              kmsg "dropbear: ${line#\[*\] }"
           done
     warn "dropbear exited unexpectedly: staying in OTA mode"
     while :; do sleep 3600; done
