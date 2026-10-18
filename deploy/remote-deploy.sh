@@ -509,7 +509,10 @@ discover_fallback() {
     mapfile -t open < <(sort -u "$OTA_SCAN_FILE" 2>/dev/null)
     case ${#open[@]} in
         0) return 1 ;;
-        1) OTA_FOUND_HOST="${open[0]}"; log "Fallback trovato a ${OTA_FOUND_HOST} (indirizzo diverso da quello atteso: la scheda di rete con il cavo non e' quella del sistema precedente)."; return 0 ;;
+        1) OTA_FOUND_HOST="${open[0]}"
+           if [ "$OTA_FOUND_HOST" = "$1" ]; then log "Fallback trovato a ${OTA_FOUND_HOST}."
+           else log "Fallback trovato a ${OTA_FOUND_HOST} (indirizzo diverso da quello atteso: la scheda di rete con il cavo non e' quella del sistema precedente)."; fi
+           return 0 ;;
         *) warn "piu' di un dropbear sulla porta 2222: ${open[*]}"; return 1 ;;
     esac
 }
