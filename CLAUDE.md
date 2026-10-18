@@ -96,6 +96,14 @@ di disco di sistema + 256 GB su `/nas`). Regole:
 - Lavorare sotto `/nas/` (Docker ha già `data-root=/nas/docker`); il disco di sistema (64 GB) non va riempito.
 - Ogni build parte staccata con `systemd-run --unit=<nome> --collect …` (o `work/run-build.sh ARCH VERSION` nel clone di `/nas/unitotem-system`):
   una caduta di ssh non la ferma. Log in `work/logs/build-ARCH.log`, sentinella `work/logs/build-ARCH.done`. Mai build in primo piano in una sessione ssh.
-- amd64: nativo sul server. arm64: serve `binfmt_misc` con qemu-aarch64, ma il container non può registrarlo (`/proc/sys/fs/binfmt_misc/register`
-  è dell'host Proxmox): va registrato sull'host Proxmox (`apt install qemu-user-static binfmt-support`); finché non c'è, l'arm64 si costruisce sul Pi (vedi sopra).
+- amd64: nativo sul server. **arm64: le immagini si costruiscono SEMPRE sul Pi** (decisione dell'utente 2026-10-18: sul container la CPU
+  è troppo lenta per l'emulazione e non si chiede di registrare qemu sull'host Proxmox). Il server serve a ciò che non esegue codice arm64.
 - La chiave di firma delle release resta sul PC dell'utente: l'immagine si porta qui con rsync e la release si firma qui.
+
+## Cross-compilazione: sempre preferita
+
+Prima di OGNI compilazione (C/C++, kernel/firmware, estensioni Python, wheel, pacchetti, parti di immagine) verificare e dichiarare se si
+può fare in cross dall'host x86 (cross-gcc/clang, sysroot, multiarch, dpkg-cross, `--host-arch`). Se si sceglie l'emulazione (qemu/binfmt)
+probabilmente si sta sbagliando: va tenuta solo per ciò che deve eseguire codice del target (debootstrap seconda fase, postinst, test) e
+bisogna dire perché. Le immagini arm64 di questo repo non compilano nulla (installano pacchetti e generano l'initramfs): lì il codice del
+target gira per forza, quindi si usa il Pi reale, non l'emulazione.
