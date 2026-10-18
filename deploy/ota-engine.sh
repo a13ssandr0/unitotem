@@ -250,6 +250,7 @@ cmd_probe() {
             echo "UNITOTEM_HAVE_DATA=1"
             echo "UNITOTEM_DATA_UUID=$(blkid -s UUID -o value "$data_dev" 2>/dev/null || echo "")"
             echo "UNITOTEM_DATA_PARTN=$(lsblk -no PARTN "$data_dev" 2>/dev/null | head -1)"
+            echo "UNITOTEM_DATA_START=$(cat "/sys/class/block/${data_dev##*/}/start" 2>/dev/null)"
             # Read-only check, never a repair: a recovery that keeps DATA must be sure it is keeping something sound.
             if awk -v d="$data_dev" '$1==d{f=1} END{exit !f}' /proc/mounts; then
                 echo "UNITOTEM_DATA_FSCK=mounted"
