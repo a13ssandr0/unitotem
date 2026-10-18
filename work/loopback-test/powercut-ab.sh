@@ -82,7 +82,7 @@ prep() {
     : > "$W/serial.log"; vm_start "$ROOTW/base0.qcow2"; wait_ssh 200 || { echo "VM non raggiungibile"; return 1; }
     # Install the current update tool into slot A (it postdates the image), configure the fake release server.
     SSH 'mount -o remount,rw / ; true'
-    _sshpass ssh "${SSH_OPTS[@]}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p $PORT root@127.0.0.1 'cat > /usr/sbin/unitotem-update.new && chmod 755 /usr/sbin/unitotem-update.new && mv /usr/sbin/unitotem-update.new /usr/sbin/unitotem-update' < "$DIR/kiosk/files/unitotem-update"
+    _sshpass ssh "${SSH_OPTS[@]}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p $PORT root@127.0.0.1 'cat > /usr/sbin/unitotem-update.new && chmod 755 /usr/sbin/unitotem-update.new && mv /usr/sbin/unitotem-update.new /usr/sbin/unitotem-update' < "$DIR/unitotem/files/unitotem-update"
     SSH 'mount -o remount,ro / ; mkdir -p /etc/unitotem; printf "UPDATE_BASE_URL=http://10.0.2.2:'$HTTP_PORT'/a13ssandr0/unitotem\nUPDATE_HEALTH_URL=\n" > /etc/unitotem/update.conf; sync'
     UU boot-ok >/dev/null    # confirm the initial trial boot (no health gate here)
     log "stato iniziale: $(UU status | jfield slot) / default $(UU status | jfield default_slot)"

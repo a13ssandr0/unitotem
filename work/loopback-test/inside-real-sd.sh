@@ -159,7 +159,7 @@ log "=== mount-target (arch arm64) ==="
 "${ENGINE[@]}" mount-target --disk "$DISK" --arch arm64 --root-part "$ROOT_PART" --bootfs-part "$BOOTFS_PART" --data-part "$DATA_PART"
 
 check "ROOT montata ha /sbin/init o systemd" bash -c '[ -x /mnt/newroot/sbin/init ] || [ -x /mnt/newroot/usr/lib/systemd/systemd ]'
-check "ROOT montata ha /etc/kiosk (marker UniTotem)" test -d /mnt/newroot/etc/kiosk
+check "ROOT montata ha /etc/unitotem (marker UniTotem)" test -d /mnt/newroot/etc/unitotem
 check "firmware montata sotto /boot/firmware" test -d /mnt/newroot/boot/firmware
 
 log "=== populate-real-kernel (arm64 only) ==="
@@ -192,7 +192,7 @@ check "tryboot.txt scritto e punta al kernel reale" grep -q "kernel8.img" "$BOOT
 check "cmdline-trial.txt scritto" test -f "$BOOTFS_MNT/cmdline-trial.txt"
 # See inside-arm64.sh's matching check: /mnt/newroot/etc/unitotem/config-extra.txt
 # is real content on this just-restored ROOT (installed by
-# kiosk/stage2-configure.sh) - dtoverlay=vc4-kms-v3d missing from tryboot.txt
+# unitotem/stage2-configure.sh) - dtoverlay=vc4-kms-v3d missing from tryboot.txt
 # is exactly the bug that shipped an OTA pipeline where KMS never reached a
 # single real device (found on real hardware this session).
 check "tryboot.txt include il dtoverlay KMS (config-extra.txt)" grep -q "dtoverlay=vc4-kms-v3d" "$BOOTFS_MNT/tryboot.txt"

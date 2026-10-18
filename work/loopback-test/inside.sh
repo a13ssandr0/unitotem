@@ -190,7 +190,7 @@ MOUNT_ARGS=(--disk "$LOOP" --arch amd64 --root-part "$ROOT_PART" --bootfs-part "
 "${ENGINE[@]}" mount-target "${MOUNT_ARGS[@]}"
 
 check "ROOT montata ha /sbin/init o systemd" bash -c '[ -x /mnt/newroot/sbin/init ] || [ -x /mnt/newroot/usr/lib/systemd/systemd ]'
-check "ROOT montata ha /etc/kiosk (marker UniTotem)" test -d /mnt/newroot/etc/kiosk
+check "ROOT montata ha /etc/unitotem (marker UniTotem)" test -d /mnt/newroot/etc/unitotem
 check "BOOT/ESP montata sotto /boot/efi ha grub" test -d /mnt/newroot/boot/efi/EFI
 
 check "unitotem-ota-changes installato" test -x /mnt/newroot/usr/sbin/unitotem-ota-changes
@@ -207,8 +207,8 @@ check "l'hook overlay ancora /var/lib/dpkg su ROOT" \
     grep -q 'dpkg_pin' /mnt/newroot/etc/initramfs-tools/scripts/init-bottom/setup-overlays
 check "timer apt automatici mascherati" \
     bash -c 'ls -l /mnt/newroot/etc/systemd/system/apt-daily.timer 2>/dev/null | grep -q /dev/null'
-check "kiosk-update ferma i servizi reali, non sway" \
-    bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/kiosk-update && ! grep -qE '^[^#]*pkill -x sway' /mnt/newroot/usr/local/bin/kiosk-update"
+check "unitotem-maintenance ferma i servizi reali, non sway" \
+    bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/unitotem-maintenance && ! grep -qE '^[^#]*pkill -x sway' /mnt/newroot/usr/local/bin/unitotem-maintenance"
 
 # La suite dell'immagine e le sue sources.list devono coincidere: un'immagine
 # costruita su trixie che punta apt a bookworm sembra sana finche' qualcuno non

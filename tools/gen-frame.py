@@ -13,7 +13,7 @@ import os
 RADII = {12: 2, 16: 3, 24: 5, 32: 6, 48: 10, 64: 13}          # radius -> line thickness in px
 LINE = (225, 225, 225)
 S = 4                                                           # supersampling for the anti-aliased arcs
-out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "kiosk", "files")
+out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "unitotem", "files")
 
 
 def encode(img, fmt):

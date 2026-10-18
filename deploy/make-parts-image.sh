@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs INSIDE the kiosk-parts-builder container (see Dockerfile.parts and
+# Runs INSIDE the unitotem-parts-builder container (see Dockerfile.parts and
 # deploy/make-parts.sh). Attaches the scratch image file as a loop device
 # and hands off to parts-lib.sh's make_parts() - see that file for the
 # actual per-partition logic.

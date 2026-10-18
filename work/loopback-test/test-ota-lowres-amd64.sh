@@ -1,7 +1,7 @@
 #!/bin/bash
 # Does the amd64 OTA environment really come up at a LOW resolution? Boots the built amd64 image in QEMU (UEFI/OVMF, virtio-vga,
 # whose native size is far above 640x480) into the OTA entry 'slot-a-recover', twice: with the grub.cfg of the image as built
-# (baseline) and with the OTA entries patched the way kiosk/files/grub-ab-entries now generates them, then asks QEMU for a
+# (baseline) and with the OTA entries patched the way unitotem/files/grub-ab-entries now generates them, then asks QEMU for a
 # screendump (PPM header = real framebuffer size) and compares. Needs no root: the ESP is edited with mtools.
 #   test-ota-lowres-amd64.sh IMAGE.img.xz
 set -euo pipefail
@@ -13,14 +13,14 @@ esp_off=$(sfdisk -d "$RAW" | awk -F'[=, ]+' '/start=/ && NR>3 && !d {for(i=1;i<=
 echo ">>> ESP at byte $esp_off"
 mdir -i "$RAW@@$esp_off" ::unitotem-grub/grub >/dev/null
 mcopy -n -i "$RAW@@$esp_off" ::unitotem-grub/grub/grub.cfg "$W/grub.orig"
-python3 - "$W/grub.orig" "$W/grub.base" "$W/grub.low" "$DIR/kiosk/files/grub-ab-entries" <<'PY'
+python3 - "$W/grub.orig" "$W/grub.base" "$W/grub.low" "$DIR/unitotem/files/grub-ab-entries" <<'PY'
 import sys
 orig=open(sys.argv[1]).read()
 entries=open(sys.argv[4]).read().split("\n",2)[2]      # drop the 'exec tail -n +3' header: what grub-mkconfig copies
 begin="### BEGIN /etc/grub.d/10_unitotem_ab ###\n"; end="### END /etc/grub.d/10_unitotem_ab ###"
 assert begin in orig and "function unitotem_lowres" in entries and "=ROOT_A ro quiet nomodeset" in entries
 tail="\nset default=slot-a-recover\nset timeout=0\n"
-# baseline: the grub.cfg exactly as built; low: its entries section replaced by the current kiosk/files/grub-ab-entries
+# baseline: the grub.cfg exactly as built; low: its entries section replaced by the current unitotem/files/grub-ab-entries
 a=orig.index(begin)+len(begin); z=orig.index(end)
 low=orig[:a]+entries+("" if entries.endswith("\n") else "\n")+orig[z:]
 open(sys.argv[2],"w").write(orig+tail); open(sys.argv[3],"w").write(low+tail)

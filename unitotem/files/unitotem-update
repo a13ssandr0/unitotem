@@ -1,0 +1,892 @@
+#!/usr/bin/env python3
+"""unitotem-update - check/fetch/apply whole-image updates (see AB-DESIGN.md).
+
+Implemented: status, check, fetch, apply, confirm, boot-ok, rollback, cancel - for the amd64/GRUB A/B
+layout (two ROOT slots, kernel inside each slot, GRUB on the ESP). The Raspberry Pi backend is not written:
+there the slot-switch commands exit 2 "backend-unsupported".
+
+Exit codes: 0 ok / update available   10 nothing to do   11 (reserved: changes need acceptance)
+            12 operation already running   13 no rollback available   2 failed   127 (shell) command absent.
+Everything is JSON with --json; progress for long operations goes to /run/unitotem-update.progress as ONE json
+line rewritten atomically. `fetch` runs detached (systemd-run) unless --foreground, so a manager restart
+does not interrupt it; poll `status`.
+"""
+import argparse, fcntl, glob, hashlib, json, os, shutil, signal, ssl, subprocess, sys, tempfile, time
+import urllib.request, urllib.error
+sys.path.insert(0, "/usr/lib/unitotem")          # unitotem_identity (the account merge)
+
+CONF_DEFAULTS = {
+    "UPDATE_BASE_URL": "https://github.com/a13ssandr0/unitotem",
+    "UPDATE_CHANNEL": "stable",
+    "UPDATE_KEYS_DIR": "/usr/share/unitotem/update-keys",
+    "UPDATE_STATE_DIR": "/mnt/data/unitotem/update",
+    "UPDATE_VERSION_FILE": "/usr/share/unitotem/release-version",
+    "UPDATE_GRUBENV": "/boot/efi/unitotem-grub/grub/grubenv",
+    "UPDATE_ESP_MOUNT": "/boot/efi",                         # amd64: where the ESP (grubenv) is mounted
+    "UPDATE_BOOTFS": "/boot/firmware",                       # Raspberry Pi: the FAT partition the firmware reads
+    "UPDATE_BACKEND": "",                                    # "grub" | "rpi"; empty = detect
+    "UPDATE_DT_BOOTLOADER": "/proc/device-tree/chosen/bootloader",  # exists on boards with the EEPROM bootloader (tryboot)
+    "UPDATE_CRASHPOINT": "",                                 # test hook: freeze at the named point (power-cut tests)
+    "UPDATE_REBOOT_CMD": "",                                 # test hook: replaces the real reboot
+    "UPDATE_DATA": "/mnt/data",
+    "UPDATE_ETC_CURRENT": "/etc",                 # the running system's /etc (source of the local accounts to carry over)
+    "UPDATE_CMDLINE": "/proc/cmdline",
+    "UPDATE_RUN_DIR": "/run",
+    "UPDATE_HEALTH_URL": "https://localhost/health",   # empty = no health gate
+    "UPDATE_HEALTH_TIMEOUT": "180",
+}
+TIMEOUT = 30
+
+
+class Fail(Exception):
+    def __init__(self, code, msg, rc=2):
+        super().__init__(msg); self.code = code; self.rc = rc
+
+
+def load_conf():
+    conf = dict(CONF_DEFAULTS)
+    path = os.environ.get("UNITOTEM_UPDATE_CONF", "/etc/unitotem/update.conf")
+    if os.path.isfile(path):
+        for line in open(path):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1); conf[k.strip()] = v.strip().strip('"')
+    for k in conf:  # environment wins: lets tests redirect everything without touching /etc
+        if "UNITOTEM_" + k in os.environ:
+            conf[k] = os.environ["UNITOTEM_" + k]
+    return conf
+
+
+def crashpoint(conf, name):
+    """Power-cut test hook. When UPDATE_CRASHPOINT names this point the process announces it on the serial
+    console and then blocks forever, so a test harness can kill the VM at exactly this moment and see what
+    the disk looks like. A no-op unless configured."""
+    if conf.get("UPDATE_CRASHPOINT") != name:
+        return
+    # One-shot: strip the key from the persistent config first, so the boot after the "power cut" does not
+    # freeze at the same point again. Synced, so the stripped file is part of the state the test inherits.
+    cf = os.environ.get("UNITOTEM_UPDATE_CONF", "/etc/unitotem/update.conf")
+    try:
+        lines = [l for l in open(cf).read().splitlines() if not l.startswith("UPDATE_CRASHPOINT=")]
+        _atomic_write(cf, "\n".join(lines) + "\n"); os.sync()
+    except OSError:
+        pass
+    try:
+        with open("/dev/ttyS0", "w") as f: f.write(f"\nCRASHPOINT {name}\n")
+    except OSError:
+        pass
+    sys.stderr.write(f"CRASHPOINT {name}\n"); sys.stderr.flush()
+    time.sleep(10 ** 6)
+
+
+def vkey(v):
+    return [int(x) if x.isdigit() else x for x in v.replace("-", ".").split(".")]
+
+
+def current_version(conf):
+    try:
+        return open(conf["UPDATE_VERSION_FILE"]).read().strip() or "0"
+    except OSError:
+        return "0"
+
+
+def get(url):
+    try:
+        with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
+            return r.read()
+    except (urllib.error.URLError, OSError) as e:
+        raise Fail("network", f"{url}: {e}")
+
+
+def verify(pub_pem, data, sig):
+    with tempfile.TemporaryDirectory() as d:
+        paths = []
+        for name, content, mode in (("pub", pub_pem, "w"), ("data", data, "wb"), ("sig", sig, "wb")):
+            p = os.path.join(d, name)
+            with open(p, mode) as f: f.write(content)
+            paths.append(p)
+        r = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", paths[0], "-rawin",
+                            "-in", paths[1], "-sigfile", paths[2]], capture_output=True)
+        return r.returncode == 0
+
+
+def state_path(conf, name):
+    return os.path.join(conf["UPDATE_STATE_DIR"], name)
+
+
+def event(conf, text):
+    """Forensic trail of what touched the persistent state, on DATA next to it (bounded to ~64 KB). Written
+    best-effort and never allowed to break an operation; it exists so that a power-cut finding can be explained."""
+    try:
+        path = state_path(conf, "events.log")
+        if os.path.exists(path) and os.path.getsize(path) > 65536:
+            os.replace(path, path + ".old")
+        with open(path, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S', time.gmtime())} pid={os.getpid()} {' '.join(sys.argv[1:])[:60]} {text}\n")
+    except OSError:
+        pass
+
+
+def read_state(conf, name, default=None):
+    try:
+        return json.load(open(state_path(conf, name)))
+    except FileNotFoundError:
+        if name in ("slots.json", "pending.json"): event(conf, f"read {name}: assente")
+        return default
+    except (OSError, ValueError) as e:
+        event(conf, f"read {name}: ILLEGGIBILE ({type(e).__name__})")
+        return default
+
+
+def write_state(conf, name, obj):
+    os.makedirs(conf["UPDATE_STATE_DIR"], exist_ok=True)
+    tmp = state_path(conf, name) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, state_path(conf, name))
+    event(conf, f"write {name}: {json.dumps(obj)[:200]}")
+    try:
+        fd = os.open(conf["UPDATE_STATE_DIR"], os.O_RDONLY); os.fsync(fd); os.close(fd)
+    except OSError:
+        pass
+
+
+def fetch_trusted(conf):
+    """Return (manifest, base) after verifying keys.json against the root key and the manifest against it."""
+    if conf["UPDATE_CHANNEL"] != "stable":
+        raise Fail("channel-unsupported", "only the stable channel is implemented (beta needs tag listing)")
+    base = conf["UPDATE_BASE_URL"].rstrip("/") + "/releases/latest/download/"
+    try:
+        root_pub = open(os.path.join(conf["UPDATE_KEYS_DIR"], "root.pub")).read()
+    except OSError as e:
+        raise Fail("no-root-key", f"chiave radice assente: {e}")
+    keys_raw, keys_sig = get(base + "keys.json"), get(base + "keys.json.sig")
+    if not verify(root_pub, keys_raw, keys_sig):
+        raise Fail("bad-keys-signature", "keys.json non firmato dalla chiave radice")
+    keys = json.loads(keys_raw)
+    seen = read_state(conf, "keys-seq.json", {}).get("seq", 0)
+    if keys["seq"] < seen:
+        raise Fail("keys-rollback", f"keys.json seq {keys['seq']} < già visto {seen}")
+    man_raw, man_sig = get(base + "manifest.json"), get(base + "manifest.json.sig")
+    if not any(verify(k["pub"], man_raw, man_sig) for k in keys["keys"]):
+        raise Fail("bad-manifest-signature", "manifest non firmato da nessuna chiave autorizzata")
+    manifest = json.loads(man_raw)
+    if manifest.get("min_updater", 1) > 1:
+        raise Fail("updater-too-old", f"serve unitotem-update >= {manifest['min_updater']}")
+    # Only after everything verified: remember the key-list generation, so an old signed list can't come back.
+    if keys["seq"] > seen:
+        try: write_state(conf, "keys-seq.json", {"seq": keys["seq"]})
+        except OSError: pass
+    return manifest
+
+
+# ---------------------------------------------------------------------------
+# A/B plumbing (amd64 / GRUB backend)
+# ---------------------------------------------------------------------------
+def cur_slot(conf):
+    try:
+        for tok in open(conf["UPDATE_CMDLINE"]).read().split():
+            if tok.startswith("unitotem.slot=") and tok[-1] in "ab":
+                return tok[-1]
+    except OSError:
+        pass
+    return None
+
+
+def other_slot(s):
+    return "b" if s == "a" else "a"
+
+
+def label(slot):
+    return "ROOT_" + slot.upper()
+
+
+def run_out(*cmd, check=True):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if check and r.returncode:
+        raise Fail("command-failed", f"{' '.join(cmd)}: {r.stderr.strip() or r.stdout.strip()}")
+    return r.stdout.strip()
+
+
+def backend(conf):
+    if conf["UPDATE_BACKEND"]:
+        return conf["UPDATE_BACKEND"]
+    if os.path.exists(conf["UPDATE_GRUBENV"]):
+        return "grub"
+    if os.path.exists(os.path.join(conf["UPDATE_BOOTFS"], "config.txt")):
+        return "rpi"
+    return None
+
+
+def need_backend(conf):
+    if cur_slot(conf) is None:
+        raise Fail("not-ab", "questo sistema non e' avviato da uno slot A/B (layout 1)")
+    be = backend(conf)
+    if be is None:
+        raise Fail("backend-unsupported", "nessun backend di avvio riconosciuto (ne' GRUB A/B ne' firmware Raspberry)")
+    if be == "rpi" and not os.path.isdir(conf["UPDATE_DT_BOOTLOADER"]):
+        # Without the EEPROM bootloader there is no tryboot: no firmware-level one-shot, so a power cut
+        # during a trial could leave the board on the new slot with nothing to bring it back.
+        raise Fail("backend-unsupported", "questa scheda Raspberry non ha tryboot (EEPROM bootloader): aggiornamento A/B non supportato")
+    return be
+
+
+def _atomic_write(path, text):
+    tmp = path + ".new"
+    with open(tmp, "w") as f:
+        f.write(text); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _rpi_prefix(text, slot):
+    """config.txt text with os_prefix pointing at SLOT (inserted under the first [all] if absent)."""
+    import re
+    line = f"os_prefix=slot{slot}/"
+    if re.search(r"(?m)^os_prefix=.*$", text):
+        return re.sub(r"(?m)^os_prefix=.*$", line, text, count=1)
+    if re.search(r"(?m)^\[all\]\s*$", text):
+        return re.sub(r"(?m)^\[all\]\s*$", "[all]\n" + line, text, count=1)
+    return line + "\n" + text
+
+
+def be_default_slot(conf):
+    be = backend(conf)
+    if be == "grub":
+        return grubenv_get(conf, "saved_entry").replace("slot-", "") or None
+    import re
+    try:
+        m = re.search(r"(?m)^os_prefix=slot([ab])/", open(os.path.join(conf["UPDATE_BOOTFS"], "config.txt")).read())
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def be_arm_trial(conf, slot):
+    """One-shot boot of SLOT. grub: next_entry (GRUB clears it before booting). Raspberry: tryboot.txt, which the
+    firmware reads only on a boot requested with the tryboot flag - a plain reboot ignores it."""
+    if backend(conf) == "grub":
+        grubenv(conf, "set", f"next_entry=slot-{slot}")
+        return
+    bf = conf["UPDATE_BOOTFS"]
+    cfg = open(os.path.join(bf, "config.txt")).read()
+    with bootfs_rw(bf):
+        _atomic_write(os.path.join(bf, "tryboot.txt"), _rpi_prefix(cfg, slot))
+
+
+def be_set_default(conf, slot):
+    if backend(conf) == "grub":
+        grubenv(conf, "set", f"saved_entry=slot-{slot}")
+        grubenv(conf, "unset", "next_entry")
+        return
+    bf = conf["UPDATE_BOOTFS"]
+    # Promote FROM the trial config when there is one: after a first deploy config.txt is still the fallback's
+    # (kernel=recovery8.img) and tryboot.txt is the only complete description of the real system; in steady state
+    # tryboot.txt is config.txt plus the new os_prefix, so the result is the same either way.
+    trial = os.path.join(bf, "tryboot.txt")
+    src = trial if os.path.exists(trial) else os.path.join(bf, "config.txt")
+    cfg = open(src).read()
+    with bootfs_rw(bf):
+        _atomic_write(os.path.join(bf, "config.txt"), _rpi_prefix(cfg, slot))
+        try: os.unlink(trial)
+        except OSError: pass
+
+
+def be_reboot(conf, trial=False, delay=3):
+    if conf["UPDATE_REBOOT_CMD"]:
+        subprocess.Popen(conf["UPDATE_REBOOT_CMD"], shell=True, env=dict(os.environ, UNITOTEM_REBOOT_TRIAL="1" if trial else "0"))
+        return
+    cmd = ["systemctl", "reboot"]
+    if trial and backend(conf) == "rpi":
+        cmd += ["--reboot-argument=0 tryboot"]        # the argument the Pi firmware reads to honour tryboot.txt
+    subprocess.Popen(["systemd-run", f"--on-active={delay}", "--quiet"] + cmd)
+
+
+class bootfs_rw:
+    """The boot FAT is mounted read-only (fstab), so every write goes through here: remount rw, do the write, sync,
+    remount ro. A no-op where PATH is not a mount point (tests; a system whose fstab predates the ro mount)."""
+    def __init__(self, path):
+        self.path = path; self.on = False
+
+    def __enter__(self):
+        if os.path.ismount(self.path):
+            r = subprocess.run(["mount", "-o", "remount,rw", self.path], capture_output=True, text=True)
+            if r.returncode:
+                raise Fail("bootfs-rw", f"impossibile rimontare {self.path} in scrittura: {r.stderr.strip()}")
+            self.on = True
+        return self
+
+    def __exit__(self, *e):
+        if self.on:
+            subprocess.run(["sync"])
+            subprocess.run(["mount", "-o", "remount,ro", self.path], capture_output=True)
+
+
+def grubenv(conf, op, *kv):
+    if op in ("set", "unset"):
+        with bootfs_rw(conf["UPDATE_ESP_MOUNT"]):
+            return run_out("grub-editenv", conf["UPDATE_GRUBENV"], op, *kv)
+    return run_out("grub-editenv", conf["UPDATE_GRUBENV"], op, *kv)
+
+
+def grubenv_get(conf, key):
+    for line in grubenv(conf, "list").splitlines():
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1]
+    return ""
+
+
+def slots_state(conf):
+    st = read_state(conf, "slots.json", {})
+    for s_ in "ab":
+        st.setdefault(s_, {"version": None, "valid": False})
+    return st
+
+
+def progress(conf, **kw):
+    path = os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update.progress")
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f: json.dump(kw, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def read_progress(conf):
+    try:
+        return json.load(open(os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update.progress")))
+    except (OSError, ValueError):
+        return None
+
+
+class Lock:
+    """One long operation at a time; the pid file lets `cancel` find it."""
+    def __init__(self, conf):
+        self.path = os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update.lock")
+        self.f = None
+
+    def __enter__(self):
+        self.f = open(self.path, "a+")
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise Fail("busy", "un'altra operazione di aggiornamento e' in corso", rc=12)
+        self.f.seek(0); self.f.truncate(); self.f.write(str(os.getpid())); self.f.flush()
+        return self
+
+    def __exit__(self, *e):
+        try: os.unlink(self.path)
+        except OSError: pass
+        self.f.close()
+
+
+def op_running(conf):
+    path = os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update.lock")
+    try:
+        with open(path, "a+") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); fcntl.flock(f, fcntl.LOCK_UN)
+                return None
+            except OSError:
+                f.seek(0); return int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return None
+
+
+def set_last_result(conf, **kw):
+    kw["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    write_state(conf, "last-result.json", kw)
+
+
+def prepare_overlays(conf, new_slot, old_slot, new_root_mnt):
+    """Give the new slot its own overlay upper dirs on DATA: /etc starts from the whitelist
+    (ota-preserve.list of the NEW image) imported from the current slot's /etc, /root is carried over
+    whole, /var starts empty (persistent things live under DATA/unitotem/persist). The current slot's
+    uppers are left untouched, which is what makes a rollback land on its own state."""
+    data = conf["UPDATE_DATA"]
+    for d in ("etc", "root", "var"):
+        for kind in ("upper", "work"):
+            shutil.rmtree(os.path.join(data, kind, f"{d}.{new_slot}"), ignore_errors=True)
+            os.makedirs(os.path.join(data, kind, f"{d}.{new_slot}"))
+    plist = os.path.join(new_root_mnt, "etc/unitotem/ota-preserve.list")
+    # Keep the new image's whitelist: `apply` runs without that slot mounted and re-imports with it.
+    try: shutil.copy2(plist, state_path(conf, "preserve.list"))
+    except OSError: pass
+    n = import_whitelist(conf, new_slot, old_slot, plist)
+    merge_identity_into(conf, new_slot, new_root_mnt)
+    old_root = os.path.join(data, "upper", f"root.{old_slot}")
+    if os.path.isdir(old_root):
+        shutil.copytree(old_root, os.path.join(data, "upper", f"root.{new_slot}"), symlinks=True, dirs_exist_ok=True)
+    return n
+
+
+def merge_identity_into(conf, new_slot, new_root_mnt=None):
+    """Local accounts across the update: the new slot's passwd/shadow/group/gshadow = the new image's + the local part of the running
+    system's (see unitotem/files/unitotem_identity.py for the rules). Re-run at `apply` from the image files saved at `fetch` (that slot
+    is not mounted then). Never raises and never fails the update: on any problem the new slot just gets the image's own files, and
+    that is logged and shown in `status` (identity_merge)."""
+    data = conf["UPDATE_DATA"]
+    dest = os.path.join(data, "upper", f"etc.{new_slot}")
+    base_dir = state_path(conf, "identity-base")
+    try:
+        import unitotem_identity as ident
+        if new_root_mnt:
+            shutil.rmtree(base_dir, ignore_errors=True)
+            os.makedirs(base_dir)
+            for n in ident.FILES:
+                try: shutil.copy2(os.path.join(new_root_mnt, "etc", n), os.path.join(base_dir, n))
+                except OSError: pass
+        res = ident.apply_merge(base_dir, conf["UPDATE_ETC_CURRENT"], dest)
+    except Exception as e:                                   # the module itself is missing/broken
+        res = {"ok": False, "detail": f"identity merge not run ({e}): the new slot uses the image's own account files", "log": []}
+    res["slot"] = new_slot
+    res["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try: write_state(conf, "identity-merge.json", res)
+    except OSError: pass
+    try: event(conf, f"identity merge slot {new_slot}: {'ok' if res['ok'] else 'FAILED'}: {res['detail'][:160]}")
+    except Exception: pass
+    if not res["ok"]:
+        print(f"WARNING: {res['detail']}", file=sys.stderr)
+    return res
+
+
+def import_whitelist(conf, new_slot, old_slot, plist):
+    """Copy the whitelisted /etc paths from the OLD slot's overlay upper into the NEW slot's. Run again at
+    `apply`, so settings changed between the download and the switch are not silently left behind."""
+    data = conf["UPDATE_DATA"]
+    old_etc = os.path.join(data, "upper", f"etc.{old_slot}")
+    new_etc = os.path.join(data, "upper", f"etc.{new_slot}")
+    n = 0
+    if os.path.isfile(plist):
+        for line in open(plist):
+            pat = line.strip()
+            if not pat or pat.startswith("#") or "=" in pat:
+                continue
+            for src in glob.glob(os.path.join(old_etc, pat)):
+                rel = os.path.relpath(src, old_etc)
+                dst = os.path.join(new_etc, rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                if os.path.isdir(src) and not os.path.islink(src):
+                    shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+                else:
+                    # Copy beside, then rename: a power cut leaves the old file or the new one, never half.
+                    tmp = dst + ".unitotem-new"
+                    shutil.copy2(src, tmp, follow_symlinks=False)
+                    os.replace(tmp, dst)
+                n += 1
+    return n
+
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+def cmd_status(a, conf):
+    cur = cur_slot(conf)
+    out = {"layout": 2 if cur else 1, "ab": bool(cur), "current_version": current_version(conf),
+           "slot": cur, "other_slot": other_slot(cur) if cur else None, "trial": False,
+           "pending_confirm": False, "rollback_available": False, "op": None,
+           "last_result": read_state(conf, "last-result.json"), "base_url": conf["UPDATE_BASE_URL"]}
+    pid = op_running(conf)
+    if pid:
+        out["op"] = {"pid": pid, "progress": read_progress(conf)}
+    if cur:
+        st = slots_state(conf)
+        pend = read_state(conf, "pending.json")
+        out["trial"] = bool(pend and pend.get("slot") == cur)
+        out["pending_confirm"] = out["trial"]
+        o = other_slot(cur)
+        out["other_version"] = st[o].get("version")
+        out["rollback_available"] = bool(st[o].get("valid") and st[o].get("confirmed") and not pid)
+        out["armed"] = pend if (pend and pend.get("slot") != cur) else None
+        out["identity_merge"] = read_state(conf, "identity-merge.json")
+        try:
+            out["default_slot"] = be_default_slot(conf)
+        except Fail:
+            out["default_slot"] = None
+    return 0, out
+
+
+def cmd_check(a, conf):
+    m = fetch_trusted(conf)
+    cur = current_version(conf)
+    avail = vkey(m["version"]) > vkey(cur)
+    total = sum(p["size"] for p in m["parts"])
+    out = {"available": avail, "current_version": cur, "version": m["version"], "channel": m["channel"],
+           "arch": m.get("arch"), "layout": m["layout"], "size": total,
+           "needs_layout_migration": m["layout"] != (2 if cur_slot(conf) else 1)}
+    return (0 if avail else 10), out
+
+
+class Cancelled(Exception):
+    pass
+
+
+def rpi_install_bootfiles(conf, cur, new, manifest, base):
+    """Raspberry: the firmware reads kernel, initramfs, dtbs and overlays from the FAT partition, not from
+    ROOT, so a slot is only bootable once its own boot files sit in <bootfs>/slot<new>/. They travel as a
+    separate release asset (the image's slot directory, tar+xz). The firmware proper (start*.elf, fixup*.dat)
+    is shared and NOT replaced here."""
+    part = next((p for p in manifest["parts"] if p.get("role") == "bootfiles"), None)
+    if not part:
+        raise Fail("no-bootfiles-part", "il manifest non contiene la parte con role=bootfiles")
+    bf = conf["UPDATE_BOOTFS"]
+    tmp = os.path.join(bf, f"slot{new}.new")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    h = hashlib.sha256(); done = 0
+    xz = subprocess.Popen(["xz", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    # --no-same-owner/-permissions: the destination is a FAT, which has no owners; tar as root otherwise fails every
+    # file with "Cannot change ownership" and exits 2 (found on the first real in-place update on a Pi).
+    tar = subprocess.Popen(["tar", "--no-same-owner", "--no-same-permissions", "-C", tmp, "-xf", "-"], stdin=xz.stdout)
+    xz.stdout.close()
+    try:
+        with urllib.request.urlopen(base + part["file"], timeout=TIMEOUT) as r:
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk: break
+                h.update(chunk); done += len(chunk); xz.stdin.write(chunk)
+        xz.stdin.close()
+    except (urllib.error.URLError, OSError) as e:
+        xz.kill(); tar.kill(); shutil.rmtree(tmp, ignore_errors=True)
+        raise Fail("network", f"download dei file di avvio interrotto: {e}")
+    xz.wait(); tar.wait()
+    if xz.returncode or tar.returncode:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise Fail("bootfiles-failed", f"xz rc={xz.returncode} tar rc={tar.returncode}")
+    if done != part["size"] or h.hexdigest() != part["sha256"]:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise Fail("bad-checksum", "sha256/dimensione dei file di avvio non corrisponde al manifest")
+    for need in ("kernel8.img", "initramfs8"):
+        if not os.path.isfile(os.path.join(tmp, need)) or os.path.getsize(os.path.join(tmp, need)) == 0:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise Fail("bad-bootfiles", f"{need} assente o vuoto nei file di avvio")
+    # cmdline.txt: this slot's own root=, derived from the slot we are running so console/quiet options stay.
+    import re
+    src = os.path.join(bf, f"slot{cur}", "cmdline.txt")
+    try:
+        cmd = open(src).read().strip()
+    except OSError:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise Fail("no-cmdline", f"{src} non leggibile")
+    cmd = re.sub(r"root=LABEL=\S+", f"root=LABEL={label(new)}", cmd)
+    cmd = re.sub(r"unitotem\.slot=\S+", f"unitotem.slot={new}", cmd)
+    if f"unitotem.slot={new}" not in cmd:
+        cmd += f" unitotem.slot={new}"
+    with open(os.path.join(tmp, "cmdline.txt"), "w") as f:
+        f.write(cmd + "\n"); f.flush(); os.fsync(f.fileno())
+    final = os.path.join(bf, f"slot{new}")
+    old = final + ".old"
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.exists(final):
+        os.rename(final, old)
+    os.rename(tmp, final)
+    shutil.rmtree(old, ignore_errors=True)
+    subprocess.run(["sync"])
+
+
+def do_fetch(a, conf):
+    need_backend(conf)
+    cur = cur_slot(conf); new = other_slot(cur)
+    with Lock(conf):
+        def on_term(*_): raise Cancelled()
+        signal.signal(signal.SIGTERM, on_term)
+        dev = None
+        st = slots_state(conf)
+        try:
+            progress(conf, op="fetch", phase="check", state="running", percent=0)
+            m = fetch_trusted(conf)
+            if m["layout"] != 2:
+                raise Fail("layout-mismatch", f"la release e' per layout {m['layout']}, questo sistema e' layout 2")
+            if vkey(m["version"]) <= vkey(current_version(conf)) and not a.force:
+                raise Fail("not-newer", f"{m['version']} non e' piu' recente di {current_version(conf)}", rc=10)
+            part = next((p for p in m["parts"] if p.get("role") == "root"), None)
+            if not part:
+                raise Fail("no-root-part", "il manifest non contiene la parte con role=root")
+            # By GPT partition name, not filesystem label: a slot that lost power mid-write has a neutral or
+            # stale label, and must still be findable to be rewritten.
+            dev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
+            dev = dev[0] if dev else run_out("blkid", "-L", label(new), check=False)
+            if not dev:
+                raise Fail("no-slot-device", f"partizione {label(new)} non trovata")
+            if subprocess.run(["findmnt", "-S", dev], capture_output=True).returncode == 0:
+                raise Fail("slot-mounted", f"{dev} e' montato: rifiuto di scriverci")
+            # Point of no return for the old contents of the inactive slot: from here it is not a
+            # valid rollback target until the write has been verified.
+            # The slot we are running from is by definition a system that boots: record it, so it is a
+            # legitimate rollback target after the update whether or not a boot-ok ever ran on it.
+            st[cur] = {"version": current_version(conf), "valid": True, "prepared": True, "confirmed": True}
+            st[new] = {"version": None, "valid": False}
+            write_state(conf, "slots.json", st)
+            crashpoint(conf, "fetch_after_invalidate")
+            try: os.unlink(state_path(conf, "pending.json"))
+            except OSError: pass
+            base = conf["UPDATE_BASE_URL"].rstrip("/") + "/releases/latest/download/"
+            total = part["size"]; done = 0; h = hashlib.sha256()
+            xz = subprocess.Popen(["xz", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            pc = subprocess.Popen(["partclone.restore", "-C", "-s", "-", "-o", dev], stdin=xz.stdout,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            xz.stdout.close()
+            t0 = time.monotonic(); last = 0
+            try:
+                with urllib.request.urlopen(base + part["file"], timeout=TIMEOUT) as r:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk: break
+                        h.update(chunk); done += len(chunk)
+                        xz.stdin.write(chunk)
+                        if done * 2 >= total: crashpoint(conf, "fetch_mid_write")
+                        if time.monotonic() - last > 1:
+                            last = time.monotonic()
+                            rate = done / max(last - t0, 1e-3)
+                            progress(conf, op="fetch", phase="write", state="running",
+                                     percent=int(done * 100 / total), bytes=done, total=total,
+                                     eta_s=int((total - done) / rate) if rate else None)
+                xz.stdin.close()
+            except (urllib.error.URLError, OSError) as e:
+                xz.kill(); pc.kill()
+                raise Fail("network", f"download interrotto: {e}")
+            xz.wait(); err = pc.communicate()[1].decode(errors="replace")
+            if xz.returncode or pc.returncode:
+                raise Fail("write-failed", f"xz rc={xz.returncode} partclone rc={pc.returncode}: {err[-300:]}")
+            crashpoint(conf, "fetch_after_write")
+            progress(conf, op="fetch", phase="verify", state="running", percent=100, bytes=done, total=total)
+            if done != total or h.hexdigest() != part["sha256"]:
+                raise Fail("bad-checksum", "sha256/dimensione dell'asset scaricato non corrisponde al manifest")
+            run_out("e2fsck", "-fn", dev)
+            # partclone copies the label and UUID with the data: give this slot its own identity.
+            run_out("tune2fs", "-L", label(new), "-U", "random", dev)
+            crashpoint(conf, "fetch_after_relabel")
+            mnt = tempfile.mkdtemp(prefix="unitotem-slot-")
+            run_out("mount", "-o", "ro", dev, mnt)
+            try:
+                ver = open(os.path.join(mnt, "usr/share/unitotem/release-version")).read().strip()
+                if ver != m["version"]:
+                    raise Fail("version-mismatch", f"l'immagine scritta dichiara {ver}, il manifest {m['version']}")
+                if not os.path.exists(os.path.join(mnt, "usr/lib/systemd/systemd")):
+                    raise Fail("bad-image", "systemd assente nello slot scritto")
+                progress(conf, op="fetch", phase="arm", state="running", percent=100)
+                if backend(conf) == "rpi":
+                    with bootfs_rw(conf["UPDATE_BOOTFS"]):
+                        rpi_install_bootfiles(conf, cur, new, m, base)
+                imported = prepare_overlays(conf, new, cur, mnt)
+            finally:
+                subprocess.run(["umount", mnt]); os.rmdir(mnt)
+            crashpoint(conf, "fetch_before_valid")
+            # Everything the flag vouches for must be on disk BEFORE the flag is: flush, then write it.
+            os.sync()
+            st[new] = {"version": m["version"], "valid": True, "prepared": True}
+            write_state(conf, "slots.json", st)
+            crashpoint(conf, "fetch_after_valid")
+            set_last_result(conf, op="fetch", result="ok", version=m["version"], slot=new, etc_imported=imported)
+            progress(conf, op="fetch", phase="arm", state="done", percent=100, version=m["version"])
+            return 0, {"fetched": True, "version": m["version"], "slot": new, "etc_imported": imported}
+        except Cancelled:
+            st[new] = {"version": None, "valid": False}; write_state(conf, "slots.json", st)
+            set_last_result(conf, op="fetch", result="cancelled")
+            progress(conf, op="fetch", state="cancelled")
+            return 2, {"error": "operazione annullata", "error_code": "cancelled"}
+        except Fail as e:
+            set_last_result(conf, op="fetch", result="failed", error_code=e.code, error=str(e))
+            progress(conf, op="fetch", state="failed", error=str(e), error_code=e.code)
+            raise
+
+
+def cmd_fetch(a, conf):
+    need_backend(conf)
+    if a.foreground:
+        return do_fetch(a, conf)
+    if op_running(conf):
+        raise Fail("busy", "un'altra operazione di aggiornamento e' in corso", rc=12)
+    cmd = [sys.executable, os.path.abspath(__file__), "--json", "fetch", "--foreground"] + (["--force"] if a.force else [])
+    run_out("systemd-run", "--unit", "unitotem-update-fetch", "--collect", "--quiet", *cmd)
+    return 0, {"started": True, "unit": "unitotem-update-fetch"}
+
+
+def slot_check(conf, new, st):
+    # Do not trust the flag alone: an interruption can leave it set over data that is not what it says. A
+    # read-only fsck and the label are cheap next to booting a half-written slot, and a failure here just
+    # means "fetch again" - the operation is repeated, never assumed done.
+    dev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
+    dev = dev[0] if dev else ""
+    if (not dev or run_out("blkid", "-s", "LABEL", "-o", "value", dev, check=False) != label(new)
+            or subprocess.run(["e2fsck", "-fn", dev], capture_output=True).returncode != 0):
+        st[new] = {"version": None, "valid": False}
+        write_state(conf, "slots.json", st)
+        raise Fail("slot-not-verified", f"lo slot {new} non supera il controllo prima dell'attivazione: rifare fetch")
+
+
+def cmd_apply(a, conf):
+    need_backend(conf)
+    cur = cur_slot(conf); new = other_slot(cur)
+    if op_running(conf):
+        raise Fail("busy", "un'operazione e' in corso", rc=12)
+    st = slots_state(conf)
+    if not (st[new].get("valid") and st[new].get("prepared")):
+        raise Fail("nothing-fetched", f"lo slot {new} non contiene una release verificata (eseguire fetch)")
+    slot_check(conf, new, st)
+    crashpoint(conf, "apply_start")
+    write_state(conf, "pending.json", {"slot": new, "from": cur, "from_version": current_version(conf), "version": st[new]["version"],
+                                       "armed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    # A Raspberry trial only exists for a boot requested with the tryboot flag, so arming without the
+    # reboot would leave a tryboot.txt that nothing consumes: refuse instead of pretending it is armed.
+    if backend(conf) == "rpi" and not a.reboot:
+        raise Fail("needs-reboot", "su Raspberry l'avvio di prova richiede il riavvio contestuale: usare apply --reboot")
+    # One-shot: GRUB clears next_entry before booting it (Raspberry: the firmware reads tryboot.txt only on the
+    # tryboot boot), so a crash/power cut during the trial lands back on the current slot with no software involved.
+    imported = import_whitelist(conf, new, cur, state_path(conf, "preserve.list"))
+    merge_identity_into(conf, new)        # again: an account created or a password changed since the download must not be left behind
+    crashpoint(conf, "apply_after_pending")
+    be_arm_trial(conf, new)
+    crashpoint(conf, "apply_after_arm")
+    set_last_result(conf, op="apply", result="armed", version=st[new]["version"], slot=new)
+    if a.reboot:
+        be_reboot(conf, trial=True)
+        return 0, {"armed": True, "slot": new, "rebooting": True}
+    return 0, {"armed": True, "slot": new, "rebooting": False}
+
+
+def confirm_now(conf):
+    cur = cur_slot(conf)
+    pend = read_state(conf, "pending.json")
+    if not pend or pend.get("slot") != cur:
+        raise Fail("nothing-to-confirm", "nessuna prova di avvio in corso su questo slot")
+    crashpoint(conf, "confirm_start")
+    be_set_default(conf, cur)
+    crashpoint(conf, "confirm_after_default")
+    st = slots_state(conf)
+    st[cur] = {"version": pend["version"], "valid": True, "prepared": True, "confirmed": True}
+    if pend.get("from") in st:
+        # It was running right before the switch, so it is a working system whatever bookkeeping said before.
+        prev = st[pend["from"]]
+        st[pend["from"]] = {"version": prev.get("version") or pend.get("from_version"), "valid": True,
+                            "prepared": True, "confirmed": True}
+    write_state(conf, "slots.json", st)
+    try: os.unlink(state_path(conf, "pending.json"))
+    except OSError: pass
+    set_last_result(conf, op="confirm", result="ok", version=pend["version"], slot=cur)
+    return {"confirmed": True, "slot": cur, "version": pend["version"]}
+
+
+def cmd_confirm(a, conf):
+    need_backend(conf)
+    return 0, confirm_now(conf)
+
+
+def health_ok(conf):
+    url = conf["UPDATE_HEALTH_URL"]
+    if not url:
+        return True
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(url, timeout=5, context=ctx) as r:
+            return r.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def cmd_boot_ok(a, conf):
+    """Called by unitotem-boot-ok on every boot. On the first boot of a trial slot: wait for the
+    health endpoint, then confirm; if it never answers, record that and reboot - next_entry was
+    one-shot, so the reboot lands on the previous (still default) slot."""
+    cur = cur_slot(conf)
+    if cur is None:
+        return 0, {"ab": False}
+    pend = read_state(conf, "pending.json")
+    if not pend:
+        # Plain boot: remember that this slot holds a system that has actually come up, which is what
+        # makes it a legitimate rollback target later (a freshly fetched slot is valid but never ran).
+        st = slots_state(conf)
+        ver = current_version(conf)
+        if not (st[cur].get("confirmed") and st[cur].get("version") == ver):
+            st[cur] = {"version": ver, "valid": True, "prepared": True, "confirmed": True}
+            write_state(conf, "slots.json", st)
+        # A manual rollback is "armed" when requested and only done once the previous slot has actually come up.
+        lr = read_state(conf, "last-result.json") or {}
+        if lr.get("op") == "rollback" and lr.get("result") == "armed" and lr.get("slot") == cur:
+            set_last_result(conf, op="rollback", result="ok", slot=cur, version=ver)
+        return 0, {"trial": False}
+    if pend.get("slot") != cur:
+        # We are on the old slot although a trial was armed: the trial slot did not come back.
+        try: os.unlink(state_path(conf, "pending.json"))
+        except OSError: pass
+        st = slots_state(conf)
+        st[pend["slot"]]["confirmed"] = False
+        write_state(conf, "slots.json", st)
+        set_last_result(conf, op="trial", result="rolled-back", reason="trial-did-not-confirm",
+                        version=pend.get("version"))
+        return 0, {"trial": False, "rolled_back": True}
+    crashpoint(conf, "bootok_health_wait")
+    # monotonic, not wall clock: a Raspberry has no RTC, so its clock starts in the past and jumps forward by years
+    # the moment NTP answers - which, with time.time(), made a 180 s health deadline expire ~40 s after boot and
+    # rolled a healthy trial back (found on the first real Pi: "health-timeout" at 48 s of uptime).
+    deadline = time.monotonic() + int(conf["UPDATE_HEALTH_TIMEOUT"])
+    while time.monotonic() < deadline:
+        if health_ok(conf):
+            return 0, confirm_now(conf)
+        time.sleep(3)
+    set_last_result(conf, op="trial", result="rolled-back", reason="health-timeout", version=pend.get("version"))
+    try: os.unlink(state_path(conf, "pending.json"))
+    except OSError: pass
+    # Plain reboot on purpose, also on Raspberry: without the tryboot flag the firmware ignores tryboot.txt and
+    # boots config.txt, i.e. the previous slot.
+    be_reboot(conf, delay=0)
+    return 2, {"error": "il sistema non ha risposto al controllo di salute: ritorno allo slot precedente",
+               "error_code": "health-timeout"}
+
+
+def cmd_rollback(a, conf):
+    need_backend(conf)
+    cur = cur_slot(conf); old = other_slot(cur)
+    if op_running(conf):
+        raise Fail("busy", "un'operazione e' in corso", rc=12)
+    st = slots_state(conf)
+    if not st[old].get("valid"):
+        raise Fail("no-rollback", "lo slot precedente non contiene un sistema valido", rc=13)
+    crashpoint(conf, "rollback_start")
+    be_set_default(conf, old)
+    crashpoint(conf, "rollback_after_default")
+    try: os.unlink(state_path(conf, "pending.json"))
+    except OSError: pass
+    set_last_result(conf, op="rollback", result="armed", slot=old, version=st[old].get("version"))
+    if a.reboot:
+        be_reboot(conf)
+    return 0, {"rollback": True, "slot": old, "rebooting": bool(a.reboot)}
+
+
+def cmd_cancel(a, conf):
+    pid = op_running(conf)
+    if not pid:
+        return 10, {"cancelled": False, "reason": "nessuna operazione in corso"}
+    os.kill(pid, signal.SIGTERM)
+    return 0, {"cancelled": True, "pid": pid}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true")
+    sp = ap.add_subparsers(dest="cmd", required=True)
+    for n in ("status", "check", "confirm", "boot-ok", "cancel"):
+        sp.add_parser(n)
+    f = sp.add_parser("fetch"); f.add_argument("--foreground", action="store_true"); f.add_argument("--force", action="store_true")
+    f.add_argument("--accept-changes", help="accettato e ignorato: in A/B lo slot corrente resta intatto")
+    for n in ("apply", "rollback"):
+        x = sp.add_parser(n); x.add_argument("--reboot", action="store_true")
+    a = ap.parse_args()
+    conf = load_conf()
+    table = {"status": cmd_status, "check": cmd_check, "fetch": cmd_fetch, "apply": cmd_apply, "confirm": cmd_confirm,
+             "boot-ok": cmd_boot_ok, "rollback": cmd_rollback, "cancel": cmd_cancel}
+    try:
+        rc, out = table[a.cmd](a, conf)
+    except Fail as e:
+        rc, out = e.rc, {"error": str(e), "error_code": e.code}
+    except Cancelled:
+        rc, out = 2, {"error": "operazione annullata", "error_code": "cancelled"}
+    if a.json:
+        print(json.dumps(out))
+    else:
+        for k, v in out.items(): print(f"{k}: {v}")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

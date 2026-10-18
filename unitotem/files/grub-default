@@ -1,0 +1,7 @@
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=1
+GRUB_TIMEOUT_STYLE=hidden
+GRUB_DISTRIBUTOR="UniTotem"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 rd.systemd.show_status=false systemd.show_status=false rd.udev.log_level=3"
+GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200n8"
+GRUB_TERMINAL=console

@@ -25,7 +25,7 @@ Se questo comando produce righe (a parte commenti/`require_cmd`), c'è una chiam
 
 ## Build arm64: preferire l'hardware Raspberry reale, quando disponibile
 
-`build-kiosk.sh`'s pipeline arm64 gira sotto emulazione `qemu-aarch64` via Docker su questo host x86_64.
+`build-unitotem.sh`'s pipeline arm64 gira sotto emulazione `qemu-aarch64` via Docker su questo host x86_64.
 Questo è **strutturalmente lento**, non un bug: `mkinitramfs` (via `copy_exec`'s uso di `ldd`, che esegue
 davvero il linker dinamico del binario target) e gli script postinst/trigger di `apt-get install` (che
 invocano binari reali come `ldconfig`, `depmod`, `systemctl`) eseguono codice arm64 vero, che deve passare
@@ -43,7 +43,7 @@ sotto emulazione (in particolare `mkinitramfs`/stage1b) — già dimostrato più
 stesso progetto (~10 min contro 12+ min e incompleto sotto qemu, vedi memoria `ota-redesign-project`). Se il
 Pi non è raggiungibile, procedere con la build Docker+qemu-aarch64 attuale come fallback.
 
-**Nota di implementazione (2026-08-02)**: `build-kiosk.sh` non implementa ancora questo probe automaticamente
+**Nota di implementazione (2026-08-02)**: `build-unitotem.sh` non implementa ancora questo probe automaticamente
 — è ancora un passo manuale/procedurale da seguire quando si avvia una build arm64, non (ancora) codificato
 nello script. Prima di rifarlo un'ennesima volta a mano, vale la pena implementarlo come parte dello script
 stesso.
@@ -70,7 +70,7 @@ ogni sessione e agente di questo repo (e della sessione del manager):
 
 - **Una prova = una cartella sotto `work/<nome>/`**, con una riga in `work/README.md` (scopo, data, "eliminabile quando"). Niente
   immagini sciolte nella radice di `work/` o `deploy/`.
-- **Conservare solo l'ultimo risultato utile.** Per le build: l'ultima `kiosk-*.img.xz` e l'ultima `*.parts` per architettura, più
+- **Conservare solo l'ultimo risultato utile.** Per le build: l'ultima `unitotem-*.img.xz` e l'ultima `*.parts` per architettura, più
   la release servita al Pi. Le copie `.prevNN`, le `*.parts` vecchie, le release intermedie e le immagini di prova si eliminano
   appena la prova è conclusa, non "più avanti".
 - **Alla fine di ogni prova/round: pulire.** Elencare cosa è stato prodotto (`du -sh`), cancellare ciò che è rigenerabile con percorsi

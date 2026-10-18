@@ -2,7 +2,7 @@
 
 **Stato (2026-10-10): amd64/GRUB implementato e provato in QEMU/UEFI, arm64 non implementato.** Vedi
 "Stato dell'implementazione" in fondo. Il resto di questo documento è la proposta di partenza, dedotta dal codice
-attuale (`PLAN.md`, `STATO.md`, `deploy/ota-engine.sh`, `kiosk/files/*`) e da documentazione nota dei
+attuale (`PLAN.md`, `STATO.md`, `deploy/ota-engine.sh`, `unitotem/files/*`) e da documentazione nota dei
 firmware; le voci che dipendono da un comportamento non provato sono marcate **[da verificare]**.
 
 ## Obiettivo (dall'utente)
@@ -78,7 +78,7 @@ prima di migrare.
 Nello stage finale della build: `dpkg-divert` di `/usr/bin/apt*` e dei suoi helper (non `dpkg --purge`,
 che con `--force-depends` lascia il database incoerente), e rimozione di `/etc/apt/sources.list*` e
 `/var/lib/apt/lists`. Il database dpkg è già ancorato a ROOT (`overlayfs-hook.sh`), quindi viaggia con
-l'immagine. Chi usava `apt` a runtime (`manager/utils/system/apt.py`, `kiosk-update`) va ritirato.
+l'immagine. Chi usava `apt` a runtime (`manager/utils/system/apt.py`, `unitotem-maintenance`) va ritirato.
 `unitotem-ota-changes` resta utile: dice cosa è stato modificato nello slot attivo e che andrà perso
 all'aggiornamento successivo.
 
@@ -143,7 +143,7 @@ vecchio (contatore già esistente in `cmd_init_premount`).
 
 ## Cosa va toccato nel codice
 
-`kiosk/common.sh` e `stage3-image.sh` (layout, label, `os_prefix`/GRUB), `kiosk/files/fstab-*`,
+`unitotem/common.sh` e `stage3-image.sh` (layout, label, `os_prefix`/GRUB), `unitotem/files/fstab-*`,
 `ota-init-premount`, `ota-local-bottom-verify`, `overlayfs-hook.sh` (upper per-slot),
 `deploy/parts-lib.sh` (label `ROOT_A/B`), `deploy/ota-engine.sh` (slot-aware, arming/promote), nuovo
 `unitotem-update`, `unitotem-boot-ok`, e i test di loopback (nuovo scenario "aggiornamento in sede").
@@ -158,7 +158,7 @@ backup su host prima di toccare la tabella.
 ## Release e chiavi di firma su GitHub
 
 Fatti verificati: il repo è `a13ssandr0/unitotem` ed è **pubblico**; `gh` è autenticato; non esiste ancora
-`.github/`. Le immagini attuali pesano ~1.1 GB (`kiosk-*-amd64.img.xz`), sotto il limite di **2 GiB per
+`.github/`. Le immagini attuali pesano ~1.1 GB (`unitotem-*-amd64.img.xz`), sotto il limite di **2 GiB per
 asset** delle GitHub Release (limite noto da documentazione, non provato qui). Se un ROOT lo superasse, il
 manifest dichiara più `parts` per lo stesso label e il dispositivo le concatena.
 
@@ -220,10 +220,10 @@ che giustifichi il rischio, e già in contrasto con la scelta di restare su Debi
 
 ## Stato dell'implementazione (2026-10-10, sera)
 
-Attivo con `AB_LAYOUT=1` in `build-kiosk.sh` (spento di default: il layout a ROOT singolo resta quello supportato).
+Attivo con `AB_LAYOUT=1` in `build-unitotem.sh` (spento di default: il layout a ROOT singolo resta quello supportato).
 Le architetture si costruiscono ora in parallelo e i pacchetti vengono scaricati con aria2 in una cache persistente
 (`work/apt-cache`); le immagini amd64/arm64 A/B si ottengono con
-`AB_LAYOUT=1 RELEASE_VERSION=x.y.z ARCHES="amd64 arm64" ./build-kiosk.sh`.
+`AB_LAYOUT=1 RELEASE_VERSION=x.y.z ARCHES="amd64 arm64" ./build-unitotem.sh`.
 
 **Provato in QEMU/UEFI (amd64), non su hardware:**
 - Primo deploy da host (`remote-deploy.sh` + `ota-engine.sh`, modalita' A/B): harness loopback `work/loopback-test/run-ab.sh`

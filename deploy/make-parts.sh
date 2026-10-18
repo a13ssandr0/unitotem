@@ -1,11 +1,11 @@
 #!/bin/bash
-# Host wrapper: turns a built kiosk-*-$ARCH.img.xz into a parts set
-# (deploy/$ARCH/<name>.parts/) via the kiosk-parts-builder container. See
+# Host wrapper: turns a built unitotem-*-$ARCH.img.xz into a parts set
+# (deploy/$ARCH/<name>.parts/) via the unitotem-parts-builder container. See
 # Dockerfile.parts/deploy/make-parts-image.sh for what actually happens
 # inside; this script only prepares the scratch decompressed image and
 # drives docker.
 #
-# Deliberately decoupled from the kiosk build itself (kiosk/stage3-image.sh
+# Deliberately decoupled from the kiosk build itself (unitotem/stage3-image.sh
 # has its own optional MAKE_PARTS hook that calls the same library against
 # the loop device it already has attached, for when a fresh build is
 # happening anyway) - the point of this standalone path is being able to
@@ -42,7 +42,7 @@ if [ -n "$OPT_IMAGE" ]; then
     esac
 else
     [ -n "$OPT_ARCH" ] || die "--arch richiesto quando non si specifica --image"
-    IMAGE=$(ls -t "${DIR}/deploy/${OPT_ARCH}/kiosk-"*"-${OPT_ARCH}.img.xz" 2>/dev/null | head -1)
+    IMAGE=$(ls -t "${DIR}/deploy/${OPT_ARCH}/unitotem-"*"-${OPT_ARCH}.img.xz" 2>/dev/null | head -1)
     [ -n "$IMAGE" ] || die "nessuna immagine trovata per ${OPT_ARCH}"
 fi
 [ -f "$IMAGE" ] || die "immagine non trovata: $IMAGE"
@@ -51,8 +51,8 @@ ARCH="$OPT_ARCH"
 SETNAME=$(basename "$IMAGE" .img.xz)
 OUTDIR="${OPT_OUT:-${DIR}/deploy/${ARCH}/${SETNAME}.parts}"
 
-log "Costruisco l'immagine del container kiosk-parts-builder..."
-${DOCKER} build -f "${DIR}/Dockerfile.parts" -t kiosk-parts-builder "${DIR}"
+log "Costruisco l'immagine del container unitotem-parts-builder..."
+${DOCKER} build -f "${DIR}/Dockerfile.parts" -t unitotem-parts-builder "${DIR}"
 
 SCRATCH_DIR="${DIR}/work/parts-scratch.$$"
 mkdir -p "$SCRATCH_DIR"
@@ -71,7 +71,7 @@ ${DOCKER} run --rm --privileged \
     -v /dev:/dev \
     -v "${SCRATCH_DIR}:/scratch" \
     -v "${DIR}/deploy:/deploy" \
-    kiosk-parts-builder \
+    unitotem-parts-builder \
     /parts/make-parts-image.sh \
         "/scratch/$(basename "$IMAGE" .xz)" "$ARCH" "$SETNAME" "$(basename "$IMAGE" .xz)"
 

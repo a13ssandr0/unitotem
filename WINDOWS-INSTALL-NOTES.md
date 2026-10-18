@@ -63,7 +63,7 @@ Tutto **[V]** sul repo salvo dove indicato.
 
 - `deploy/remote-deploy.sh` pilota il target via SSH solo tramite gli helper di `deploy/lib.sh` (`ssh_t`, `scp_root`, `ota_ssh`...; regola di `CLAUDE.md`: mai `ssh`/`scp` grezzi, sempre `_sshpass`).
 - `do_probe()` (riga ~104) esegue **uno script bash** sul target: `uname -m`, `/sys/firmware/efi` (UEFI si/no), modello device-tree (Pi), **Secure Boot** letto dalla variabile EFI `SecureBoot`
-  (`unknown` se illeggibile), presenza di `grub-reboot`/`update-grub`, `HAVE_UNITOTEM` (esiste `/etc/kiosk`), `HAVE_DATA`, punto di mount del boot e spazio libero (`BOOTFREE`), RAM,
+  (`unknown` se illeggibile), presenza di `grub-reboot`/`update-grub`, `HAVE_UNITOTEM` (esiste `/etc/unitotem`), `HAVE_DATA`, punto di mount del boot e spazio libero (`BOOTFREE`), RAM,
   rete (interfaccia, wired/wifi, dhcp/static, SSID+PSK se Wi-Fi) e l'elenco dischi `DISK: nome|size|tran|model|by-id`. Se `EFI=1` -> `ARCH=amd64 FIRMWARE=uefi`, altrimenti `bios`.
 - `cmd_deploy()` (riga ~711): `do_probe`, `select_disk`, scelta del parts set, `secure_boot_gate`, `changes_gate`, conferma "SI". Poi due rami:
   - **target gia' UniTotem**: `ssh_t "unitotem-ota-arm --port 2222"` (script sul target che scrive `unitotem-ota.request` + `unitotem-ota.conf` sulla ESP e riavvia).
@@ -84,8 +84,8 @@ Tutto **[V]** sul repo salvo dove indicato.
   - Contenuto non compresso dell'initrd: 201 MB di cui **firmware amdgpu 81,5 MB**, radeon 3,3 MB, moduli kernel 38,7 MB. **[V]**
   - Driver di rete cablata: ampio (e1000e, igc, igb, ixgbe, r8169, tg3, bnxt, atlantic, USB: ax88179, cdc_ether, cdc_ncm...). Storage: nvme, ahci, xhci, uas, usb-storage. **[V]**
   - Wi-Fi: **solo** `brcmfmac`/`brcmutil` (per il Pi); nessun `iwlwifi`, `rtw88/89`, `ath1xk`, `mt76`; in `/lib/firmware` solo amdgpu, radeon, `cis`, `ene-ub6250`, `cxgb3/4`, `tigon`, `kaweth`, `advansys`, `microchip`, `tehuti`, `isci`, `3com`, `rp2.fw`, `regulatory.db`: **nessun firmware Wi-Fi e nemmeno `rtl_nic`** (alcune Realtek r8169 lo vogliono, **[R]**). **[V]** per la lista.
-  - (Nota: `kiosk/stage1-packages.sh` installa `firmware-linux-nonfree`, `firmware-misc-nonfree`, `firmware-brcm80211` nell'**immagine**, ma questi firmware NON finiscono nell'initrd di recovery. **[V]**)
-- **Catena Secure Boot** (commit `748ed61`, `kiosk/stage3-image.sh` righe ~256-281, `deploy/ota-engine.sh` righe ~557-575): l'immagine porta in `EFI/unitotem-sb/` `shimx64.efi`, `mmx64.efi`, `grubx64.efi` (firmati), `grub-unsigned.efi` e uno `grub.cfg` "stub"
+  - (Nota: `unitotem/stage1-packages.sh` installa `firmware-linux-nonfree`, `firmware-misc-nonfree`, `firmware-brcm80211` nell'**immagine**, ma questi firmware NON finiscono nell'initrd di recovery. **[V]**)
+- **Catena Secure Boot** (commit `748ed61`, `unitotem/stage3-image.sh` righe ~256-281, `deploy/ota-engine.sh` righe ~557-575): l'immagine porta in `EFI/unitotem-sb/` `shimx64.efi`, `mmx64.efi`, `grubx64.efi` (firmati), `grub-unsigned.efi` e uno `grub.cfg` "stub"
   (`search --no-floppy --label --set=root EFI` poi `configfile .../unitotem-grub/grub/grub.cfg`). `populate-bootfs --secure-boot shim` copia gli stub in `EFI/BOOT` **e** `EFI/debian`, e sostituisce `BOOTX64.EFI` con lo shim per ultimo, via rename. Il commento nel codice: *"The signed GRUB has a fixed prefix and cannot be pointed elsewhere"*. **[V]**
   - I binari firmati in `work/sb-test/signed/` (altro agente, solo lettura): `shimx64.efi.signed` 1.036.152 B con **due firme** (Microsoft Windows UEFI Driver Publisher <- Microsoft Corporation UEFI CA 2011; e Microsoft UEFI CA 2023 signer <- Microsoft UEFI CA 2023), `grubx64.efi.signed` 2.684.352 B e `mmx64.efi.signed` 873.904 B firmati "Debian Secure Boot Signer 2022". Totale catena ~4,6 MB. **[V]** (`sbverify --list`); che quei file coincidano con quelli dell'immagine finale: **[V]** (laboratorio 2026-10-13: `sha256sum` identici a quelli estratti da `work/sb-test/built2.img`).
   - Test gia' fatto dall'altro agente (`work/sb-test/STATE.md`): l'immagine senza shim sotto OVMF con chiavi Microsoft viene rifiutata ("Access Denied -- rejected probably by Secure Boot"). **[V]** (file di stato letto).
@@ -350,7 +350,7 @@ Output a righe `KEY: value` identico nel formato, cosi' `print_probe`, `secure_b
 | `EFI` | PEFirmwareType==2 oppure `SetFirmwareEnvironmentVariable` ok (par. 6.4) | [V]/[R] |
 | `SECUREBOOT` | `Confirm-SecureBootUEFI` -> 1/0, errore -> `unknown` (come oggi) | [V] cmdlet |
 | (nuovo) `SB_3RDPARTY_CA` | stringa in `db` (par. 6.4): `2011`, `2023`, `both`, `none`, `unknown` | [R] |
-| `HAVE_UNITOTEM` | sempre `0` (nessun `/etc/kiosk`) | [I] |
+| `HAVE_UNITOTEM` | sempre `0` (nessun `/etc/unitotem`) | [I] |
 | `BOOTMNT`/`BOOTFREE` | ESP: `Get-Partition` con `GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'`, monta `mountvol S: /S`, spazio libero `[IO.DriveInfo]` | [R] |
 | `MEMAVAIL` | `(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory` KB (ma conta la RAM *totale* per l'initrd: ~200 MB scompressi + page cache) | [R]/[I] |
 | `NETIF/NETLINK/NETMODE/NETADDR/NETGW/NETDNS/WIFI_*` | `Get-NetAdapter`, `Get-NetIPConfiguration` (dhcp/static), tipo `PhysicalMediaType`/`NdisPhysicalMedium`, Wi-Fi via `netsh wlan export` | [R] |
@@ -380,7 +380,7 @@ Mai `rm` con glob/variabili anche qui: percorsi letterali dallo state-file, un f
 | `deploy/windows/grub-windows.cfg` | Stub: `search --no-floppy --file --set=root /EFI/unitotem-ota/vmlinuz` poi `linux ($root)/EFI/unitotem-ota/vmlinuz unitotem.ota=1 console=tty0 ...` e `initrd ($root)/EFI/unitotem-ota/initrd.img`. NB: lo stub dell'immagine usa `--label EFI`, che su Windows **non** esiste (la ESP Windows di solito non ha quella label) -> serve ricerca per file o UUID. **[V]** (stub dell'immagine) / **[I]** |
 | `deploy/lib.sh` | `ssh_win`/`scp_win` su `_sshpass` (solo modalita' B). |
 | `deploy/remote-deploy.sh` | rilevazione OS target in `do_probe`; ramo `FIRMWARE=uefi-windows` in `cmd_deploy` (al posto di `push_recovery_kernel`+`arm_grub`); `cmd_disarm` ramo Windows; `secure_boot_gate` esteso con lo stato 3rd-party CA; nuovo gate BitLocker. |
-| `kiosk/stage1-recovery-initrd.sh` (+ `ota-engine.sh`) | variante initrd "slim" (senza amdgpu/radeon) per Windows; lettura rete anche nel percorso legacy (par. 8.1); password OTA per-deploy. |
+| `unitotem/stage1-recovery-initrd.sh` (+ `ota-engine.sh`) | variante initrd "slim" (senza amdgpu/radeon) per Windows; lettura rete anche nel percorso legacy (par. 8.1); password OTA per-deploy. |
 
 ### 10.2 Sequenza passo-passo (modalita' A, UEFI, cablato)
 
@@ -506,7 +506,7 @@ Comportamento dei firmware OEM (che e' il rischio n.1), la gestione reale di `Bo
 7. **Gestione di BitLocker**: pretendere che sia gia' sospeso/spento dall'operatore, oppure sospenderlo noi con `Suspend-BitLocker`?
 8. **Password dell'ambiente OTA**: accettare la fissa `unitotem` anche su LAN non fidate, o una per-deploy?
 9. **Ambito di supporto**: quali PC provare? (Almeno una Surface se interessa il caso CA disattivata; un laptop Dell/HP/Lenovo consumer; un desktop.)
-10. **Vale la pena?** Se l'unico scopo e' evitare una chiavetta su pochi PC, una chiavetta USB con l'ISO installer (`deploy/unitotem-kiosk-installer-*.iso` esiste gia' nel repo **[V]**) e' molto meno lavoro; lo script ha senso se i PC sono molti, remoti, o senza accesso fisico comodo.
+10. **Vale la pena?** Se l'unico scopo e' evitare una chiavetta su pochi PC, una chiavetta USB con l'ISO installer (`deploy/unitotem-installer-*.iso` esiste gia' nel repo **[V]**) e' molto meno lavoro; lo script ha senso se i PC sono molti, remoti, o senza accesso fisico comodo.
 
 ---
 
@@ -561,7 +561,7 @@ Secondarie (forum, giornali, snippet di ricerca; indizi):
 - Windows 11 Dev VM non disponibili: https://www.neowin.net/news/microsofts-official-windows-11-virtual-machines-are-no-longer-available/ , https://learn.microsoft.com/en-us/answers/questions/2169617/download-of-testing-windows-11-hyper-v-vms
 - Kexec Windows (inverso): https://www.phoronix.com/news/Google-Kexec-Windows-Linux
 
-Nel repo: `deploy/remote-deploy.sh`, `deploy/ota-engine.sh`, `deploy/lib.sh`, `kiosk/files/unitotem-ota-arm`, `kiosk/stage3-image.sh`, `kiosk/stage1-packages.sh`, `AB-DESIGN.md`, `API-OTA.md`, `work/sb-test/{STATE.md,vm.sh,signed/}`, `work/windows-research/STATE.md`.
+Nel repo: `deploy/remote-deploy.sh`, `deploy/ota-engine.sh`, `deploy/lib.sh`, `unitotem/files/unitotem-ota-arm`, `unitotem/stage3-image.sh`, `unitotem/stage1-packages.sh`, `AB-DESIGN.md`, `API-OTA.md`, `work/sb-test/{STATE.md,vm.sh,signed/}`, `work/windows-research/STATE.md`.
 
 ---
 
@@ -605,7 +605,7 @@ bcdedit /set {fwbootmgr} bootsequence {GUID}               :: one-shot
 ### 15.5 E4 - ambiente OTA avviato da Windows con Secure Boot attivo
 - **[V]** Kernel+initrd dalla FAT32 (`linux ($root)/vmlinuz unitotem.ota=1 nomodeset console=tty0 console=ttyS0,115200`, `initrd ($root)/initrd.img`) attraverso la catena firmata: l'ambiente OTA parte, prende DHCP sulla e1000e (**stesso IP 192.168.122.88 di Windows**, stesso MAC), schermo: `OTA update mode / Reason: booted from the resident fallback image / Address / Port: 2222 / Waiting for commands over SSH...` (`shots/e4-ota-screen-from-windows-esp-secureboot.png`, bassa risoluzione).
 - **[V]** Dall'host `ota_ssh` su 2222 risponde; `dmesg`: `Kernel is locked down from EFI Secure Boot`; `unitotem-ota-engine probe` ok (`UNITOTEM_EFI=1`). Il percorso "legacy" (`unitotem.ota=1`) usa DHCP, come dedotto.
-- **STRETCH [V]: installazione completa.** `deploy/make-parts.sh --arch amd64 --image deploy/amd64/kiosk-2026-10-12-amd64.img.xz` (docker, utente normale, ~18 min; ha ignorato `--out` e scritto in `deploy/amd64/kiosk-2026-10-12-amd64.parts`). `cmd_recover` e' **solo uno stub** (si ferma con un messaggio): ho scritto `tools/win-lab/recover-driver.sh`, che esegue le vere `run_ota_sequence()`/`populate_bootfs_step()` estratte da `remote-deploy.sh` con `SB_MODE=shim`. Esito: GPT riscritta, ESP+ROOT_A+ROOT_B+DATA ripristinate, catena attivata (`EFI/BOOT/BOOTX64.EFI`=shim), riavvio: **UniTotem parte con Secure Boot attivo** (`shots/e4-unitotem-booted-under-secureboot.png`; via ssh: `Kernel is locked down from EFI Secure Boot`, efivar `SecureBoot`=1; `BootCurrent`=0002 = voce auto-creata da OVMF). La voce orfana `Boot0005 "UniTotem OTA"` resta in NVRAM; le voci Windows erano gia' sparite dal `BootOrder`.
+- **STRETCH [V]: installazione completa.** `deploy/make-parts.sh --arch amd64 --image deploy/amd64/unitotem-2026-10-12-amd64.img.xz` (docker, utente normale, ~18 min; ha ignorato `--out` e scritto in `deploy/amd64/unitotem-2026-10-12-amd64.parts`). `cmd_recover` e' **solo uno stub** (si ferma con un messaggio): ho scritto `tools/win-lab/recover-driver.sh`, che esegue le vere `run_ota_sequence()`/`populate_bootfs_step()` estratte da `remote-deploy.sh` con `SB_MODE=shim`. Esito: GPT riscritta, ESP+ROOT_A+ROOT_B+DATA ripristinate, catena attivata (`EFI/BOOT/BOOTX64.EFI`=shim), riavvio: **UniTotem parte con Secure Boot attivo** (`shots/e4-unitotem-booted-under-secureboot.png`; via ssh: `Kernel is locked down from EFI Secure Boot`, efivar `SecureBoot`=1; `BootCurrent`=0002 = voce auto-creata da OVMF). La voce orfana `Boot0005 "UniTotem OTA"` resta in NVRAM; le voci Windows erano gia' sparite dal `BootOrder`.
 - **BUG TROVATO [V]** (`work/win-lab/logs/e4-install-attempt1.log`): la prima installazione e' fallita a meta' (disco con tabella nuova) perche' l'initrd di recovery amd64 (sha256 `4967187009a0...`, build 01:32 del 13/10) **non contiene `tr` ne' `cmp`**, usati da `deploy/ota-engine.sh:432` (padding del grubenv: `tr ' ' '#'` -> "scrittura grubenv fallita") e `:572` (`cmp -s` sullo shim -> "lo shim scritto non coincide"). `lsinitramfs`: ci sono cat/cp/dd/mv/sha256sum/sync, mancano tr e cmp. Aggirato **solo nel laboratorio** copiando in RAM il busybox statico dell'host come `tr`/`cmp`; **nessuna modifica al repo**: da correggere (aggiungere `tr` e `cmp` all'initrd, o riscrivere i due punti). Senza, ne' `set-default-recovery` (A/B) ne' `populate-bootfs --secure-boot shim` funzionano.
 
 ### 15.6 E5 - controlli negativi e altre strade
