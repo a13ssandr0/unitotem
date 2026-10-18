@@ -11,6 +11,17 @@ exec tail -n +3 "$0"
 # the kernel; nomodeset stops the DRM drivers (i915, amdgpu, nouveau, ...) from taking over at the monitor's native size, so
 # the console and /dev/fb0 stay at that mode. The OTA environment needs only a console and the network. 640x480 first, so a
 # firmware without it lands on the next smallest instead of the native mode.
+# Self-healing boot: when the chosen slot cannot even be loaded (its filesystem is unreadable, so GRUB finds no kernel), GRUB tries
+# the OTHER slot, and when that fails too the resident OTA fallback, which waits for a host to write the disk (deploy recover).
+# ${default} is already the entry being booted here (saved_entry, or the one-shot next_entry of a trial), so the alternative is
+# always "the slot that is not this one".
+if [ "${default}" = slot-a ]; then
+    set fallback="slot-b ota-recovery"
+elif [ "${default}" = slot-b ]; then
+    set fallback="slot-a ota-recovery"
+else
+    set fallback="ota-recovery"
+fi
 function unitotem_lowres {
     insmod all_video
     insmod gfxterm

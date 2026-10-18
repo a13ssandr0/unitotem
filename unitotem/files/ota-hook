@@ -64,7 +64,7 @@ ln -sf /usr/lib/unitotem/ota-engine.sh "${DESTDIR}/usr/sbin/unitotem-ota-engine"
 for bin in \
     partclone.extfs partclone.fat partclone.dd partclone.restore partclone.info \
     sgdisk parted sfdisk partx blockdev blkid mountpoint \
-    e2fsck tune2fs resize2fs dumpe2fs mke2fs e2label mkfs.fat fatlabel mkfs.ext4 \
+    e2fsck tune2fs resize2fs dumpe2fs mke2fs e2label mkfs.fat fsck.fat fatlabel mkfs.ext4 \
     xz unxz pv whiptail \
     dropbear dropbearkey dbclient scp \
     wpa_supplicant wpa_passphrase \

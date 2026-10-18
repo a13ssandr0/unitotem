@@ -34,6 +34,7 @@ CONF_DEFAULTS = {
     "UPDATE_RUN_DIR": "/run",
     "UPDATE_HEALTH_URL": "https://localhost/health",   # empty = no health gate
     "UPDATE_HEALTH_TIMEOUT": "180",
+    "UPDATE_AUTOREPAIR": "1",                     # rebuild a damaged other slot from the running one after a plain boot
 }
 TIMEOUT = 30
 
@@ -804,6 +805,11 @@ def cmd_boot_ok(a, conf):
         lr = read_state(conf, "last-result.json") or {}
         if lr.get("op") == "rollback" and lr.get("result") == "armed" and lr.get("slot") == cur:
             set_last_result(conf, op="rollback", result="ok", slot=cur, version=ver)
+        note_failover(conf)
+        # Self-healing: if the other slot held a system and no longer passes its check, rebuild it from this one (detached, idle priority).
+        if conf.get("UPDATE_AUTOREPAIR", "1") == "1":
+            try: cmd_repair(argparse.Namespace(foreground=False, auto=True, force=False), conf)
+            except Exception as e: event(conf, f"repair not started: {e}")
         return 0, {"trial": False}
     if pend.get("slot") != cur:
         # We are on the old slot although a trial was armed: the trial slot did not come back.
@@ -853,6 +859,153 @@ def cmd_rollback(a, conf):
     return 0, {"rollback": True, "slot": old, "rebooting": bool(a.reboot)}
 
 
+# ---------------------------------------------------------------------------
+# self-repair: a damaged slot is rebuilt from the working one
+# ---------------------------------------------------------------------------
+def bootfs_dir(conf):
+    return conf["UPDATE_BOOTFS"] if backend(conf) == "rpi" else conf["UPDATE_ESP_MOUNT"]
+
+
+def slot_sound(conf, slot):
+    """Is SLOT bootable as it stands? Same bar as slot_check plus, on a Raspberry, the boot files the firmware reads from the FAT.
+    Read-only: never repairs, never writes."""
+    dev = run_out("blkid", "-t", f"PARTLABEL={label(slot)}", "-o", "device", check=False).splitlines()
+    dev = dev[0] if dev else ""
+    if not dev or run_out("blkid", "-s", "LABEL", "-o", "value", dev, check=False) != label(slot):
+        return False, "label"
+    if subprocess.run(["e2fsck", "-fn", dev], capture_output=True).returncode != 0:
+        return False, "fsck"
+    if backend(conf) == "rpi":
+        for need in ("kernel8.img", "initramfs8", "cmdline.txt"):
+            f = os.path.join(conf["UPDATE_BOOTFS"], f"slot{slot}", need)
+            if not os.path.isfile(f) or os.path.getsize(f) == 0:
+                return False, f"bootfile:{need}"
+    return True, "ok"
+
+
+def rpi_clone_bootfiles(conf, cur, new):
+    """Copy slot<cur>/ over slot<new>/ on the FAT (kernel, initramfs, dtbs, overlays) with the new slot's own root=/unitotem.slot=."""
+    import re
+    bf = conf["UPDATE_BOOTFS"]
+    src = os.path.join(bf, f"slot{cur}")
+    tmp = os.path.join(bf, f"slot{new}.new")
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copytree(src, tmp, symlinks=True)
+    cmd = open(os.path.join(tmp, "cmdline.txt")).read().strip()
+    cmd = re.sub(r"root=LABEL=\S+", f"root=LABEL={label(new)}", cmd)
+    cmd = re.sub(r"unitotem\.slot=\S+", f"unitotem.slot={new}", cmd)
+    with open(os.path.join(tmp, "cmdline.txt"), "w") as f:
+        f.write(cmd + "\n"); f.flush(); os.fsync(f.fileno())
+    final = os.path.join(bf, f"slot{new}")
+    old = final + ".old"
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.exists(final):
+        os.rename(final, old)
+    os.rename(tmp, final)
+    shutil.rmtree(old, ignore_errors=True)
+    subprocess.run(["sync"])
+
+
+def do_repair(a, conf):
+    """Rebuild the OTHER slot as a copy of the one we are running. Automatic (--auto) only when the state says the other slot once held a
+    valid system and it no longer passes the check - a never-written or interrupted-fetch slot is not 'damaged', fetch redoes it."""
+    need_backend(conf)
+    cur = cur_slot(conf); new = other_slot(cur)
+    st = slots_state(conf)
+    ok, why = slot_sound(conf, new)
+    if ok and not a.force:
+        return 0, {"repaired": False, "reason": "other slot is sound"}
+    if a.auto and not st[new].get("valid"):
+        return 0, {"repaired": False, "reason": "other slot holds no system yet (nothing to repair)"}
+    with Lock(conf):
+        try:
+            progress(conf, op="repair", phase="check", state="running", percent=0)
+            okc, whyc = slot_sound(conf, new)         # again under the lock: another operation may have just rebuilt it
+            if okc and not a.force:
+                return 0, {"repaired": False, "reason": "other slot is sound"}
+            ver = current_version(conf)
+            cdev = run_out("blkid", "-t", f"PARTLABEL={label(cur)}", "-o", "device", check=False).splitlines()
+            ndev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
+            if not cdev or not ndev:
+                raise Fail("no-slot-device", "partizioni degli slot non trovate")
+            cdev, ndev = cdev[0], ndev[0]
+            if subprocess.run(["findmnt", "-S", ndev], capture_output=True).returncode == 0:
+                raise Fail("slot-mounted", f"{ndev} e' montato: rifiuto di scriverci")
+            event(conf, f"repair: slot {new} ({whyc}) <- copy of slot {cur} ({ver})")
+            st[new] = {"version": None, "valid": False}
+            write_state(conf, "slots.json", st)
+            progress(conf, op="repair", phase="write", state="running", percent=10)
+            # partclone copies only the used blocks; label and UUID travel with them and are reset below like in fetch
+            with tempfile.TemporaryFile() as serr_f, tempfile.TemporaryFile() as derr_f:
+                src = subprocess.Popen(["partclone.extfs", "-c", "-s", cdev, "-o", "-"], stdout=subprocess.PIPE, stderr=serr_f)
+                dst = subprocess.Popen(["partclone.restore", "-C", "-s", "-", "-o", ndev], stdin=src.stdout,
+                                       stdout=subprocess.DEVNULL, stderr=derr_f)
+                src.stdout.close()
+                dst.wait(); src.wait()
+                serr_f.seek(0); derr_f.seek(0)
+                tail = (derr_f.read() + serr_f.read()).decode(errors="replace")[-300:]
+            if src.returncode or dst.returncode:
+                raise Fail("write-failed", f"partclone read rc={src.returncode} write rc={dst.returncode}: {tail}")
+            progress(conf, op="repair", phase="verify", state="running", percent=80)
+            run_out("e2fsck", "-fn", ndev)
+            run_out("tune2fs", "-L", label(new), "-U", "random", ndev)
+            mnt = tempfile.mkdtemp(prefix="unitotem-slot-")
+            run_out("mount", "-o", "ro", ndev, mnt)
+            try:
+                got = open(os.path.join(mnt, "usr/share/unitotem/release-version")).read().strip()
+                if got != ver:
+                    raise Fail("version-mismatch", f"la copia dichiara {got}, il sistema in esecuzione {ver}")
+                if backend(conf) == "rpi":
+                    with bootfs_rw(conf["UPDATE_BOOTFS"]):
+                        rpi_clone_bootfiles(conf, cur, new)
+                prepare_overlays(conf, new, cur, mnt)
+            finally:
+                subprocess.run(["umount", mnt]); os.rmdir(mnt)
+            os.sync()
+            st[new] = {"version": ver, "valid": True, "prepared": True, "confirmed": True}
+            write_state(conf, "slots.json", st)
+            set_last_result(conf, op="repair", result="ok", version=ver, slot=new, cause=whyc)
+            progress(conf, op="repair", phase="done", state="done", percent=100, version=ver)
+            return 0, {"repaired": True, "slot": new, "version": ver, "cause": whyc}
+        except Fail as e:
+            set_last_result(conf, op="repair", result="failed", error_code=e.code, error=str(e))
+            progress(conf, op="repair", state="failed", error=str(e), error_code=e.code)
+            raise
+
+
+def cmd_repair(a, conf):
+    need_backend(conf)
+    if a.foreground:
+        return do_repair(a, conf)
+    if op_running(conf):
+        return 0, {"repaired": False, "reason": "another operation is running"}
+    cmd = [sys.executable, os.path.abspath(__file__), "--json", "repair", "--foreground"] + (["--auto"] if a.auto else []) + (["--force"] if a.force else [])
+    # idle class and lowest CPU priority: this runs next to the kiosk page and must never be noticed
+    run_out("systemd-run", "--unit", "unitotem-update-repair", "--collect", "--quiet", "-p", "Nice=19", "-p", "IOSchedulingClass=idle",
+            "-p", "RuntimeMaxSec=3600", *cmd)
+    return 0, {"started": True, "unit": "unitotem-update-repair"}
+
+
+def note_failover(conf):
+    """The initramfs switched slots because the chosen one was unusable (guard file on the boot partition). We are up on the other
+    slot, so the guard has done its job: record what happened and remove it."""
+    guard = os.path.join(bootfs_dir(conf), "unitotem-ota.failover")
+    try:
+        what = open(guard).read().strip()
+    except OSError:
+        return
+    try:
+        set_last_result(conf, op="failover", result="ok", detail=what, slot=cur_slot(conf))
+        event(conf, f"failover {what}: the previous slot was unusable, running on the other one")
+    except Exception:
+        pass
+    try:
+        with bootfs_rw(bootfs_dir(conf)):
+            os.unlink(guard)
+    except OSError:
+        pass
+
+
 def cmd_cancel(a, conf):
     pid = op_running(conf)
     if not pid:
@@ -869,12 +1022,14 @@ def main():
         sp.add_parser(n)
     f = sp.add_parser("fetch"); f.add_argument("--foreground", action="store_true"); f.add_argument("--force", action="store_true")
     f.add_argument("--accept-changes", help="accettato e ignorato: in A/B lo slot corrente resta intatto")
+    r = sp.add_parser("repair"); r.add_argument("--foreground", action="store_true"); r.add_argument("--auto", action="store_true")
+    r.add_argument("--force", action="store_true", help="copy even when the other slot passes the check")
     for n in ("apply", "rollback"):
         x = sp.add_parser(n); x.add_argument("--reboot", action="store_true")
     a = ap.parse_args()
     conf = load_conf()
     table = {"status": cmd_status, "check": cmd_check, "fetch": cmd_fetch, "apply": cmd_apply, "confirm": cmd_confirm,
-             "boot-ok": cmd_boot_ok, "rollback": cmd_rollback, "cancel": cmd_cancel}
+             "boot-ok": cmd_boot_ok, "rollback": cmd_rollback, "cancel": cmd_cancel, "repair": cmd_repair}
     try:
         rc, out = table[a.cmd](a, conf)
     except Fail as e:

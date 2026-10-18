@@ -161,6 +161,8 @@ chk "no SSH host key in the image's /etc/ssh is relied on (unitotem-ssh-hostkey 
 
 echo "== Update machinery"
 chk "unitotem-update installed" test -x "$R/usr/sbin/unitotem-update"
+chk "unitotem-update can rebuild a damaged slot from the running one (repair + failover bookkeeping)" bash -c "grep -q 'def do_repair' $R/usr/sbin/unitotem-update && grep -q 'def note_failover' $R/usr/sbin/unitotem-update"
+chk "partclone.extfs (source of the slot copy) is installed" bash -c "test -x '$R/usr/sbin/partclone.extfs' || test -x '$R/usr/bin/partclone.extfs'"
 chk "update root key installed" test -s "$R/usr/share/unitotem/update-keys/root.pub"
 chk "release-version present" test -s "$R/usr/share/unitotem/release-version"
 chk "unitotem-update uses the monotonic clock for deadlines" bash -c "grep -q 'time.monotonic' $R/usr/sbin/unitotem-update && ! grep -q 'deadline = time.time()' $R/usr/sbin/unitotem-update"
@@ -191,6 +193,7 @@ elif [ "$AB" = 1 ]; then
 echo "== amd64 boot"
     chk "GRUB entries for both slots" bash -c "grep -q 'slot-a' $FAT/unitotem-grub/grub/grub.cfg && grep -q 'slot-b' $FAT/unitotem-grub/grub/grub.cfg"
     chk "OTA fallback entry is last (a torn grubenv must boot a slot)" bash -c "[ \"\$(grep -E '^menuentry' $FAT/unitotem-grub/grub/grub.cfg | tail -1 | grep -c ota-recovery)\" = 1 ]"
+    chk "GRUB tries the other slot, then the OTA fallback, when the chosen slot cannot be loaded (fallback= in grub.cfg)" bash -c "grep -q 'set fallback=\"slot-b ota-recovery\"' $FAT/unitotem-grub/grub/grub.cfg && grep -q 'set fallback=\"slot-a ota-recovery\"' $FAT/unitotem-grub/grub/grub.cfg"
     chk "recovery kernel and initrd on the ESP" bash -c "test -s $FAT/unitotem/recovery-vmlinuz && test -s $FAT/unitotem/recovery-initrd.img"
     chk "Secure Boot chain staged on the ESP (shim, MokManager, signed GRUB, stub grub.cfg, unsigned GRUB kept)" bash -c "for f in shimx64.efi mmx64.efi grubx64.efi grub-unsigned.efi grub.cfg; do test -s $FAT/EFI/unitotem-sb/\$f || exit 1; done"
     chk "the staged chain is NOT active by default (EFI/BOOT/BOOTX64.EFI is the plain GRUB; the deploy activates shim only on request)" bash -c "cmp -s $FAT/EFI/BOOT/BOOTX64.EFI $FAT/EFI/unitotem-sb/grub-unsigned.efi && ! cmp -s $FAT/EFI/BOOT/BOOTX64.EFI $FAT/EFI/unitotem-sb/shimx64.efi"

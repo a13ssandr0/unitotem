@@ -210,6 +210,15 @@ cmd_probe() {
     echo "UNITOTEM_ENGINE_VERSION=1"
     echo "UNITOTEM_ARCH_HOST=$(uname -m)"
     [ -d /sys/firmware/efi ] && echo "UNITOTEM_EFI=1" || echo "UNITOTEM_EFI=0"
+    local sbv=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c sbx
+    if [ -r "$sbv" ]; then sbx=$(od -An -tu1 -j4 -N1 "$sbv" 2>/dev/null | tr -d ' '); echo "UNITOTEM_SECUREBOOT=${sbx:-unknown}"; fi
+    # Same capability test remote-deploy.sh's do_probe makes on a running system: the Pi firmware publishes the node
+    # only when its EEPROM bootloader understands tryboot (the SoC check leaves out Pi 3 / Zero 2).
+    if [ -e /proc/device-tree/chosen/bootloader/tryboot ] && tr -d '\0' < /proc/device-tree/compatible 2>/dev/null | grep -qE 'bcm2711|bcm2712'; then
+        echo "UNITOTEM_TRYBOOT=1"
+    else
+        echo "UNITOTEM_TRYBOOT=0"
+    fi
 
     if [ -n "$disk" ]; then
         local size
@@ -217,33 +226,49 @@ cmd_probe() {
         echo "UNITOTEM_DISK=$disk"
         echo "UNITOTEM_DISKSIZE=$size"
 
-        root_dev=$(blkid -L ROOT 2>/dev/null || true)
-        if [ -n "$root_dev" ] && [ "$(lsblk -no PKNAME "$root_dev" 2>/dev/null)" = "${disk##*/}" ]; then
-            echo "UNITOTEM_HAVE_ROOT=1"
+        # Single-root layout has ROOT, A/B has ROOT_A + ROOT_B. Each slot is judged on its own: the label exists, the
+        # filesystem mounts read-only and carries the "is a UniTotem root" marker. (A destroyed slot has no label.)
+        local lbl slotdev have_root=0 have_unitotem=0
+        for lbl in ROOT ROOT_A ROOT_B; do
+            slotdev=$(blkid -L "$lbl" 2>/dev/null || true)
+            [ -n "$slotdev" ] && [ "$(lsblk -no PKNAME "$slotdev" 2>/dev/null)" = "${disk##*/}" ] || continue
+            have_root=1
             mkdir -p /tmp/ota-probe-root
-            if mount -t ext4 -o ro "$root_dev" /tmp/ota-probe-root 2>/dev/null; then
-                [ -f /tmp/ota-probe-root/etc/unitotem/ota-preserve.list ] && echo "UNITOTEM_HAVE_UNITOTEM=1" || echo "UNITOTEM_HAVE_UNITOTEM=0"
+            if mount -t ext4 -o ro "$slotdev" /tmp/ota-probe-root 2>/dev/null; then
+                if [ -f /tmp/ota-probe-root/etc/unitotem/ota-preserve.list ]; then
+                    have_unitotem=1; echo "UNITOTEM_SLOT_OK_${lbl}=1"
+                fi
                 umount /tmp/ota-probe-root 2>/dev/null || true
-            else
-                echo "UNITOTEM_HAVE_UNITOTEM=0"
             fi
-        else
-            echo "UNITOTEM_HAVE_ROOT=0"
-            echo "UNITOTEM_HAVE_UNITOTEM=0"
-        fi
+        done
+        echo "UNITOTEM_HAVE_ROOT=$have_root"
+        echo "UNITOTEM_HAVE_UNITOTEM=$have_unitotem"
 
         data_dev=$(blkid -L DATA 2>/dev/null || true)
         if [ -n "$data_dev" ] && [ "$(lsblk -no PKNAME "$data_dev" 2>/dev/null)" = "${disk##*/}" ] \
            && dumpe2fs -h "$data_dev" >/dev/null 2>&1; then
             echo "UNITOTEM_HAVE_DATA=1"
             echo "UNITOTEM_DATA_UUID=$(blkid -s UUID -o value "$data_dev" 2>/dev/null || echo "")"
+            echo "UNITOTEM_DATA_PARTN=$(lsblk -no PARTN "$data_dev" 2>/dev/null | head -1)"
+            # Read-only check, never a repair: a recovery that keeps DATA must be sure it is keeping something sound.
+            if awk -v d="$data_dev" '$1==d{f=1} END{exit !f}' /proc/mounts; then
+                echo "UNITOTEM_DATA_FSCK=mounted"
+            else
+                local drc=0; e2fsck -fn "$data_dev" >/dev/null 2>&1 || drc=$?
+                echo "UNITOTEM_DATA_FSCK=$drc"
+            fi
         else
             echo "UNITOTEM_HAVE_DATA=0"
         fi
+        echo "UNITOTEM_NPARTS=$(lsblk -lno TYPE "$disk" 2>/dev/null | grep -c '^part$')"
 
         fw_dev=$(blkid -L FIRMWARE -o device 2>/dev/null || blkid -L EFI -o device 2>/dev/null || true)
         [ -n "$fw_dev" ] && [ "$(lsblk -no PKNAME "$fw_dev" 2>/dev/null)" = "${disk##*/}" ] \
             && echo "UNITOTEM_HAVE_BOOTFS=1" || echo "UNITOTEM_HAVE_BOOTFS=0"
+        if [ -n "$fw_dev" ] && command -v fsck.fat >/dev/null 2>&1 && ! awk -v d="$fw_dev" '$1==d{f=1} END{exit !f}' /proc/mounts; then
+            local brc=0; fsck.fat -n "$fw_dev" >/dev/null 2>&1 || brc=$?
+            echo "UNITOTEM_BOOTFS_FSCK=$brc"
+        fi
     fi
 
     command -v partclone.restore >/dev/null 2>&1 \
@@ -1751,6 +1776,51 @@ check_bootcount() {
     [ "${count:-0}" -ge 3 ]
 }
 
+# Self-healing boot, initramfs half. The slot GRUB/the Pi firmware chose has a root that is missing or fails the read-only check:
+# if the OTHER slot is sound, make it the default and reboot straight into it (the running system then repairs the damaged one
+# from it, see unitotem-update repair). Returns 1 whenever it cannot (no A/B, other slot not sound, already failed over once):
+# the caller then goes to the OTA fallback and waits for a host. The guard file is written BEFORE the switch and removed by
+# userspace once a system has come up, so a pair of flaky slots cannot make the device ping-pong forever.
+ab_failover() {
+    local cur other odev guard=/boot-ota/unitotem-ota.failover
+    cur=$(cmdline_get unitotem.slot 2>/dev/null) || return 1
+    case "$cur" in a) other=b ;; b) other=a ;; *) return 1 ;; esac
+    mountpoint -q /boot-ota || return 1
+    [ ! -e "$guard" ] || { warn "failover already done once without a successful boot: not switching again"; return 1; }
+    case "$other" in a) odev=$(blkid -L ROOT_A 2>/dev/null) ;; b) odev=$(blkid -L ROOT_B 2>/dev/null) ;; esac
+    [ -n "$odev" ] || return 1
+    check_root_readonly "$odev" || return 1
+    mkdir -p /tmp/ota-failover-root
+    mount -t ext4 -o ro "$odev" /tmp/ota-failover-root 2>/dev/null || return 1
+    local sound=1; [ -f /tmp/ota-failover-root/etc/unitotem/ota-preserve.list ] || sound=0
+    umount /tmp/ota-failover-root 2>/dev/null || true
+    [ "$sound" = 1 ] || return 1
+    mount -o remount,rw /boot-ota 2>/dev/null || return 1
+    echo "$cur->$other" > "$guard" || { mount -o remount,ro /boot-ota 2>/dev/null; return 1; }
+    if grep -qs 'Raspberry Pi' /proc/device-tree/model; then
+        # the firmware picks the slot through os_prefix in config.txt (a half-armed tryboot.txt must not override it)
+        grep -q '^os_prefix=' /boot-ota/config.txt 2>/dev/null || { rm -f "$guard"; mount -o remount,ro /boot-ota 2>/dev/null; return 1; }
+        sed "s|^os_prefix=.*|os_prefix=slot${other}/|" /boot-ota/config.txt > /boot-ota/config.txt.new && mv -f /boot-ota/config.txt.new /boot-ota/config.txt \
+            || { rm -f "$guard"; mount -o remount,ro /boot-ota 2>/dev/null; return 1; }
+        rm -f /boot-ota/tryboot.txt
+    else
+        local genv=/boot-ota/unitotem-grub/grub/grubenv
+        [ -f "$genv" ] || { rm -f "$guard"; mount -o remount,ro /boot-ota 2>/dev/null; return 1; }
+        # keep every variable except the two that choose the boot, which are rewritten
+        local keep=() kv
+        while IFS= read -r kv; do
+            case "$kv" in \#*|"") continue ;; saved_entry=*|next_entry=*) continue ;; esac
+            keep+=("$kv")
+        done < "$genv"
+        grubenv_write "$genv" "${keep[@]}" "saved_entry=slot-${other}" || { rm -f "$guard"; mount -o remount,ro /boot-ota 2>/dev/null; return 1; }
+    fi
+    sync
+    warn "slot ${cur} is unusable, slot ${other} is sound: switching the default and rebooting"
+    reboot -f
+    sleep 30
+    return 0
+}
+
 cmd_init_premount() {
     modprobe ext4 2>/dev/null || true
     modprobe vfat 2>/dev/null || true
@@ -1787,10 +1857,12 @@ cmd_init_premount() {
         tries=$((tries + 1))
     done
     if [ -z "$root_dev" ]; then
+        ab_failover && return
         cmd_serve_fallback --reason "partition $root_label not found" --kind recovery
         return
     fi
     if ! check_root_readonly "$root_dev"; then
+        ab_failover && return
         cmd_serve_fallback --reason "unrepaired filesystem errors on $root_label" --kind recovery
         return
     fi
