@@ -14,6 +14,12 @@ menuentry 'UniTotem OTA recovery' {
     insmod part_msdos
     insmod ext2
     search --no-floppy --set=root --label ROOT
-    linux /vmlinuz root=LABEL=ROOT ro quiet unitotem.ota=recover
+    # low resolution for the OTA screens (see kiosk/files/grub-ab-entries)
+    insmod all_video
+    insmod gfxterm
+    set gfxmode=640x480x32,640x480,800x600x32,800x600,1024x768x32,1024x768,auto
+    terminal_output gfxterm
+    set gfxpayload=keep
+    linux /vmlinuz root=LABEL=ROOT ro quiet nomodeset unitotem.ota=recover
     initrd /initrd.img
 }

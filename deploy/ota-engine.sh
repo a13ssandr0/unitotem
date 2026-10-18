@@ -30,7 +30,7 @@ set -Eeuo pipefail
 # during configure_networking_ota ended up as cmd_serve_fallback's "myip",
 # shown as the address in the OTA whiptail screen instead of any real IP.
 log()  { echo "unitotem-ota: $*" >&2; echo "unitotem-ota: $*" > /dev/kmsg 2>/dev/null || true; }
-warn() { log "ATTENZIONE: $*"; }
+warn() { log "WARNING: $*"; }
 
 # ---------------------------------------------------------------------------
 # Reused verbatim from the old whole-disk flasher script (removed from the
@@ -63,10 +63,10 @@ ota_mount_bootfs_rw() {
     mountpoint -q "$mnt" && { mount -o remount,rw "$mnt" 2>/dev/null || true; return 0; }
     existing=$(awk -v d="$dev" '$1==d{print $2; exit}' /proc/mounts)
     if [ -n "$existing" ]; then
-        mount -o remount,rw "$existing" || fail "remount rw di $existing ($dev) fallito"
-        mount --bind "$existing" "$mnt" || fail "bind-mount di $existing su $mnt fallito"
+        mount -o remount,rw "$existing" || fail "remount rw of $existing ($dev) failed"
+        mount --bind "$existing" "$mnt" || fail "bind-mount of $existing on $mnt failed"
     else
-        mount -t vfat "$dev" "$mnt" || fail "mount bootfs ($dev) fallito"
+        mount -t vfat "$dev" "$mnt" || fail "mount of bootfs ($dev) failed"
     fi
 }
 
@@ -89,7 +89,7 @@ check_root_readonly() {
     local dev="$1" rc=0
     e2fsck -fn "$dev" >/dev/null 2>&1 || rc=$?
     [ "$rc" -eq 0 ] && return 0
-    warn "controllo in sola lettura di $dev: rc=$rc, provo la riparazione sicura (preen)"
+    warn "read-only check of $dev: rc=$rc, trying the safe repair (preen)"
     e2fsck -fp "$dev" >/dev/null 2>&1 || true
     e2fsck -fn "$dev" >/dev/null 2>&1
 }
@@ -97,7 +97,7 @@ check_root_readonly() {
 run_e2fsck() {
     local rc=0
     e2fsck -fy "$1" || rc=$?
-    [ "$rc" -lt 4 ] || fail "e2fsck ha rilevato errori non corretti su $1 (rc=$rc)"
+    [ "$rc" -lt 4 ] || fail "e2fsck found uncorrected errors on $1 (rc=$rc)"
 }
 
 resolve_disk() {
@@ -107,7 +107,7 @@ resolve_disk() {
         sleep 1
         tries=$((tries + 1))
     done
-    [ -e "$path" ] || fail "dispositivo non trovato: $path"
+    [ -e "$path" ] || fail "device not found: $path"
     resolved=$(readlink -f "$path")
     tries=0
     while [ ! -b "$resolved" ] && [ "$tries" -lt 15 ]; do
@@ -115,7 +115,7 @@ resolve_disk() {
         sleep 1
         tries=$((tries + 1))
     done
-    [ -b "$resolved" ] || fail "dispositivo non pronto dopo la risoluzione: $resolved (da $path)"
+    [ -b "$resolved" ] || fail "device not ready after resolution: $resolved (from $path)"
     echo "$resolved"
 }
 
@@ -161,21 +161,21 @@ mark_point_of_no_return() { : > "$NO_RETURN_MARKER"; }
 past_point_of_no_return() { [ -f "$NO_RETURN_MARKER" ]; }
 
 fail() {
-    log "ERRORE: $*"
+    log "ERROR: $*"
     if [ "$DEBUG" = 1 ]; then
-        log "debug=1: shell di emergenza (nessuna azione automatica)"
+        log "debug=1: emergency shell (no automatic action)"
         setsid sh -c 'exec sh </dev/console >/dev/console 2>&1' || true
         exit 1
     fi
     if past_point_of_no_return; then
-        log "Errore dopo la scrittura della tabella delle partizioni: non riavvio su un disco a meta'."
+        log "Error after writing the partition table: not rebooting into a half-written disk."
         cmd_serve_fallback --reason "error: $*"
         exit 1
     fi
-    log "Errore prima di scrivere sul disco: nessuna modifica persistente da annullare."
+    log "Error before writing to the disk: no persistent change to undo."
     exit 1
 }
-trap 'fail "errore inatteso alla riga $LINENO"' ERR
+trap 'fail "unexpected error at line $LINENO"' ERR
 
 # ---------------------------------------------------------------------------
 # Argument parsing: every subcommand takes --long-opt value pairs.
@@ -186,11 +186,11 @@ parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --*) ARG["${1#--}"]="${2:-}"; shift 2 ;;
-            *) fail "argomento non riconosciuto: $1" ;;
+            *) fail "unrecognized argument: $1" ;;
         esac
     done
 }
-need() { [ -n "${ARG[$1]:-}" ] || fail "--$1 richiesto"; }
+need() { [ -n "${ARG[$1]:-}" ] || fail "--$1 required"; }
 
 # ---------------------------------------------------------------------------
 # probe: facts about the current target, printed as KEY=VALUE so the caller
@@ -286,9 +286,9 @@ cmd_restore_table() {
     disk_sectors=$(blockdev --getsz "$disk")
     tail_start=$(printf '%s\n' "$patched" | grep -E "(^|[^0-9])${tail_part}[[:space:]]*:" | head -1 \
         | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
-    [ -n "$tail_start" ] || fail "impossibile trovare la partizione ${tail_part} nella tabella fornita"
+    [ -n "$tail_start" ] || fail "cannot find partition ${tail_part} in the supplied table"
     local tail_size=$((disk_sectors - tail_start - 34))
-    [ "$tail_size" -gt 0 ] || fail "disco troppo piccolo per la tabella (partizione finale risulterebbe negativa)"
+    [ "$tail_size" -gt 0 ] || fail "disk too small for the table (final partition would be negative)"
 
     patched=$(printf '%s\n' "$patched" | awk -v tp="$tail_part" -v sz="$tail_size" '
         {
@@ -303,13 +303,13 @@ cmd_restore_table() {
     # mounted partition makes the kernel keep the OLD geometry (the re-read fails with EBUSY) when the new table moves it.
     umount /boot-ota 2>/dev/null || true
     log "Writing the partition table on $disk (total sectors: $disk_sectors)..."
-    printf '%s\n' "$patched" | sfdisk --force --no-reread "$disk" || fail "sfdisk restore fallito"
+    printf '%s\n' "$patched" | sfdisk --force --no-reread "$disk" || fail "sfdisk restore failed"
     mark_point_of_no_return
 
     if [ -n "${ARG[bootcode-b64]:-}" ]; then
-        log "Scrivo il boot code MBR (440 byte) su $disk..."
+        log "Writing the MBR boot code (440 bytes) to $disk..."
         printf '%s' "${ARG[bootcode-b64]}" | base64 -d | dd of="$disk" bs=440 count=1 conv=notrunc \
-            || fail "scrittura bootcode fallita"
+            || fail "bootcode write failed"
     fi
 
     partprobe "$disk" 2>/dev/null || true
@@ -332,7 +332,7 @@ cmd_restore_part() {
     need disk; need part; need cloner; need data-host; need data-port; need used-bytes
     local disk; disk=$(resolve_disk "${ARG[disk]}")
     local part_dev; part_dev=$(pdev_target "$disk" "${ARG[part]}")
-    [ -b "$part_dev" ] || fail "partizione non trovata: $part_dev"
+    [ -b "$part_dev" ] || fail "partition not found: $part_dev"
 
     local part_sectors used_bytes allow_smaller=0
     used_bytes="${ARG[used-bytes]}"
@@ -343,7 +343,7 @@ cmd_restore_part() {
         allow_smaller=1
     fi
 
-    log "Restore partizione ${ARG[part]} ($part_dev, cloner=${ARG[cloner]}) da ${ARG[data-host]}:${ARG[data-port]}..."
+    log "Restoring partition ${ARG[part]} ($part_dev, cloner=${ARG[cloner]}) from ${ARG[data-host]}:${ARG[data-port]}..."
     # partclone.restore always tries to open /var/log/partclone.log and
     # fails outright ("open logfile ... error") if the directory doesn't
     # exist - confirmed as a real hardware bug, not theoretical: this
@@ -392,8 +392,8 @@ cmd_restore_part() {
                 unzstd -dc <&4 | partclone.restore "${restore_flags[@]}" -F -B
             fi
             ;;
-        *)    fail "compressione sconosciuta: ${ARG[comp]:-}" ;;
-    esac || fail "restore fallito su $part_dev"
+        *)    fail "unknown compression: ${ARG[comp]:-}" ;;
+    esac || fail "restore failed on $part_dev"
     ota_status_set "Checking the filesystem of partition ${ARG[part]}..."
     exec 4<&-
 
@@ -413,8 +413,8 @@ cmd_format_part() {
     need disk; need part; need label
     local disk; disk=$(resolve_disk "${ARG[disk]}")
     local part_dev; part_dev=$(pdev_target "$disk" "${ARG[part]}")
-    log "Formatto ${ARG[label]} (${part_dev})..."
-    mkfs.ext4 -F -L "${ARG[label]}" "$part_dev" >/dev/null || fail "mkfs.ext4 su ${ARG[label]} fallito"
+    log "Formatting ${ARG[label]} (${part_dev})..."
+    mkfs.ext4 -F -L "${ARG[label]}" "$part_dev" >/dev/null || fail "mkfs.ext4 on ${ARG[label]} failed"
     echo "UNITOTEM_PART_FORMATTED=${ARG[part]}"
 }
 
@@ -428,8 +428,8 @@ grubenv_write() {
     local body="# GRUB Environment Block"$'\n' kv
     for kv in "$@"; do body+="$kv"$'\n'; done
     local pad=$((1024 - ${#body}))
-    [ "$pad" -ge 0 ] || fail "grubenv troppo grande"
-    { printf '%s' "$body"; printf '%*s' "$pad" '' | tr ' ' '#'; } > "$file.new" || fail "scrittura grubenv fallita"
+    [ "$pad" -ge 0 ] || fail "grubenv too large"
+    { printf '%s' "$body"; printf '%*s' "$pad" '' | tr ' ' '#'; } > "$file.new" || fail "grubenv write failed"
     mv -f "$file.new" "$file"
 }
 
@@ -442,12 +442,12 @@ cmd_data_op() {
     local disk; disk=$(resolve_disk "${ARG[disk]}")
     local part_dev; part_dev=$(pdev_target "$disk" "${ARG[part]}")
     case "${ARG[op]}" in
-        preserve) log "DATA preservata (${part_dev})" ;;
+        preserve) log "DATA preserved (${part_dev})" ;;
         mkfs)
-            log "Formatto DATA (${part_dev})..."
-            mkfs.ext4 -F -L DATA "$part_dev" || fail "mkfs.ext4 su DATA fallito"
+            log "Formatting DATA (${part_dev})..."
+            mkfs.ext4 -F -L DATA "$part_dev" || fail "mkfs.ext4 on DATA failed"
             ;;
-        *) fail "data-op sconosciuta: ${ARG[op]}" ;;
+        *) fail "unknown data-op: ${ARG[op]}" ;;
     esac
     echo "UNITOTEM_DATA_OP_DONE=1"
 }
@@ -491,13 +491,13 @@ cmd_prepare_bootfs() {
         while m=$(awk -v d="$bootfs_dev" '$1==d{print $2; exit}' /proc/mounts) && [ -n "$m" ]; do
             umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || break
         done
-        log "Formatto la partizione di boot ($bootfs_dev, ${ARG[fstype]})..."
+        log "Formatting the boot partition ($bootfs_dev, ${ARG[fstype]})..."
         # --volid: the FAT serial of the image's own boot partition. GRUB's EFI/BIOS images locate the
         # directory holding grub.cfg by that serial (search.fs_uuid), so a freshly formatted partition
         # with a random one boots to a bare grub prompt.
         local volid_args=()
         [ -n "${ARG[volid]:-}" ] && volid_args=(-i "${ARG[volid]//-/}")
-        mkfs.fat -F32 "${volid_args[@]}" -n "${ARG[label]:-BOOT}" "$bootfs_dev" || fail "mkfs.fat su $bootfs_dev fallito"
+        mkfs.fat -F32 "${volid_args[@]}" -n "${ARG[label]:-BOOT}" "$bootfs_dev" || fail "mkfs.fat on $bootfs_dev failed"
     fi
     echo "UNITOTEM_BOOTFS_READY=1"
 }
@@ -536,7 +536,7 @@ cmd_populate_bootfs() {
     local mnt=/tmp/ota-bootfs
     ota_mount_bootfs_rw "$bootfs_dev" "$mnt"
 
-    log "Popolo il contenuto file-level della partizione di boot da ${ARG[data-host]}:${ARG[data-port]}..."
+    log "Populating the file-level content of the boot partition from ${ARG[data-host]}:${ARG[data-port]}..."
     exec 4<>"/dev/tcp/${ARG[data-host]}/${ARG[data-port]}"
     # tar's default exclude matching is unanchored: 'cmdline.txt' also drops slota/cmdline.txt, which an A/B image
     # needs (os_prefix makes the firmware read it from there). With --layout ab the names are anchored to the top
@@ -551,7 +551,7 @@ cmd_populate_bootfs() {
         --exclude="${pre}tryboot.txt" --exclude="${pre}cmdline-trial.txt" \
         --exclude="${pre}config.txt" --exclude="${pre}cmdline.txt" \
         --exclude="${pre}*.unitotem-bak" \
-        || fail "estrazione bootfs fallita"
+        || fail "bootfs extraction failed"
     exec 4<&-
     sync
     # --secure-boot shim: the image only STAGES the signed chain (EFI/unitotem-sb/, see kiosk/stage3-image.sh); this activates it.
@@ -560,16 +560,16 @@ cmd_populate_bootfs() {
     if [ "${ARG[secure-boot]:-}" = shim ]; then
         local sb="$mnt/EFI/unitotem-sb" bt="$mnt/EFI/BOOT" f
         for f in shimx64.efi mmx64.efi grubx64.efi grub.cfg; do
-            [ -s "$sb/$f" ] || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: $f assente in EFI/unitotem-sb (immagine senza catena firmata?)"; }
+            [ -s "$sb/$f" ] || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: $f missing in EFI/unitotem-sb (image without a signed chain?)"; }
         done
         mkdir -p "$bt" "$mnt/EFI/debian"
         cp "$sb/grubx64.efi" "$bt/grubx64.efi" && cp "$sb/mmx64.efi" "$bt/mmx64.efi" \
             && cp "$sb/grub.cfg" "$bt/grub.cfg" && cp "$sb/grub.cfg" "$mnt/EFI/debian/grub.cfg" \
-            || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: copia della catena fallita"; }
+            || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: chain copy failed"; }
         sync
         cp "$sb/shimx64.efi" "$bt/BOOTX64.EFI.new" && sync && mv -f "$bt/BOOTX64.EFI.new" "$bt/BOOTX64.EFI" \
-            || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: installazione dello shim fallita"; }
-        cmp -s "$sb/shimx64.efi" "$bt/BOOTX64.EFI" || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: lo shim scritto non coincide"; }
+            || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: shim installation failed"; }
+        cmp -s "$sb/shimx64.efi" "$bt/BOOTX64.EFI" || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "Secure Boot: the written shim does not match"; }
         echo shim > "$sb/active"; sync
         echo "UNITOTEM_SECURE_BOOT=shim"
     fi
@@ -584,7 +584,7 @@ cmd_read_bootfile() {
     local bootfs_dev; bootfs_dev=$(pdev_target "$disk" "${ARG[bootfs-part]}")
     local mnt=/tmp/ota-bootfs subdir="${ARG[subdir]:-}"
     mkdir -p "$mnt"
-    mountpoint -q "$mnt" || mount -t vfat -o ro "$bootfs_dev" "$mnt" || fail "mount bootfs ($bootfs_dev) fallito"
+    mountpoint -q "$mnt" || mount -t vfat -o ro "$bootfs_dev" "$mnt" || fail "mount of bootfs ($bootfs_dev) failed"
     cat "$mnt/${subdir:+$subdir/}${ARG[name]}"
     umount "$mnt" 2>/dev/null || true
 }
@@ -629,7 +629,7 @@ EOF
                 # must have run). Its grub.cfg has an 'ota-recovery' entry; making it the saved default is
                 # the whole job, and it is a plain file write.
                 [ -f "$mnt/unitotem-grub/grub/grub.cfg" ] \
-                    || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "A/B: unitotem-grub/grub/grub.cfg assente (populate-bootfs non eseguito?)"; }
+                    || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "A/B: unitotem-grub/grub/grub.cfg missing (populate-bootfs not run?)"; }
                 grubenv_write "$mnt/unitotem-grub/grub/grubenv" "saved_entry=ota-recovery"
                 sync
                 ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
@@ -646,7 +646,7 @@ menuentry 'UniTotem OTA' {
 }
 EOF
             ;;
-        *) fail "firmware sconosciuto: ${ARG[firmware]}" ;;
+        *) fail "unknown firmware: ${ARG[firmware]}" ;;
     esac
     sync
     ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
@@ -697,7 +697,7 @@ cmd_set_trial_boot() {
             if [ "${ARG[layout]:-1}" = ab ]; then
                 need target
                 local t="${ARG[target]}" ge="${ARG[target]}/boot/efi/unitotem-grub/grub/grubenv"
-                [ -f "$ge" ] || fail "A/B: grubenv assente in $ge (ESP montata sul target?)"
+                [ -f "$ge" ] || fail "A/B: grubenv missing in $ge (ESP mounted on the target?)"
                 # Trial = one-shot next_entry; saved_entry stays on the fallback until unitotem-boot-ok
                 # confirms. The same state unitotem-update writes for an in-place update, so the boot-ok
                 # path is identical for a first deploy and for every later one.
@@ -733,9 +733,9 @@ EOF
             fi
             (chroot "$t" sh -c 'command -v update-grub >/dev/null 2>&1 && update-grub' \
                 || chroot "$t" grub-mkconfig -o /boot/grub/grub.cfg) \
-                || { umount -lf "${t}/sys/firmware/efi/efivars" "${t}/dev" "${t}/proc" "${t}/sys" 2>/dev/null || true; fail "grub-mkconfig fallito"; }
+                || { umount -lf "${t}/sys/firmware/efi/efivars" "${t}/dev" "${t}/proc" "${t}/sys" 2>/dev/null || true; fail "grub-mkconfig failed"; }
             chroot "$t" grub-reboot 'UniTotem (trial)' \
-                || { umount -lf "${t}/sys/firmware/efi/efivars" "${t}/dev" "${t}/proc" "${t}/sys" 2>/dev/null || true; fail "grub-reboot fallito"; }
+                || { umount -lf "${t}/sys/firmware/efi/efivars" "${t}/dev" "${t}/proc" "${t}/sys" 2>/dev/null || true; fail "grub-reboot failed"; }
             umount -lf "${t}/sys/firmware/efi/efivars" 2>/dev/null || true
             umount -lf "${t}/dev" "${t}/proc" "${t}/sys" 2>/dev/null || true
             ;;
@@ -803,7 +803,7 @@ EOF
                 > "$mnt/cmdline.txt"
             sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
             ;;
-        *) fail "modalita' trial-boot sconosciuta: ${ARG[firmware]}" ;;
+        *) fail "unknown trial-boot mode: ${ARG[firmware]}" ;;
     esac
     ota_final_status
     echo "UNITOTEM_TRIAL_ARMED=1"
@@ -841,7 +841,7 @@ EOF
                   "$mnt/config.txt.unitotem-bak" "$mnt/cmdline.txt.unitotem-bak"
             sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
             ;;
-        *) fail "firmware sconosciuto: ${ARG[firmware]}" ;;
+        *) fail "unknown firmware: ${ARG[firmware]}" ;;
     esac
     echo "UNITOTEM_PROMOTED=1"
 }
@@ -859,11 +859,11 @@ cmd_mount_target() {
     need disk
     local disk; disk=$(resolve_disk "${ARG[disk]}")
     mkdir -p /mnt/newroot
-    local root_dev; root_dev=$(pdev_target "$disk" "${ARG[root-part]:?--root-part richiesto}")
-    mountpoint -q /mnt/newroot || mount -t ext4 "$root_dev" /mnt/newroot || fail "mount ROOT (nuovo sistema) fallito"
+    local root_dev; root_dev=$(pdev_target "$disk" "${ARG[root-part]:?--root-part required}")
+    mountpoint -q /mnt/newroot || mount -t ext4 "$root_dev" /mnt/newroot || fail "mount of ROOT (new system) failed"
     if [ -n "${ARG[boot-part]:-}" ]; then
         mkdir -p /mnt/newroot/boot
-        mount -t ext4 "$(pdev_target "$disk" "${ARG[boot-part]}")" /mnt/newroot/boot || fail "mount BOOT fallito"
+        mount -t ext4 "$(pdev_target "$disk" "${ARG[boot-part]}")" /mnt/newroot/boot || fail "mount of BOOT failed"
     fi
     if [ -n "${ARG[bootfs-part]:-}" ]; then
         # amd64: FAT partition is the ESP, mounted under BOOT at /boot/efi.
@@ -918,7 +918,7 @@ cmd_populate_real_kernel() {
     # entirely, same reasoning as the basename/dirname/tr removals above.
     local kver=""
     for _d in /mnt/newroot/lib/modules/*/; do kver="${_d%/}"; kver="${kver##*/}"; break; done
-    [ -n "$kver" ] || fail "nessun kernel trovato in /mnt/newroot/lib/modules"
+    [ -n "$kver" ] || fail "no kernel found in /mnt/newroot/lib/modules"
     cp "/mnt/newroot/boot/vmlinuz-${kver}"    /mnt/newroot/boot/firmware/kernel8.img
     cp "/mnt/newroot/boot/initrd.img-${kver}" /mnt/newroot/boot/firmware/initramfs8
     cp "/mnt/newroot/usr/lib/linux-image-${kver}"/broadcom/bcm27*.dtb /mnt/newroot/boot/firmware/ 2>/dev/null || true
@@ -1204,20 +1204,8 @@ ota_ui_start() {
     OTA_UI_PID=$!
 }
 
-configure_networking_ota() {
-    local conf=/boot-ota/unitotem-ota.conf iface
-    [ -f "$conf" ] && read_kv_lines < "$conf"
-    # Belt-and-braces before looking for an interface: don't just trust that
-    # udev's own coldplug already bound a driver by this point (confirmed
-    # failing in a real boot test - virtio_net.ko was present in the initrd
-    # but never got loaded, "ip link show" saw nothing but lo). Harmless
-    # no-ops on hardware where these modules don't exist or already loaded.
-    modprobe -a virtio_net genet bcmgenet 2>/dev/null || true
-    udevadm trigger --subsystem-match=net 2>/dev/null || true
-    udevadm settle --timeout=5 2>/dev/null || true
-    iface="${OTA_NET_IFACE:-}"
-    [ -n "$iface" ] || iface=$(ip -o link show 2>/dev/null | awk -F': ' '$2!="lo"{print $2; exit}')
-    [ -n "$iface" ] || { warn "nessuna interfaccia di rete trovata"; return 1; }
+configure_one_iface() {
+    local iface="$1"
     ip link set "$iface" up 2>/dev/null || true
     udevadm settle --timeout=5 2>/dev/null || true
 
@@ -1226,11 +1214,11 @@ configure_networking_ota() {
         ssid=$(printf '%s' "$OTA_WIFI_SSID_B64" | base64 -d)
         psk=$(printf '%s' "${OTA_WIFI_PSK_B64:-}" | base64 -d)
         wpa_passphrase "$ssid" "$psk" > /tmp/wpa.conf
-        wpa_supplicant -B -i "$iface" -c /tmp/wpa.conf 2>/dev/null || warn "wpa_supplicant fallito"
+        wpa_supplicant -B -i "$iface" -c /tmp/wpa.conf 2>/dev/null || warn "wpa_supplicant failed"
         sleep 3
     fi
 
-    if [ "${OTA_NET_MODE:-dhcp}" = static ] && [ -n "${OTA_NET_ADDR:-}" ]; then
+    if [ "${OTA_NET_MODE:-dhcp}" = static ] && [ -n "${OTA_NET_ADDR:-}" ] && [ "$iface" = "${OTA_NET_IFACE:-$iface}" ]; then
         ip addr add "$OTA_NET_ADDR" dev "$iface" || true
         [ -n "${OTA_NET_GW:-}" ] && ip route replace default via "$OTA_NET_GW" dev "$iface" || true
     else
@@ -1287,7 +1275,7 @@ configure_networking_ota() {
             # indistinguishable from every other source writing there.
             ( IP=dhcp DEVICE="$iface" configure_networking 2>&1 \
                 | while IFS= read -r cn_line; do
-                      printf 'unitotem-ota/rete: %s\n' "$cn_line" > /dev/kmsg 2>/dev/null || true
+                      printf 'unitotem-ota/net: %s\n' "$cn_line" > /dev/kmsg 2>/dev/null || true
                   done ) &
             cn_pid=$!
             while kill -0 "$cn_pid" 2>/dev/null && [ "$cn_waited" -lt "$cn_budget" ]; do
@@ -1295,7 +1283,7 @@ configure_networking_ota() {
                 cn_waited=$((cn_waited + 1))
             done
             if kill -0 "$cn_pid" 2>/dev/null; then
-                warn "configure_networking bloccato oltre ${cn_budget}s (bug noto di ipconfig, non onora il proprio -t): interrotto a forza"
+                warn "configure_networking stuck beyond ${cn_budget}s (known ipconfig bug, it ignores its own -t): killed"
                 kill -9 "$cn_pid" 2>/dev/null
                 # wait on a just-kill -9'd job reports its signal-based exit
                 # status (137) - under set -e a bare `wait` here would abort
@@ -1328,12 +1316,71 @@ configure_networking_ota() {
                 wait "$cn_pid" || cn_rc=$?
             fi
             set -u
-            [ "$cn_rc" -eq 0 ] || warn "DHCP (configure_networking) fallito"
+            [ "$cn_rc" -eq 0 ] || warn "DHCP (configure_networking) failed"
         else
-            ipconfig -t 10 -d "$iface" 2>/dev/null || warn "DHCP (ipconfig) fallito"
+            ipconfig -t 10 -d "$iface" 2>/dev/null || warn "DHCP (ipconfig) failed"
         fi
     fi
     ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1
+}
+
+# Network bring-up of the fallback: try EVERY wired interface that has a link (the cable may be in a different port than the one the
+# running system used - a mini PC with two NICs was left without an address on the second one), the one named in the deploy configuration
+# first. WiFi targets keep the configured interface. Prints the first address obtained, nothing if none got one.
+configure_networking_ota() {
+    local conf=/boot-ota/unitotem-ota.conf iface addr="" ifs="" i w=0 first
+    [ -f "$conf" ] && read_kv_lines < "$conf"
+    # Belt-and-braces before looking for an interface: don't just trust that
+    # udev's own coldplug already bound a driver by this point (confirmed
+    # failing in a real boot test - virtio_net.ko was present in the initrd
+    # but never got loaded, "ip link show" saw nothing but lo). Harmless
+    # no-ops on hardware where these modules don't exist or already loaded.
+    modprobe -a virtio_net genet bcmgenet 2>/dev/null || true
+    udevadm trigger --subsystem-match=net 2>/dev/null || true
+    udevadm settle --timeout=5 2>/dev/null || true
+    if [ "${OTA_NET_LINK:-wired}" = wifi ]; then
+        iface="${OTA_NET_IFACE:-}"
+        [ -n "$iface" ] || iface=$(ip -o link show 2>/dev/null | awk -F': ' '$2!="lo"{print $2; exit}')
+        [ -n "$iface" ] || { warn "no network interface found"; return 1; }
+        configure_one_iface "$iface"
+        return 0
+    fi
+    # physical Ethernet devices only (no lo, bridges, veth, tunnels)
+    for i in /sys/class/net/*; do
+        i=${i##*/}
+        [ "$i" = lo ] && continue
+        [ -e "/sys/class/net/$i/device" ] || continue
+        [ "$(cat /sys/class/net/$i/type 2>/dev/null)" = 1 ] || continue
+        [ -d "/sys/class/net/$i/wireless" ] && continue
+        ifs="$ifs $i"
+        ip link set "$i" up 2>/dev/null || true
+    done
+    if [ -z "$ifs" ]; then
+        iface=$(ip -o link show 2>/dev/null | awk -F': ' '$2!="lo"{print $2; exit}')
+        [ -n "$iface" ] || { warn "no network interface found"; return 1; }
+        ifs=" $iface"
+    fi
+    # give the links a few seconds to negotiate, then order: with carrier first, the configured interface first among them
+    while [ "$w" -lt 8 ]; do
+        for i in $ifs; do [ "$(cat /sys/class/net/$i/carrier 2>/dev/null)" = 1 ] && break 2; done
+        sleep 1; w=$((w + 1))
+    done
+    first=""
+    for i in $ifs; do
+        [ "$(cat /sys/class/net/$i/carrier 2>/dev/null)" = 1 ] || continue
+        if [ "$i" = "${OTA_NET_IFACE:-}" ]; then first="$i $first"; else first="$first $i"; fi
+    done
+    for i in $ifs; do case " $first " in *" $i "*) ;; *) first="$first $i" ;; esac; done   # no-carrier ones last, as a final resort
+    for i in $first; do
+        addr=$(configure_one_iface "$i")
+        if [ -n "$addr" ]; then
+            printf 'unitotem-ota/net: address %s on %s\n' "$addr" "$i" > /dev/kmsg 2>/dev/null || true
+            printf '%s\n' "$addr"
+            return 0
+        fi
+        warn "no address on $i, trying the next interface"
+    done
+    return 1
 }
 
 # PWR and ACT blink in ALTERNATION (one on while the other is off), 50/50
@@ -1406,7 +1453,7 @@ ota_idle_watchdog() {
         sleep 5; waited=$((waited + 5))
         grep -qE ':08AE [0-9A-F]+:[0-9A-F]+ 01 ' /proc/net/tcp /proc/net/tcp6 2>/dev/null && return 0
     done
-    log "nessun host si e' collegato entro ${limit}s: riavvio per ritentare l'avvio normale"
+    log "no host connected within ${limit}s: rebooting to retry the normal boot"
     sync
     reboot -f
 }
@@ -1568,7 +1615,7 @@ cmd_serve_fallback() {
 
     mkdir -p /run/dropbear
     dropbearkey -t ed25519 -f /run/dropbear_ed25519_host_key >/dev/null 2>&1 \
-        || warn "generazione chiave dropbear fallita"
+        || warn "dropbear key generation failed"
 
     # systemd's reboot compat binary (kiosk/files/ota-hook force-copies the
     # real one, not busybox's, so that "reboot -f '0 tryboot'" can reach the
@@ -1637,7 +1684,7 @@ Address: ${myip:-none}   Port: 2222" || true
         | while IFS= read -r line; do
               printf 'dropbear: %s\n' "${line#\[*\] }"
           done
-    warn "dropbear e' terminato inaspettatamente: resto in modalita' OTA"
+    warn "dropbear exited unexpectedly: staying in OTA mode"
     while :; do sleep 3600; done
 }
 
@@ -1788,10 +1835,10 @@ cmd_init_premount() {
             local n=0
             [ -n "$trial_reset" ] || n=$(cat /boot-ota/unitotem-ota.bootcount 2>/dev/null || echo 0)
             { echo $((n + 1)) > /boot-ota/unitotem-ota.bootcount && sync; } \
-                || warn "impossibile aggiornare il contatore di boot (non fatale)"
+                || warn "cannot update the boot counter (non-fatal)"
             mount -o remount,ro /boot-ota 2>/dev/null || true
         else
-            warn "impossibile rimontare /boot-ota in scrittura per il contatore di boot (non fatale)"
+            warn "cannot remount /boot-ota read-write for the boot counter (non-fatal)"
         fi
     fi
     # /boot-ota must never be left mounted across switch_root: it's a real
@@ -1816,13 +1863,13 @@ cmd_local_bottom_verify() {
     need rootmnt
     local rootmnt="${ARG[rootmnt]}"
     if [ ! -x "$rootmnt/sbin/init" ] && [ ! -x "$rootmnt/usr/lib/systemd/systemd" ]; then
-        warn "init assente su $rootmnt - passo in modalita' OTA"
+        warn "init missing on $rootmnt - switching to OTA mode"
         umount -lf "$rootmnt" 2>/dev/null || true
         cmd_serve_fallback --reason "/sbin/init missing on the mounted filesystem" --kind recovery
         return
     fi
     if [ ! -d "$rootmnt/etc/kiosk" ]; then
-        warn "/etc/kiosk assente su $rootmnt - passo in modalita' OTA"
+        warn "/etc/kiosk missing on $rootmnt - switching to OTA mode"
         umount -lf "$rootmnt" 2>/dev/null || true
         cmd_serve_fallback --reason "/etc/kiosk missing on the mounted filesystem" --kind recovery
         return
@@ -1853,7 +1900,7 @@ main() {
         serve-fallback)         cmd_serve_fallback "$@" ;;
         init-premount)          cmd_init_premount "$@" ;;
         local-bottom-verify)    cmd_local_bottom_verify "$@" ;;
-        *) echo "Sottocomando sconosciuto: $sub" >&2; exit 1 ;;
+        *) echo "Unknown subcommand: $sub" >&2; exit 1 ;;
     esac
 }
 

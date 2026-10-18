@@ -421,7 +421,14 @@ menuentry 'UniTotem OTA' {
     insmod part_gpt
     insmod part_msdos
     insmod ext2
-    linux /unitotem-recovery-vmlinuz ${CMDLINE}
+    # low resolution for the OTA screens (readable from far away, same as kiosk/files/grub-ab-entries): GRUB sets a small firmware
+    # framebuffer mode, gfxpayload=keep hands it to the kernel and nomodeset stops the DRM driver from switching to the native size
+    insmod all_video
+    insmod gfxterm
+    set gfxmode=640x480x32,640x480,800x600x32,800x600,1024x768x32,1024x768,auto
+    terminal_output gfxterm
+    set gfxpayload=keep
+    linux /unitotem-recovery-vmlinuz nomodeset ${CMDLINE}
     initrd /unitotem-recovery-initrd.img
 }
 EOF
