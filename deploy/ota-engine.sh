@@ -6,10 +6,10 @@
 # hand-rolled protocol (deploy/ota-commands.md documents this CLI).
 #
 # Installed at /usr/lib/unitotem/ota-engine.sh (symlinked from
-# /usr/sbin/unitotem-ota-engine) inside the rootfs by kiosk/stage1-packages.sh,
-# so it ships both in the resident fallback initrd (kiosk/stage1-recovery-initrd.sh,
+# /usr/sbin/unitotem-ota-engine) inside the rootfs by unitotem/stage1-packages.sh,
+# so it ships both in the resident fallback initrd (unitotem/stage1-recovery-initrd.sh,
 # built from that same stage1 rootfs) and in the real system's own initramfs
-# (kiosk/stage2-configure.sh installs the init-premount/local-bottom wrappers
+# (unitotem/stage2-configure.sh installs the init-premount/local-bottom wrappers
 # that call it). Every subcommand below takes its own --disk, so it is also
 # runnable standalone on any Linux box (against a loop device instead of a
 # real disk) with no initramfs involved at all - what makes the host-side
@@ -19,7 +19,7 @@
 #
 # Bash on purpose (not dash): needs pipefail, /dev/tcp, and process
 # substitution for the progress gauge - this initrd already carries bash for
-# it (see kiosk/files/ota-hook).
+# it (see unitotem/files/ota-hook).
 set -Eeuo pipefail
 . /scripts/functions 2>/dev/null || true   # only present inside an initramfs
 
@@ -222,7 +222,7 @@ cmd_probe() {
             echo "UNITOTEM_HAVE_ROOT=1"
             mkdir -p /tmp/ota-probe-root
             if mount -t ext4 -o ro "$root_dev" /tmp/ota-probe-root 2>/dev/null; then
-                [ -d /tmp/ota-probe-root/etc/kiosk ] && echo "UNITOTEM_HAVE_UNITOTEM=1" || echo "UNITOTEM_HAVE_UNITOTEM=0"
+                [ -f /tmp/ota-probe-root/etc/unitotem/ota-preserve.list ] && echo "UNITOTEM_HAVE_UNITOTEM=1" || echo "UNITOTEM_HAVE_UNITOTEM=0"
                 umount /tmp/ota-probe-root 2>/dev/null || true
             else
                 echo "UNITOTEM_HAVE_UNITOTEM=0"
@@ -253,7 +253,7 @@ cmd_probe() {
     # exactly the (single, trailing) NUL these device-tree string properties
     # end with - same effective result as `tr -d '\0'` without depending on
     # an external binary that may be missing from a minimal initramfs
-    # (confirmed missing on real hardware, see kiosk/files/ota-hook).
+    # (confirmed missing on real hardware, see unitotem/files/ota-hook).
     [ -f /proc/device-tree/model ] && echo "UNITOTEM_MODEL=$(cat /proc/device-tree/model 2>/dev/null)"
     true
 }
@@ -556,7 +556,7 @@ cmd_populate_bootfs() {
         || fail "bootfs extraction failed"
     exec 4<&-
     sync
-    # --secure-boot shim: the image only STAGES the signed chain (EFI/unitotem-sb/, see kiosk/stage3-image.sh); this activates it.
+    # --secure-boot shim: the image only STAGES the signed chain (EFI/unitotem-sb/, see unitotem/stage3-image.sh); this activates it.
     # Everything the chain needs is copied first and BOOTX64.EFI - the one file the firmware loads - is replaced last, through a
     # temporary name and a rename, so a cut leaves either the old loader or the complete new chain, never a half-written shim.
     if [ "${ARG[secure-boot]:-}" = shim ]; then
@@ -622,7 +622,7 @@ EOF
             # console=serial0: that alias means the PL011 (Bluetooth pins) under
             # the mainline/Debian DTBs we ship, the opposite of what it means
             # under Raspberry Pi's own DTBs - see the longer note in
-            # kiosk/stage2-configure.sh. Pairs with enable_uart=1 above.
+            # unitotem/stage2-configure.sh. Pairs with enable_uart=1 above.
             echo "unitotem.ota=1 console=tty1 console=ttyS0,115200" > "$mnt/cmdline.txt"
             ;;
         uefi|bios)
@@ -665,12 +665,12 @@ EOF
 # (just the kernel=/initramfs= boot-selection lines they themselves own) -
 # on purpose, since these functions must never depend on a full untrusted
 # copy of the real image's config.txt to keep the fallback guarantee simple.
-# kiosk/files/config.txt itself never actually reaches a real device's boot
+# unitotem/files/config.txt itself never actually reaches a real device's boot
 # partition through this pipeline for that same reason. Any OTHER boot
 # config (dtoverlay=, dtparam=, framebuffer/splash tuning - anything that
 # isn't boot-selection) has to be spliced back in explicitly: this appends
-# kiosk/files/config-extra.txt, installed onto ROOT at build time
-# (kiosk/stage2-configure.sh), after the hardcoded lines. Best-effort - a
+# unitotem/files/config-extra.txt, installed onto ROOT at build time
+# (unitotem/stage2-configure.sh), after the hardcoded lines. Best-effort - a
 # missing file (e.g. amd64, which has no config.txt at all) is not an error.
 append_config_extra() {
     local extra_file="$1" dest="$2"
@@ -939,7 +939,7 @@ cmd_migrate_etc_overlay() {
     need root-mnt; need data-mnt
     local root="${ARG[root-mnt]}" data="${ARG[data-mnt]}"
     # A/B: the new system is slot A and keeps its overlay state in upper/<d>.a (see
-    # kiosk/files/overlayfs-hook.sh). Slot B is about to be formatted empty, so whatever a previous
+    # unitotem/files/overlayfs-hook.sh). Slot B is about to be formatted empty, so whatever a previous
     # install left for it, and the update bookkeeping that described it, is stale and goes.
     local sfx=""
     if [ -n "${ARG[slot]:-}" ]; then
@@ -961,7 +961,7 @@ cmd_migrate_etc_overlay() {
     local ts; TZ=UTC0 printf -v ts '%(%Y%m%dT%H%M%SZ)T' -1
     # /var is archived and reset alongside /etc, and for this one it is not a
     # nicety but a correctness requirement. /var is overlaid too now (see
-    # kiosk/files/overlayfs-hook.sh), and an OTA replaces the whole ROOT
+    # unitotem/files/overlayfs-hook.sh), and an OTA replaces the whole ROOT
     # partition: left in place, the previous image's upper would shadow the
     # new image's /var - its dpkg database, and /var/unitotem-venv, the
     # manager's Python environment. The new system would be running with the
@@ -1624,7 +1624,7 @@ cmd_serve_fallback() {
     dropbearkey -t ed25519 -f /run/dropbear_ed25519_host_key >/dev/null 2>&1 \
         || warn "dropbear key generation failed"
 
-    # systemd's reboot compat binary (kiosk/files/ota-hook force-copies the
+    # systemd's reboot compat binary (unitotem/files/ota-hook force-copies the
     # real one, not busybox's, so that "reboot -f '0 tryboot'" can reach the
     # kernel) writes its parameter to /run/systemd/reboot-param before
     # calling reboot(2) - confirmed on real hardware: without this directory
@@ -1633,9 +1633,9 @@ cmd_serve_fallback() {
     # in this initrd ever creates /run/systemd (no real systemd runs here).
     mkdir -p /run/systemd
 
-    # root's password (fixed value, same as kiosk/common.sh's ROOT_PASSWORD
+    # root's password (fixed value, same as unitotem/common.sh's ROOT_PASSWORD
     # default) is baked into /etc/shadow at build time - see
-    # kiosk/files/ota-hook - rather than set here at runtime: this initrd's
+    # unitotem/files/ota-hook - rather than set here at runtime: this initrd's
     # /etc/shadow doesn't exist at all otherwise (confirmed by extracting a
     # real built initrd), and chpasswd/PAM aren't worth pulling in just to
     # set one fixed, known value every boot. dropbear (below) accepts
@@ -1716,7 +1716,7 @@ check_flag_file() {
     local label="$1" fstype="$2" mnt=/boot-ota dev tries=0
     # blkid -L can race udev this early in boot and find nothing even though
     # the label genuinely exists - the same class of bug already found and
-    # fixed for DATA in kiosk/files/overlayfs-hook.sh (bounded retry, not a
+    # fixed for DATA in unitotem/files/overlayfs-hook.sh (bounded retry, not a
     # single settle beforehand: confirmed live that cmd_init_premount's own
     # `udevadm settle --timeout=10` right before this call is not always
     # enough on its own). Bound kept small (this runs on every single boot,
@@ -1877,10 +1877,10 @@ cmd_local_bottom_verify() {
         cmd_serve_fallback --reason "/sbin/init missing on the mounted filesystem" --kind recovery
         return
     fi
-    if [ ! -d "$rootmnt/etc/kiosk" ]; then
-        warn "/etc/kiosk missing on $rootmnt - switching to OTA mode"
+    if [ ! -f "$rootmnt/etc/unitotem/ota-preserve.list" ]; then
+        warn "/etc/unitotem missing on $rootmnt - switching to OTA mode"
         umount -lf "$rootmnt" 2>/dev/null || true
-        cmd_serve_fallback --reason "/etc/kiosk missing on the mounted filesystem" --kind recovery
+        cmd_serve_fallback --reason "/etc/unitotem missing on the mounted filesystem" --kind recovery
         return
     fi
 }

@@ -167,7 +167,7 @@ log "=== mount-target (arch arm64, niente boot-part separato) ==="
 "${ENGINE[@]}" mount-target --disk "$LOOP" --arch arm64 --root-part "$ROOT_PART" --bootfs-part "$BOOTFS_PART" --data-part "$DATA_PART"
 
 check "ROOT montata ha /sbin/init o systemd" bash -c '[ -x /mnt/newroot/sbin/init ] || [ -x /mnt/newroot/usr/lib/systemd/systemd ]'
-check "ROOT montata ha /etc/kiosk (marker UniTotem)" test -d /mnt/newroot/etc/kiosk
+check "ROOT montata ha /etc/unitotem (marker UniTotem)" test -d /mnt/newroot/etc/unitotem
 check "firmware montata sotto /boot/firmware" test -d /mnt/newroot/boot/firmware
 
 # Rescue-path content, all of which only exists inside the built image and so
@@ -218,8 +218,8 @@ check "l'hook overlay ancora /var/lib/dpkg su ROOT" \
     grep -q 'dpkg_pin' /mnt/newroot/etc/initramfs-tools/scripts/init-bottom/setup-overlays
 check "timer apt automatici mascherati" \
     bash -c 'ls -l /mnt/newroot/etc/systemd/system/apt-daily.timer 2>/dev/null | grep -q /dev/null'
-check "kiosk-update ferma i servizi reali, non sway" \
-    bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/kiosk-update && ! grep -qE '^[^#]*pkill -x sway' /mnt/newroot/usr/local/bin/kiosk-update"
+check "unitotem-maintenance ferma i servizi reali, non sway" \
+    bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/unitotem-maintenance && ! grep -qE '^[^#]*pkill -x sway' /mnt/newroot/usr/local/bin/unitotem-maintenance"
 
 log "=== populate-real-kernel (arm64 only) ==="
 "${ENGINE[@]}" populate-real-kernel
@@ -290,7 +290,7 @@ check "cmdline di prova usa ttyS0 (DTB Raspberry), non ttyS1" \
 # Regression check for the config-extra.txt splice (deploy/ota-engine.sh's
 # append_config_extra): set-trial-boot's rpi-tryboot branch reads
 # /mnt/newroot/etc/unitotem/config-extra.txt, which is real content on this
-# just-restored ROOT (installed by kiosk/stage2-configure.sh, no simulation
+# just-restored ROOT (installed by unitotem/stage2-configure.sh, no simulation
 # needed here unlike promote-default below) - dtoverlay=vc4-kms-v3d missing
 # from tryboot.txt is exactly the bug that shipped an OTA pipeline where KMS
 # never reached a single real device (found on real hardware this session).
@@ -309,12 +309,12 @@ log "=== promote-default (simulando boot confermato, rpi non richiede chroot) ==
 # promote-default runs post-boot on the real system's own / (see
 # deploy/ota-engine.sh's append_config_extra comment) - this test container
 # IS that "/" here (no chroot), so /etc/unitotem/config-extra.txt has to be
-# staged manually to match what kiosk/stage2-configure.sh installs onto a
+# staged manually to match what unitotem/stage2-configure.sh installs onto a
 # real ROOT. Without this the check below would silently no-op instead of
 # catching a regression (append_config_extra treats a missing file as
 # nothing-to-add, not an error).
 mkdir -p /etc/unitotem
-cp "$REPO/kiosk/files/config-extra.txt" /etc/unitotem/config-extra.txt
+cp "$REPO/unitotem/files/config-extra.txt" /etc/unitotem/config-extra.txt
 "${ENGINE[@]}" promote-default --firmware rpi --disk "$LOOP" --bootfs-part "$BOOTFS_PART"
 mkdir -p /mnt/ota-promote-check
 mount -t vfat -o ro "${LOOP}p${BOOTFS_PART}" /mnt/ota-promote-check
@@ -376,7 +376,7 @@ source /tmp/run_ota_sequence.sh
 # (deploy/lib.sh) - both normally SSH out as (host, cmd...). Here "the
 # target" IS this container, so eval the command directly instead; a real
 # deployed system resolves "unitotem-ota-engine" via PATH
-# (/usr/sbin/unitotem-ota-engine -> .../ota-engine.sh, kiosk/stage1-packages.sh).
+# (/usr/sbin/unitotem-ota-engine -> .../ota-engine.sh, unitotem/stage1-packages.sh).
 # A shell function of that exact name achieves the same resolution when
 # eval'd, without needing a writable PATH directory - debian:bookworm's
 # /usr/local/bin turned out to be read-only in this container image (bash
@@ -453,7 +453,7 @@ check "guard: ota_ssh passa -n (non divora lo stdin del chiamante)" \
     grep -qF '_sshpass ssh -n ' "$REPO/deploy/lib.sh"
 
 log "=== round2: promote-default (secondo boot confermato) ==="
-cp "$REPO/kiosk/files/config-extra.txt" /etc/unitotem/config-extra.txt
+cp "$REPO/unitotem/files/config-extra.txt" /etc/unitotem/config-extra.txt
 "${ENGINE[@]}" promote-default --firmware rpi --disk "$LOOP" --bootfs-part "$BOOTFS_PART"
 mkdir -p /mnt/round2-promote-check
 mount -o ro "${LOOP}p${BOOTFS_PART}" /mnt/round2-promote-check

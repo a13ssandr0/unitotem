@@ -6,7 +6,7 @@ ISO_ROOT=/tmp/iso-root
 RELEASE=bookworm
 MIRROR=http://deb.debian.org/debian
 
-echo "=== UniTotem Kiosk — ISO Installer Build ==="
+echo "=== UniTotem — ISO Installer Build ==="
 
 # ---- 1. Bootstrap live system ----------------------------------------
 
@@ -73,7 +73,7 @@ EOF
 # Installer systemd service
 cat > "$LIVE_ROOT/etc/systemd/system/unitotem-installer.service" << 'EOF'
 [Unit]
-Description=UniTotem Kiosk Installer
+Description=UniTotem Installer
 After=live-config.service network.target
 ConditionPathExists=/usr/local/bin/unitotem-installer.sh
 
@@ -96,7 +96,7 @@ chroot "$LIVE_ROOT" systemctl enable unitotem-installer.service
 # Copy installer script and bundled kiosk files
 install -m 755 /iso-src/installer.sh "$LIVE_ROOT/usr/local/bin/unitotem-installer.sh"
 mkdir -p "$LIVE_ROOT/usr/local/share/unitotem/files"
-cp -r /iso-src/kiosk-files/. "$LIVE_ROOT/usr/local/share/unitotem/files/"
+cp -r /iso-src/unitotem-files/. "$LIVE_ROOT/usr/local/share/unitotem/files/"
 
 # live-config: set hostname, disable most tweaks
 mkdir -p "$LIVE_ROOT/etc/live/config"
@@ -140,18 +140,18 @@ UI menu.c32
 PROMPT 0
 TIMEOUT 50
 
-MENU TITLE UniTotem Kiosk Installer
+MENU TITLE UniTotem Installer
 MENU COLOR title        * #2282F2 #00000000 *
 MENU COLOR sel          * #ffffff #2282F2 *
 MENU COLOR unsel        * #aaaaaa #00000000 *
 
 LABEL install
-    MENU LABEL UniTotem Kiosk Installer
+    MENU LABEL UniTotem Installer
     KERNEL /live/vmlinuz
     APPEND initrd=/live/initrd.img boot=live components quiet splash
 
 LABEL install-debug
-    MENU LABEL UniTotem Kiosk Installer (verbose)
+    MENU LABEL UniTotem Installer (verbose)
     KERNEL /live/vmlinuz
     APPEND initrd=/live/initrd.img boot=live components
 EOF
@@ -169,12 +169,12 @@ insmod all_video
 insmod gfxterm
 terminal_output gfxterm
 
-menuentry "UniTotem Kiosk Installer" {
+menuentry "UniTotem Installer" {
     linux  /live/vmlinuz boot=live components quiet splash
     initrd /live/initrd.img
 }
 
-menuentry "UniTotem Kiosk Installer (verbose)" {
+menuentry "UniTotem Installer (verbose)" {
     linux  /live/vmlinuz boot=live components
     initrd /live/initrd.img
 }
@@ -215,12 +215,12 @@ cp /tmp/bootx64.efi "$ISO_ROOT/EFI/boot/bootx64.efi"
 
 echo ">>> [7/7] Building hybrid ISO..."
 ISO_DATE="$(date +%Y-%m-%d)"
-ISO_FILE="/deploy/unitotem-kiosk-installer-${ISO_DATE}-amd64.iso"
+ISO_FILE="/deploy/unitotem-installer-${ISO_DATE}-amd64.iso"
 
 xorriso -as mkisofs \
     -iso-level 3 \
     -full-iso9660-filenames \
-    -volid "UNITOTEM_KIOSK" \
+    -volid "UNITOTEM_INSTALLER" \
     \
     -eltorito-boot   isolinux/isolinux.bin \
     -eltorito-catalog isolinux/boot.cat \

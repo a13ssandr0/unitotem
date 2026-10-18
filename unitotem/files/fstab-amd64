@@ -1,0 +1,26 @@
+# iocharset=iso8859-1 explicit: avoids depending on the kernel's on-demand
+# nls_ascii module load for the default iocharset - confirmed failing for
+# real on arm64 (unitotem/files/fstab-arm64 has the full incident detail);
+# not yet observed here, but the same latent gap applies equally to amd64's
+# EFI mount, so fixed preemptively rather than waiting to hit it live.
+# ro + nofail: see unitotem/files/fstab-arm64 (same reasoning for the ESP).
+LABEL=EFI   /boot/efi  vfat  defaults,noatime,ro,nofail,x-systemd.device-timeout=15s,iocharset=iso8859-1        0 2
+LABEL=BOOT  /boot      ext4  defaults,noatime                           0 2
+LABEL=ROOT  /          ext4  defaults,noatime,ro                        0 1
+tmpfs       /tmp       tmpfs defaults,noatime,nosuid,nodev,size=256M    0 0
+tmpfs       /run       tmpfs defaults,noatime,nosuid,nodev,mode=0755    0 0
+# Pure churn, nothing worth keeping across a reboot: these stay tmpfs even
+# though /var is overlaid now, so apt archives and scratch files never reach
+# the SD card.
+tmpfs       /var/cache tmpfs defaults,noatime,nosuid,nodev,size=512M    0 0
+tmpfs       /var/tmp   tmpfs defaults,noatime,nosuid,nodev,size=64M     0 0
+# The per-directory tmpfs allowlist that used to sit here (NetworkManager,
+# dhcp, systemd, haproxy) is gone, and the reasoning that produced it is worth
+# keeping because it is still correct - about tmpfs. A blanket tmpfs over
+# /var/lib WOULD hide dpkg's build-time database, which has to stay readable
+# even though OTA never writes it; the same goes for /var/unitotem-venv. That
+# is an argument against tmpfs, not against writability, and it led to an
+# allowlist that could only ever cover directories someone had already caught
+# failing. The DATA overlay (unitotem/files/overlayfs-hook.sh) keeps the lower
+# layer visible and diverts only writes, so it satisfies both requirements at
+# once - and covers what the allowlist had missed, notably /var/log/journal.

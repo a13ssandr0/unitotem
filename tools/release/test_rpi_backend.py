@@ -23,7 +23,7 @@ def sh(*cmd, **kw):
     return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)
 
 
-loader = importlib.machinery.SourceFileLoader("uu", os.path.join(ROOT, "kiosk/files/unitotem-update"))
+loader = importlib.machinery.SourceFileLoader("uu", os.path.join(ROOT, "unitotem/files/unitotem-update"))
 spec = importlib.util.spec_from_loader("uu", loader); uu = importlib.util.module_from_spec(spec); loader.exec_module(uu)
 
 with tempfile.TemporaryDirectory() as td:

@@ -8,7 +8,7 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$DIR/work/loopback-test/scratch-frame"; mkdir -p "$OUT"
-export OTA_LOGO_DIR="$DIR/kiosk/files"
+export OTA_LOGO_DIR="$DIR/unitotem/files"
 # pull in only the functions under test
 src=$(sed -n '/^OTA_LOGO_DIR=/,/^ota_splash() {/p' "$DIR/deploy/ota-engine.sh" | sed '$d')
 pass=0; fail=0

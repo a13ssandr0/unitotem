@@ -28,9 +28,9 @@ verify)
         cmp -s <(openssl pkey -in "$tmp/$k.key" -pubout) "$tmp/$k.pub" || { echo "$k: pubblica non corrisponde" >&2; exit 1; }
         echo "$k: chiave privata valida e coerente con la pubblica"
     done
-    cmp -s "$tmp/root.pub" "$(dirname "$0")/../../kiosk/files/update-root.pub" \
-        && echo "root.pub coincide con quella nell'immagine (kiosk/files/update-root.pub)" \
-        || echo "ATTENZIONE: root.pub del backup diversa da kiosk/files/update-root.pub" >&2
+    cmp -s "$tmp/root.pub" "$(dirname "$0")/../../unitotem/files/update-root.pub" \
+        && echo "root.pub coincide con quella nell'immagine (unitotem/files/update-root.pub)" \
+        || echo "ATTENZIONE: root.pub del backup diversa da unitotem/files/update-root.pub" >&2
     ;;
 restore)
     in="${2:?uso: restore IN.enc DIR}"; dir="${3:?uso: restore IN.enc DIR}"

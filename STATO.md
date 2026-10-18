@@ -9,7 +9,7 @@ Deploy OTA a due stage per i kiosk UniTotem (Raspberry Pi arm64 + amd64): un fal
 si installa per primo e diventa il default di boot, poi l'immagine vera arriva per partizione via
 partclone+netcat, con DATA preservata. Codice: `deploy/ota-engine.sh` (motore condiviso fallback +
 initramfs del sistema reale), `deploy/remote-deploy.sh` (orchestrazione host via SSH),
-`kiosk/stage1-recovery-initrd.sh` (build del fallback), `work/loopback-test/` (regressione).
+`unitotem/stage1-recovery-initrd.sh` (build del fallback), `work/loopback-test/` (regressione).
 
 ## Verificato su hardware reale (Pi 4 Model B Rev 1.5)
 
@@ -150,7 +150,7 @@ distrutta **in silenzio**: un aggiornamento e la perdita del lavoro altrui erano
   è ancora quello mostrato. È ciò che rende una conferma da interfaccia web sicura quanto un prompt.
 - **`API-OTA.md`**: contratto per il frontend nell'altro progetto.
 - **Database dpkg riportato su ROOT** (`initramfs-dpkg-pinned-to-root=yes`), timer `apt-daily*`
-  mascherati, `kiosk-update` che ferma i servizi veri.
+  mascherati, `unitotem-maintenance` che ferma i servizi veri.
 
 ### Prove di quanto l'incoerenza fosse reale
 
@@ -160,7 +160,7 @@ sparita da sé col deploy, che sostituisce ROOT e azzera l'upper di `/var`.
 
 ### Difetti trovati solo su hardware
 
-1. **Un bind mount ha flag propri**: `kiosk-update enter` rimontava `/` in rw e `/var/lib/dpkg` restava
+1. **Un bind mount ha flag propri**: `unitotem-maintenance enter` rimontava `/` in rw e `/var/lib/dpkg` restava
    `ro` nello stesso istante. apt non poteva prendere i lock, dpkg non poteva scrivere: installare un
    pacchetto era impossibile.
 2. **Liste dei pacchetti azzerate** dall'OTA (stanno sull'overlay), quindi ogni `install` falliva con
@@ -194,7 +194,7 @@ un'immagine il cui kernel e modulo sono stati costruiti insieme.
 - La build **fallisce** se il modulo NVIDIA non viene costruito: apt segnala i fallimenti DKMS come
   semplici avvisi, e senza questa guardia ne uscirebbe un'immagine apparentemente sana e priva di NVIDIA.
 - Gli headers del kernel sono **volutamente conservati** (94 MiB, misurati, e il modulo sopravvive al loro
-  purge): servono a DKMS se qualcuno aggiorna il kernel in place con `kiosk-update`, che è un percorso che
+  purge): servono a DKMS se qualcuno aggiorna il kernel in place con `unitotem-maintenance`, che è un percorso che
   l'immagine ora supporta esplicitamente.
 - Costo: immagine amd64 da **774 a 1057 MiB** compressi. Su un OTA quella differenza viaggia in rete a
   ogni deploy.
@@ -244,7 +244,7 @@ dei timestamp: questa era un **arco mancante nel grafo delle dipendenze**.
 
 ### Altri due difetti trovati e chiusi
 
-- Il remount del bind `/var/lib/dpkg` mancava in `build-kiosk.sh` (avevo corretto solo `kiosk-update`):
+- Il remount del bind `/var/lib/dpkg` mancava in `build-unitotem.sh` (avevo corretto solo `unitotem-maintenance`):
   rompeva la build nativa con un errore di lock di apt.
 - Una build interrotta lascia i bind di chroot dentro il rootfs, e il successivo `rm -rf` fallisce con
   "Directory not empty" — messaggio che non nomina i mount. Il percorso nativo ora li smonta prima di
@@ -278,7 +278,7 @@ lascia un dispositivo di riferimento funzionante mentre quel punto si chiarisce 
 La suite ora viene da `$RELEASE` ovunque, anche nelle `sources.list` che finiscono dentro l'immagine. Con
 due architetture su due release, una suite cablata avrebbe fatto il bootstrap di una base puntando apt
 all'altra — disallineamento che salta fuori molto dopo, come dipendenze irrisolvibili o come apt che
-propone un mezzo aggiornamento al primo `kiosk-update enter`.
+propone un mezzo aggiornamento al primo `unitotem-maintenance enter`.
 
 Nota di percorso: la prima build si è incastrata dentro `debootstrap` (log fermo 15 minuti, shell in
 `wait4` senza figli). Un `debootstrap trixie` pulito nello stesso container riusciva, quindi era uno stallo
@@ -314,8 +314,8 @@ al primo errore plausibile:
    quella riproduzione mentiva: il file vero (pacchetti completi: X11, Chromium, pipewire) produce
    `early/`+`main/` con `/init` dentro `main/`. Scoperto tirando giù il file vero rimasto sul Pi dopo il
    fallimento ed estraendolo lì, non ricostruendo un'approssimazione.
-4. **`build-kiosk.sh` non rimontava il bind di `/var/lib/dpkg`** per il percorso nativo — stessa asimmetria
-   già corretta in `kiosk-update`, mancata la prima volta perché è un secondo chiamante.
+4. **`build-unitotem.sh` non rimontava il bind di `/var/lib/dpkg`** per il percorso nativo — stessa asimmetria
+   già corretta in `unitotem-maintenance`, mancata la prima volta perché è un secondo chiamante.
 
 **Risultato**: build nativa sul Pi, tutti e quattro gli stage senza ripiego su qemu. Loopback **136/136**.
 Deploy sul Pi riuscito, e il dispositivo è **tornato su con Debian 13, kernel 6.18.39, `running`, 0 unit
@@ -333,8 +333,8 @@ invece di un sintomo generico.
 
 | Gap | Note |
 |---|---|
-| **Due fix sono in sorgente ma non nell'immagine sul Pi** | Il remount del bind dpkg in `kiosk-update` e lo sha256 batch. Verificati su hardware copiando gli script a mano; entrano in un'immagine solo alla prossima build. Stessa proprietà di ritardo di un giro di sempre. |
-| `iso/installer.sh` è disallineato dal repo | Indipendente da questo lavoro: installa `chromium-flags-amd64`, che non esiste più in `kiosk/files/`. Con `set -euo pipefail` l'installer si fermerebbe lì. Non è nella pipeline di `build-kiosk.sh`, quindi non blocca nulla oggi. |
+| **Due fix sono in sorgente ma non nell'immagine sul Pi** | Il remount del bind dpkg in `unitotem-maintenance` e lo sha256 batch. Verificati su hardware copiando gli script a mano; entrano in un'immagine solo alla prossima build. Stessa proprietà di ritardo di un giro di sempre. |
+| `iso/installer.sh` è disallineato dal repo | Indipendente da questo lavoro: installa `chromium-flags-amd64`, che non esiste più in `unitotem/files/`. Con `set -euo pipefail` l'installer si fermerebbe lì. Non è nella pipeline di `build-unitotem.sh`, quindi non blocca nulla oggi. |
 | `unitotem-manager.service` in crash-loop sul Pi | Causa nota con precisione ora: `OSError` scrivendo sotto `/usr/share/...`, ROOT read-only e non overlaid. Bug del progetto manager, non di questo repo. |
 | **Immagine amd64 trixie mai avviata** | Costruita e verificata in loopback (98/98), ma nessun avvio reale: non ho hardware amd64 su cui provarla. arm64 su trixie invece **è** stata avviata (9 agosto), quindi il gap è ormai specifico ad amd64. |
 | **HEVC non riproducibile** | Chromium non ha `PlatformHEVCDecoderSupport` compilata e GStreamer non espone `v4l2slh265dec`: il decoder HEVC del Pi 4 (`/dev/video19`) resta irraggiungibile da entrambe le strade. Servirebbe una build diversa di Chromium. |
@@ -356,8 +356,8 @@ invece di un sintomo generico.
 2. Completare la build nativa sul Pi end-to-end, ora che stage0 passa.
 3. Estendere `inside-real-sd.sh` con lo scenario "Round 2", quando serve di nuovo l'harness su SD fisica.
 
-Nota di metodo emersa più volte oggi: `should_run()` in `build-kiosk.sh` confronta i timestamp a livello di
-**directory** (`kiosk/files/*`), quindi un file modificato *durante* una build risulta più vecchio
+Nota di metodo emersa più volte oggi: `should_run()` in `build-unitotem.sh` confronta i timestamp a livello di
+**directory** (`unitotem/files/*`), quindi un file modificato *durante* una build risulta più vecchio
 dell'artefatto che avrebbe dovuto invalidare, e la build successiva lo salta silenziosamente. È costato tre
 cicli sprecati. Rimedio immediato: `FORCE_STAGE=2`. Rimedio strutturale da valutare: confrontare gli hash
 dei file invece dei timestamp.

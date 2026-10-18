@@ -9,6 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY iso/ /iso-src/
-COPY kiosk/files/ /iso-src/kiosk-files/
+COPY unitotem/files/ /iso-src/unitotem-files/
 RUN chmod +x /iso-src/*.sh
 VOLUME ["/deploy"]

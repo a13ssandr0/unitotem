@@ -30,7 +30,7 @@ for width in (256, 640, 1280):
     # guard: no orange (spinner) pixel may reach a still logo
     rgb = bg.convert("RGB").tobytes()
     assert not any(rgb[i] > 150 and rgb[i] - rgb[i + 1] > 60 and rgb[i] - rgb[i + 2] > 60 for i in range(0, len(rgb), 3)), "orange pixel in the still logo"
-    out = os.path.join(here, "..", "kiosk", "files", f"unitotem-logo-{width}x{h}.bgrx")
+    out = os.path.join(here, "..", "unitotem", "files", f"unitotem-logo-{width}x{h}.bgrx")
     open(out, "wb").write(raw)
     print(out, width, h, len(raw), "bytes")
     # RGB565, little endian: the firmware framebuffer of the resident Pi fallback (no KMS driver) is 16 bpp
@@ -39,6 +39,6 @@ for width in (256, 640, 1280):
     for i in range(0, len(px), 3):
         v = ((px[i] >> 3) << 11) | ((px[i + 1] >> 2) << 5) | (px[i + 2] >> 3)
         out16 += bytes((v & 255, v >> 8))
-    out = os.path.join(here, "..", "kiosk", "files", f"unitotem-logo-{width}x{h}.rgb565")
+    out = os.path.join(here, "..", "unitotem", "files", f"unitotem-logo-{width}x{h}.rgb565")
     open(out, "wb").write(bytes(out16))
     print(out, width, h, len(out16), "bytes")

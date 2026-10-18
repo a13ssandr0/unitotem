@@ -151,14 +151,14 @@ scelte con le avvertenze sopra, e passare la scelta con `--secure-boot`.
 Root è read-only. Il varco è:
 
 ```
-kiosk-update enter                     # ferma il kiosk e rimonta / in rw
+unitotem-maintenance enter                     # ferma il kiosk e rimonta / in rw
 apt-get update && apt-get install ...
-kiosk-update exit [--initramfs]        # rimonta ro e RIAVVIA il dispositivo
+unitotem-maintenance exit [--initramfs]        # rimonta ro e RIAVVIA il dispositivo
 ```
 
 Due cose che l'interfaccia deve sapere:
 
-- **`kiosk-update exit` riavvia**, sempre, dopo 5 secondi. Non è opzionale.
+- **`unitotem-maintenance exit` riavvia**, sempre, dopo 5 secondi. Non è opzionale.
 - `enter` ferma `unitotem-manager.service` e `start-xorg.service`, quindi lo schermo si spegne e il manager
   non risponde più finché il dispositivo non riparte. Se l'interfaccia gira **sul** dispositivo, perderà la
   connessione con sé stessa: l'operazione va comandata in modo da sopravvivere alla propria esecuzione.
@@ -171,7 +171,7 @@ fatto.
 
 ## Da dove viene la baseline
 
-Generata a build time in `/usr/lib/unitotem/baseline/` (`kiosk/stage3-image.sh`), come ultima operazione
+Generata a build time in `/usr/lib/unitotem/baseline/` (`unitotem/stage3-image.sh`), come ultima operazione
 sull'immagine: `packages`, `unowned.sha256`, `verify-expected`, `meta`.
 
 Se manca, `check` esce con `2`. Un'immagine costruita prima di questa funzione non ha la baseline e il

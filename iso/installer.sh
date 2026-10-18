@@ -1,11 +1,11 @@
 #!/bin/bash
-# UniTotem Kiosk System Installer
+# UniTotem System Installer
 # Text-based TUI installer: collects configuration, then installs everything at once.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export TERM=linux
 
-KIOSK_FILES=/usr/local/share/unitotem/files
+UNITOTEM_FILES=/usr/local/share/unitotem/files
 
 # ======================================================================
 # Boot mode detection (shown immediately on start)
@@ -19,14 +19,14 @@ fi
 clear
 printf '\033[1;34m'
 echo "  ┌─────────────────────────────────────────────────────┐"
-echo "  │         UniTotem Kiosk System Installer             │"
+echo "  │         UniTotem System Installer             │"
 echo "  └─────────────────────────────────────────────────────┘"
 printf '\033[0m'
 echo ""
 printf "  Boot mode detected: \033[1;32m%s\033[0m\n" "$BOOT_MODE"
 echo ""
 echo "  This installer will ask a few questions, then download"
-echo "  and install the UniTotem Kiosk system on the selected disk."
+echo "  and install the UniTotem system on the selected disk."
 echo ""
 read -rp "  Press ENTER to begin configuration..." _
 
@@ -296,7 +296,7 @@ clear
 echo ""
 printf '\033[1;34m'
 echo "  ┌─────────────────────────────────────────────────────┐"
-echo "  │         Installing UniTotem Kiosk System            │"
+echo "  │         Installing UniTotem System            │"
 echo "  │   Do not power off the machine during installation  │"
 echo "  └─────────────────────────────────────────────────────┘"
 printf '\033[0m'
@@ -444,7 +444,7 @@ _ok "Base system installed"
 # No window manager: unitotem-manager's own Qt6+CEF viewer already sets its
 # window to exact fullscreen geometry with no decorations, and CEF only
 # supports X11 embedding - a bare Xorg session is both sufficient and simpler
-# (mirrors kiosk/stage1-packages.sh's "X11 + PipeWire" block).
+# (mirrors unitotem/stage1-packages.sh's "X11 + PipeWire" block).
 _step "[7/10] Installing Xorg, PipeWire, Chromium…"
 
 chroot "$TARGET" apt-get install -y \
@@ -510,13 +510,13 @@ chroot "$TARGET" dpkg-reconfigure -f noninteractive tzdata
 chroot "$TARGET" bash -c "echo 'root:${ROOTPW}' | chpasswd"
 
 # SSH
-install -m 644 "$KIOSK_FILES/sshd_config" "$TARGET/etc/ssh/sshd_config"
+install -m 644 "$UNITOTEM_FILES/sshd_config" "$TARGET/etc/ssh/sshd_config"
 mkdir -p "$TARGET/root/.ssh"
 chmod 700 "$TARGET/root/.ssh"
 
 # fstab
 if [ "$BOOT_MODE" = "UEFI" ]; then
-    install -m 644 "$KIOSK_FILES/fstab-amd64" "$TARGET/etc/fstab"
+    install -m 644 "$UNITOTEM_FILES/fstab-amd64" "$TARGET/etc/fstab"
 else
     # BIOS: no EFI partition
     cat > "$TARGET/etc/fstab" << 'EOF'
@@ -546,48 +546,48 @@ chmod 600 "$TARGET/etc/netplan/00-default.yaml"
 # leave plymouthd.conf's Theme= key pointing at it, which the manager's
 # update-alternatives call alone cannot override.
 mkdir -p "$TARGET/etc/plymouth"
-install -m 644 "$KIOSK_FILES/plymouthd.conf" "$TARGET/etc/plymouth/plymouthd.conf"
+install -m 644 "$UNITOTEM_FILES/plymouthd.conf" "$TARGET/etc/plymouth/plymouthd.conf"
 
 # GRUB config
-install -m 644 "$KIOSK_FILES/grub-default" "$TARGET/etc/default/grub"
+install -m 644 "$UNITOTEM_FILES/grub-default" "$TARGET/etc/default/grub"
 
 # Kiosk config (X11, no window manager)
-mkdir -p "$TARGET/etc/kiosk"
-install -m 644 "$KIOSK_FILES/chromium-flags-amd64"   "$TARGET/etc/kiosk/chromium-flags"
-cat > "$TARGET/usr/local/bin/chromium-kiosk" << 'SCRIPT'
+mkdir -p "$TARGET/etc/unitotem"
+install -m 644 "$UNITOTEM_FILES/chromium-flags-amd64"   "$TARGET/etc/unitotem/chromium-flags"
+cat > "$TARGET/usr/local/bin/chromium-unitotem" << 'SCRIPT'
 #!/bin/bash
-FLAGS=$(grep -v '^#' /etc/kiosk/chromium-flags | tr '\n' ' ')
+FLAGS=$(grep -v '^#' /etc/unitotem/chromium-flags | tr '\n' ' ')
 exec /usr/bin/chromium $FLAGS "$@"
 SCRIPT
-chmod +x "$TARGET/usr/local/bin/chromium-kiosk"
-install -m 755 "$KIOSK_FILES/kiosk-update"               "$TARGET/usr/local/bin/kiosk-update"
+chmod +x "$TARGET/usr/local/bin/chromium-unitotem"
+install -m 755 "$UNITOTEM_FILES/unitotem-maintenance"               "$TARGET/usr/local/bin/unitotem-maintenance"
 
 # X session: started as a proper systemd service (not autologin +
 # .bash_profile, which is tied to a getty/PAM login session's lifecycle and
 # proved fragile). Same unit used by the image build, see
-# kiosk/stage2-configure.sh.
-install -m 644 "$KIOSK_FILES/start-xorg.service" \
+# unitotem/stage2-configure.sh.
+install -m 644 "$UNITOTEM_FILES/start-xorg.service" \
     "$TARGET/etc/systemd/system/start-xorg.service"
 
 # OverlayFS initramfs hook
-install -m 755 "$KIOSK_FILES/overlayfs-hook.sh" \
+install -m 755 "$UNITOTEM_FILES/overlayfs-hook.sh" \
     "$TARGET/etc/initramfs-tools/scripts/init-bottom/setup-overlays"
 echo "overlay" >> "$TARGET/etc/initramfs-tools/modules"
 echo "FRAMEBUFFER=y" >> "$TARGET/etc/initramfs-tools/initramfs.conf"
 
 # Firewall
-install -m 644 "$KIOSK_FILES/iptables-firewall.service" \
+install -m 644 "$UNITOTEM_FILES/iptables-firewall.service" \
     "$TARGET/etc/systemd/system/iptables-firewall.service"
-install -m 750 "$KIOSK_FILES/iptables-firewall.sh" \
+install -m 750 "$UNITOTEM_FILES/iptables-firewall.sh" \
     "$TARGET/sbin/iptables-firewall.sh"
-install -m 644 "$KIOSK_FILES/kiosk-update-mode.service" \
-    "$TARGET/etc/systemd/system/kiosk-update-mode.service"
+install -m 644 "$UNITOTEM_FILES/unitotem-maintenance-mode.service" \
+    "$TARGET/etc/systemd/system/unitotem-maintenance-mode.service"
 
 # Journald / sysctl / udev
 mkdir -p "$TARGET/etc/systemd/journald.conf.d"
-install -m 644 "$KIOSK_FILES/journald.conf" \
-    "$TARGET/etc/systemd/journald.conf.d/kiosk.conf"
-install -m 644 "$KIOSK_FILES/scheduler.rules" \
+install -m 644 "$UNITOTEM_FILES/journald.conf" \
+    "$TARGET/etc/systemd/journald.conf.d/unitotem.conf"
+install -m 644 "$UNITOTEM_FILES/scheduler.rules" \
     "$TARGET/etc/udev/rules.d/60-scheduler.rules"
 cat >> "$TARGET/etc/sysctl.conf" << 'EOF'
 vm.dirty_writeback_centisecs = 3000
@@ -607,7 +607,7 @@ done
 # Enable services
 chroot "$TARGET" systemctl enable \
     systemd-timesyncd NetworkManager dbus ssh \
-    iptables-firewall kiosk-update-mode start-xorg
+    iptables-firewall unitotem-maintenance-mode start-xorg
 
 # Rebuild initramfs
 chroot "$TARGET" update-initramfs -u -k all
@@ -660,7 +660,7 @@ echo "  ┌───────────────────────
 echo "  │            Installation Complete!                   │"
 echo "  ├─────────────────────────────────────────────────────┤"
 echo "  │                                                     │"
-echo "  │   UniTotem Kiosk has been successfully installed.   │"
+echo "  │   UniTotem has been successfully installed.   │"
 printf "  │   Disk: %-44s│\n" "$DISK  ($DISK_INFO)"
 printf "  │   Mode: %-44s│\n" "$BOOT_MODE"
 echo "  │                                                     │"

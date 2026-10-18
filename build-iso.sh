@@ -12,14 +12,14 @@ if ! ${DOCKER} info >/dev/null 2>&1; then
 fi
 
 echo ">>> Building ISO builder image..."
-${DOCKER} build -f "${DIR}/Dockerfile.iso" -t kiosk-iso-builder "${DIR}"
+${DOCKER} build -f "${DIR}/Dockerfile.iso" -t unitotem-iso-builder "${DIR}"
 
 mkdir -p "${DIR}/deploy"
 
 echo ">>> Building installer ISO..."
 ${DOCKER} run --rm --privileged \
     -v "${DIR}/deploy:/deploy" \
-    kiosk-iso-builder /iso-src/build-live.sh
+    unitotem-iso-builder /iso-src/build-live.sh
 
 echo ""
 echo "ISO ready:"

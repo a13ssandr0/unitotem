@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side tests of kiosk/files/unitotem_identity.py (the A/B identity merge). Fixtures only: no target, no qemu.
+"""Host-side tests of unitotem/files/unitotem_identity.py (the A/B identity merge). Fixtures only: no target, no qemu.
 
   python3 tools/release/test_identity_merge.py
 """
@@ -7,7 +7,7 @@ import importlib.util, os, shutil, stat, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-spec = importlib.util.spec_from_file_location("unitotem_identity", os.path.join(ROOT, "kiosk/files/unitotem_identity.py"))
+spec = importlib.util.spec_from_file_location("unitotem_identity", os.path.join(ROOT, "unitotem/files/unitotem_identity.py"))
 ident = importlib.util.module_from_spec(spec); spec.loader.exec_module(ident)
 ok = fail = 0
 
@@ -197,7 +197,7 @@ with tempfile.TemporaryDirectory() as t:
 
 # 5. through the update engine: prepare_overlays (fetch) and a re-merge at apply --------------------------------------------------
 import importlib.machinery
-loader = importlib.machinery.SourceFileLoader("uu", os.path.join(ROOT, "kiosk/files/unitotem-update"))
+loader = importlib.machinery.SourceFileLoader("uu", os.path.join(ROOT, "unitotem/files/unitotem-update"))
 uspec = importlib.util.spec_from_loader("uu", loader); uu = importlib.util.module_from_spec(uspec); loader.exec_module(uu)
 sys.modules["unitotem_identity"] = ident
 with tempfile.TemporaryDirectory() as t:

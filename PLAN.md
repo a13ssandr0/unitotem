@@ -8,13 +8,13 @@ l'immagine **intera** con `dd bs=4M`: 12 GiB su ogni target, contro un'occupazio
 tutti spesi a scrivere zeri. Il test su hardware reale ha esposto due problemi indipendenti:
 
 1. **L'immagine arm64 non si avvia sul Pi.** Il `dd` era corretto (label FIRMWARE/ROOT/DATA giuste, DATA
-   espansa, `/etc/kiosk` presente) ma la FIRMWARE non contiene `kernel8.img` né i `.dtb`:
+   espansa, `/etc/unitotem` presente) ma la FIRMWARE non contiene `kernel8.img` né i `.dtb`:
    `/etc/kernel/postinst.d/z50-raspi-firmware` calcola `flavour="${kernel_version#*-rpi-}"` e con il
    kernel Debian generico `6.1.0-49-arm64` non matcha il suo case `v8|v8-rt|2712|v6|v7|v7l`, quindi esce
    senza copiare nulla. Risultato: loop di lampeggi del LED, macchina irraggiungibile.
 2. **Un fallimento a metà scrittura lascia la macchina morta**, senza alcuna via di recupero remota.
 
-Inoltre `kiosk/files/overlayfs-hook.sh:20-32` usa **DATA come upperdir degli overlay di `/etc` e
+Inoltre `unitotem/files/overlayfs-hook.sh:20-32` usa **DATA come upperdir degli overlay di `/etc` e
 `/root`**: il `dd` whole-disk distrugge la configurazione della macchina ad ogni deploy.
 
 **Esito voluto.** Deploy in **due stage**: prima un'immagine di **fallback** minimale (nessun UniTotem,
@@ -59,7 +59,7 @@ Raspberry Pi OS**: `ROOT/boot/vmlinuz-6.1.0-49-arm64` è un **Image arm64 non co
 4. Commentare `dtoverlay=vc4-kms-v3d`/`-pi5`: il pacchetto kernel Debian **non contiene `overlays/`**,
    quelle righe non possono funzionare. Il Pi si avvia a console + X su fbdev, **senza KMS**.
 
-Accesso al sistema avviato: `root`/`unitotem` (`kiosk/common.sh:11`, `kiosk/files/sshd_config`). Serve
+Accesso al sistema avviato: `root`/`unitotem` (`unitotem/common.sh:11`, `unitotem/files/sshd_config`). Serve
 come target SSH per tutto il resto. **Questo è l'unico intervento manuale sulla SD reale**: tutto il
 resto del piano si verifica su loop device/VM prima di toccarla di nuovo (§11.4).
 
@@ -80,7 +80,7 @@ deve ospitare **due** coppie kernel+initrd (fallback + reale).
 
 `IMAGE_SIZE` 12 GiB → **11 GiB** (ROOT da 10 a 8 GiB: 2.93 GiB usati, resta ampio margine), così il
 disco minimo richiesto scende e più target qualificano. La ef02 resta nascosta nel gap pre-2048 come già
-fa `kiosk/stage3-image.sh:27-31`, così nessun offset si sposta. Modificare `kiosk/common.sh:15-19`.
+fa `unitotem/stage3-image.sh:27-31`, così nessun offset si sposta. Modificare `unitotem/common.sh:15-19`.
 
 **La partizione FAT di boot viene popolata a livello di file, non con partclone.** È la scelta che rende
 possibile la garanzia richiesta: lo stage 2 deve scriverci il kernel/initrd del sistema reale **senza
@@ -111,7 +111,7 @@ arm64 FIRMWARE/                          amd64 EFI/
 
 Come richiesto, ho verificato il comportamento di pi-gen upstream invece di assumerlo: questo repository
 contiene **letteralmente** l'albero pi-gen originale (`stage0/`, `stage1/`, `stage2/`, `export-image/`,
-`build.sh`, `scripts/common`), separato dal nuovo sistema `kiosk/`. Leggendo `build.sh:93-150` e
+`build.sh`, `scripts/common`), separato dal nuovo sistema `unitotem/`. Leggendo `build.sh:93-150` e
 `scripts/common:31-36`:
 
 - ogni stage ha una propria `ROOTFS_DIR` che nasce da un **`rsync -aHAXx --exclude var/cache/apt/archives`
@@ -127,21 +127,21 @@ contiene **letteralmente** l'albero pi-gen originale (`stage0/`, `stage1/`, `sta
 
 Questo conferma esattamente l'idea del punto 2: **il fallback può essere l'immagine di uno stage
 intermedio su cui il resto si costruisce sopra**, e la build può essere strutturata per ricostruire solo
-gli strati più esterni quando cambia poco. Il sistema `kiosk/` (nuovo, non-pi-gen) oggi non ha questo
-meccanismo — estrae ogni stage da un tarball statico via `tar -C "${ROOTFS}" -xzf` (`kiosk/stage2-configure.sh`
+gli strati più esterni quando cambia poco. Il sistema `unitotem/` (nuovo, non-pi-gen) oggi non ha questo
+meccanismo — estrae ogni stage da un tarball statico via `tar -C "${ROOTFS}" -xzf` (`unitotem/stage2-configure.sh`
 e affini) senza `SKIP`/rsync incrementale. Applicando lo stesso principio:
 
-- `kiosk/stage1-packages.sh` guadagna i pacchetti OTA (partclone, dropbear, wpasupplicant, whiptail —
+- `unitotem/stage1-packages.sh` guadagna i pacchetti OTA (partclone, dropbear, wpasupplicant, whiptail —
   quest'ultimo già presente) **e basta**: nessuna configurazione kiosk-specifica;
 - **il kernel+initrd del fallback si costruisce a fine stage1**, con `mkinitramfs` lanciato contro la
   rootfs di stage1 così com'è, includendo l'hook OTA — nessuna build separata, nessun `Dockerfile.parts`
   per il fallback, nessun `deploy/recovery/*`;
 - stage2/stage3 continuano a costruire l'immagine UniTotem completa **sopra** la stessa rootfs di stage1
-  (già oggi `kiosk/stage2-configure.sh` estrae da `work/$ARCH/stage1.tar.gz`, quindi la dipendenza esiste
+  (già oggi `unitotem/stage2-configure.sh` estrae da `work/$ARCH/stage1.tar.gz`, quindi la dipendenza esiste
   già — manca solo la generazione del kernel/initrd di recovery come sotto-prodotto di stage1);
-- **cache**: aggiungere a `kiosk/common.sh` un controllo "se `work/$ARCH/stage1.tar.gz` esiste ed è più
-  recente di `kiosk/stage1-packages.sh`, salta la ricostruzione" (l'equivalente pratico di `SKIP` di
-  pi-gen, dato che il sistema `kiosk/` non ha overlay incrementale rsync ma tarball per stage). Un cambio
+- **cache**: aggiungere a `unitotem/common.sh` un controllo "se `work/$ARCH/stage1.tar.gz` esiste ed è più
+  recente di `unitotem/stage1-packages.sh`, salta la ricostruzione" (l'equivalente pratico di `SKIP` di
+  pi-gen, dato che il sistema `unitotem/` non ha overlay incrementale rsync ma tarball per stage). Un cambio
   a `stage2-configure.sh`/`stage3-image.sh` (temi, sway, chromium) non tocca più né i pacchetti né il
   fallback e non richiede mai di rigenerare `stage1.tar.gz` né il suo initrd — **solo gli strati esterni
   si ricostruiscono**, esattamente come richiesto.
@@ -151,7 +151,7 @@ e affini) senza `SKIP`/rsync incrementale. Applicando lo stesso principio:
 La diagnosi precedente (in questa stessa sessione) aveva individuato lo stallo: `mkinitramfs` con
 `MODULES=most` copiava firmware AMD irrilevante (`amdgpu/navi14_pfp_wks.bin`) sotto traduzione
 `qemu-aarch64`. Punto chiave, verificabile: **nessun binario viene ricompilato** in nessuna delle due
-pipeline (pi-gen o `kiosk/`) — i pacchetti sono `.deb` arm64 già pronti scaricati dal mirror; qemu-user-static
+pipeline (pi-gen o `unitotem/`) — i pacchetti sono `.deb` arm64 già pronti scaricati dal mirror; qemu-user-static
 serve solo a eseguire gli script maintainer (`postinst`/`triggers`) e i tool che girano durante l'installazione
 (`depmod`, `ldconfig`, e soprattutto `mkinitramfs` stesso). Il costo è quindi tutto nell'**esecuzione emulata**
 di programmi che enumerano il filesystem (migliaia di piccole `stat`/`open`), non nella compilazione. Due
@@ -171,7 +171,7 @@ anche la scelta corretta per questo initrd, che deve avviarsi su hardware non no
 causa dello stallo resta la mitigazione 1 sopra (esecuzione nativa, non sotto qemu): `MODULES=most`
 stesso non è il problema, lo è eseguirlo sotto emulazione.
 `deploy/build-flasher.sh`/`flasher-image.sh`/`Dockerfile.flasher` restano eliminati come da §9; la loro
-funzione si sposta dentro `kiosk/stage1-packages.sh` con queste due correzioni.
+funzione si sposta dentro `unitotem/stage1-packages.sh` con queste due correzioni.
 
 ### 2.3 Contenuto del fallback (= rootfs di stage1 + hook OTA)
 
@@ -254,11 +254,11 @@ target si propaga.
 ### 4.1 Parts set
 `deploy/make-parts.sh <image.img.xz>` → `deploy/$ARCH/<base>.parts/`. Decorrelato dalla build del kiosk,
 perché il formato cambierà più volte e ogni modifica deve essere ritestabile sulle immagini **già
-costruite** senza rebuild da 40 minuti. Un blocco opzionale `MAKE_PARTS` in `kiosk/stage3-image.sh` (fra
+costruite** senza rebuild da 40 minuti. Un blocco opzionale `MAKE_PARTS` in `unitotem/stage3-image.sh` (fra
 `umount /mnt` alla riga 141 e `losetup -d` alla 142) userà la stessa libreria.
 
 - `xz -dc | dd conv=sparse` su uno scratch in `work/`, poi `losetup -r --partscan`, riusando il pattern
-  `cleanup_loop` di `kiosk/stage3-image.sh:43-60`.
+  `cleanup_loop` di `unitotem/stage3-image.sh:43-60`.
 - **partclone va pinnato fra generatore e payload, non contro un target pre-esistente.** Punto corretto
   rispetto alla bozza precedente: il payload OTA porta **il proprio** `partclone.restore` (§2.3), il
   target non ha e non deve avere un partclone preinstallato di cui preoccuparsi. Il vincolo reale è che
@@ -351,7 +351,7 @@ esistente e già hardenizzato nel codice, non uno nuovo.
 
 **Negoziazione DATA** (via il comando SSH `unitotem-ota-engine probe`, non più un blocco `HELLO`):
 `HAVE_DATA=1` solo se sul disco scelto esiste, allo start sector previsto, una partizione il cui
-superblocco ext4 si legge (`dumpe2fs -h`); `HAVE_UNITOTEM=1` se esiste anche una ROOT con `/etc/kiosk`.
+superblocco ext4 si legge (`dumpe2fs -h`); `HAVE_UNITOTEM=1` se esiste anche una ROOT con `/etc/unitotem`.
 Sistema **già UniTotem** → tabella intatta, DATA preservata; sistema **nuovo o layout diverso** → tabella
 ricreata, DATA formattata. `--wipe-data` forza il formato in ogni caso.
 
@@ -434,7 +434,7 @@ Quattro livelli indipendenti, ognuno sufficiente da solo.
    `blkid -L ROOT` risolve? `e2fsck -fp` < 4 (riusando la logica bitmask di `run_e2fsck`,
    `unitotem-flash:56-60`)? Se no → modalità OTA.
 3. **Validazione post-mount** (`zz-unitotem-verify` in `local-bottom`): `[ -x $rootmnt/sbin/init ]`,
-   `[ -d $rootmnt/etc/kiosk ]`. Va ordinata **prima** di `overlayfs-hook.sh`, che è in `init-bottom`.
+   `[ -d $rootmnt/etc/unitotem ]`. Va ordinata **prima** di `overlayfs-hook.sh`, che è in `init-bottom`.
 4. **Contatore di boot** su `unitotem-ota.state`, azzerato da `unitotem-boot-ok.service`: tre boot
    consecutivi non azzerati → fallback.
 
@@ -449,12 +449,12 @@ ro → stat → remount rw → leggi in memoria → `rm` → `sync` → umount �
 crash in qualunque momento dopo `rm` porta a un boot normale, **mai a un loop**.
 
 **Via di fuga manuale su amd64**: `/etc/grub.d/45_unitotem_ota` permanente, più `GRUB_TIMEOUT=1` +
-`GRUB_TIMEOUT_STYLE=hidden` in `kiosk/files/grub-default` (oggi `GRUB_TIMEOUT=0`, menu irraggiungibile).
+`GRUB_TIMEOUT_STYLE=hidden` in `unitotem/files/grub-default` (oggi `GRUB_TIMEOUT=0`, menu irraggiungibile).
 **Sul Pi non esiste equivalente diretto**: la garanzia sono i quattro livelli sopra, rinforzati dal
 principio PINN del riquadro in §5.
 
 **Nessuna modifica al firewall**: tutto il traffico OTA (SSH incluso) è nell'initramfs, prima che
-`iptables-firewall.service` esista, e `kiosk/files/iptables-firewall.sh:12` ha `OUTPUT ACCEPT`.
+`iptables-firewall.service` esista, e `unitotem/files/iptables-firewall.sh:12` ha `OUTPUT ACCEPT`.
 
 ---
 
@@ -462,7 +462,7 @@ principio PINN del riquadro in §5.
 
 ### 7.1 Sequenza obbligata
 1. **Verificare che amd64 BIOS si avvii da un'immagine stage3**, prima di scrivere codice OTA per BIOS.
-   `kiosk/stage3-image.sh:117-120` e la ef02 non sono **mai** stati testati. Costo: un dominio libvirt
+   `unitotem/stage3-image.sh:117-120` e la ef02 non sono **mai** stati testati. Costo: un dominio libvirt
    senza `firmware='efi'`.
 2. Fix boot arm64 + nuovo layout + rebuild stage1/2/3 di **entrambe** le arch (con le correzioni di §2.2),
    **prima** di generare qualunque parts set.
@@ -549,7 +549,7 @@ modo 10-12 min → 3-4 min, più pochi secondi per lo stage 1. Se la banda conte
 
 ## 8. Pacchetti e hook
 
-### `kiosk/stage1-packages.sh` (blocco base, entrambe le arch)
+### `unitotem/stage1-packages.sh` (blocco base, entrambe le arch)
 | pacchetto | perché | dimensione |
 |---|---|---|
 | `partclone` | motore di restore, condiviso da fallback e sistema reale | ~1.9 MB |
@@ -593,7 +593,7 @@ arrivano da `pv -n -s <used_bytes>` inserito fra `unxz` e `partclone.restore`.
 ### Creare
 | path | contenuto |
 |---|---|
-| `kiosk/stage1-recovery-initrd.sh` | genera kernel+initrd di fallback da stage1 (§2.1), sostituisce il vecchio `deploy/flasher-image.sh` |
+| `unitotem/stage1-recovery-initrd.sh` | genera kernel+initrd di fallback da stage1 (§2.1), sostituisce il vecchio `deploy/flasher-image.sh` |
 | `deploy/parts-lib.sh` | generatore parts set, `make_parts <device> <outdir> <arch>` |
 | `deploy/make-parts.sh` | wrapper host: `.img`/`.img.xz` → scratch sparse → `losetup -r --partscan` → docker |
 | `deploy/make-parts-image.sh` | worker in-container |
@@ -601,12 +601,12 @@ arrivano da `pv -n -s <used_bytes>` inserito fra `unxz` e `partclone.restore`.
 | `deploy/ota-engine.sh` | motore condiviso: gira nel fallback **e** nell'initramfs del sistema reale; sottocomandi invocati via ssh (`probe`, `restore-table`, `restore-part`, `stage1`, `promote`, ...) |
 | `deploy/ota-commands.md` | elenco breve dei sottocomandi `unitotem-ota-engine` e del loro output — non più una grammatica di wire-protocol da difendere, solo una reference |
 | `deploy/net-probe.sh` | sonda di rete host-side (§3) |
-| `kiosk/files/unitotem-ota-arm` | → `/usr/sbin/unitotem-ota-arm` |
-| `kiosk/files/unitotem-boot-ok.service` | conferma avvio, promuove il default |
-| `kiosk/files/ota-preserve.list` | → `/etc/unitotem/ota-preserve.list`, con `OTA_PRESERVE_LIST_VERSION=` (§7.2) |
-| `kiosk/files/rpi-firmware-sync` | → `/etc/kernel/postinst.d/zz-unitotem-rpi-firmware` (§10) |
-| `kiosk/files/grub-ota-entry` | → `/etc/grub.d/45_unitotem_ota` |
-| `kiosk/files/ota-hook` + `ota-verify` | i due script initramfs del sistema reale (§6 livelli 2-3), stesso hook di §8 |
+| `unitotem/files/unitotem-ota-arm` | → `/usr/sbin/unitotem-ota-arm` |
+| `unitotem/files/unitotem-boot-ok.service` | conferma avvio, promuove il default |
+| `unitotem/files/ota-preserve.list` | → `/etc/unitotem/ota-preserve.list`, con `OTA_PRESERVE_LIST_VERSION=` (§7.2) |
+| `unitotem/files/rpi-firmware-sync` | → `/etc/kernel/postinst.d/zz-unitotem-rpi-firmware` (§10) |
+| `unitotem/files/grub-ota-entry` | → `/etc/grub.d/45_unitotem_ota` |
+| `unitotem/files/ota-hook` + `ota-verify` | i due script initramfs del sistema reale (§6 livelli 2-3), stesso hook di §8 |
 
 ### Eliminare
 `deploy/flasher/unitotem-flash` (607 righe), `deploy/flasher/hook`, `deploy/flasher/udhcpc-script`,
@@ -638,7 +638,7 @@ arrivano da `pv -n -s <used_bytes>` inserito fra `unxz` e `partclone.restore`.
   UUID, label duplicate su altri dischi; `print_probe` (144-159); `select_disk` (165-204); `push_flasher_
   kernel` (256-266) ripuntato sui file di recovery; `arm_grub` (276-321) verbatim; `arm_rpi` (323-344) per
   i Pi senza tryboot/PINN; `do_reboot` (346-349); `cmd_disarm` (486-512); la coda di attesa SSH di
-  `cmd_deploy` (462-480), che legge `unitotem-ota.state` invece dell'euristica `/etc/kiosk` a 475.
+  `cmd_deploy` (462-480), che legge `unitotem-ota.state` invece dell'euristica `/etc/unitotem` a 475.
 - **Muore**: `decide_mode` (209-229) → `pick_arming` + `pick_source`; i branch `part`/`net` di
   `build_flash_cmdline` (243-252); `push_deploy_payload` (268-274) → spinge una *directory*; `net_send`
   (354-386) → sostituito da chiamate `ssh_t`/`scp_t` dirette all'engine, dato che il controllo ora è SSH;
@@ -658,25 +658,25 @@ deploy/remote-deploy.sh disarm  user@host
 ```
 
 ### Modificare
-- `kiosk/common.sh:15-19` — nuove dimensioni (§1); aggiungere il controllo di cache stage1 (§2.1).
-- `kiosk/stage1-packages.sh` — i sei pacchetti di §8; **nessuna** asserzione "no busybox" (§2.3: è
+- `unitotem/common.sh:15-19` — nuove dimensioni (§1); aggiungere il controllo di cache stage1 (§2.1).
+- `unitotem/stage1-packages.sh` — i sei pacchetti di §8; **nessuna** asserzione "no busybox" (§2.3: è
   inevitabile, l'asserzione andrebbe sempre in errore).
-- `kiosk/stage1-recovery-initrd.sh` (nuovo) — `mkinitramfs` con `MODULES=dep`+`MODULES_EXTRA` mirato
+- `unitotem/stage1-recovery-initrd.sh` (nuovo) — `mkinitramfs` con `MODULES=dep`+`MODULES_EXTRA` mirato
   (§2.2) sulla rootfs di stage1, con l'hook OTA già installato.
-- `kiosk/stage2-configure.sh` — installa `ota-engine.sh`, hook, i due script initramfs del sistema reale,
+- `unitotem/stage2-configure.sh` — installa `ota-engine.sh`, hook, i due script initramfs del sistema reale,
   `unitotem-ota-arm`, `unitotem-boot-ok.service`, `ota-preserve.list`, `45_unitotem_ota`,
   `rpi-firmware-sync`; popolazione FIRMWARE arm64 **dopo** `update-initramfs -u -k all`.
-- `kiosk/files/config.txt` — `kernel=kernel8.img`, `initramfs initramfs8 followkernel`; commentare
+- `unitotem/files/config.txt` — `kernel=kernel8.img`, `initramfs initramfs8 followkernel`; commentare
   `dtoverlay=vc4-kms-v3d`/`-pi5` con rimando al follow-up.
-- `kiosk/files/grub-default` — `GRUB_TIMEOUT=1`, `GRUB_TIMEOUT_STYLE=hidden`.
-- `kiosk/stage3-image.sh` — nuovo layout, blocco `MAKE_PARTS` opzionale, **asserzioni di avviabilità** di
+- `unitotem/files/grub-default` — `GRUB_TIMEOUT=1`, `GRUB_TIMEOUT_STYLE=hidden`.
+- `unitotem/stage3-image.sh` — nuovo layout, blocco `MAKE_PARTS` opzionale, **asserzioni di avviabilità** di
   §10.
-- `Dockerfile.kiosk` — aggiungere `partclone`.
+- `Dockerfile.unitotem` — aggiungere `partclone`.
 - `deploy/lib.sh` — ritirare `build_deploy_manifest` (86-117) e i `layout_*` hardcoded (61-63) in favore
   di `parts.manifest`; tenere `pdev`, `size_to_bytes`, `bytes_human`, `SSH_OPTS`, `ssh_t`, `scp_t`;
   aggiungere `socat_listen`/`wait_port_bound` (solo per il canale **dati**); `require_cmd` guadagna
   `socat`/`ss` (dati) e `ssh` resta come già.
-- `debian-kiosk.md` §28 — riscrivere; `README.md` — nota breve.
+- `debian-unitotem.md` §28 — riscrivere; `README.md` — nota breve.
 
 ---
 
@@ -684,7 +684,7 @@ deploy/remote-deploy.sh disarm  user@host
 
 Richiesta esplicita ("non possiamo permetterci errori"), quindi trattata come requisito verificabile.
 
-**Asserzioni di build** in `kiosk/stage3-image.sh`, che **fanno fallire la build** se non passano:
+**Asserzioni di build** in `unitotem/stage3-image.sh`, che **fanno fallire la build** se non passano:
 1. `FIRMWARE/kernel8.img` esiste e i byte 0x38-0x3B sono `ARMd` (magic Image arm64) — il controllo che
    avrebbe intercettato il bug attuale;
 2. `FIRMWARE/bcm2711-rpi-4-b.dtb` esiste e `dtc -I dtb -O dts` lo parsa;
@@ -697,8 +697,8 @@ Richiesta esplicita ("non possiamo permetterci errori"), quindi trattata come re
 7. `fsck.vfat -n` pulito sulla FIRMWARE e `fsck.ext4 -fn` pulito su ROOT/DATA.
 
 **Hook di manutenzione**: `/etc/kernel/postinst.d/zz-unitotem-rpi-firmware` ripete le copie
-kernel/initrd/dtb ad ogni aggiornamento di kernel — altrimenti il primo `kiosk-update`
-(`kiosk/files/kiosk-update:27`, `update-initramfs -u -k all`) riporterebbe il Pi nella condizione attuale.
+kernel/initrd/dtb ad ogni aggiornamento di kernel — altrimenti il primo `unitotem-maintenance`
+(`unitotem/files/unitotem-maintenance:27`, `update-initramfs -u -k all`) riporterebbe il Pi nella condizione attuale.
 
 **Gate su hardware reale, prima di qualunque deploy**: scrivere l'immagine appena costruita su un
 supporto, avviare il Pi 4 con seriale collegata, e confermare kernel caricato → root montata → login.
@@ -738,7 +738,7 @@ Da far funzionare **per primo**: prende la maggior parte dei bug in pochi minuti
    cablato, DHCP WiFi, statico WiFi.
 
 ### 11.2 amd64 UEFI — `work/vm-test/`
-Sempre su un `overlay.qcow2` fresco sopra `kiosk-amd64.img` intatto.
+Sempre su un `overlay.qcow2` fresco sopra `unitotem-amd64.img` intatto.
 - **Percorso preparato**: boot dell'immagine, `unitotem-ota-arm --host <ip>`, seguire il log seriale per
   stage 1 + stage 2, confermare la promozione del default e il contenuto di `unitotem-ota.state`.
 - **Percorso non preparato**: `work/vm-test-oldsys2/oldsys.img` → push recovery, `arm_grub`, deploy.
@@ -776,7 +776,7 @@ rischio, con un checkpoint esplicito prima di reinserire la SD nel Raspberry Pi.
    effettivamente si comporta come atteso (cosa che un loop device sull'host non può testare: il firmware
    del Pi stesso).
 4. **Segnale esplicito all'utente**: solo dopo il passo 3 confermato via SSH (`ssh root@<ip> "cat
-   /etc/kiosk/*; systemctl is-active unitotem-boot-ok"` o equivalente) comunico che è sicuro considerare
+   /etc/unitotem/*; systemctl is-active unitotem-boot-ok"` o equivalente) comunico che è sicuro considerare
    il test hardware concluso. Se qualcosa va storto al passo 3, si ripristina con il backup del passo 0
    (`dd` inverso) e si torna ai test di loopback per capire cosa il loop device non aveva catturato.
 5. Il test di power-cut **reale** (staccare l'alimentazione del Pi a metà OTA) resta l'unico caso che
@@ -841,7 +841,7 @@ soltanto asserito.
   DHCP confermato funzionante (IP reale ottenuto, `<pi-host>`), dropbear confermato raggiungibile a
   livello di protocollo TCP/SSH.
 
-**Bug noto, non bloccante, rimandato**: l'overlay DATA→`/etc`,`/root` di `kiosk/files/overlayfs-hook.sh`
+**Bug noto, non bloccante, rimandato**: l'overlay DATA→`/etc`,`/root` di `unitotem/files/overlayfs-hook.sh`
 non sopravvive allo `switch_root` (vedi memoria `overlayfs-switch-root-bug`). Non blocca l'OTA:
 `migrate-etc-overlay` opera offline sul filesystem già montato, non dipende da questo meccanismo di boot.
 
@@ -881,7 +881,7 @@ runtime) potrebbe cercarla. Questo va risolto comunque, indipendentemente dal me
 ### Design finale: password fissa, stesso valore già in uso ovunque
 
 `root`/`unitotem` è già la credenziale stabilita per l'accesso interattivo a questi dispositivi (memoria
-`no-ssh-password-prompts`, `kiosk/common.sh`'s `ROOT_PASSWORD` default). Riusarla per il canale di
+`no-ssh-password-prompts`, `unitotem/common.sh`'s `ROOT_PASSWORD` default). Riusarla per il canale di
 controllo elimina interamente il problema di propagazione: nessuna chiave da copiare, nessuna differenza
 tra percorso "target già pronto" e "target mai stato UniTotem", nessuna funzione nuova da testare in
 isolamento per la sola preoccupazione di popolare un file di configurazione.
@@ -911,7 +911,7 @@ ota_ssh() { local host="$1"; shift; _sshpass ssh "${OTA_SSH_OPTS[@]}" "root@${ho
 
 Aggiungere `sshpass` a `require_cmd` in `deploy/remote-deploy.sh`.
 
-**`kiosk/files/ota-hook`** — il fix del problema *reale* (`/etc/shadow` assente). Scrivere l'hash a
+**`unitotem/files/ota-hook`** — il fix del problema *reale* (`/etc/shadow` assente). Scrivere l'hash a
 build-time invece di chiamare `chpasswd` a runtime: evita di dover forzare la copia di `chpasswd` e delle
 sue dipendenze (PAM incluso) nell'initrd per un risultato comunque fisso e noto in anticipo:
 
@@ -925,7 +925,7 @@ chmod 600 "${DESTDIR}/etc/shadow"
 copy_file file /etc/group /etc/group
 ```
 
-Questo hook è condiviso tra il fallback residente (`kiosk/stage1-recovery-initrd.sh`) e l'initramfs del
+Questo hook è condiviso tra il fallback residente (`unitotem/stage1-recovery-initrd.sh`) e l'initramfs del
 sistema reale (`update-initramfs` in stage2) — corretto che lo sia: anche l'initramfs del sistema reale
 deve poter servire OTA (livelli 2/3 della garanzia di fallback, §6) con le stesse credenziali, prima ancora
 di uno switch_root verso il rootfs persistente dove vive la password "vera".
@@ -953,7 +953,7 @@ passo chiudeva con un riavvio semplice, che per `$trial_mode = rpi-tryboot` non 
 reale, in tre parti:
 
 1. **Fix del binario `reboot` (richiesto esplicitamente dall'utente: *"se il reboot di busybox non lo
-   supporta includi un binario che lo supporta"*)**: `kiosk/files/ota-hook` ora forza la copia del vero
+   supporta includi un binario che lo supporta"*)**: `unitotem/files/ota-hook` ora forza la copia del vero
    `reboot` (risolve a `/usr/sbin/reboot -> /bin/systemctl -> /usr/bin/systemctl`, verificato con
    `readlink -f`, non assunto), stesso schema ldd-based già usato per `nc`/`mount`/`dd`. Confermato su
    hardware reale: il log del kernel ora mostra `reboot: Restarting system with command '0 tryboot'` —
@@ -999,7 +999,7 @@ un follow-up separato (KMS e tryboot dipendono entrambi da quello, quando accadr
 
 ### Verifica
 
-1. Rebuild `./build-kiosk.sh` (arm64 necessario — `kiosk/files/ota-hook` è tracciato come dipendenza di
+1. Rebuild `./build-unitotem.sh` (arm64 necessario — `unitotem/files/ota-hook` è tracciato come dipendenza di
    stage1/stage2 da `should_run()`, nessun `FORCE_STAGE` necessario).
 2. Rigenerare il parts set arm64, ri-eseguire il loopback test arm64 (50/50 atteso, nessuna delle modifiche
    tocca il meccanismo di restore).
@@ -1060,7 +1060,7 @@ modalità auto (o avere già approvato esplicitamente l'azione) per inviare la p
 osservato empiricamente in questa sessione. Comandi effettivamente usati con successo:
 ```
 printf '\x04' > /dev/ttyUSB0        # Ctrl-D, es. per superare un prompt di emergency shell
-printf 'unitotem\n' > /dev/ttyUSB0  # password di root (stessa di SSH, kiosk/common.sh ROOT_PASSWORD)
+printf 'unitotem\n' > /dev/ttyUSB0  # password di root (stessa di SSH, unitotem/common.sh ROOT_PASSWORD)
 printf 'comando qui\n' > /dev/ttyUSB0   # qualunque comando shell, una volta autenticati
 ```
 Dopo ogni scrittura, aspettare 2-3 secondi e rileggere il log (vedi sopra) — non c'è modo di sapere se un
@@ -1093,7 +1093,7 @@ SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS sshpass -p unitotem ssh 
   stanotte mentre si validava dal vivo un fix.
 - Shell minimale sul fallback: **non c'è busybox**, solo binari klibc-utils separati — `which`, `grep`,
   `head`, `tail`, `wc`, `cp`, `mountpoint` sono **assenti di default** (fissato per `cp`/`grep`/`head`/
-  `tail`/`mountpoint` in `kiosk/files/ota-hook`, ma solo nell'immagine più recente — vedi §14.4 per quale
+  `tail`/`mountpoint` in `unitotem/files/ota-hook`, ma solo nell'immagine più recente — vedi §14.4 per quale
   build ce li ha). `awk`, `command -v`, `cat`, `readlink` coprono quasi tutto il resto quando serve
   diagnosticare senza quei binari.
 
@@ -1117,8 +1117,8 @@ ffmpeg -f v4l2 -input_format mjpeg -video_size 1920x1080 -i /dev/video2 \
 ### 14.4 Stato dettagliato: cosa è fatto, cosa resta
 
 **Fatto e verificato con esecuzione reale, non solo scritto:**
-- Intero motore OTA a due stage scritto e funzionante: `deploy/ota-engine.sh`, `kiosk/files/ota-hook`,
-  `kiosk/stage1-recovery-initrd.sh`, `deploy/parts-lib.sh`/`make-parts.sh`, `deploy/remote-deploy.sh` +
+- Intero motore OTA a due stage scritto e funzionante: `deploy/ota-engine.sh`, `unitotem/files/ota-hook`,
+  `unitotem/stage1-recovery-initrd.sh`, `deploy/parts-lib.sh`/`make-parts.sh`, `deploy/remote-deploy.sh` +
   `deploy/lib.sh` riscritti.
 - Build di entrambe le architetture, gate di avviabilità, verifica loopback (§11.1) **50/50 ripetuta più
   volte stanotte** con ogni nuovo fix, mai una regressione.
@@ -1137,9 +1137,9 @@ ffmpeg -f v4l2 -input_format mjpeg -video_size 1920x1080 -i /dev/video2 \
   correttamente (`config.txt` punta permanentemente al kernel reale, `tryboot.txt`/backup rimossi).
 - **Scoperta che l'initrd non ha affatto busybox** (solo klibc-utils) — spiega retroattivamente ogni
   "comando non trovato" di stanotte. Fissato: `cp grep head tail mountpoint` aggiunti a `copy_exec` in
-  `kiosk/files/ota-hook`, `nls_ascii` aggiunto a `manual_add_modules` (serve per **qualunque** `mount -t
+  `unitotem/files/ota-hook`, `nls_ascii` aggiunto a `manual_add_modules` (serve per **qualunque** `mount -t
   vfat` senza `iocharset=` esplicito, non solo per i nomi file).
-- **`unitotem-ota-arm` (kiosk/files/unitotem-ota-arm)**: il riavvio in background (`nohup reboot &`)
+- **`unitotem-ota-arm` (unitotem/files/unitotem-ota-arm)**: il riavvio in background (`nohup reboot &`)
   non sopravviveva alla chiusura della sessione SSH (il processo veniva ucciso prima di eseguire davvero
   il reset) — fissato con `setsid` + breve `sleep 2` dopo il backgrounding.
 - **`check_flag_file()` in `deploy/ota-engine.sh`**: `blkid -L` può perdere la race con udev in avvio
@@ -1150,7 +1150,7 @@ ffmpeg -f v4l2 -input_format mjpeg -video_size 1920x1080 -i /dev/video2 \
   causavano tentativi di askpass grafico e fallimento silenzioso in esecuzione non interattiva) — fissate.
   `select_disk()` moriva silenziosamente sotto `set -e` con `--yes` + un solo disco e nessun terminale
   (`read` su EOF) — fissato con auto-selezione quando c'è un solo disco candidato.
-- **Build nativa sul Pi** (task #22, `build-kiosk.sh`): implementata (`probe_pi()` +
+- **Build nativa sul Pi** (task #22, `build-unitotem.sh`): implementata (`probe_pi()` +
   `build_natively_on_pi()`), meccanica di setup validata dal vivo (symlink `/kiosk`/`/work`/`/deploy` su
   `/mnt/data`, root reso scrivibile solo per la finestra necessaria con trap di ripristino a `ro`) — **mai
   ancora eseguita end-to-end per una build reale completa** (ogni rebuild di stanotte è finita sotto
@@ -1159,7 +1159,7 @@ ffmpeg -f v4l2 -input_format mjpeg -video_size 1920x1080 -i /dev/video2 \
   mount guidato da fstab dopo lo switch_root, con il set completo di moduli del kernel, non quello
   ristretto dell'initrd) per la stessa causa (`nls_ascii`/iocharset di default assente) — diagnosticato
   stanotte via login diretto nella emergency shell su seriale (`systemctl --failed` →
-  `boot-firmware.mount loaded failed failed /boot/firmware`), **fissato** in `kiosk/files/fstab-arm64` e
+  `boot-firmware.mount loaded failed failed /boot/firmware`), **fissato** in `unitotem/files/fstab-arm64` e
   `fstab-amd64` con `iocharset=iso8859-1` esplicito.
 - `CLAUDE.md` creato con due policy permanenti: SSH/SCP sempre via i wrapper `_sshpass` (mai grezzi);
   build arm64 nativa sul Pi quando raggiungibile, altrimenti Docker+qemu.
@@ -1195,7 +1195,7 @@ live) fino a boot confermato del sistema reale: `unitotem-boot-ok.service` `Acti
 Result=success`, nessun file di trial/backup residuo su FIRMWARE (`tryboot.txt`/`*.unitotem-bak` rimossi da
 `promote-default`), `systemctl --failed` **senza** `boot-firmware.mount` (i quattro rimasti — `dpkg-db-
 backup`, `glamor-test`, `logrotate`, `rpi-eeprom-update` — sono preesistenti e non correlati). Sistema su
-stabile, `/etc/kiosk` presente.
+stabile, `/etc/unitotem` presente.
 
 Cinque bug reali trovati e fissati in questa sessione, **tutti scoperti solo eseguendo il ciclo completo
 contro hardware vero**, mai dal loopback (che non innesca gli stessi percorsi):
@@ -1234,7 +1234,7 @@ confermato (prima: `!!! migrazione /etc fallita`).
 
 **Due bug in più trovati testando per la prima volta il percorso "arma da sistema live" fino in fondo**
 (mai eseguito realmente con `unitotem-ota-arm` seguito dal deploy completo, in questa sessione o prima):
-1. `kiosk/files/unitotem-ota-arm` montava `/run/unitotem-bootfs` con un `mount -t vfat` indipendente,
+1. `unitotem/files/unitotem-ota-arm` montava `/run/unitotem-bootfs` con un `mount -t vfat` indipendente,
    stesso bug di classe EBUSY/`errors=remount-ro` già fissato altrove: sul sistema reale `/boot/firmware`
    si trova spesso già montato (a volte inaspettatamente read-only, verosimilmente per un urto pregresso
    con `errors=remount-ro`, l'opzione di mount di default per vfat), quindi il secondo mount veniva
@@ -1250,7 +1250,7 @@ confermato (prima: `!!! migrazione /etc fallita`).
    successivo (compreso il boot di trial appena armato) rientrava in fallback per "flag file
    unitotem-ota.request" invece di procedere — un loop permanente scoperto solo eseguendo per intero il
    percorso arm-da-sistema-live → deploy → trial-boot, mai testato in questa forma prima d'ora. Fix:
-   `rm`, `chmod`, `tar` aggiunti al `copy_exec` di `kiosk/files/ota-hook` (i primi due mai presenti neppure
+   `rm`, `chmod`, `tar` aggiunti al `copy_exec` di `unitotem/files/ota-hook` (i primi due mai presenti neppure
    come applet busybox su questa build; `tar` serve a `populate-bootfs`, mai esercitato nei test di questa
    sessione perché sempre su un target già-UniTotem, ma con lo stesso gap).
 
@@ -1300,7 +1300,7 @@ usato da `deploy/remote-deploy.sh deploy`.
 
 **Fix**: `umount /boot-ota 2>/dev/null || true` aggiunto subito prima del `return 0` finale di
 `cmd_init_premount()` in `deploy/ota-engine.sh`. Richiede rebuild (l'hook è parte dell'initramfs generato
-da `kiosk/stage2-configure.sh`/`kiosk/stage1-recovery-initrd.sh`) — in corso alla fine di questa sessione,
+da `unitotem/stage2-configure.sh`/`unitotem/stage1-recovery-initrd.sh`) — in corso alla fine di questa sessione,
 non ancora verificato su hardware reale dopo il fix.
 
 ---
@@ -1341,12 +1341,12 @@ Tutte e tre implementate nella stessa sessione, su richiesta esplicita dell'uten
 altri" per il kernel switch, "Solo su DATA" per il backup della host key) — non trattate come sessioni
 separate come inizialmente raccomandato.
 
-1. **Kernel switch a `linux-image-rpi-v8`.** `kiosk/stage1-packages.sh` installa ora il kernel reale
-   Raspberry Pi invece del generico Debian; `kiosk/files/config.txt` abilita `dtoverlay=vc4-kms-v3d`(-pi5);
-   `kiosk/files/rpi-firmware-sync` (l'hook custom che aggirava il mismatch del vecchio kernel) è stato
+1. **Kernel switch a `linux-image-rpi-v8`.** `unitotem/stage1-packages.sh` installa ora il kernel reale
+   Raspberry Pi invece del generico Debian; `unitotem/files/config.txt` abilita `dtoverlay=vc4-kms-v3d`(-pi5);
+   `unitotem/files/rpi-firmware-sync` (l'hook custom che aggirava il mismatch del vecchio kernel) è stato
    rimosso, ora ridondante. **Bug reale trovato e fissato**: il kernel reale ships `vmlinuz` **compresso
    gzip** (magic `1f8b`), non come Image arm64 grezzo (magic `ARMd` a 0x38) come il vecchio kernel Debian —
-   il gate di avviabilità in `kiosk/stage3-image.sh` (aggiunto in una sessione precedente) lo ha beccato
+   il gate di avviabilità in `unitotem/stage3-image.sh` (aggiunto in una sessione precedente) lo ha beccato
    correttamente al primo giro, fissato per accettare entrambi i formati. **Stesso identico controllo
    duplicato in `work/loopback-test/inside-arm64.sh` e `inside-real-sd.sh`** (script gitignored, non
    tracciati) — mancato nel primo giro di fix, la loopback verification l'ha ribeccato al secondo giro,
@@ -1355,18 +1355,18 @@ separate come inizialmente raccomandato.
    `deploy/ota-engine.sh` — un solo punto di modifica copre sia il fallback residente sia l'initramfs OTA-
    capable del sistema reale, dato che entrambi chiamano la stessa funzione. Solo il LED PWR è toccato, il
    LED di attività disco resta al default. Best-effort e silenzioso (niente sysfs su amd64).
-3. **Host key SSH persistente su DATA.** Nuovo `kiosk/files/unitotem-ssh-hostkey` (script) +
+3. **Host key SSH persistente su DATA.** Nuovo `unitotem/files/unitotem-ssh-hostkey` (script) +
    `.service` (`Before=ssh.service`, `RequiresMountsFor=/mnt/data`): al primo boot genera la chiave e la
    salva in `/mnt/data/unitotem/ssh-host-keys/`, ai boot successivi la ripristina da lì invece di
    rigenerarla. `ota-preserve.list`'s `ssh/ssh_host_*` rimosso (ridondante, la persistenza ora passa da
    questo meccanismo dedicato, non dalla migrazione overlay `/etc`).
 
-**Bug indipendente trovato e fissato nello stesso giro** (non una delle 3 richieste): `kiosk/files/unitotem-
+**Bug indipendente trovato e fissato nello stesso giro** (non una delle 3 richieste): `unitotem/files/unitotem-
 boot-ok` aveva lo stesso bug EBUSY (doppio mount dello stesso device di boot) già fissato altrove in
 `unitotem-ota-arm` e `deploy/ota-engine.sh`'s `ota_mount_bootfs_rw` — trovato rivedendo il file per il lavoro
 sulla host key, sistemato con lo stesso pattern reuse-and-remount.
 
-**Verifica**: rebuild completo arm64 (`build-kiosk.sh`, stage1/1b/2 cachati + stage3 rifatto dopo il fix del
+**Verifica**: rebuild completo arm64 (`build-unitotem.sh`, stage1/1b/2 cachati + stage3 rifatto dopo il fix del
 gate), parts set rigenerato, loopback test (`work/loopback-test/run-arm64.sh`) **50/50 controlli passati,
 zero regressioni** dopo i due fix (gate + duplicato nel driver di test). 4 commit separati, uno per
 feature/fix (kernel switch, LED, host key, bugfix EBUSY indipendente).
@@ -1396,7 +1396,7 @@ scratchpad l'aveva bypassato. Corretto usando `/dev/disk/by-id/mmc-00000_0x10105
 codice di produzione necessaria per questo punto.
 
 **Bug reale trovato *nel* codice di produzione, molto più significativo**: dopo un trial-boot riuscito
-(kernel `6.12.96+rpt-rpi-v8` confermato via `uname -r`, `/etc/kiosk` presente, `unitotem-boot-ok.service`
+(kernel `6.12.96+rpt-rpi-v8` confermato via `uname -r`, `/etc/unitotem` presente, `unitotem-boot-ok.service`
 uscito 0/SUCCESS), **nessun `dtoverlay=` KMS sul dispositivo reale** — `grep dtoverlay=vc4
 /boot/firmware/config.txt` non trovava nulla, `/sys/class/drm/` non mostrava alcuna card vc4. Causa
 radice, non quella inizialmente ipotizzata (il gate di `populate-bootfs` legato a `recreate_table` — quello
@@ -1404,22 +1404,22 @@ esiste ma è irrilevante qui, dato che `cmd_populate_bootfs` esclude esplicitame
 `cmdline.txt` dall'estrazione): **`cmd_set_default_recovery`, `cmd_set_trial_boot` e `cmd_promote_default`
 in `deploy/ota-engine.sh` scrivono ciascuno un `config.txt`/`tryboot.txt` con un template minimo
 hardcoded direttamente nello script** (solo `arm_64bit=1`, `enable_uart=1`, `kernel=`, `initramfs=...
-followkernel`) — **mai** il contenuto reale di `kiosk/files/config.txt` costruito nell'immagine. Dato che
+followkernel`) — **mai** il contenuto reale di `unitotem/files/config.txt` costruito nell'immagine. Dato che
 `deploy/remote-deploy.sh` è l'**unico** percorso di deploy supportato (il vecchio flasher whole-disk `dd` è
-stato rimosso, §17 step 3), questo significa che `dtoverlay=vc4-kms-v3d`/`-pi5` in `kiosk/files/config.txt`
+stato rimosso, §17 step 3), questo significa che `dtoverlay=vc4-kms-v3d`/`-pi5` in `unitotem/files/config.txt`
 non ha mai raggiunto **nessun** dispositivo reale attraverso la pipeline — non solo un gap degli
 aggiornamenti OTA, un gap fin dal primo provisioning.
 
-**Fix**: introdotto `kiosk/files/config-extra.txt` — solo il contenuto che non è selezione-del-kernel
+**Fix**: introdotto `unitotem/files/config-extra.txt` — solo il contenuto che non è selezione-del-kernel
 (`max_framebuffers`, `disable_splash`, `boot_delay`, le sezioni `[pi4]`/`[pi5]` con `dtoverlay=`/
-`dtparam=audio=on`). Installato su ROOT in `kiosk/stage2-configure.sh`
+`dtparam=audio=on`). Installato su ROOT in `unitotem/stage2-configure.sh`
 (`/etc/unitotem/config-extra.txt`). Nuovo helper `append_config_extra()` in `deploy/ota-engine.sh`,
 chiamato da `cmd_set_trial_boot`'s `rpi-tryboot`/`rpi-legacy` (che leggono da
 `/mnt/newroot/etc/unitotem/config-extra.txt`, girano nel fallback contro la ROOT appena ripristinata) e da
 `cmd_promote_default`'s `rpi` (che legge da `/etc/unitotem/config-extra.txt`, gira **dopo** il boot, sul
 sistema reale stesso, via `unitotem-boot-ok`). `cmd_set_default_recovery` (config.txt del **fallback**)
 deliberatamente **non** tocca questo helper: il fallback non fa grafica, non serve KMS lì.
-`kiosk/files/config.txt` resta nel repo come riferimento/per un eventuale flash diretto fuori pipeline, con
+`unitotem/files/config.txt` resta nel repo come riferimento/per un eventuale flash diretto fuori pipeline, con
 un commento che spiega la sua portata reale ora limitata; nessun templating fra i due file, vanno tenuti
 sincronizzati a mano.
 

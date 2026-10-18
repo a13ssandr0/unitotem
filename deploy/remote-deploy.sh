@@ -154,7 +154,7 @@ command -v grub-reboot >/dev/null 2>&1 && echo "GRUB_REBOOT: 1" || echo "GRUB_RE
 command -v update-grub >/dev/null 2>&1 && echo "UPDATE_GRUB: 1" || echo "UPDATE_GRUB: 0"
 command -v systemctl >/dev/null 2>&1 && echo "SYSTEMD: 1" || echo "SYSTEMD: 0"
 
-[ -d /etc/kiosk ] && echo "HAVE_UNITOTEM: 1" || echo "HAVE_UNITOTEM: 0"
+[ -f /etc/unitotem/ota-preserve.list ] && echo "HAVE_UNITOTEM: 1" || echo "HAVE_UNITOTEM: 0"
 
 ROOTSRC=$(findmnt -no SOURCE / 2>/dev/null || true)
 echo "ROOTSRC: ${ROOTSRC:-none}"
@@ -276,10 +276,10 @@ REMOTE_EOF
         #     fork; it is silently ignored on a mainline/Debian generic
         #     kernel (confirmed on this very hardware, and matching
         #     raspberrypi/rpi-eeprom#716). That was the original blocker and
-        #     is now satisfied: kiosk/stage1-packages.sh installs
+        #     is now satisfied: unitotem/stage1-packages.sh installs
         #     linux-image-rpi-v8, and - the part that actually matters here -
         #     the reboot is issued from the RESIDENT FALLBACK initrd, which
-        #     kiosk/stage1-recovery-initrd.sh builds from that same rpi
+        #     unitotem/stage1-recovery-initrd.sh builds from that same rpi
         #     kernel. So the kernel doing the tryboot reboot is always ours,
         #     never whatever the probed system happens to run.
         # Falls back to rpi-legacy (direct config.txt swap, protected by the
@@ -383,7 +383,7 @@ push_recovery_kernel() {
     local vmlinuz="${DIR}/deploy/${ARCH}/recovery-vmlinuz-${ARCH}"
     local initrd="${DIR}/deploy/${ARCH}/recovery-initrd-${ARCH}.img"
     [ -f "$vmlinuz" ] && [ -f "$initrd" ] \
-        || die "recovery kernel/initrd mancanti per ${ARCH}: esegui prima ./build-kiosk.sh (produce anche lo stage 1b)"
+        || die "recovery kernel/initrd mancanti per ${ARCH}: esegui prima ./build-unitotem.sh (produce anche lo stage 1b)"
 
     log "Copio kernel/initrd di fallback in ${P[BOOTMNT]}..."
     ssh_t "mount -o remount,rw '${P[BOOTMNT]}' 2>/dev/null; true"
@@ -424,7 +424,7 @@ menuentry 'UniTotem OTA' {
     insmod part_gpt
     insmod part_msdos
     insmod ext2
-    # low resolution for the OTA screens (readable from far away, same as kiosk/files/grub-ab-entries): GRUB sets a small firmware
+    # low resolution for the OTA screens (readable from far away, same as unitotem/files/grub-ab-entries): GRUB sets a small firmware
     # framebuffer mode, gfxpayload=keep hands it to the kernel and nomodeset stops the DRM driver from switching to the native size
     insmod all_video
     insmod gfxterm
@@ -738,7 +738,7 @@ run_ota_sequence() {
     # reboot does not do this at all, it would just boot the fallback again.
     # rpi-legacy doesn't need it (config.txt was already swapped directly by
     # set-trial-boot above) and neither does uefi/bios (grub-reboot's
-    # one-shot is picked up by any normal reboot). See kiosk/files/ota-hook
+    # one-shot is picked up by any normal reboot). See unitotem/files/ota-hook
     # for why this needs the real systemd-provided reboot binary, not
     # BusyBox's (which doesn't support this argument at all), and why a
     # plain `reboot ARG` alone is not enough either - `-f` is what skips the
@@ -814,7 +814,7 @@ cmd_deploy() {
         # time. The actual verdict is wait_ota_reachable below: if arming
         # really failed, the target simply stays up and the fallback never
         # appears, which that call reports clearly. The target-side script
-        # also defers its reboot now (see kiosk/files/unitotem-ota-arm), but
+        # also defers its reboot now (see unitotem/files/unitotem-ota-arm), but
         # this stays tolerant regardless - a target still running an older
         # image has the old script, and the race is timing-dependent anyway.
         ssh_t "unitotem-ota-arm --port 2222 ${wipe_arg}" \
@@ -866,7 +866,7 @@ cmd_deploy() {
         [ "$waited" -lt 600 ] || { warn "il target non e' tornato raggiungibile entro 10 minuti - verificare manualmente (potrebbe essere ancora in stage 2, o nel fallback in attesa)"; return 0; }
     done
 
-    if OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" "[ -d /etc/kiosk ]" 2>/dev/null; then
+    if OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" "[ -f /etc/unitotem/ota-preserve.list ]" 2>/dev/null; then
         log "Deploy completato: ${post} e' raggiungibile sul nuovo sistema."
     else
         warn "${post} e' raggiungibile ma non sembra il sistema nuovo - potrebbe essere ancora il fallback in attesa di comandi."
