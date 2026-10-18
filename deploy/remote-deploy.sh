@@ -928,12 +928,17 @@ cmd_recover() {
     esac
     load_parts
 
-    local nparts_exp; nparts_exp=$(awk -F= '/^UNITOTEM_NPARTS=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
+    # The table must still have the shape the parts set would write: same number of partitions, DATA on the expected number AND at the
+    # expected start sector (restore-part would otherwise write the slots over a different geometry than the one DATA lives in).
+    local nparts_exp data_start_exp
+    nparts_exp=$(grep -c ' : start=' "${OPT_PARTS}/layout.sfdisk")
+    data_start_exp=$(grep -E "(^|[^0-9])${P_DATA_PART}[[:space:]]*:" "${OPT_PARTS}/layout.sfdisk" | head -1 | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
     local keep=1 why=""
     [ "$OPT_WIPE_DATA" != 1 ]                                  || { keep=0; why="richiesto --wipe-data"; }
     [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ]                      || { keep=0; why="la partizione DATA non e' leggibile"; }
     [ "${E[UNITOTEM_DATA_FSCK]:-x}" = 0 ]                      || { keep=0; why="DATA non supera il controllo in sola lettura (fsck=${E[UNITOTEM_DATA_FSCK]:-n/d})"; }
     [ "${E[UNITOTEM_DATA_PARTN]:-x}" = "$P_DATA_PART" ]        || { keep=0; why="DATA non e' sulla partizione ${P_DATA_PART} attesa"; }
+    [ "${E[UNITOTEM_DATA_START]:-x}" = "$data_start_exp" ]     || { keep=0; why="DATA non inizia al settore atteso (${E[UNITOTEM_DATA_START]:-?} invece di ${data_start_exp})"; }
     [ "${E[UNITOTEM_NPARTS]:-0}" = "$nparts_exp" ]             || { keep=0; why="la tabella ha ${E[UNITOTEM_NPARTS]:-0} partizioni, ne servono ${nparts_exp}"; }
     RECOVER_MODE=1; RECOVER_KEEP_TABLE=$keep
     RECOVER_BOOTFS_FRESH=0
