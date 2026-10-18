@@ -369,6 +369,22 @@ chroot "${ROOTFS}" systemctl enable \
 chroot "${ROOTFS}" systemctl mask apt-daily.timer apt-daily-upgrade.timer \
     apt-daily.service apt-daily-upgrade.service
 
+# ---------- amd64: the NVIDIA stack is installed for machines that have an NVIDIA GPU; on every other PC it must not make the system 'degraded' ----------
+# (found on a real Intel PC 2026-10-18: nvidia-persistenced and systemd-modules-load failed on every boot)
+if [ "$ARCH" = "amd64" ]; then
+    mkdir -p "${ROOTFS}/etc/systemd/system/nvidia-persistenced.service.d" "${ROOTFS}/etc/systemd/system/systemd-modules-load.service.d"
+    cat > "${ROOTFS}/etc/systemd/system/nvidia-persistenced.service.d/unitotem-only-with-nvidia.conf" <<'UNITEOF'
+# start only when an NVIDIA PCI device (vendor 0x10de) is present; otherwise the unit is skipped, not failed
+[Service]
+ExecCondition=/bin/sh -c 'cat /sys/bus/pci/devices/*/vendor 2>/dev/null | grep -qi 0x10de'
+UNITEOF
+    cat > "${ROOTFS}/etc/systemd/system/systemd-modules-load.service.d/unitotem-nvidia-optional.conf" <<'UNITEOF'
+# the NVIDIA modules listed in modules-load.d cannot be inserted on a PC without an NVIDIA GPU: that is expected, not a failed boot
+[Service]
+SuccessExitStatus=1
+UNITEOF
+fi
+
 # ---------- Regenerate initramfs ----------
 
 # The initramfs carries a copy of the OTA engine, and its deploy/recovery SCREEN (texts, wording) is that copy's. stage1

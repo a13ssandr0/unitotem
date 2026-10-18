@@ -103,7 +103,10 @@ if [ "$ARCH" = "amd64" ]; then
         linux-headers-amd64 \
         firmware-linux \
         firmware-linux-nonfree \
-        firmware-misc-nonfree
+        firmware-misc-nonfree \
+        firmware-intel-graphics
+    # firmware-intel-graphics: i915 display (DMC), GuC and HuC firmware. Without it (found on a real Alder Lake PC, 2026-10-18) i915 logs
+    # 'failed to load i915/adlp_dmc.bin' and the iHD VA-API driver cannot initialise (vaInitialize failed): no hardware video decode.
     apt_install --no-install-recommends \
         grub-efi-amd64 \
         grub-pc-bin \

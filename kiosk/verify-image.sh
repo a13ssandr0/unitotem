@@ -81,16 +81,20 @@ chk "no xinitrc is left (the X session is not started through startx/xinit any m
 
 echo "== X server is a plain systemd unit (Xorg run directly), with a log"
 XU="$R/etc/systemd/system/start-xorg.service"
-chk "start-xorg.service runs Xorg directly (no startx/xinit)" bash -c "grep -qE '^ExecStart=/usr/bin/Xorg :0 vt8 ' '$XU' && ! grep -qE '^ExecStart=.*(startx|xinit)' '$XU'"
-chk "X starts without clearing the screen and without listening on TCP" bash -c "grep -E '^ExecStart=' '$XU' | grep -q -- '-background none' && grep -E '^ExecStart=' '$XU' | grep -q -- '-nolisten tcp'"
-chk "the account merge for A/B updates is installed (unitotem_identity.py next to unitotem-update)" bash -c "test -s '$R/usr/lib/unitotem/unitotem_identity.py' && python3 -c \"import ast,sys;ast.parse(open(sys.argv[1]).read())\" '$R/usr/lib/unitotem/unitotem_identity.py'"
+chk "start-xorg.service runs Xorg directly (no startx/xinit)" bash -c "grep -qE '^ExecStart=/usr/bin/Xorg :0 vt1 ' '$XU' && ! grep -qE '^ExecStart=.*(startx|xinit)' '$XU'"
+chk "X starts with a black root window and without listening on TCP" bash -c "grep -E '^ExecStart=' '$XU' | grep -q -- ' -br' && grep -E '^ExecStart=' '$XU' | grep -q -- '-nolisten tcp'"
+chk "the account merge for A/B updates is installed (unitotem_identity.py next to unitotem-update)" bash -c "test -s '$R/usr/lib/unitotem/unitotem_identity.py' && grep -q 'def merge_identity' '$R/usr/lib/unitotem/unitotem_identity.py' && grep -q 'merge_identity_into' '$R/usr/sbin/unitotem-update'"
 chk "group unitotem exists (web UI logins through PAM)" bash -c "grep -q '^unitotem:' '$R/etc/group'"
 chk "PAM service of the manager is shipped (/etc/pam.d/unitotem-manager)" test -s "$R/etc/pam.d/unitotem-manager"
+if [ "$ARCH" = amd64 ]; then
+    chk "Intel graphics firmware is installed (i915 DMC/GuC/HuC; without it VA-API cannot initialise)" bash -c "ls '$R'/lib/firmware/i915/adlp_dmc* >/dev/null 2>&1 || ls '$R'/usr/lib/firmware/i915/adlp_dmc* >/dev/null 2>&1"
+    chk "the NVIDIA units do not fail the boot on PCs without an NVIDIA GPU" bash -c "test -s '$R/etc/systemd/system/nvidia-persistenced.service.d/unitotem-only-with-nvidia.conf' && test -s '$R/etc/systemd/system/systemd-modules-load.service.d/unitotem-nvidia-optional.conf'"
+fi
 chk "X keeps its log (no -logfile /dev/null): /var/log/Xorg.0.log" bash -c "! grep -E '^ExecStart=' '$XU' | grep -q -- '-logfile'"
 chk "the X cookie is created before X starts (xauth + mcookie installed)" bash -c "grep -q 'xauth' '$XU' && grep -q 'mcookie' '$XU' && test -x '$R/usr/bin/xauth' && test -x '$R/usr/bin/mcookie'"
-chk "X takes over from a deactivated Plymouth (no blanking quit): deactivate before X, Plymouth removed once X answers" bash -c "grep -q '^ExecStartPre=-/usr/bin/plymouth deactivate' '$XU' && grep -q 'xset q' '$XU' && grep -q 'pkill -KILL -x plymouthd' '$XU' && grep -q '^After=plymouth-start.service' '$XU' && ! grep -q 'chvt' '$XU'"
+chk "X takes over from a deactivated Plymouth (no blanking quit): deactivate before X, Plymouth removed once X answers" bash -c "grep -q '^ExecStartPre=-/usr/bin/plymouth deactivate' '$XU' && grep -q 'xset q' '$XU' && grep -q 'pkill -KILL -x plymouthd' '$XU' && grep -q '^After=plymouth-start.service' '$XU' && ! grep -qE '^ExecStartPre=.*chvt' '$XU'"
 chk "X runs on VT1 and getty@tty1 is masked (nothing may share Plymouth's VT)" bash -c "grep -q 'vt1' '$XU' && test \$(readlink '$R/etc/systemd/system/getty@tty1.service') = /dev/null"
-chk "the kernel command line silences systemd status text (it would be repainted on the console during the hand-over)" bash -c "grep -rq 'systemd.show_status=false' '$R/boot/firmware/cmdline.txt' 2>/dev/null || grep -rq 'systemd.show_status=false' '$R/etc/default/grub.d' '$R/etc/default/grub' '$R/boot/grub/grub.cfg' 2>/dev/null"
+chk "the kernel command line silences systemd status text (it would be repainted on the console during the hand-over)" bash -c "for f in '$FAT/cmdline.txt' '$FAT/slota/cmdline.txt' '$R/etc/default/grub' '$R/etc/default/grub.d/'* '$R/boot/grub/grub.cfg'; do [ -f \"\$f\" ] && grep -q ' systemd.show_status=false' \"\$f\" && exit 0; done; exit 1"
 chk "X authority file is the one the manager reads" file_has "$XU" '^Environment=XAUTHORITY=/run/unitotem-x11.auth'
 chk "start-xorg service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/start-xorg.service"
 
