@@ -933,6 +933,8 @@ cmd_recover() {
     local nparts_exp data_start_exp
     nparts_exp=$(grep -c ' : start=' "${OPT_PARTS}/layout.sfdisk")
     data_start_exp=$(grep -E "(^|[^0-9])${P_DATA_PART}[[:space:]]*:" "${OPT_PARTS}/layout.sfdisk" | head -1 | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
+    # asked here, not of the engine: the recovery initrd on the target may be older than this script
+    E[UNITOTEM_DATA_START]=$(ota_ssh "$host" 'd=$(blkid -L DATA 2>/dev/null) && cat /sys/class/block/${d##*/}/start' 2>/dev/null || true)
     local keep=1 why=""
     [ "$OPT_WIPE_DATA" != 1 ]                                  || { keep=0; why="richiesto --wipe-data"; }
     [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ]                      || { keep=0; why="la partizione DATA non e' leggibile"; }
