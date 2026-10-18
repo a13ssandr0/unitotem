@@ -385,6 +385,12 @@ SuccessExitStatus=1
 UNITEOF
 fi
 
+# ---------- root keeps a session D-Bus (/run/user/0/bus) from boot ----------
+# GUI programs started as root (notify-send, the viewer's helpers) talk to the notification server of unitotem-node on the session bus; without a
+# login session there is none. dbus-user-session is installed (stage 1); lingering makes systemd start user@0.service at boot.
+mkdir -p "${ROOTFS}/var/lib/systemd/linger"
+: > "${ROOTFS}/var/lib/systemd/linger/root"
+
 # ---------- Regenerate initramfs ----------
 
 # The initramfs carries a copy of the OTA engine, and its deploy/recovery SCREEN (texts, wording) is that copy's. stage1
