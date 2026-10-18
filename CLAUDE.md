@@ -108,7 +108,10 @@ probabilmente si sta sbagliando: va tenuta solo per ciò che deve eseguire codic
 bisogna dire perché. Le immagini arm64 di questo repo non compilano nulla (installano pacchetti e generano l'initramfs): lì il codice del
 target gira per forza, quindi si usa il Pi reale, non l'emulazione.
 
-Rete verso il server (misurata 2026-10-18): è in un'altra sede, via VPN (RTT ~38 ms). PC→server ~25 MB/s, ma server→PC era 0,7 MB/s per riordino dei pacchetti
-(27%) causato da VPNd su 128 core; con `GOMAXPROCS=8` (drop-in `VPNd.service.d/gomaxprocs.conf`) il riordino è ~1,5% e un flusso va a 5-36 Mbit/s
-(rumoroso), quattro flussi in parallelo a ~60-73 Mbit/s: scaricare dal server con più trasferimenti paralleli e solo ciò che serve, compresso. Se la connessione
-cade: `nmcli connection up <vpn>` e `<vpn>`, poi ssh a <build-server>.
+Rete verso il server (misurata 2026-10-18): è in un'altra sede, via VPN (RTT ~38 ms). Il collo di bottiglia era `VPNd` in modalità
+userspace (`--tun=userspace-networking`, il container non aveva /dev/net/tun): 5-60 Mbit/s. Con `/dev/net/tun` abilitato e `FLAGS=""` in
+`/etc/default/VPNd` il tunnel va a ~390-530 Mbit/s con un flusso e ~730 Mbit/s con quattro (percorso pubblico diretto). Mantenere le VPN
+`<vpn>` e `<vpn>` SPENTE durante i trasferimenti: se sono su, VPN sceglie il percorso `<build-server>` dentro la VPN (~30-65 Mbit/s).
+Se VPN cade: `nmcli connection up <vpn>` e `<vpn>`, poi ssh a <build-server> (e riportare `FLAGS="--tun=userspace-networking"` se serve).
+`mknod` funziona sul server (feature mknod=1) ma NON dentro un container Docker annidato: la build immagine con debootstrap in Docker fallisce ancora
+(`Cannot install into target '/tmp/rootfs' mounted with noexec or nodev`): amd64 resta sul PC dell'utente finché non si trova un modo.
