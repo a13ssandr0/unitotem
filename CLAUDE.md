@@ -88,3 +88,14 @@ Durante una build (soprattutto quella nativa sul Pi) la build ha la priorità ma
 si ripristina tutto com'era. Salvare prima i valori attuali (nice, `CPUWeight` di unitotem-manager/splash/start-xorg e dei
 sottoprocessi CEF), applicare `systemctl set-property --runtime … CPUWeight=1` / `renice 19` ai servizi e `nice -n -20` alla build,
 e fare il ripristino in un `trap … EXIT` (così un'interruzione ripristina comunque). Valori solo runtime: spariscono al riavvio.
+
+## Server di compilazione (root@build-server)
+
+Dal 2026-10-18 le compilazioni pesanti si fanno su `root@build-server` (Ubuntu 26.04, **container LXC** su Proxmox, 128 core, 256 GB di RAM, 64 GB
+di disco di sistema + 256 GB su `/nas`). Regole:
+- Lavorare sotto `/nas/` (Docker ha già `data-root=/nas/docker`); il disco di sistema (64 GB) non va riempito.
+- Ogni build parte staccata con `systemd-run --unit=<nome> --collect …` (o `work/run-build.sh ARCH VERSION` nel clone di `/nas/unitotem-system`):
+  una caduta di ssh non la ferma. Log in `work/logs/build-ARCH.log`, sentinella `work/logs/build-ARCH.done`. Mai build in primo piano in una sessione ssh.
+- amd64: nativo sul server. arm64: serve `binfmt_misc` con qemu-aarch64, ma il container non può registrarlo (`/proc/sys/fs/binfmt_misc/register`
+  è dell'host Proxmox): va registrato sull'host Proxmox (`apt install qemu-user-static binfmt-support`); finché non c'è, l'arm64 si costruisce sul Pi (vedi sopra).
+- La chiave di firma delle release resta sul PC dell'utente: l'immagine si porta qui con rsync e la release si firma qui.
