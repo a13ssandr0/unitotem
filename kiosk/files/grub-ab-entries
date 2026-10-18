@@ -37,7 +37,7 @@ menuentry 'UniTotem slot A (OTA recovery)' --id slot-a-recover {
     insmod ext2
     unitotem_lowres
     search --no-floppy --set=root --label ROOT_A
-    linux /vmlinuz root=LABEL=ROOT_A ro quiet nomodeset unitotem.ota=recover unitotem.slot=a
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet nomodeset fbcon=font:TER16x32 unitotem.ota=recover unitotem.slot=a
     initrd /initrd.img
 }
 menuentry 'UniTotem slot B (OTA recovery)' --id slot-b-recover {
@@ -45,7 +45,7 @@ menuentry 'UniTotem slot B (OTA recovery)' --id slot-b-recover {
     insmod ext2
     unitotem_lowres
     search --no-floppy --set=root --label ROOT_B
-    linux /vmlinuz root=LABEL=ROOT_B ro quiet nomodeset unitotem.ota=recover unitotem.slot=b
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet nomodeset fbcon=font:TER16x32 unitotem.ota=recover unitotem.slot=b
     initrd /initrd.img
 }
 # The resident fallback on the ESP. Deliberately LAST: when grubenv is unreadable (a torn write) GRUB
@@ -57,6 +57,6 @@ menuentry 'UniTotem OTA fallback' --id ota-recovery {
     insmod fat
     unitotem_lowres
     search --no-floppy --set=root --label EFI
-    linux /unitotem/recovery-vmlinuz nomodeset quiet loglevel=3 unitotem.ota=1 console=tty0 console=ttyS0,115200
+    linux /unitotem/recovery-vmlinuz nomodeset quiet loglevel=3 fbcon=font:TER16x32 unitotem.ota=1 console=tty0 console=ttyS0,115200
     initrd /unitotem/recovery-initrd.img
 }
