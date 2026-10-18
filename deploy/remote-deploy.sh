@@ -561,7 +561,12 @@ run_ota_sequence() {
     local host="$1" disk_byid="$2"
 
     local recreate_table=0
-    [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ "$OPT_WIPE_DATA" != 1 ] || recreate_table=1
+    if [ "${RECOVER_MODE:-0}" = 1 ]; then
+        # recover: the caller already judged the disk (see cmd_recover); the table is rewritten only when it is not usable as it is
+        [ "${RECOVER_KEEP_TABLE:-0}" = 1 ] || recreate_table=1
+    else
+        [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ "$OPT_WIPE_DATA" != 1 ] || recreate_table=1
+    fi
 
     log "Risolvo il disco sul target (probe engine)..."
     local probe_out
@@ -591,6 +596,15 @@ run_ota_sequence() {
         [ -n "${P_BOOTFS_VOLID:-}" ] && volid_arg="--volid '${P_BOOTFS_VOLID}'"
         # shellcheck disable=SC2086
         ota_ssh "$host" "unitotem-ota-engine prepare-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --fstype vfat --fresh 1 --label ${bootfs_label} ${volid_arg}"
+    fi
+
+    if [ "$recreate_table" != 1 ] && [ "${RECOVER_BOOTFS_FRESH:-0}" = 1 ]; then
+        # recover with the table and DATA intact but a damaged boot partition: format only that one
+        local bootfs_label_r; bootfs_label_r=$([ "$ARCH" = arm64 ] && echo FIRMWARE || echo EFI)
+        local volid_arg_r=""; [ -n "${P_BOOTFS_VOLID:-}" ] && volid_arg_r="--volid '${P_BOOTFS_VOLID}'"
+        log "Riformatto la sola partizione di boot (danneggiata)..."
+        # shellcheck disable=SC2086
+        ota_ssh "$host" "unitotem-ota-engine prepare-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --fstype vfat --fresh 1 --label ${bootfs_label_r} ${volid_arg_r}"
     fi
 
     log "Copio il kernel/initrd di fallback sulla partizione di boot..."
@@ -753,17 +767,10 @@ run_ota_sequence() {
 }
 
 # ---------------------------------------------------------------------------
-cmd_deploy() {
-    do_probe
-    select_disk
-
+load_parts() {
     OPT_PARTS="${OPT_PARTS:-$(ls -td "${DIR}/deploy/${ARCH}/"*.parts 2>/dev/null | head -1)}"
     [ -n "$OPT_PARTS" ] && [ -d "$OPT_PARTS" ] \
         || die "nessun parts set trovato per ${ARCH} (usa --parts o esegui prima deploy/make-parts.sh)"
-
-    local min_disk; min_disk=$(awk -F= '/^UNITOTEM_MIN_DISK_BYTES=/{print $2}' "${OPT_PARTS}/parts.manifest")
-    [ "$TARGET_DISK_SIZE" -ge "$min_disk" ] \
-        || die "${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE")) e' piu' piccolo del minimo richiesto ($(bytes_human "$min_disk"))"
 
     P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${OPT_PARTS}/parts.manifest")
     P_BOOTFS_PART=$(awk -F= '/^UNITOTEM_BOOTFS_PART=/{print $2}' "${OPT_PARTS}/parts.manifest")
@@ -786,6 +793,16 @@ cmd_deploy() {
     fi
     P_BOOT_PART=$(part_num_for_label BOOT)
     P_BOOTFS_VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
+}
+
+cmd_deploy() {
+    do_probe
+    select_disk
+
+    load_parts
+    local min_disk; min_disk=$(awk -F= '/^UNITOTEM_MIN_DISK_BYTES=/{print $2}' "${OPT_PARTS}/parts.manifest")
+    [ "$TARGET_DISK_SIZE" -ge "$min_disk" ] \
+        || die "${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE")) e' piu' piccolo del minimo richiesto ($(bytes_human "$min_disk"))"
 
     echo ""
     echo "Parts set   : $(basename "$OPT_PARTS")"
@@ -876,11 +893,75 @@ cmd_deploy() {
 
 # ---------------------------------------------------------------------------
 cmd_recover() {
+    # The target is ALREADY in the OTA fallback (it got there by itself: both slots unusable, or a boot failure it could
+    # not repair). Nothing to arm, no running system to ask: everything is learned from the engine's own probe. DATA is
+    # kept whenever the partition table still has the expected shape and DATA passes a read-only fsck; otherwise the
+    # disk is laid out again from scratch (and DATA is lost) - only with --wipe-data, or when there is nothing to keep.
     local host="${RECOVER_HOSTPORT%%:*}"
-    do_probe_skip=1
     log "Mi collego al target in fallback (${host})..."
-    ota_ssh "$host" true || die "impossibile raggiungere ${host} sulla sessione OTA"
-    die "recover: specifica manualmente --disk e usa deploy/ota-engine.sh via ota_ssh per una sessione di recupero guidata (percorso avanzato, non ancora automatizzato end-to-end)"
+    ota_ssh "$host" true || die "impossibile raggiungere ${host} sulla sessione OTA (porta 2222)"
+
+    # Disk: --disk, else the one that carries our partitions, else the only disk.
+    local disk="$OPT_DISK" cand d
+    if [ -z "$disk" ]; then
+        local disks; disks=$(ota_ssh "$host" "lsblk -dpno NAME,TYPE | awk '\$2==\"disk\"{print \$1}' | grep -v -E '/dev/(loop|ram|zram|sr|fd)'")
+        local n=0
+        for d in $disks; do
+            n=$((n + 1))
+            if ota_ssh "$host" "blkid -L DATA; blkid -L ROOT_A; blkid -L ROOT; blkid -L EFI; blkid -L FIRMWARE" 2>/dev/null | grep -q "^${d}"; then cand="$d"; break; fi
+        done
+        [ -n "${cand:-}" ] || { [ "$n" = 1 ] && cand="$disks"; }
+        [ -n "${cand:-}" ] || die "impossibile scegliere il disco da solo: ripeti con --disk /dev/..."
+        disk="$cand"
+    fi
+
+    declare -A E
+    local line probe_out
+    probe_out=$(ota_ssh "$host" "unitotem-ota-engine probe --disk '${disk}'")
+    while IFS= read -r line; do [ -n "$line" ] && E["${line%%=*}"]="${line#*=}"; done <<< "$probe_out"
+    [ -n "${E[UNITOTEM_DISK]:-}" ] || die "il target non risolve il disco ${disk}"
+
+    case "${E[UNITOTEM_ARCH_HOST]:-}" in
+        aarch64) ARCH=arm64; FIRMWARE=rpi; TRYBOOT_CAPABLE="${E[UNITOTEM_TRYBOOT]:-0}" ;;
+        x86_64)  ARCH=amd64; FIRMWARE=$([ "${E[UNITOTEM_EFI]:-0}" = 1 ] && echo uefi || echo bios); TRYBOOT_CAPABLE=0 ;;
+        *) die "architettura del target non riconosciuta: ${E[UNITOTEM_ARCH_HOST]:-?}" ;;
+    esac
+    load_parts
+
+    local nparts_exp; nparts_exp=$(awk -F= '/^UNITOTEM_NPARTS=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
+    local keep=1 why=""
+    [ "$OPT_WIPE_DATA" != 1 ]                                  || { keep=0; why="richiesto --wipe-data"; }
+    [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ]                      || { keep=0; why="la partizione DATA non e' leggibile"; }
+    [ "${E[UNITOTEM_DATA_FSCK]:-x}" = 0 ]                      || { keep=0; why="DATA non supera il controllo in sola lettura (fsck=${E[UNITOTEM_DATA_FSCK]:-n/d})"; }
+    [ "${E[UNITOTEM_DATA_PARTN]:-x}" = "$P_DATA_PART" ]        || { keep=0; why="DATA non e' sulla partizione ${P_DATA_PART} attesa"; }
+    [ "${E[UNITOTEM_NPARTS]:-0}" = "$nparts_exp" ]             || { keep=0; why="la tabella ha ${E[UNITOTEM_NPARTS]:-0} partizioni, ne servono ${nparts_exp}"; }
+    RECOVER_MODE=1; RECOVER_KEEP_TABLE=$keep
+    RECOVER_BOOTFS_FRESH=0
+    if [ "${E[UNITOTEM_HAVE_BOOTFS]:-0}" != 1 ] || { [ -n "${E[UNITOTEM_BOOTFS_FSCK]:-}" ] && [ "${E[UNITOTEM_BOOTFS_FSCK]}" != 0 ]; }; then
+        RECOVER_BOOTFS_FRESH=1
+    fi
+    P[HAVE_DATA]=$keep
+    P[HAVE_UNITOTEM]=$keep
+    P[SSHCLIENT]=none
+    # Secure Boot on: only the signed chain (shim) can boot; without it the recovered machine would stop at "Security Violation"
+    [ "${E[UNITOTEM_SECUREBOOT]:-}" = 1 ] && SB_MODE=shim
+
+    echo ""
+    echo "Recupero    : ${host}  disco ${disk}  (${ARCH}/${FIRMWARE})"
+    echo "Parts set   : $(basename "$OPT_PARTS")"
+    if [ "$keep" = 1 ]; then
+        echo "DATA        : INTEGRA, verra' PRESERVATA (tabella invariata)"
+        [ "$RECOVER_BOOTFS_FRESH" = 1 ] && echo "Boot        : partizione di boot danneggiata, verra' riformattata"
+    else
+        echo "DATA        : NON preservabile (${why}) - il disco viene riscritto da zero"
+    fi
+    if [ "$OPT_YES" != 1 ]; then
+        read -rp "Procedo con il recupero? [scrivi SI]: " ans
+        [ "$ans" = "SI" ] || die "annullato dall'utente"
+    fi
+
+    run_ota_sequence "$host" "$disk"
+    log "Sequenza di recupero inviata: il target si riavvia sul sistema ripristinato."
 }
 
 cmd_serve() {
