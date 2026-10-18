@@ -233,6 +233,11 @@ install -m 644 /kiosk/files/unitotem-manager-x.conf "${ROOTFS}/etc/systemd/syste
 install -m 755 /kiosk/files/unitotem-first-boot-cert "${ROOTFS}/usr/sbin/unitotem-first-boot-cert"
 install -m 644 /kiosk/files/unitotem-first-boot-cert.service "${ROOTFS}/etc/systemd/system/unitotem-first-boot-cert.service"
 install -m 755 /kiosk/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
+install -d "${ROOTFS}/usr/lib/unitotem"
+install -m 644 /kiosk/files/unitotem_identity.py "${ROOTFS}/usr/lib/unitotem/unitotem_identity.py"
+# the web UI logs in through PAM with system accounts of this group (the unitotem-manager postinst creates it too; a rootfs built before that
+# package has none)
+chroot "${ROOTFS}" getent group unitotem >/dev/null || chroot "${ROOTFS}" addgroup --system unitotem
 # Public half of the update root key only. The private keys live outside the repo
 # (tools/release/backup-keys.sh); losing them means no fielded device accepts an update again.
 install -d -m 755 "${ROOTFS}/usr/share/unitotem/update-keys"

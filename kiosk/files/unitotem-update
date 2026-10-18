@@ -13,6 +13,7 @@ does not interrupt it; poll `status`.
 """
 import argparse, fcntl, glob, hashlib, json, os, shutil, signal, ssl, subprocess, sys, tempfile, time
 import urllib.request, urllib.error
+sys.path.insert(0, "/usr/lib/unitotem")          # unitotem_identity (the account merge)
 
 CONF_DEFAULTS = {
     "UPDATE_BASE_URL": "https://github.com/a13ssandr0/unitotem",
@@ -28,6 +29,7 @@ CONF_DEFAULTS = {
     "UPDATE_CRASHPOINT": "",                                 # test hook: freeze at the named point (power-cut tests)
     "UPDATE_REBOOT_CMD": "",                                 # test hook: replaces the real reboot
     "UPDATE_DATA": "/mnt/data",
+    "UPDATE_ETC_CURRENT": "/etc",                 # the running system's /etc (source of the local accounts to carry over)
     "UPDATE_CMDLINE": "/proc/cmdline",
     "UPDATE_RUN_DIR": "/run",
     "UPDATE_HEALTH_URL": "https://localhost/health",   # empty = no health gate
@@ -411,10 +413,41 @@ def prepare_overlays(conf, new_slot, old_slot, new_root_mnt):
     try: shutil.copy2(plist, state_path(conf, "preserve.list"))
     except OSError: pass
     n = import_whitelist(conf, new_slot, old_slot, plist)
+    merge_identity_into(conf, new_slot, new_root_mnt)
     old_root = os.path.join(data, "upper", f"root.{old_slot}")
     if os.path.isdir(old_root):
         shutil.copytree(old_root, os.path.join(data, "upper", f"root.{new_slot}"), symlinks=True, dirs_exist_ok=True)
     return n
+
+
+def merge_identity_into(conf, new_slot, new_root_mnt=None):
+    """Local accounts across the update: the new slot's passwd/shadow/group/gshadow = the new image's + the local part of the running
+    system's (see kiosk/files/unitotem_identity.py for the rules). Re-run at `apply` from the image files saved at `fetch` (that slot
+    is not mounted then). Never raises and never fails the update: on any problem the new slot just gets the image's own files, and
+    that is logged and shown in `status` (identity_merge)."""
+    data = conf["UPDATE_DATA"]
+    dest = os.path.join(data, "upper", f"etc.{new_slot}")
+    base_dir = state_path(conf, "identity-base")
+    try:
+        import unitotem_identity as ident
+        if new_root_mnt:
+            shutil.rmtree(base_dir, ignore_errors=True)
+            os.makedirs(base_dir)
+            for n in ident.FILES:
+                try: shutil.copy2(os.path.join(new_root_mnt, "etc", n), os.path.join(base_dir, n))
+                except OSError: pass
+        res = ident.apply_merge(base_dir, conf["UPDATE_ETC_CURRENT"], dest)
+    except Exception as e:                                   # the module itself is missing/broken
+        res = {"ok": False, "detail": f"identity merge not run ({e}): the new slot uses the image's own account files", "log": []}
+    res["slot"] = new_slot
+    res["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try: write_state(conf, "identity-merge.json", res)
+    except OSError: pass
+    try: event(conf, f"identity merge slot {new_slot}: {'ok' if res['ok'] else 'FAILED'}: {res['detail'][:160]}")
+    except Exception: pass
+    if not res["ok"]:
+        print(f"WARNING: {res['detail']}", file=sys.stderr)
+    return res
 
 
 def import_whitelist(conf, new_slot, old_slot, plist):
@@ -465,6 +498,7 @@ def cmd_status(a, conf):
         out["other_version"] = st[o].get("version")
         out["rollback_available"] = bool(st[o].get("valid") and st[o].get("confirmed") and not pid)
         out["armed"] = pend if (pend and pend.get("slot") != cur) else None
+        out["identity_merge"] = read_state(conf, "identity-merge.json")
         try:
             out["default_slot"] = be_default_slot(conf)
         except Fail:
@@ -700,6 +734,7 @@ def cmd_apply(a, conf):
     # One-shot: GRUB clears next_entry before booting it (Raspberry: the firmware reads tryboot.txt only on the
     # tryboot boot), so a crash/power cut during the trial lands back on the current slot with no software involved.
     imported = import_whitelist(conf, new, cur, state_path(conf, "preserve.list"))
+    merge_identity_into(conf, new)        # again: an account created or a password changed since the download must not be left behind
     crashpoint(conf, "apply_after_pending")
     be_arm_trial(conf, new)
     crashpoint(conf, "apply_after_arm")
