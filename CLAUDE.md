@@ -89,16 +89,20 @@ si ripristina tutto com'era. Salvare prima i valori attuali (nice, `CPUWeight` d
 sottoprocessi CEF), applicare `systemctl set-property --runtime … CPUWeight=1` / `renice 19` ai servizi e `nice -n -20` alla build,
 e fare il ripristino in un `trap … EXIT` (così un'interruzione ripristina comunque). Valori solo runtime: spariscono al riavvio.
 
-## Server di compilazione (root@build-server)
+## Server di compilazione (alessandro@build-server)
 
-Dal 2026-10-18 le compilazioni pesanti si fanno su `root@build-server` (Ubuntu 26.04, **container LXC** su Proxmox, 128 core, 256 GB di RAM, 64 GB
-di disco di sistema + 256 GB su `/nas`). Regole:
-- Lavorare sotto `/nas/` (Docker ha già `data-root=/nas/docker`); il disco di sistema (64 GB) non va riempito.
-- Ogni build parte staccata con `systemd-run --unit=<nome> --collect …` (o `work/run-build.sh ARCH VERSION` nel clone di `/nas/unitotem-system`):
-  una caduta di ssh non la ferma. Log in `work/logs/build-ARCH.log`, sentinella `work/logs/build-ARCH.done`. Mai build in primo piano in una sessione ssh.
-- amd64: la build immagine (debootstrap) **non gira ancora sul server**: nel container LXC `mknod` è vietato (`E: Cannot install into target '/tmp/rootfs' mounted with noexec or nodev`, provato 2026-10-18). Serve che l'utente abiliti sull'host Proxmox `pct set <ID> -features nesting=1,mknod=1` (o un container privilegiato). Finché non c'è, l'amd64 si costruisce sul PC dell'utente con Docker locale; il server resta per le compilazioni che non fanno mknod (CEF/Chromium, cross-build, wheel). **arm64: le immagini si costruiscono SEMPRE sul Pi** (decisione dell'utente 2026-10-18: sul container la CPU
-  è troppo lenta per l'emulazione e non si chiede di registrare qemu sull'host Proxmox). Il server serve a ciò che non esegue codice arm64.
+Dal 2026-10-18 le compilazioni pesanti e le immagini **amd64** si fanno sulla **VM KVM `build-server`** (Proxmox VM 1008 `<build-vm>`, Ubuntu 26.04,
+128 vCPU con NUMA a 4 nodi e affinità sull'host, 256 GB di RAM con ballooning, 64 GB di sistema + 256 GB su `/nas`). Ci si connette con
+`ssh alessandro@build-server` (VPN, chiave già installata, `sudo` senza password); Proxmox è `root@<hypervisor>` (solo con le VPN
+`<vpn>` e `<vpn>` su; usarle solo se VPN cade, poi spegnerle). Regole:
+- Lavorare sotto `/nas/build/` (repo in `/nas/build/unitotem-system`, Docker con `data-root=/nas/docker-vm`); non riempire il disco di sistema.
+- Ogni build parte staccata con `sudo systemd-run --unit=<nome> --collect --working-directory=… <script>` (es. `work/run-build.sh ARCH VERSION`): una caduta
+  di ssh non la ferma. Log in `work/logs/build-ARCH.log`, sentinella `work/logs/build-ARCH.done`. Mai build in primo piano in una sessione ssh.
+- Su questa VM `mknod`, Docker privilegiato e i loop device funzionano (nel vecchio container LXC no). **arm64: le immagini si costruiscono SEMPRE sul Pi**
+  (decisione dell'utente: la CPU del server è troppo lenta per l'emulazione, nessun qemu-user).
 - La chiave di firma delle release resta sul PC dell'utente: l'immagine si porta qui con rsync e la release si firma qui.
+- VPN con TUN del kernel: ~400-500 Mbit/s con un flusso (VPN `<vpn>`/`<vpn>` spente durante i trasferimenti, altrimenti VPN passa dentro la VPN e scende a 30-65).
+- Evitare cicli di tentativi sullo stesso comando fallito: dopo un errore diagnosticare (console Proxmox `qm monitor` screendump, log cloud-init, ecc.).
 
 ## Cross-compilazione: sempre preferita
 
@@ -107,11 +111,3 @@ può fare in cross dall'host x86 (cross-gcc/clang, sysroot, multiarch, dpkg-cros
 probabilmente si sta sbagliando: va tenuta solo per ciò che deve eseguire codice del target (debootstrap seconda fase, postinst, test) e
 bisogna dire perché. Le immagini arm64 di questo repo non compilano nulla (installano pacchetti e generano l'initramfs): lì il codice del
 target gira per forza, quindi si usa il Pi reale, non l'emulazione.
-
-Rete verso il server (misurata 2026-10-18): è in un'altra sede, via VPN (RTT ~38 ms). Il collo di bottiglia era `VPNd` in modalità
-userspace (`--tun=userspace-networking`, il container non aveva /dev/net/tun): 5-60 Mbit/s. Con `/dev/net/tun` abilitato e `FLAGS=""` in
-`/etc/default/VPNd` il tunnel va a ~390-530 Mbit/s con un flusso e ~730 Mbit/s con quattro (percorso pubblico diretto). Mantenere le VPN
-`<vpn>` e `<vpn>` SPENTE durante i trasferimenti: se sono su, VPN sceglie il percorso `<build-server>` dentro la VPN (~30-65 Mbit/s).
-Se VPN cade: `nmcli connection up <vpn>` e `<vpn>`, poi ssh a <build-server> (e riportare `FLAGS="--tun=userspace-networking"` se serve).
-`mknod` funziona sul server (feature mknod=1) ma NON dentro un container Docker annidato: la build immagine con debootstrap in Docker fallisce ancora
-(`Cannot install into target '/tmp/rootfs' mounted with noexec or nodev`): amd64 resta sul PC dell'utente finché non si trova un modo.
