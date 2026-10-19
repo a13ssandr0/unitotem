@@ -949,7 +949,7 @@ cmd_recover() {
     fi
     P[HAVE_DATA]=$keep
     P[HAVE_UNITOTEM]=$keep
-    P[SSHCLIENT]=none
+    P[SSHCLIENT]="${OTA_HOSTIP:-none}"   # OTA_HOSTIP: the address the target reaches this machine at, when it is not the one routing to it (QEMU NAT, tests)
     # Secure Boot on: only the signed chain (shim) can boot; without it the recovered machine would stop at "Security Violation"
     [ "${E[UNITOTEM_SECUREBOOT]:-}" = 1 ] && SB_MODE=shim
 
