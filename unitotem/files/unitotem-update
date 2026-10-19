@@ -770,7 +770,10 @@ def confirm_now(conf):
 
 def cmd_confirm(a, conf):
     need_backend(conf)
-    return 0, confirm_now(conf)
+    res = confirm_now(conf)
+    try: sync_esp_grubcfg(conf)
+    except Exception as e: event(conf, f"ESP grub.cfg sync failed: {e}")
+    return 0, res
 
 
 def health_ok(conf):
@@ -830,7 +833,10 @@ def cmd_boot_ok(a, conf):
     deadline = time.monotonic() + int(conf["UPDATE_HEALTH_TIMEOUT"])
     while time.monotonic() < deadline:
         if health_ok(conf):
-            return 0, confirm_now(conf)
+            res = confirm_now(conf)
+            try: sync_esp_grubcfg(conf)          # a confirmed system is the only one allowed to touch the bootloader config
+            except Exception as e: event(conf, f"ESP grub.cfg sync failed: {e}")
+            return 0, res
         time.sleep(3)
     set_last_result(conf, op="trial", result="rolled-back", reason="health-timeout", version=pend.get("version"))
     try: os.unlink(state_path(conf, "pending.json"))
