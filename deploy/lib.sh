@@ -220,7 +220,7 @@ scp_root() {
 # waiting for the real system.
 OTA_SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
               -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
-              -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p 2222)
+              -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p "${OTA_PORT:-2222}")
 
 # -n (stdin from /dev/null) is load-bearing here, not tidiness. ssh without
 # it forwards its own stdin to the remote command, and run_ota_sequence
