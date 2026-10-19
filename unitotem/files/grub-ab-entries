@@ -6,6 +6,8 @@ exec tail -n +3 "$0"
 # /etc/grub.d/10_unitotem_ab. 'saved_entry' in grubenv picks the default; grub-reboot sets a
 # one-shot trial entry that GRUB clears before booting it, so a power cut or a crash during a
 # trial returns to the default slot with no software involved.
+# unitotem-grub-level: 2   (raise it whenever this file changes in a way the devices must pick up: unitotem-update copies the image's
+# grub.cfg over the ESP's only when the shipped level is HIGHER, so a rollback to an older image never downgrades the bootloader config)
 # Low resolution for every OTA entry (the screens must be readable from far away on 1080p/4K monitors): GRUB switches the
 # firmware framebuffer (UEFI GOP / BIOS VBE) to the first mode of gfxmode that exists and gfxpayload=keep hands exactly that to
 # the kernel; nomodeset stops the DRM drivers (i915, amdgpu, nouveau, ...) from taking over at the monitor's native size, so
