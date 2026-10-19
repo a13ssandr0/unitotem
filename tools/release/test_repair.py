@@ -50,11 +50,14 @@ with tempfile.TemporaryDirectory() as td:
     check("failover: no guard is a no-op", True)
 
     # --- when does a repair run?
-    uu.slot_sound = lambda c, s: (False, "fsck")
+    uu.slot_sound = lambda c, s: (False, "empty")
     st = uu.slots_state(conf)
     st["b"] = {"version": None, "valid": False}; uu.write_state(conf, "slots.json", st)
-    rc, out = uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf)
-    check("auto: a slot that never held a system is not 'damaged'", out.get("repaired") is False and "nothing to repair" in out.get("reason", ""), out)
+    try:
+        uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf); reached = False
+    except uu.Fail as e:
+        reached = e.code == "no-slot-device"          # it got as far as looking for the partitions: an unsound other slot is rebuilt
+    check("auto: an unsound other slot (even one never valid, e.g. empty after a recovery) is rebuilt", reached)
     uu.slot_sound = lambda c, s: (True, "ok")
     st["b"] = {"version": "1", "valid": True}; uu.write_state(conf, "slots.json", st)
     rc, out = uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf)

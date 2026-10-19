@@ -930,16 +930,14 @@ def rpi_clone_bootfiles(conf, cur, new):
 
 
 def do_repair(a, conf):
-    """Rebuild the OTHER slot as a copy of the one we are running. Automatic (--auto) only when the state says the other slot once held a
-    valid system and it no longer passes the check - a never-written or interrupted-fetch slot is not 'damaged', fetch redoes it."""
+    """Rebuild the OTHER slot as a copy of the one we are running whenever it is not a sound system (damaged, empty after a recovery,
+    half-fetched): simple rule, the running slot is by definition good. Does nothing when the other slot is sound."""
     need_backend(conf)
     cur = cur_slot(conf); new = other_slot(cur)
     st = slots_state(conf)
     ok, why = slot_sound(conf, new)
     if ok and not a.force:
         return 0, {"repaired": False, "reason": "other slot is sound"}
-    if a.auto and not st[new].get("valid"):
-        return 0, {"repaired": False, "reason": "other slot holds no system yet (nothing to repair)"}
     with Lock(conf):
         try:
             progress(conf, op="repair", phase="check", state="running", percent=0)
