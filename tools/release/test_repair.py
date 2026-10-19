@@ -60,5 +60,21 @@ with tempfile.TemporaryDirectory() as td:
     rc, out = uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf)
     check("auto: a sound other slot is left alone", out.get("repaired") is False and "sound" in out.get("reason", ""), out)
 
+    # --- the ESP's grub.cfg follows the image, never backwards
+    esp = os.path.join(td, "esp"); os.makedirs(esp + "/unitotem-grub/grub")
+    shipped = os.path.join(td, "esp-grub.cfg")
+    cfg = lambda lvl: (f"# unitotem-grub-level: {lvl}\n" if lvl else "") + "menuentry 'A' --id slot-a {}\nmenuentry 'B' --id slot-b {}\nmenuentry 'O' --id ota-recovery {}\n"
+    gconf = dict(conf, UPDATE_BACKEND="grub", UPDATE_ESP_MOUNT=esp, UPDATE_ESP_GRUBCFG=shipped)
+    target = esp + "/unitotem-grub/grub/grub.cfg"
+    open(target, "w").write(cfg(0)); open(shipped, "w").write(cfg(2))
+    r = uu.sync_esp_grubcfg(gconf)
+    check("grub.cfg sync: older ESP config is replaced", r == {"from": 0, "to": 2} and open(target).read() == cfg(2), r)
+    check("grub.cfg sync: no .new left behind", not os.path.exists(target + ".new"))
+    check("grub.cfg sync: same level is left alone", uu.sync_esp_grubcfg(gconf) is None)
+    open(shipped, "w").write(cfg(1))
+    check("grub.cfg sync: a rollback to an older image never downgrades", uu.sync_esp_grubcfg(gconf) is None and open(target).read() == cfg(2))
+    open(shipped, "w").write("# unitotem-grub-level: 3\nmenuentry 'A' --id slot-a {}\n")
+    check("grub.cfg sync: an incomplete config is refused", uu.sync_esp_grubcfg(gconf) is None and open(target).read() == cfg(2))
+
 print(f"\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

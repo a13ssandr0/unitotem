@@ -192,6 +192,7 @@ echo "== Raspberry boot property (every file a config loads must exist under its
 elif [ "$AB" = 1 ]; then
 echo "== amd64 boot"
     chk "GRUB entries for both slots" bash -c "grep -q 'slot-a' $FAT/unitotem-grub/grub/grub.cfg && grep -q 'slot-b' $FAT/unitotem-grub/grub/grub.cfg"
+    chk "the image carries its ESP grub.cfg for unitotem-update to refresh the bootloader config (usr/share/unitotem/esp-grub.cfg == the ESP's)" bash -c "cmp -s '$R/usr/share/unitotem/esp-grub.cfg' $FAT/unitotem-grub/grub/grub.cfg && grep -q 'unitotem-grub-level' '$R/usr/share/unitotem/esp-grub.cfg'"
     chk "the OTA fallback is entry number 4 (the GRUB fallback list is numeric)" bash -c "[ \"\$(grep -E '^menuentry' $FAT/unitotem-grub/grub/grub.cfg | sed -n 5p | grep -c ota-recovery)\" = 1 ]"
     chk "OTA fallback entry is last (a torn grubenv must boot a slot)" bash -c "[ \"\$(grep -E '^menuentry' $FAT/unitotem-grub/grub/grub.cfg | tail -1 | grep -c ota-recovery)\" = 1 ]"
     chk "GRUB tries the other slot, then the OTA fallback, when the chosen slot cannot be loaded (fallback= in grub.cfg)" bash -c "grep -q 'set fallback=\"1 4\"' $FAT/unitotem-grub/grub/grub.cfg && grep -q 'set fallback=\"0 4\"' $FAT/unitotem-grub/grub/grub.cfg"

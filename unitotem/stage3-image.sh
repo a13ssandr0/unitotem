@@ -287,6 +287,9 @@ SBEOF
             || boot_assert_fail "grub.cfg non contiene la voce slot-a"
         grep -q "slot-b" "${IMG_MNT}${GRUB_BOOTDIR}/grub/grub.cfg" \
             || boot_assert_fail "grub.cfg non contiene la voce slot-b"
+        # The image carries its own copy of the ESP's grub.cfg: the ESP is not part of a slot, so an A/B update never rewrites it, and
+        # unitotem-update refreshes it from this file once the new system has booted (see sync_esp_grubcfg).
+        install -D -m 644 "${IMG_MNT}${GRUB_BOOTDIR}/grub/grub.cfg" "${IMG_MNT}/usr/share/unitotem/esp-grub.cfg"
     else
         chroot ${IMG_MNT} update-grub
     fi

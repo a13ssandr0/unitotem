@@ -806,6 +806,8 @@ def cmd_boot_ok(a, conf):
         if lr.get("op") == "rollback" and lr.get("result") == "armed" and lr.get("slot") == cur:
             set_last_result(conf, op="rollback", result="ok", slot=cur, version=ver)
         note_failover(conf)
+        try: sync_esp_grubcfg(conf)
+        except Exception as e: event(conf, f"ESP grub.cfg sync failed: {e}")
         # Self-healing: if the other slot held a system and no longer passes its check, rebuild it from this one (detached, idle priority).
         if conf.get("UPDATE_AUTOREPAIR", "1") == "1":
             try: cmd_repair(argparse.Namespace(foreground=False, auto=True, force=False), conf)
@@ -999,6 +1001,43 @@ def cmd_repair(a, conf):
     run_out("systemd-run", "--unit", "unitotem-update-repair", "--collect", "--quiet", "-p", "Nice=19", "-p", "IOSchedulingClass=idle",
             "-p", "RuntimeMaxSec=3600", *cmd)
     return 0, {"started": True, "unit": "unitotem-update-repair"}
+
+
+def _grub_level(text):
+    import re
+    m = re.search(r"(?m)^# unitotem-grub-level:\s*(\d+)", text)
+    return int(m.group(1)) if m else 0
+
+
+def sync_esp_grubcfg(conf):
+    """The ESP (GRUB's grub.cfg) is outside both slots, so an update never refreshes it: a device installed with an older bootloader
+    config would keep it forever. The image ships its own copy; once a system has booted and been confirmed, copy it over when its
+    `unitotem-grub-level` is higher. Written beside and renamed, verified before the rename, never run on a trial boot."""
+    if backend(conf) != "grub":
+        return None
+    src = conf.get("UPDATE_ESP_GRUBCFG", "/usr/share/unitotem/esp-grub.cfg")
+    dst = os.path.join(conf["UPDATE_ESP_MOUNT"], "unitotem-grub", "grub", "grub.cfg")
+    try:
+        new = open(src).read(); old = open(dst).read()
+    except OSError:
+        return None
+    if _grub_level(new) <= _grub_level(old):
+        return None
+    # sanity: it must still describe both slots and the OTA fallback, or it is not a config we may put in charge of the boot
+    for need in ("--id slot-a", "--id slot-b", "--id ota-recovery"):
+        if need not in new:
+            event(conf, f"grub.cfg sync refused: the image's copy lacks '{need}'")
+            return None
+    tmp = dst + ".new"
+    with bootfs_rw(conf["UPDATE_ESP_MOUNT"]):
+        with open(tmp, "w") as f:
+            f.write(new); f.flush(); os.fsync(f.fileno())
+        if open(tmp).read() != new:
+            os.unlink(tmp)
+            raise OSError("grub.cfg copy did not verify")
+        os.replace(tmp, dst)
+    event(conf, f"ESP grub.cfg updated: level {_grub_level(old)} -> {_grub_level(new)}")
+    return {"from": _grub_level(old), "to": _grub_level(new)}
 
 
 def note_failover(conf):
