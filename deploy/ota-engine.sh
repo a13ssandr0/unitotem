@@ -1859,12 +1859,12 @@ cmd_init_premount() {
     done
     if [ -z "$root_dev" ]; then
         ab_failover && return
-        cmd_serve_fallback --reason "partition $root_label not found" --kind recovery
+        cmd_serve_fallback --reason "partition $root_label not found" --kind recovery --idle-timeout 21600
         return
     fi
     if ! check_root_readonly "$root_dev"; then
         ab_failover && return
-        cmd_serve_fallback --reason "unrepaired filesystem errors on $root_label" --kind recovery
+        cmd_serve_fallback --reason "unrepaired filesystem errors on $root_label" --kind recovery --idle-timeout 21600
         return
     fi
 
@@ -1891,7 +1891,7 @@ cmd_init_premount() {
         return 0
     fi
     if [ -z "$trial_reset" ] && check_bootcount; then
-        cmd_serve_fallback --reason "three consecutive boots without confirmation (unitotem-boot-ok)" --kind recovery
+        cmd_serve_fallback --reason "three consecutive boots without confirmation (unitotem-boot-ok)" --kind recovery --idle-timeout 21600
         return
     fi
 
