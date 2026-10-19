@@ -15,12 +15,15 @@ exec tail -n +3 "$0"
 # the OTHER slot, and when that fails too the resident OTA fallback, which waits for a host to write the disk (deploy recover).
 # ${default} is already the entry being booted here (saved_entry, or the one-shot next_entry of a trial), so the alternative is
 # always "the slot that is not this one".
+# GRUB reads the `fallback` list as entry NUMBERS only (names and ids are silently dropped: found in QEMU, GRUB then reports "Failed to
+# boot both default and fallback entries" without trying anything), so these are positions in this file: 0 slot A, 1 slot B, 4 the OTA
+# fallback (the entry at the bottom, after the two *-recover entries). Keep the order of the entries below in step with this.
 if [ "${default}" = slot-a ]; then
-    set fallback="slot-b ota-recovery"
+    set fallback="1 4"
 elif [ "${default}" = slot-b ]; then
-    set fallback="slot-a ota-recovery"
+    set fallback="0 4"
 else
-    set fallback="ota-recovery"
+    set fallback="4"
 fi
 function unitotem_lowres {
     insmod all_video
