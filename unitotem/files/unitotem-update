@@ -875,6 +875,21 @@ def slot_sound(conf, slot):
         return False, "label"
     if subprocess.run(["e2fsck", "-fn", dev], capture_output=True).returncode != 0:
         return False, "fsck"
+    # a clean filesystem is not a system: a freshly formatted slot (what a host recovery leaves in the slot it did not fill) passes fsck
+    mnt = tempfile.mkdtemp(prefix="unitotem-slotcheck-")
+    try:
+        if subprocess.run(["mount", "-o", "ro", dev, mnt], capture_output=True).returncode != 0:
+            return False, "mount"
+        try:
+            has = all(os.path.getsize(os.path.join(mnt, f)) > 0 for f in ("usr/share/unitotem/release-version", "usr/lib/systemd/systemd"))
+        except OSError:
+            has = False
+        subprocess.run(["umount", mnt])
+        if not has:
+            return False, "empty"
+    finally:
+        try: os.rmdir(mnt)
+        except OSError: pass
     if backend(conf) == "rpi":
         for need in ("kernel8.img", "initramfs8", "cmdline.txt"):
             f = os.path.join(conf["UPDATE_BOOTFS"], f"slot{slot}", need)
