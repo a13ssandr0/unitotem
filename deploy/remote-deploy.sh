@@ -939,7 +939,7 @@ cmd_recover() {
     [ "$OPT_WIPE_DATA" != 1 ]                                  || { keep=0; why="richiesto --wipe-data"; }
     [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ]                      || { keep=0; why="la partizione DATA non e' leggibile"; }
     [ "${E[UNITOTEM_DATA_FSCK]:-x}" = 0 ]                      || { keep=0; why="DATA non supera il controllo in sola lettura (fsck=${E[UNITOTEM_DATA_FSCK]:-n/d})"; }
-    [ "${E[UNITOTEM_DATA_PARTN]:-x}" = "$P_DATA_PART" ]        || { keep=0; why="DATA non e' sulla partizione ${P_DATA_PART} attesa"; }
+    [ "$(echo ${E[UNITOTEM_DATA_PARTN]:-x})" = "$P_DATA_PART" ]    || { keep=0; why="DATA non e' sulla partizione ${P_DATA_PART} attesa"; }
     [ "${E[UNITOTEM_DATA_START]:-x}" = "$data_start_exp" ]     || { keep=0; why="DATA non inizia al settore atteso (${E[UNITOTEM_DATA_START]:-?} invece di ${data_start_exp})"; }
     [ "${E[UNITOTEM_NPARTS]:-0}" = "$nparts_exp" ]             || { keep=0; why="la tabella ha ${E[UNITOTEM_NPARTS]:-0} partizioni, ne servono ${nparts_exp}"; }
     RECOVER_MODE=1; RECOVER_KEEP_TABLE=$keep
