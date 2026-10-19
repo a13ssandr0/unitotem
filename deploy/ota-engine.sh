@@ -1947,13 +1947,13 @@ cmd_local_bottom_verify() {
     if [ ! -x "$rootmnt/sbin/init" ] && [ ! -x "$rootmnt/usr/lib/systemd/systemd" ]; then
         warn "init missing on $rootmnt - switching to OTA mode"
         umount -lf "$rootmnt" 2>/dev/null || true
-        cmd_serve_fallback --reason "/sbin/init missing on the mounted filesystem" --kind recovery
+        cmd_serve_fallback --reason "/sbin/init missing on the mounted filesystem" --kind recovery --idle-timeout 21600
         return
     fi
     if [ ! -f "$rootmnt/etc/unitotem/ota-preserve.list" ]; then
         warn "/etc/unitotem missing on $rootmnt - switching to OTA mode"
         umount -lf "$rootmnt" 2>/dev/null || true
-        cmd_serve_fallback --reason "/etc/unitotem missing on the mounted filesystem" --kind recovery
+        cmd_serve_fallback --reason "/etc/unitotem missing on the mounted filesystem" --kind recovery --idle-timeout 21600
         return
     fi
 }
