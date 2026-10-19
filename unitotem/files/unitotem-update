@@ -968,14 +968,15 @@ def do_repair(a, conf):
             if src.returncode or dst.returncode:
                 raise Fail("write-failed", f"partclone read rc={src.returncode} write rc={dst.returncode}: {tail}")
             progress(conf, op="repair", phase="verify", state="running", percent=80)
-            # The copy of a slot that has been running is a snapshot of a mounted filesystem (flags/times of a used one): tune2fs refuses
-            # to change the UUID until the copy has been checked ("requires a freshly checked filesystem", found on test-pc). It is OUR
-            # new copy, so a real fsck that may fix it is exactly right; rc 0/1 = clean/fixed, anything else is a failed copy.
+            # The copy carries the source's label AND UUID, and e2fsck/blkid then confuse it with the mounted original (e2fsck returned 8 on
+            # test-pc), so the new identity comes FIRST. -f: tune2fs otherwise refuses to change the UUID of a copy of a used filesystem
+            # ("requires a freshly checked filesystem"); the real fsck follows right after. It is OUR new copy, so a fsck that fixes it
+            # is exactly right (rc 0/1 = clean/fixed, anything else = failed copy).
+            run_out("tune2fs", "-f", "-U", "random", "-L", label(new), ndev)
             rc = subprocess.run(["e2fsck", "-fy", ndev], capture_output=True).returncode
             if rc > 1:
                 raise Fail("bad-copy", f"e2fsck sulla copia ha restituito {rc}")
             run_out("e2fsck", "-fn", ndev)
-            run_out("tune2fs", "-L", label(new), "-U", "random", ndev)
             mnt = tempfile.mkdtemp(prefix="unitotem-slot-")
             run_out("mount", "-o", "ro", ndev, mnt)
             try:
