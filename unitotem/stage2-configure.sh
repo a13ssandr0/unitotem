@@ -166,6 +166,14 @@ ln -sf /dev/null "${ROOTFS}/etc/systemd/system/getty@tty1.service"
 # /dev/uinput: the viewer puts each window on its output through a virtual keyboard
 echo uinput > "${ROOTFS}/etc/modules-load.d/unitotem-uinput.conf"
 
+# PipeWire for root: Debian's pipewire/pipewire-pulse/wireplumber user units carry ConditionUser=!root, so on this image (everything runs as
+# root) sound never started ("start condition unmet"). An empty ConditionUser= in a drop-in clears the condition; root already has a user
+# manager (linger, see below) and the units are enabled by the packages. Verified live on the Pi: the HDMI sink appears, the browser plays.
+for u in pipewire.socket pipewire.service pipewire-pulse.socket pipewire-pulse.service wireplumber.service; do
+    mkdir -p "${ROOTFS}/etc/systemd/user/${u}.d"
+    printf '[Unit]\nConditionUser=\n' > "${ROOTFS}/etc/systemd/user/${u}.d/10-root.conf"
+done
+
 # ---------- OverlayFS initramfs hook ----------
 
 install -m 755 /unitotem/files/overlayfs-hook.sh \
