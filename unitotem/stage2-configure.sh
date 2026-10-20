@@ -154,29 +154,17 @@ network:
 EOF
 chmod 600 "${ROOTFS}/etc/netplan/00-default.yaml"
 
-# ---------- Kiosk config (X11, no window manager) ----------
+# ---------- Kiosk config (Wayland: labwc, no X server) ----------
 
 mkdir -p "${ROOTFS}/etc/unitotem"
-mkdir -p "${ROOTFS}/etc/X11/xorg.conf.d"
-install -m 644 /unitotem/files/10-unitotem-noblank.conf "${ROOTFS}/etc/X11/xorg.conf.d/10-unitotem-noblank.conf"
 
 install -m 755 /unitotem/files/unitotem-maintenance "${ROOTFS}/usr/local/bin/unitotem-maintenance"
 
-# X started as a proper systemd service (not autologin+.bash_profile, which
-# is tied to a getty/PAM login session's lifecycle and proved fragile -
-# ties the X server's fate to VT/session handling it doesn't need to care
-# about). Matches the pattern already proven in the pi-gen build
-# (stage2/04-unitotem/files/start-xorg.service).
-install -m 644 /unitotem/files/start-xorg.service \
-    "${ROOTFS}/etc/systemd/system/start-xorg.service"
-# X runs on VT1 (Plymouth's VT, see start-xorg.service): no login prompt may sit on it
+# The compositor is a systemd service of the unitotem-viewer deb (unitotem-compositor.service: Plymouth deactivate before, plymouthd
+# killed once the Wayland socket exists, VT1, Restart=always); this image only enables it. No login prompt may sit on VT1.
 ln -sf /dev/null "${ROOTFS}/etc/systemd/system/getty@tty1.service"
-# The placeholder screen is a service of its own (its output goes to the journal, Restart= keeps it up); there is no xinitrc.
-# It is installed but NOT enabled any more: since unitotem-viewer 3.0.0~dev5 ships unitotem-splash.service (a tiny process that paints the
-# wordmark ~0.2 s after X is up, then hands over to the manager's own splash), the banner would only flash for a second before it. It stays
-# on the image as a diagnostic tool (systemctl start unitotem-xbackground) and is easy to delete for good when the user decides to.
-install -m 644 /unitotem/files/unitotem-xbackground.service \
-    "${ROOTFS}/etc/systemd/system/unitotem-xbackground.service"
+# /dev/uinput: the viewer puts each window on its output through a virtual keyboard
+echo uinput > "${ROOTFS}/etc/modules-load.d/unitotem-uinput.conf"
 
 # ---------- OverlayFS initramfs hook ----------
 
@@ -226,10 +214,8 @@ done
 # from it. Remove it (and its temporary halves) and let each device generate its own on first boot.
 rm -f -- "${ROOTFS}/etc/ssl/unitotem.pem" "${ROOTFS}/etc/ssl/unitotem_crt.pem" "${ROOTFS}/etc/ssl/unitotem_key.pem"
 [ ! -e "${ROOTFS}/etc/ssl/unitotem.pem" ] || { echo "ERRORE: il certificato e' ancora nell'immagine" >&2; exit 1; }
-# The placeholder screen is the X background itself (started by unitotem-xbackground.service): visible whenever nothing covers the root window.
-install -m 755 /unitotem/files/unitotem-xbackground "${ROOTFS}/usr/sbin/unitotem-xbackground"
 mkdir -p "${ROOTFS}/etc/systemd/system/unitotem-manager.service.d"
-install -m 644 /unitotem/files/unitotem-manager-x.conf "${ROOTFS}/etc/systemd/system/unitotem-manager.service.d/20-unitotem-x.conf"
+install -m 644 /unitotem/files/unitotem-manager-wayland.conf "${ROOTFS}/etc/systemd/system/unitotem-manager.service.d/20-unitotem-wayland.conf"
 install -m 755 /unitotem/files/unitotem-first-boot-cert "${ROOTFS}/usr/sbin/unitotem-first-boot-cert"
 install -m 644 /unitotem/files/unitotem-first-boot-cert.service "${ROOTFS}/etc/systemd/system/unitotem-first-boot-cert.service"
 install -m 755 /unitotem/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
@@ -342,7 +328,7 @@ chroot "${ROOTFS}" systemctl enable \
     ssh \
     iptables-firewall \
     unitotem-maintenance-mode \
-    start-xorg \
+    unitotem-compositor \
     unitotem-boot-ok \
     unitotem-ssh-hostkey \
     unitotem-persist-paths \

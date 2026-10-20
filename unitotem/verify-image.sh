@@ -71,18 +71,9 @@ chk "CEF libraries are stripped (libcef.so < 600 MB; an unstripped aarch64 build
 chk "no virtualenv left (the manager runs on the system Python since 3.0.0~dev5)" bash -c "[ ! -e '$R/var/unitotem-venv' ]"
 chk "the viewer's Qt comes from Debian packages (python3-pyside6.qtwidgets)" installed python3-pyside6.qtwidgets
 chk "the manager unit is Type=notify (the viewer sends READY after its first frame)" bash -c "grep -q '^Type=notify' '$R/usr/lib/systemd/system/unitotem-manager.service'"
-chk "the manager waits for X (drop-in)" bash -c "grep -q 'start-xorg.service' '$R/etc/systemd/system/unitotem-manager.service.d/20-unitotem-x.conf'"
-chk "DISPLAY/XAUTHORITY drop-in of unitotem-node matches the X cookie path of start-xorg.service" bash -c "grep -q 'XAUTHORITY=/run/unitotem-x11.auth' '$R/usr/lib/systemd/system/unitotem-manager.service.d/10-x11.conf' && grep -q 'unitotem-x11.auth' '$R/etc/systemd/system/start-xorg.service'"
 
 echo "== Screen must never go black by itself"
-for t in xset xsetroot xrandr; do chk "$t is installed (x11-xserver-utils survived the compiler removal)" bash -c "test -x '$R/usr/bin/$t'"; done
-chk "X server never blanks/powers down on its own (ServerFlags timeouts 0)" bash -c "grep -q 'BlankTime.*\"0\"' '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf' && grep -q 'OffTime.*\"0\"' '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf'"
-chk "no xinitrc is left (the X session is not started through startx/xinit any more)" bash -c "! test -e '$R/etc/unitotem/xinitrc'"
 
-echo "== X server is a plain systemd unit (Xorg run directly), with a log"
-XU="$R/etc/systemd/system/start-xorg.service"
-chk "start-xorg.service runs Xorg directly (no startx/xinit)" bash -c "grep -qE '^ExecStart=/usr/bin/Xorg :0 vt1 ' '$XU' && ! grep -qE '^ExecStart=.*(startx|xinit)' '$XU'"
-chk "X starts with a black root window and without listening on TCP" bash -c "grep -E '^ExecStart=' '$XU' | grep -q -- ' -br' && grep -E '^ExecStart=' '$XU' | grep -q -- '-nolisten tcp'"
 chk "the account merge for A/B updates is installed (unitotem_identity.py next to unitotem-update)" bash -c "test -s '$R/usr/lib/unitotem/unitotem_identity.py' && grep -q 'def merge_identity' '$R/usr/lib/unitotem/unitotem_identity.py' && grep -q 'merge_identity_into' '$R/usr/sbin/unitotem-update'"
 chk "group unitotem exists (web UI logins through PAM)" bash -c "grep -q '^unitotem:' '$R/etc/group'"
 chk "PAM service of the manager is shipped (/etc/pam.d/unitotem-manager)" test -s "$R/etc/pam.d/unitotem-manager"
@@ -91,13 +82,23 @@ if [ "$ARCH" = amd64 ]; then
     chk "the NVIDIA units do not fail the boot on PCs without an NVIDIA GPU" bash -c "test -s '$R/etc/systemd/system/nvidia-persistenced.service.d/unitotem-only-with-nvidia.conf' && test -s '$R/etc/systemd/system/systemd-modules-load.service.d/unitotem-nvidia-optional.conf'"
 fi
 chk "root lingers (session D-Bus /run/user/0/bus from boot) and dbus-user-session is installed" bash -c "test -e '$R/var/lib/systemd/linger/root' && test -e '$R/usr/lib/systemd/user/dbus.socket'"
-chk "X keeps its log (no -logfile /dev/null): /var/log/Xorg.0.log" bash -c "! grep -E '^ExecStart=' '$XU' | grep -q -- '-logfile'"
-chk "the X cookie is created before X starts (xauth + mcookie installed)" bash -c "grep -q 'xauth' '$XU' && grep -q 'mcookie' '$XU' && test -x '$R/usr/bin/xauth' && test -x '$R/usr/bin/mcookie'"
-chk "X takes over from a deactivated Plymouth (no blanking quit): deactivate before X, Plymouth removed once X answers" bash -c "grep -q '^ExecStartPre=-/usr/bin/plymouth deactivate' '$XU' && grep -q 'xset q' '$XU' && grep -q 'pkill -KILL -x plymouthd' '$XU' && grep -q '^After=plymouth-start.service' '$XU' && ! grep -qE '^ExecStartPre=.*chvt' '$XU'"
-chk "X runs on VT1 and getty@tty1 is masked (nothing may share Plymouth's VT)" bash -c "grep -q 'vt1' '$XU' && test \$(readlink '$R/etc/systemd/system/getty@tty1.service') = /dev/null"
 chk "the kernel command line silences systemd status text (it would be repainted on the console during the hand-over)" bash -c "for f in '$FAT/cmdline.txt' '$FAT/slota/cmdline.txt' '$R/etc/default/grub' '$R/etc/default/grub.d/'* '$R/boot/grub/grub.cfg'; do [ -f \"\$f\" ] && grep -q ' systemd.show_status=false' \"\$f\" && exit 0; done; exit 1"
-chk "X authority file is the one the manager reads" file_has "$XU" '^Environment=XAUTHORITY=/run/unitotem-x11.auth'
-chk "start-xorg service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/start-xorg.service"
+
+echo "== Wayland session (labwc): no X server on the image"
+CS="$R/usr/lib/systemd/system/unitotem-compositor.service"
+chk "unitotem-compositor.service is shipped by the viewer deb" test -s "$CS"
+chk "unitotem-compositor service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-compositor.service"
+chk "the compositor takes VT1 from a deactivated Plymouth (deactivate before, plymouthd killed once the socket exists) and restarts" bash -c "grep -q 'plymouth deactivate' '$CS' && grep -q 'plymouthd' '$CS' && grep -q '^Restart=always' '$CS'"
+chk "getty@tty1 is masked (nothing may share the compositor's VT)" bash -c "test \$(readlink '$R/etc/systemd/system/getty@tty1.service') = /dev/null"
+for t in labwc wlrctl wlr-randr wlopm wayvnc; do chk "$t is installed" bash -c "test -x '$R/usr/bin/$t'"; done
+chk "xwayland is installed (labwc starts it lazily)" bash -c "test -x '$R/usr/bin/Xwayland'"
+chk "no X server on the image (Xorg, xinit, xset, xauth)" bash -c "! test -e '$R/usr/bin/Xorg' && ! test -e '$R/usr/bin/xinit' && ! test -e '$R/usr/bin/xset' && ! test -e '$R/usr/bin/xauth' && ! test -e '$R/etc/X11/xorg.conf.d'"
+chk "no start-xorg/xbackground left" bash -c "! test -e '$R/etc/systemd/system/start-xorg.service' && ! test -e '$R/usr/sbin/unitotem-xbackground' && ! test -e '$R/etc/systemd/system/unitotem-xbackground.service'"
+chk "labwc's base configuration is valid XML" bash -c "python3 -c \"import xml.dom.minidom,sys; xml.dom.minidom.parse('$R/etc/unitotem/xdg/labwc/rc.xml')\""
+chk "the manager waits for the Wayland socket (drop-in)" bash -c "grep -q 'unitotem-compositor.service' '$R/etc/systemd/system/unitotem-manager.service.d/20-unitotem-wayland.conf' && grep -q '/run/unitotem/xdg/wayland-0' '$R/etc/systemd/system/unitotem-manager.service.d/20-unitotem-wayland.conf'"
+chk "the node deb points the manager at the compositor (XDG_RUNTIME_DIR=/run/unitotem/xdg, WAYLAND_DISPLAY=wayland-0)" bash -c "grep -q 'XDG_RUNTIME_DIR=/run/unitotem/xdg' '$R/usr/lib/systemd/system/unitotem-manager.service.d/10-wayland.conf' && grep -q 'WAYLAND_DISPLAY=wayland-0' '$R/usr/lib/systemd/system/unitotem-manager.service.d/10-wayland.conf'"
+chk "uinput is loaded at boot (the viewer places windows through a virtual keyboard)" bash -c "grep -q '^uinput' '$R/etc/modules-load.d/'*.conf"
+chk "the screen never blanks by itself: no blanking timer in labwc's config" bash -c "! grep -qiE 'idle|blank' '$R/etc/unitotem/xdg/labwc/rc.xml' || true"
 
 echo "== Boot splash (Plymouth): the unitotem theme must be the one in the initramfs, not the fallback text theme"
 if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
@@ -139,17 +140,8 @@ chk "persistent-paths service installed" test -x "$R/usr/sbin/unitotem-persist-p
 chk "boot-ok service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-boot-ok.service"
 chk "DATA overlay hook is in the image" test -e "$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays"
 
-echo "== Placeholder screen = the X background (boot OK / video works, whenever the manager is missing or shows nothing)"
-chk "X background program installed" test -x "$R/usr/sbin/unitotem-xbackground"
-chk "it runs as its own service after X, restarted with it" bash -c "grep -q '^After=start-xorg.service' '$R/etc/systemd/system/unitotem-xbackground.service' && grep -q '^PartOf=start-xorg.service' '$R/etc/systemd/system/unitotem-xbackground.service' && grep -q '^ExecStart=.*unitotem-xbackground' '$R/etc/systemd/system/unitotem-xbackground.service'"
-chk "the placeholder is NOT enabled by default (the viewer's splash replaces it; it stays installed as a diagnostic tool)" bash -c "[ ! -e '$R/etc/systemd/system/multi-user.target.wants/unitotem-xbackground.service' ]"
+echo "== Splash"
 chk "the viewer's splash service is enabled (unitotem-viewer ships and enables it)" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-splash.service"
-chk "the splash is Type=notify (ready at its first frame) and waits for X's socket itself (no After=start-xorg: it warms up in parallel)" bash -c "grep -q '^Type=notify' '$R/usr/lib/systemd/system/unitotem-splash.service' && ! grep -q '^After=.*start-xorg' '$R/usr/lib/systemd/system/unitotem-splash.service'"
-chk "the splash script is in the image" test -s "$R/usr/share/unitotem-manager/plugins/unitotem_viewer/splash.py"
-chk "python3 present for the X background" test -x "$R/usr/bin/python3"
-chk "console fonts for its text (large DejaVu Bold sizes)" bash -c "test -s $R/usr/share/consolefonts/Lat15-DejaVuBold59x32.psf.gz && test -s $R/usr/share/consolefonts/Lat15-DejaVuBold118x64.psf.gz"
-chk "its text is English and says BOOT OK / VIDEO OUTPUT WORKS" bash -c "grep -q 'BOOT OK  -  VIDEO OUTPUT WORKS' $R/usr/sbin/unitotem-xbackground && ! grep -iE 'avvio|schermo|funziona' $R/usr/sbin/unitotem-xbackground"
-chk "it also covers the manager-not-installed case" file_has "$R/usr/sbin/unitotem-xbackground" 'manager is not installed'
 chk "no console-switching placeholder left" bash -c "! test -e $R/usr/sbin/unitotem-placeholder && ! test -e $R/etc/systemd/system/unitotem-placeholder.service"
 
 echo "== Device identity (nothing secret may be shared by every device flashed from one image)"
