@@ -220,11 +220,9 @@ if [ "$ARCH" = "amd64" ]; then
     # One image, three GPU vendors. That works because libglvnd dispatches GL
     # to whichever vendor's driver is actually present at runtime, so Mesa
     # (Intel/AMD) and the NVIDIA blob coexist without either being chosen at
-    # build time. The X server picks its driver the same way: modesetting for
-    # Intel, amdgpu for AMD, nvidia for NVIDIA (xserver-xorg-video-all already
-    # supplies amdgpu/ati/nouveau; modern Intel is served by the server's
-    # built-in modesetting, which is why there is no xserver-xorg-video-intel
-    # here - that driver is legacy and hurts on anything recent).
+    # build time. The compositor (labwc) talks to the kernel's KMS drivers
+    # directly through libdrm/GBM: i915/xe for Intel, amdgpu for AMD, nvidia-drm
+    # for NVIDIA - there is no X driver to choose any more.
 
     # Mesa 25.0 from trixie: this is what actually makes Intel ARC work (iris +
     # ANV for DG2) and it materially improves RDNA3. mesa-vulkan-drivers and
@@ -311,24 +309,18 @@ elif [ "$ARCH" = "arm64" ]; then
         raspi-utils
 fi
 
-# ---------- X11 + PipeWire ----------
-# No window manager: unitotem-manager's own Qt6+CEF viewer already sets its
-# window to exact fullscreen geometry with no decorations on its own, and CEF
-# only supports X11 embedding anyway (see manager/webview/window.py), so a
-# bare Xorg session (no WM) is all this image needs. The session itself is
-# unitotem/files/start-xorg.service (Xorg run directly, no startx/xinitrc) + unitotem/files/unitotem-xbackground.service.
-#
-# Historical note: a compositor-based session was evaluated first and dropped
-# - CEF's X11-only embedding would have forced an X server underneath it
-# anyway, so the compositor bought nothing and cost a moving part.
+# ---------- Wayland session (labwc) + PipeWire ----------
+# The kiosk runs on Wayland only (decision 2026-10-20, see WAYLAND-IMAGE.md in the manager repo): the compositor is labwc, started by
+# unitotem-compositor.service (shipped, disabled, by the unitotem-viewer deb; enabled in stage 2). There is no X server on the image;
+# xwayland is installed only because labwc starts it lazily and logs an error without it (no X client is run).
+# Measured on a Pi 4 and an Intel PC: 60 fps at 1080p, no tearing, a window per output, hot-plug, touch mapping, VNC, screen power.
 
 # Screen control in the manager (DDC/CI, CEC): ddcutil >= 2.0 (trixie has 2.1), cec-ctl comes from v4l-utils (installed
 # above on arm64 only, so named here for both), i2c-tools; the i2c-dev module is loaded at boot (stage2).
 apt_install ddcutil v4l-utils i2c-tools
 
 apt_install \
-    xserver-xorg xserver-xorg-video-all xserver-xorg-input-all \
-    xinit x11-xserver-utils kbd \
+    labwc wlrctl wlr-randr wlopm wayvnc xwayland qt6-wayland kbd \
     pipewire pipewire-audio pipewire-pulse pipewire-jack pipewire-alsa \
     wireplumber libpipewire-0.3-0 \
     gstreamer1.0-pipewire \
@@ -435,10 +427,8 @@ if [ "$ARCH" = "arm64" ]; then
         # shellcheck disable=SC2086
         chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE
     fi
-    # The compilers go with dpkg --force-depends, NOT with apt: x11-xserver-utils (xset, xsetroot, xrandr - the manager's screen
-    # control and the kiosk's DPMS-off all need them) depends on cpp, so `apt-get purge cpp` silently took it along and the
-    # 2026.10.10/.11 arm64 images had no xset: DPMS stayed at its 10-minute default and the screen went black after 10 minutes.
-    # The price is an unmet-dependency note on x11-xserver-utils in `dpkg --audit`, harmless on an image that never runs apt.
+    # The compilers go with dpkg --force-depends, NOT with apt: a package that depends on cpp would be taken along by `apt-get purge cpp`
+    # (that is how the earlier X images lost xset). The price is an unmet-dependency note in `dpkg --audit`, harmless on an image that never runs apt.
     REMOVE_CC=$(purge_list build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 \
                            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cpp-aarch64-linux-gnu \
                            gcc-14-aarch64-linux-gnu g++-14-aarch64-linux-gnu cpp-14-aarch64-linux-gnu)
@@ -471,9 +461,9 @@ if [ "$ARCH" = "amd64" ] && [ -e "${ROOTFS}/var/lib/dkms/mok.key" ]; then
     rm -f "${ROOTFS}/var/lib/dkms/mok.key"
     echo ">>> removed the DKMS module-signing private key from the image (mok.pub kept)"
 fi
-# What the kiosk needs from x11-xserver-utils must have survived the removal above, on every architecture (see the arm64 note).
-for t in xset xsetroot xrandr; do
-    chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERRORE: $t e' sparito con la rimozione dei compilatori/Chromium (x11-xserver-utils)" >&2; exit 1; }
+# What the Wayland session needs must have survived the removals above, on every architecture.
+for t in labwc wlrctl wlr-randr wlopm wayvnc; do
+    chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERRORE: $t e' sparito con la rimozione dei compilatori/Chromium" >&2; exit 1; }
 done
 echo ">>> installed size of / after removal: $(du -sxm "${ROOTFS}" | cut -f1) MiB"
 

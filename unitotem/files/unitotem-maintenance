@@ -1,16 +1,11 @@
 #!/bin/bash
 set -e
 
-# The units that actually own the screen on this image. This used to be a
-# single `pkill -x sway`, which stopped nothing at all: there is no sway here
-# (bare Xorg, no window manager - see unitotem/stage1-packages.sh for why), so
-# the kiosk kept running through the whole update while this script reported
-# "Fermo il kiosk...". Confirmed on hardware: Xorg was still up after `enter`.
+# The units that actually own the screen on this image: the manager (and its viewer) and the Wayland compositor.
 #
-# systemctl stop, not pkill: start-xorg.service is Restart=always, so killing
-# the process just brings it straight back. Stopping the unit is the only
-# thing that holds.
-UNITOTEM_UNITS="unitotem-manager.service start-xorg.service"
+# systemctl stop, not pkill: unitotem-compositor.service is Restart=always, so killing the process just brings it straight back.
+# Stopping the unit is the only thing that holds.
+UNITOTEM_UNITS="unitotem-manager.service unitotem-compositor.service"
 
 _enter() {
     echo "[unitotem-maintenance] Fermo il kiosk..."
