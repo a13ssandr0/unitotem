@@ -461,6 +461,13 @@ if [ "$ARCH" = "amd64" ] && [ -e "${ROOTFS}/var/lib/dkms/mok.key" ]; then
     rm -f "${ROOTFS}/var/lib/dkms/mok.key"
     echo ">>> removed the DKMS module-signing private key from the image (mok.pub kept)"
 fi
+# No X server on the image: the NVIDIA driver (amd64) and a few packages pull xserver-xorg-core in as a dependency, but nothing starts it.
+# dpkg --force-depends like the compilers (an unmet-dependency note in `dpkg --audit` on an image that never runs apt; the NVIDIA kernel module
+# and its libraries do not need the X server). xwayland (installed above, no Xorg needed) stays.
+XPURGE=$(purge_list xserver-xorg-core xserver-xorg-legacy xserver-xorg xserver-xorg-input-all xserver-xorg-video-all xinit x11-xserver-utils)
+echo ">>> removing the X server (dpkg --force-depends): $(echo $XPURGE)"
+# shellcheck disable=SC2086
+[ -z "$XPURGE" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $XPURGE
 # What the Wayland session needs must have survived the removals above, on every architecture.
 for t in labwc wlrctl wlr-randr wlopm wayvnc; do
     chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERRORE: $t e' sparito con la rimozione dei compilatori/Chromium" >&2; exit 1; }
