@@ -163,8 +163,6 @@ install -m 755 /unitotem/files/unitotem-maintenance "${ROOTFS}/usr/local/bin/uni
 # The compositor is a systemd service of the unitotem-viewer deb (unitotem-compositor.service: Plymouth deactivate before, plymouthd
 # killed once the Wayland socket exists, VT1, Restart=always); this image only enables it. No login prompt may sit on VT1.
 ln -sf /dev/null "${ROOTFS}/etc/systemd/system/getty@tty1.service"
-# /dev/uinput: the viewer puts each window on its output through a virtual keyboard
-echo uinput > "${ROOTFS}/etc/modules-load.d/unitotem-uinput.conf"
 
 # PipeWire for root: Debian's pipewire/pipewire-pulse/wireplumber user units carry ConditionUser=!root, so on this image (everything runs as
 # root) sound never started ("start condition unmet"). An empty ConditionUser= in a drop-in clears the condition; root already has a user

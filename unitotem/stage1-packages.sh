@@ -320,7 +320,7 @@ fi
 apt_install ddcutil v4l-utils i2c-tools
 
 apt_install \
-    labwc wlrctl wlr-randr wlopm wayvnc xwayland qt6-wayland kbd \
+    labwc wlr-randr wlopm wayvnc xwayland qt6-wayland kbd \
     pipewire pipewire-audio pipewire-pulse pipewire-jack pipewire-alsa \
     wireplumber libpipewire-0.3-0 \
     gstreamer1.0-pipewire \
@@ -469,7 +469,7 @@ echo ">>> removing the X server (dpkg --force-depends): $(echo $XPURGE)"
 # shellcheck disable=SC2086
 [ -z "$XPURGE" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $XPURGE
 # What the Wayland session needs must have survived the removals above, on every architecture.
-for t in labwc wlrctl wlr-randr wlopm wayvnc; do
+for t in labwc wlr-randr wlopm wayvnc; do
     chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERRORE: $t e' sparito con la rimozione dei compilatori/Chromium" >&2; exit 1; }
 done
 echo ">>> installed size of / after removal: $(du -sxm "${ROOTFS}" | cut -f1) MiB"
