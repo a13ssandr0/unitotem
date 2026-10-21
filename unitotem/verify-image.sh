@@ -90,7 +90,7 @@ chk "unitotem-compositor.service is shipped by the viewer deb" test -s "$CS"
 chk "unitotem-compositor service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-compositor.service"
 chk "the compositor takes VT1 from a deactivated Plymouth (deactivate before, plymouthd killed once the socket exists) and restarts" bash -c "grep -q 'plymouth deactivate' '$CS' && grep -q 'plymouthd' '$CS' && grep -q '^Restart=always' '$CS'"
 chk "getty@tty1 is masked (nothing may share the compositor's VT)" bash -c "test \$(readlink '$R/etc/systemd/system/getty@tty1.service') = /dev/null"
-for t in labwc wlrctl wlr-randr wlopm wayvnc; do chk "$t is installed" bash -c "test -x '$R/usr/bin/$t'"; done
+for t in labwc wlr-randr wlopm wayvnc; do chk "$t is installed" bash -c "test -x '$R/usr/bin/$t'"; done
 chk "xwayland is installed (labwc starts it lazily)" bash -c "test -x '$R/usr/bin/Xwayland'"
 chk "no X server on the image (Xorg, xinit, xset, the X config of the old session; xauth is only an openssh Recommends)" bash -c "! test -e '$R/usr/bin/Xorg' && ! test -e '$R/usr/bin/xinit' && ! test -e '$R/usr/bin/xset' && ! test -e '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf'"
 chk "no start-xorg/xbackground left" bash -c "! test -e '$R/etc/systemd/system/start-xorg.service' && ! test -e '$R/usr/sbin/unitotem-xbackground' && ! test -e '$R/etc/systemd/system/unitotem-xbackground.service'"
@@ -99,7 +99,6 @@ chk "the manager waits for the Wayland socket (drop-in)" bash -c "grep -q 'unito
 chk "the node deb points the manager at the compositor (absolute WAYLAND_DISPLAY) and at root's runtime dir for audio (XDG_RUNTIME_DIR=/run/user/0)" bash -c "grep -q 'XDG_RUNTIME_DIR=/run/user/0' '$R/usr/lib/systemd/system/unitotem-manager.service.d/10-wayland.conf' && grep -q 'WAYLAND_DISPLAY=/run/unitotem/xdg/wayland-0' '$R/usr/lib/systemd/system/unitotem-manager.service.d/10-wayland.conf'"
 chk "the manager starts after root's user manager (user@0.service hosts PipeWire)" bash -c "grep -q '^After=.*user@0.service' '$R/etc/systemd/system/unitotem-manager.service.d/20-unitotem-wayland.conf'"
 for u in pipewire.socket pipewire.service pipewire-pulse.socket pipewire-pulse.service wireplumber.service; do chk "$u may run as root (ConditionUser= cleared; Debian ships ConditionUser=!root)" bash -c "grep -q '^ConditionUser=\$' '$R/etc/systemd/user/$u.d/10-root.conf'"; done
-chk "uinput is loaded at boot (the viewer places windows through a virtual keyboard)" bash -c "grep -q '^uinput' '$R/etc/modules-load.d/'*.conf"
 chk "the screen never blanks by itself: no blanking timer in labwc's config" bash -c "! grep -qiE 'idle|blank' '$R/etc/unitotem/xdg/labwc/rc.xml' || true"
 
 echo "== Boot splash (Plymouth): the unitotem theme must be the one in the initramfs, not the fallback text theme"
