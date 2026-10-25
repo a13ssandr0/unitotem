@@ -164,6 +164,13 @@ install -m 755 /unitotem/files/unitotem-maintenance "${ROOTFS}/usr/local/bin/uni
 # killed once the Wayland socket exists, VT1, Restart=always); this image only enables it. No login prompt may sit on VT1.
 ln -sf /dev/null "${ROOTFS}/etc/systemd/system/getty@tty1.service"
 
+# Debian's wayvnc package enables its own VNC server (wayvnc.service, user "vnc", PAM auth, listening on every address) and a control
+# service whose script does not exist (exit 127: the system came up "degraded"). Remote viewing is the manager's own feature, started by
+# it when asked, so the distro units must not run: mask them (found on the first Wayland image, 2026-10-25).
+for u in wayvnc.service wayvnc-control.service wayvnc-generate-keys.service; do
+    ln -sf /dev/null "${ROOTFS}/etc/systemd/system/${u}"
+done
+
 # PipeWire for root: Debian's pipewire/pipewire-pulse/wireplumber user units carry ConditionUser=!root, so on this image (everything runs as
 # root) sound never started ("start condition unmet"). An empty ConditionUser= in a drop-in clears the condition; root already has a user
 # manager (linger, see below) and the units are enabled by the packages. Verified live on the Pi: the HDMI sink appears, the browser plays.
