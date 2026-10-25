@@ -94,13 +94,15 @@ for t in labwc wlr-randr wlopm wayvnc; do chk "$t is installed" bash -c "test -x
 chk "xwayland is installed (labwc starts it lazily)" bash -c "test -x '$R/usr/bin/Xwayland'"
 chk "no X server on the image (Xorg, xinit, xset, the X config of the old session; xauth is only an openssh Recommends)" bash -c "! test -e '$R/usr/bin/Xorg' && ! test -e '$R/usr/bin/xinit' && ! test -e '$R/usr/bin/xset' && ! test -e '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf'"
 chk "no start-xorg/xbackground left" bash -c "! test -e '$R/etc/systemd/system/start-xorg.service' && ! test -e '$R/usr/sbin/unitotem-xbackground' && ! test -e '$R/etc/systemd/system/unitotem-xbackground.service'"
-chk "labwc's base configuration is well-formed (rc.xml opens and closes <labwc_config>)" bash -c "grep -q '^<labwc_config>' '$R/etc/unitotem/xdg/labwc/rc.xml' && grep -q '^</labwc_config>' '$R/etc/unitotem/xdg/labwc/rc.xml' && head -1 '$R/etc/unitotem/xdg/labwc/rc.xml' | grep -q '<?xml'"
+chk "labwc's base configuration is well-formed (rc.xml opens and closes <labwc_config>)" bash -c "grep -q '^<labwc_config>' '$R/usr/share/unitotem/xdg/labwc/rc.xml' && grep -q '^</labwc_config>' '$R/usr/share/unitotem/xdg/labwc/rc.xml' && head -1 '$R/usr/share/unitotem/xdg/labwc/rc.xml' | grep -q '<?xml'"
+chk "the compositor reads the image's base labwc config from /usr/share (not /etc/unitotem, which A/B updates freeze)" bash -c "grep -q 'XDG_CONFIG_DIRS=/usr/share/unitotem/xdg' '$CS'"
+chk "the viewer/node/manager debs ship no file under /etc/unitotem (the preserve list would pin it to the first install)" bash -c "! test -e '$R/etc/unitotem/xdg'"
 chk "the manager waits for the Wayland socket (drop-in)" bash -c "grep -q 'unitotem-compositor.service' '$R/etc/systemd/system/unitotem-manager.service.d/20-unitotem-wayland.conf' && grep -q '/run/unitotem/xdg/wayland-0' '$R/etc/systemd/system/unitotem-manager.service.d/20-unitotem-wayland.conf'"
 chk "the node deb points the manager at the compositor (absolute WAYLAND_DISPLAY) and at root's runtime dir for audio (XDG_RUNTIME_DIR=/run/user/0)" bash -c "grep -q 'XDG_RUNTIME_DIR=/run/user/0' '$R/usr/lib/systemd/system/unitotem-manager.service.d/10-wayland.conf' && grep -q 'WAYLAND_DISPLAY=/run/unitotem/xdg/wayland-0' '$R/usr/lib/systemd/system/unitotem-manager.service.d/10-wayland.conf'"
 chk "the manager starts after root's user manager (user@0.service hosts PipeWire)" bash -c "grep -q '^After=.*user@0.service' '$R/etc/systemd/system/unitotem-manager.service.d/20-unitotem-wayland.conf'"
 for u in wayvnc.service wayvnc-control.service wayvnc-generate-keys.service; do chk "$u (Debian's own VNC server) is masked: remote viewing is started by the manager" bash -c "test \$(readlink '$R/etc/systemd/system/$u') = /dev/null"; done
 for u in pipewire.socket pipewire.service pipewire-pulse.socket pipewire-pulse.service wireplumber.service; do chk "$u may run as root (ConditionUser= cleared; Debian ships ConditionUser=!root)" bash -c "grep -q '^ConditionUser=\$' '$R/etc/systemd/user/$u.d/10-root.conf'"; done
-chk "the screen never blanks by itself: no blanking timer in labwc's config" bash -c "! grep -qiE 'idle|blank' '$R/etc/unitotem/xdg/labwc/rc.xml' || true"
+chk "the screen never blanks by itself: no blanking timer in labwc's config" bash -c "! grep -qiE 'idle|blank' '$R/usr/share/unitotem/xdg/labwc/rc.xml' || true"
 
 echo "== Boot splash (Plymouth): the unitotem theme must be the one in the initramfs, not the fallback text theme"
 if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
