@@ -114,6 +114,7 @@ if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
     if [ "$ARCH" = arm64 ]; then
         # the Pi firmware reads the initramfs at ~5 MB/s: 40 MB was 8 s of black screen (measured 2026-10-17); slimmed it is ~26 MB
         chk "the Pi initramfs is slim (< 32 MB, no hwdb.bin; unitotem/slim-initramfs.py)" bash -c "[ \$(stat -c %s '$INITRD') -lt 33554432 ] && ! lsinitramfs '$INITRD' | grep -q 'udev/hwdb.bin'"
+        chk "the Pi initramfs carries the brcmfmac vendor module for the Pi's Wi-Fi chip (without brcmfmac-cyw the probe fails and there is no wlan0)" bash -c "lsinitramfs '$INITRD' | grep -q 'brcmfmac/cyw/brcmfmac-cyw.ko'"
         chk "the Pi initramfs has no plymouth label plugin (pango/cairo/X11 ~4 MB)" bash -c "! lsinitramfs '$INITRD' | grep -q 'plymouth/label'"
     fi
     chk "the initramfs carries the unitotem theme and the script plugin (${INITRD##*/})" bash -c "l=\$(lsinitramfs '$INITRD' 2>/dev/null) && printf '%s\n' \"\$l\" | grep -q 'plymouth/themes/unitotem/unitotem.script' && printf '%s\n' \"\$l\" | grep -q 'plymouth/script.so'"

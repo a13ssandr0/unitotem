@@ -155,7 +155,14 @@ for tif in l/linux v/vt220 v/vt100; do
 done
 
 manual_add_modules vfat nls_iso8859-1 nls_cp437 overlay
+# Since the 6.18 kernels brcmfmac is split by chip vendor: the core module asks for a vendor module (brcmfmac-cyw for the CYW4345x of the
+# Pi 3B+/4/400/5, -wcc, -bca) when the chip probes, and an initramfs without it makes the probe fail ("brcmf_fwvid_request_module: mod=cyw:
+# failed", "brcmf_attach failed"): no wlan0 at all, in the real system and in the OTA fallback (found on the Pi 4, 2026-10-25). modprobe
+# resolves the names with underscores; kernels that do not have them (older than 6.13) skip the loop.
 manual_add_modules brcmfmac brcmutil
+for _m in brcmfmac_cyw brcmfmac_wcc brcmfmac_bca; do
+    modinfo -k "${version}" "$_m" >/dev/null 2>&1 && manual_add_modules "$_m"
+done
 
 # nls_ascii: this kernel's default vfat iocharset ("ascii") is a separate
 # loadable module, not built in - without it, EVERY plain `mount -t vfat`
