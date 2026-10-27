@@ -1,0 +1,13 @@
+[Unit]
+Description=UniTotem automatic update policy (one tick)
+Documentation=file:///usr/share/doc/unitotem/AB-DESIGN.md
+ConditionPathExists=/usr/sbin/unitotem-update
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-update --json auto
+# the kiosk keeps playing: lowest CPU and idle I/O priority for the download and the write
+Nice=19
+IOSchedulingClass=idle
+# a stuck network must not leave a tick hanging for ever
+TimeoutStartSec=2h

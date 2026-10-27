@@ -232,6 +232,8 @@ install -m 644 /unitotem/files/unitotem-manager-wayland.conf "${ROOTFS}/etc/syst
 install -m 755 /unitotem/files/unitotem-first-boot-cert "${ROOTFS}/usr/sbin/unitotem-first-boot-cert"
 install -m 644 /unitotem/files/unitotem-first-boot-cert.service "${ROOTFS}/etc/systemd/system/unitotem-first-boot-cert.service"
 install -m 755 /unitotem/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
+install -m 644 /unitotem/files/unitotem-update-auto.service "${ROOTFS}/etc/systemd/system/unitotem-update-auto.service"
+install -m 644 /unitotem/files/unitotem-update-auto.timer "${ROOTFS}/etc/systemd/system/unitotem-update-auto.timer"
 install -d "${ROOTFS}/usr/lib/unitotem"
 install -m 644 /unitotem/files/unitotem_identity.py "${ROOTFS}/usr/lib/unitotem/unitotem_identity.py"
 # the web UI logs in through PAM with system accounts of this group (the unitotem-manager postinst creates it too; a rootfs built before that
@@ -346,7 +348,8 @@ chroot "${ROOTFS}" systemctl enable \
     unitotem-ssh-hostkey \
     unitotem-persist-paths \
     unitotem-first-boot-cert \
-    unitotem-net-watchdog.timer
+    unitotem-net-watchdog.timer \
+    unitotem-update-auto.timer
 
 # ---------- Disable unattended apt ----------
 # Three independent reasons, any one of which would be enough:

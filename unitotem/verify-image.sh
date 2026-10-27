@@ -157,6 +157,8 @@ chk "the generator runs before the manager" file_has "$R/etc/systemd/system/unit
 chk "no SSH host key in the image's /etc/ssh is relied on (unitotem-ssh-hostkey regenerates)" test -x "$R/usr/sbin/unitotem-ssh-hostkey"
 
 echo "== Update machinery"
+chk "the automatic update policy: timer enabled, service runs at the lowest priority" bash -c "test -L '$R/etc/systemd/system/timers.target.wants/unitotem-update-auto.timer' && grep -q '^Nice=19' '$R/etc/systemd/system/unitotem-update-auto.service' && grep -q '^IOSchedulingClass=idle' '$R/etc/systemd/system/unitotem-update-auto.service'"
+chk "unitotem-update has the policy/auto/reboot commands" bash -c "grep -q 'def cmd_auto' '$R/usr/sbin/unitotem-update' && grep -q 'def cmd_policy' '$R/usr/sbin/unitotem-update'"
 chk "unitotem-update installed" test -x "$R/usr/sbin/unitotem-update"
 chk "unitotem-update can rebuild a damaged slot from the running one (repair + failover bookkeeping)" bash -c "grep -q 'def do_repair' $R/usr/sbin/unitotem-update && grep -q 'def note_failover' $R/usr/sbin/unitotem-update"
 chk "partclone.extfs (source of the slot copy) is installed" bash -c "test -x '$R/usr/sbin/partclone.extfs' || test -x '$R/usr/bin/partclone.extfs'"
