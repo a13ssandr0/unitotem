@@ -167,6 +167,26 @@ for ARCH in ${ARCHES}; do
     echo "  Building for ARCH=${ARCH}"
     echo "=================================================="
 
+    # Package lock gate: before anything is built, say what is newer than the locked versions and STOP on security updates.
+    # PKGLOCK=off skips it; PKGLOCK_ACK_SECURITY=1 builds anyway, knowingly, with the security updates pending.
+    if [ "${PKGLOCK:-on}" != off ] && [ -f "${DIR}/unitotem/locks/${ARCH}.lock" ]; then
+        set +e
+        python3 "${DIR}/tools/pkglock.py" check "${DIR}/unitotem/locks/${ARCH}.lock"
+        gate=$?
+        set -e
+        if [ "$gate" = 20 ] && [ "${PKGLOCK_ACK_SECURITY:-0}" != 1 ]; then
+            echo "" >&2
+            echo "[${ARCH}] BUILD BLOCCATA: ci sono aggiornamenti di SICUREZZA per i pacchetti bloccati (elenco sopra)." >&2
+            echo "[${ARCH}] Decisione manuale: 'python3 tools/pkglock.py upgrade ${ARCH}' ritira il lock e la prossima build dallo stage 1 installa le versioni attuali" >&2
+            echo "[${ARCH}] (e ne congela uno nuovo); oppure PKGLOCK_ACK_SECURITY=1 per costruire comunque con le versioni bloccate." >&2
+            exit 20
+        elif [ "$gate" = 2 ]; then
+            echo "[${ARCH}] avviso: controllo degli aggiornamenti non riuscito (rete?): si va avanti con le versioni bloccate" >&2
+        fi
+    elif [ "${PKGLOCK:-on}" != off ]; then
+        echo "[${ARCH}] nessun lock dei pacchetti (unitotem/locks/${ARCH}.lock): questa build ne congela uno nuovo"
+    fi
+
     if [ "${ARCH}" = "arm64" ] && [ "${PI_NATIVE_BUILD:-1}" = 1 ] && probe_pi; then
         if build_natively_on_pi; then
             echo "[${ARCH}] Done (build nativa)! Image in: deploy/${ARCH}/"

@@ -85,7 +85,39 @@ curl -fsSL https://a13ssandr0.github.io/unitotem-manager/KEY.gpg \
 curl -fsSL https://a13ssandr0.github.io/unitotem-manager/unitotem-manager.list \
     > "${ROOTFS}/etc/apt/sources.list.d/unitotem-manager.list"
 
+# ---------- Package lock (repeatable builds) ----------
+# unitotem/locks/<arch>.lock pins every archive package to an exact version (see tools/pkglock.py). With a lock: the Debian archives are
+# read from the snapshot taken when the lock was frozen, every locked package is pinned to its version, and at the end the installed set must be
+# EXACTLY the lock. Without a lock (first build, or after `pkglock.py upgrade`): the live archives are used and a new lock is frozen at the end.
+# PKGLOCK=off skips all of it.
+PKGLOCK_FILE="/unitotem/locks/${ARCH}.lock"
+PKGLOCKED=0
+if [ "${PKGLOCK:-on}" != off ] && [ -f "$PKGLOCK_FILE" ]; then
+    PKGLOCKED=1
+    SNAP=$(python3 /unitotem/pkglock.py snapshot "$PKGLOCK_FILE") || { echo "ERRORE: il lock non registra uno snapshot Debian" >&2; exit 1; }
+    echo ">>> package lock: ${PKGLOCK_FILE}, Debian snapshot ${SNAP}"
+    cat > "${ROOTFS}/etc/apt/sources.list" << EOF
+deb http://snapshot.debian.org/archive/debian/${SNAP}/ ${RELEASE} main contrib non-free non-free-firmware
+deb http://snapshot.debian.org/archive/debian/${SNAP}/ ${RELEASE}-updates main contrib non-free non-free-firmware
+deb http://snapshot.debian.org/archive/debian-security/${SNAP}/ ${RELEASE}-security main contrib non-free non-free-firmware
+EOF
+    # The build's download cache as one more source: it still holds every version this lock was built from, including those an archive without
+    # snapshots (Raspberry Pi) has since dropped. Pins decide the version; this only supplies it when the archives no longer do.
+    if [ -d "${ROOTFS}/var/cache/apt/archives" ]; then
+        python3 /unitotem/pkglock.py index "${ROOTFS}/var/cache/apt/archives" --arch "${ARCH}" || true
+        echo "deb [trusted=yes] file:/var/cache/apt/archives ./" >> "${ROOTFS}/etc/apt/sources.list"
+    fi
+    echo 'Acquire::Check-Valid-Until "false";' > "${ROOTFS}/etc/apt/apt.conf.d/99-pkglock"
+    mkdir -p "${ROOTFS}/etc/apt/preferences.d"
+    python3 /unitotem/pkglock.py prefs "$PKGLOCK_FILE" > "${ROOTFS}/etc/apt/preferences.d/99-unitotem-lock"
+fi
+
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get update
+PKGLOCK_FROZEN_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if [ "$PKGLOCKED" = 1 ]; then
+    # the stage-0 base (debootstrap, from an older day) must be at the locked versions too: with the pins this moves each package up OR down to them
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -y --allow-downgrades dist-upgrade
+fi
 
 # ---------- Kernel + firmware + bootloader ----------
 
@@ -396,6 +428,22 @@ if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
         v=$(chroot "${ROOTFS}" dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
         case "$v" in 3.*) ;; *) echo "ERRORE: $pkg non e' installato alla versione 3.x (trovato: '${v}')" >&2; exit 1 ;; esac
     done
+fi
+
+# ---------- Package lock: verify or freeze ----------
+if [ "$PKGLOCKED" = 1 ]; then
+    python3 /unitotem/pkglock.py verify "$PKGLOCK_FILE" "${ROOTFS}" || { echo "ERRORE: l'immagine non coincide col lock dei pacchetti (vedi sopra): aggiornare il lock con tools/pkglock.py upgrade ${ARCH} se i pacchetti sono cambiati apposta" >&2; exit 1; }
+    # the shipped image does not carry the snapshot sources or the pins (a device never runs apt): back to the ordinary ones
+    rm -f "${ROOTFS}/etc/apt/preferences.d/99-unitotem-lock" "${ROOTFS}/etc/apt/apt.conf.d/99-pkglock"
+    cat > "${ROOTFS}/etc/apt/sources.list" << EOF
+deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security ${RELEASE}-security main contrib non-free non-free-firmware
+EOF
+elif [ "${PKGLOCK:-on}" != off ]; then
+    mkdir -p "${WORK_DIR}"
+    python3 /unitotem/pkglock.py freeze "${ROOTFS}" --arch "${ARCH}" --release "${RELEASE}" --snapshot "${PKGLOCK_FROZEN_AT}" --out "${WORK_DIR}/${ARCH}.lock.new"
+    echo ">>> NUOVO LOCK dei pacchetti in work/${ARCH}/${ARCH}.lock.new: copiarlo in unitotem/locks/${ARCH}.lock e committarlo"
 fi
 
 # ---------- Clean up ----------

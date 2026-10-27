@@ -1256,3 +1256,26 @@ locale: `/usr/sbin/unitotem-ota-arm --host <ip-host> [--port N] [--wipe-data]`.
 - `deploy/remote-deploy.sh recover`/`serve` (percorso di recupero per un
   target già in fallback con host sconosciuto) restano un percorso avanzato
   non ancora automatizzato end-to-end.
+
+## Build ripetibile: lock dei pacchetti (`unitotem/locks/<arch>.lock`)
+
+Una build non dipende più da "quello che gli archivi offrono oggi". Il lock elenca ogni pacchetto di archivio con la versione esatta
+(`nome==versione`, come un requirements.txt) e il momento (`apt-snapshot`) dell'indice apt da cui è stato installato; i pacchetti nostri
+(`unitotem-*`, la ruota CEF, le librerie Python ripacchettate) sono registrati come `local` ma non bloccati: sono il prodotto, non una dipendenza.
+
+- **Stage 1 con lock:** gli archivi Debian si leggono da `snapshot.debian.org` alla data del lock, ogni pacchetto è fissato alla sua versione
+  (preferenze apt 1001), la cache dei .deb della build è una fonte di riserva (l'archivio Raspberry Pi non ha snapshot), e a fine stage
+  l'insieme installato deve coincidere ESATTAMENTE col lock (`pkglock.py verify`): una differenza ferma la build.
+- **Senza lock** (prima build o dopo `upgrade`): si usano gli archivi vivi e a fine stage 1 viene scritto `work/<arch>/<arch>.lock.new`,
+  da copiare in `unitotem/locks/<arch>.lock` e committare.
+- **Controllo prima di ogni build** (`build-unitotem.sh`, anche per gli stage successivi): `tools/pkglock.py check` interroga gli archivi e
+  stampa cosa è più nuovo del lock. Solo se esiste qualcosa di più nuovo; non cambia nulla da solo.
+  - **SECURITY** = l'aggiornamento arriva dal pocket `trixie-security`, oppure il changelog Debian tra la versione bloccata e la nuova cita CVE.
+    **La build si ferma** (exit 20) con il motivo. Si decide a mano: `python3 tools/pkglock.py upgrade <arch>` ritira il lock (la build
+    successiva dallo stage 1 installa le versioni attuali e ne congela uno nuovo), oppure `PKGLOCK_ACK_SECURITY=1` per costruire comunque.
+  - Gli altri aggiornamenti si segnalano e basta.
+  - **Urgenza:** apt non la espone nei metadati. Si usano il pocket e il campo `urgency=` (con i CVE) del changelog Debian per ogni voce tra le due
+    versioni; gli archivi che non pubblicano changelog (Raspberry Pi) mostrano `urgency n/a` (solo il pocket è noto). L'urgenza da sola non blocca.
+  - **Backports:** una sezione a parte elenca le versioni più nuove disponibili in `trixie-backports` per kernel, Mesa, NVIDIA, firmware, PipeWire...
+    (non usate: sono decisioni, non aggiornamenti).
+- `tools/pkglock.py snapcheck <lock>` verifica che il lock sia ricostruibile dallo snapshot; `PKGLOCK=off` salta tutto.
