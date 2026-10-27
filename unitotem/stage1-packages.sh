@@ -113,12 +113,9 @@ if [ "$ARCH" = "amd64" ]; then
     apt_install --no-install-recommends shim-signed grub-efi-amd64-signed mokutil
 
 elif [ "$ARCH" = "arm64" ]; then
-    # linux-image-rpi-v8, not the generic linux-image-arm64: its version string
-    # matches raspi-firmware's z50-raspi-firmware postinst hook (flavour v8), which
-    # copies kernel8.img/initramfs8/dtbs, and it ships overlays/ (KMS, vc4-kms-v3d).
-    # raspi-firmware alone provides bootcode.bin/fixup*.dat/start*.elf: its postinst
-    # copies them into /boot/firmware/ even inside this chroot (ischroot only skips
-    # the mountpoint check).
+    # linux-image-rpi-v8, not linux-image-arm64: its version matches raspi-firmware's z50 postinst hook (flavour v8)
+    # and it ships overlays/ (KMS). raspi-firmware provides bootcode.bin/fixup*/start*.elf, copied into /boot/firmware
+    # even inside this chroot.
     apt_install --no-install-recommends \
         linux-image-rpi-v8 \
         firmware-brcm80211 \
@@ -210,12 +207,9 @@ if [ "$ARCH" = "amd64" ]; then
     apt_install \
         firmware-amd-graphics libdrm-amdgpu1
 
-    # NVIDIA, proprietary:
-    #  - it blacklists nouveau, and the 535 branch covers Maxwell onwards; a
-    #    pre-Maxwell card loses acceleration.
-    #  - the module is built by DKMS against this image's kernel. Nothing is upgraded
-    #    in place (an OTA replaces the whole ROOT), so kernel and module stay matched.
-    # nvidia-vaapi-driver bridges VAAPI onto NVDEC, as on Intel and AMD.
+    # NVIDIA proprietary: blacklists nouveau; the 535 branch covers Maxwell onwards (older cards lose acceleration).
+    # The module is built by DKMS against this image's kernel, which stays matched because nothing upgrades in place.
+    # nvidia-vaapi-driver bridges VAAPI onto NVDEC.
     apt_install \
         nvidia-driver \
         nvidia-vaapi-driver
@@ -230,12 +224,9 @@ if [ "$ARCH" = "amd64" ]; then
     # the module after an in-place kernel upgrade through `unitotem-maintenance enter`.
 
 elif [ "$ARCH" = "arm64" ]; then
-    # No VAAPI driver or tooling on arm64: VideoCore has none. Hardware video
-    # decode goes through V4L2 mem2mem (/dev/video10 bcm2835-codec-decode for H.264,
-    # /dev/video19 rpi-hevc-dec for HEVC on Pi 4 and later). libva2 is still pulled
-    # in by gstreamer1.0-plugins-bad, as a library with no driver behind it.
-    # Diagnostics only: v4l2-ctl (v4l-utils), gst-inspect (gstreamer1.0-tools) and
-    # vcgencmd (raspi-utils, to detect thermal or voltage throttling).
+    # No VAAPI on arm64 (VideoCore has none): hardware decode goes through V4L2 mem2mem (/dev/video10 for H.264,
+    # /dev/video19 for HEVC on Pi 4+). libva2 comes in via gstreamer1.0-plugins-bad with no driver behind it.
+    # Diagnostics only: v4l2-ctl, gst-inspect, vcgencmd (throttling detection).
     apt_install \
         v4l-utils \
         gstreamer1.0-tools \

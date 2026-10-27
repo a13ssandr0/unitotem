@@ -1,16 +1,9 @@
 #!/bin/bash
-# Shared OTA engine: every operation deploy/remote-deploy.sh needs on a target, exposed as subcommands driven
-# over SSH (control channel), with bulk partition data pulled over a plain netcat connection (data channel).
-# deploy/ota-commands.md documents this CLI.
-#
-# Installed at /usr/lib/unitotem/ota-engine.sh (symlinked from /usr/sbin/unitotem-ota-engine) by
-# unitotem/stage1-packages.sh, so it ships in the resident fallback initrd (unitotem/stage1-recovery-initrd.sh)
-# and in the system's own initramfs (unitotem/stage2-configure.sh installs the init-premount/local-bottom
-# wrappers that call it). Every subcommand takes its own --disk, so it also runs standalone on any Linux box
-# (against a loop device). Only init-premount/serve-fallback/local-bottom-verify assume an initramfs.
-#
-# Bash, not dash: it needs pipefail, /dev/tcp and process substitution for the progress gauge (the initrd
-# carries bash, see unitotem/files/ota-hook).
+# Shared OTA engine: every operation deploy/remote-deploy.sh needs on a target, as subcommands driven over SSH
+# (control channel); bulk partition data is pulled over plain netcat (data channel). CLI: deploy/ota-commands.md.
+# Runs in the resident fallback initrd and the system's own initramfs; each subcommand takes --disk, so it also
+# works standalone on a loop device. Only init-premount/serve-fallback/local-bottom-verify assume an initramfs.
+# Bash, not dash: needs pipefail, /dev/tcp and process substitution (the initrd carries bash, see unitotem/files/ota-hook).
 set -Eeuo pipefail
 . /scripts/functions 2>/dev/null || true   # only present inside an initramfs
 
@@ -114,10 +107,8 @@ read_kv_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# Failure handling. Before the partition table is (re)written, a failure can still roll back to whatever
-# booted this initrd (a GRUB one-shot entry self-reverts, rollback_config_swap() below undoes the Pi
-# config.txt swap). Once the table has been rewritten there is nothing to roll back to, so fail() must never
-# reboot: it drops into the fallback console, keeping the machine remotely reachable.
+# Before the partition table is rewritten a failure can roll back to whatever booted this initrd; afterwards
+# there is nothing to roll back to, so fail() never reboots: it drops into the fallback console.
 # ---------------------------------------------------------------------------
 DEBUG="${UNITOTEM_OTA_DEBUG:-0}"
 # Kept in /run (not a shell variable) because restore-table and restore-part run as separate invocations of
@@ -326,12 +317,9 @@ cmd_restore_part() {
     local restore_flags=(-o "$part_dev" -s -)
     [ "$allow_smaller" = 1 ] && [ "${ARG[cloner]}" != dd ] && restore_flags=(-C "${restore_flags[@]}")
 
-    # Restore always goes through partclone.restore whichever partclone.<fstype> made the image (it reads the
-    # image header). pv sits after decompression so it measures the payload that --used-bytes describes; -n
-    # emits a bare integer per update, which ota_ui_feed reads back. Its stderr goes to a file, not a pipe: the UI
-    # is a different process and a pipe would couple the transfer to the reader.
-    # pv is used only when present: without it the pipeline would break (partclone would see an immediate EOF),
-    # and the restore must never depend on the optional progress display.
+    # Restore always goes through partclone.restore (it reads the image header). pv sits after decompression so it
+    # measures the payload that --used-bytes describes; its stderr goes to a file so the UI process is not coupled
+    # to the transfer. pv is optional: without it the restore still runs, just with no progress display.
     ota_status_set "Writing partition ${ARG[part]} (${ARG[cloner]})"
     local have_pv=0
     command -v pv >/dev/null 2>&1 && have_pv=1
@@ -456,16 +444,11 @@ cmd_prepare_bootfs() {
     echo "UNITOTEM_BOOTFS_READY=1"
 }
 
-# populate-bootfs: pulls the boot-fs filecopy tarball over the DATA connection (same /dev/tcp pull as
-# restore-part) and extracts it, always excluding anything that belongs to the resident fallback
-# (recovery8.img/recovery-vmlinuz/-initrd.img, unitotem-ota.* state, trial-boot markers).
-#
-# config.txt/cmdline.txt are excluded too: on arm64 they live on this same FIRMWARE partition, and the source
-# image's copies point at the real kernel8.img. Overwriting the fallback-pointing config.txt that stage 1's
-# set-default-recovery wrote would make a power cut during the rest of stage 2 boot a half-written real system
-# instead of the fallback. config.txt's only writers are set-default-recovery (point at the fallback) and
-# promote-default (after a confirmed boot, point at the real kernel). (No-op on amd64: grub.cfg lives on the
-# ext4 BOOT partition there, not on the FAT ESP this tar covers.)
+# populate-bootfs: pulls the boot-fs tarball over the DATA connection and extracts it, excluding everything that
+# belongs to the resident fallback (recovery files, unitotem-ota.* state, trial-boot markers).
+# config.txt/cmdline.txt are excluded too (arm64: same FIRMWARE partition): overwriting the fallback-pointing
+# config.txt would leave a half-written real system after a power cut. Only set-default-recovery and
+# promote-default write it. No-op on amd64 (grub.cfg lives on the ext4 BOOT partition).
 cmd_populate_bootfs() {
     ota_status_set "Copying boot files (firmware, dtb, overlays)"
     parse_args "$@"
@@ -588,15 +571,12 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# set-trial-boot / promote-default: the real system boots "on trial" (GRUB one-shot, tryboot on Pi 4/5, or a
-# config.txt swap on legacy firmware) with the fallback staying default until unitotem-boot-ok.service confirms;
+# set-trial-boot / promote-default: the real system boots on trial (GRUB one-shot, tryboot on Pi 4/5, or a
+# config.txt swap on legacy firmware) while the fallback stays default until unitotem-boot-ok.service confirms;
 # only then does promote-default flip the permanent default.
-#
-# The rpi branches write a minimal config.txt/tryboot.txt with only the kernel=/initramfs= boot-selection lines
-# they own, so the fallback guarantee never depends on a copy of the real image's config.txt (unitotem/files/
-# config.txt does not reach the device's boot partition through this pipeline). Any other boot config (dtoverlay=,
-# dtparam=, framebuffer/splash tuning) comes from unitotem/files/config-extra.txt, installed onto ROOT at build time
-# (unitotem/stage2-configure.sh) and appended after those lines. A missing file (amd64) is not an error.
+# The rpi branches write a minimal config.txt/tryboot.txt with only the kernel=/initramfs= lines, so the fallback
+# never depends on the image's config.txt; other boot options come from unitotem/files/config-extra.txt (appended
+# after those lines, installed by stage2-configure.sh). A missing file (amd64) is not an error.
 append_config_extra() {
     local extra_file="$1" dest="$2"
     [ -f "$extra_file" ] && cat "$extra_file" >> "$dest"
@@ -886,18 +866,10 @@ cmd_migrate_etc_overlay() {
 }
 
 # ---------------------------------------------------------------------------
-# apply-network: carry the target's existing network settings onto the system being installed.
-#
-# migrate-etc-overlay only rescues what is already on DATA, which covers a UniTotem being updated but not a
-# non-UniTotem device whose configuration lives in the root filesystem about to be overwritten. Without this the
-# machine comes back on NetworkManager's defaults, which strands a static-address device and takes a WiFi-only
-# device off the network.
-#
-# The values come from remote-deploy.sh's probe. They are written into DATA's upper/etc, not the new root's /etc,
-# so the profile survives later OTAs through the ota-preserve.list whitelist.
-#
-# interface-name is NOT pinned: predictable names differ between systems (eth0 vs end0), so NetworkManager binds
-# the profile to whatever device of that type exists.
+# apply-network: carry the target's network settings onto the installed system. migrate-etc-overlay only rescues
+# what is already on DATA; a non-UniTotem device keeps its configuration in the ROOT about to be overwritten.
+# Values come from remote-deploy.sh's probe and go into DATA's upper/etc, so ota-preserve.list keeps them across OTAs.
+# interface-name is not pinned (names differ between systems, eth0 vs end0): NetworkManager binds by device type.
 # ---------------------------------------------------------------------------
 cmd_apply_network() {
     parse_args "$@"
@@ -970,14 +942,10 @@ CONSOLE_TERM_FOR() {
 }
 
 # ---------------------------------------------------------------------------
-# On-screen status. Every subcommand is a separate process invoked over SSH, so none can own the display; the only
-# long-lived process on the target is serve-fallback. They publish phase and progress to files under /run, and
-# serve-fallback runs one loop that redraws a whiptail gauge from them.
-#
-# The gauge is drawn on /dev/tty1, not /dev/console: with console=tty1 console=ttyS0,115200 the kernel makes the
-# last entry /dev/console, i.e. the serial port. Serial keeps the kernel log; the screen gets the UI.
-#
-# Two files: the phase is set once per step, while pv appends a percentage per update. Both live in /run (tmpfs).
+# On-screen status. Subcommands are separate processes over SSH, so none can own the display: they publish phase
+# and progress to files under /run and serve-fallback redraws a whiptail gauge from them.
+# The gauge goes to /dev/tty1, not /dev/console (with console=ttyS0 last, /dev/console is the serial port).
+# Two files: the phase is set once per step, pv appends a percentage per update.
 # ---------------------------------------------------------------------------
 OTA_STATUS_FILE=/run/unitotem-ota.status
 OTA_PCT_FILE=/run/unitotem-ota.pct
@@ -1009,13 +977,9 @@ ota_ui_feed() {
     done
 }
 
-# Best-effort: a board with no /dev/tty1 (serial-only or headless) gets no UI, which never holds up an OTA.
-#
-#   setsid + opening /dev/tty1 as fd 0 gives the process a controlling terminal. Redirecting whiptail's stdout is
-#   not enough: newt opens /dev/tty, and without a controlling terminal it exits with "Failed to open terminal".
-#   A process acquires one only by opening it as a session leader, hence setsid.
-#
-#   The gauge is fed through a FIFO because fd 0 has to be the tty, so the percentage stream needs its own channel.
+# Best-effort: a board with no /dev/tty1 gets no UI, which never holds up an OTA.
+# setsid + opening /dev/tty1 as fd 0 gives whiptail a controlling terminal (newt opens /dev/tty and fails
+# without one). The gauge is fed through a FIFO because fd 0 is the tty.
 OTA_UI_FIFO=/run/unitotem-ota.gauge
 
 ota_ui_start() {
@@ -1027,12 +991,9 @@ ota_ui_start() {
     ota_status_set ""
     rm -f "$OTA_UI_FIFO" 2>/dev/null
     mkfifo "$OTA_UI_FIFO" 2>/dev/null || return 0
-    # The redirections belong to setsid, not to the inner shell: setsid -c applies TIOCSCTTY to its own stdin, and a
-    # shell opening the tty itself uses O_NOCTTY, so newt would fail on /dev/tty.
-    #
-    # The initial --gauge text has five lines because whiptail sizes the text area once, when the dialog is created,
-    # and clips every update to that height. Five is what ota_ui_feed sends (3 header + blank + phase); change both
-    # together.
+    # The redirections belong to setsid: setsid -c applies TIOCSCTTY to its own stdin, while a shell opening the tty
+    # uses O_NOCTTY and newt would fail. The initial --gauge text has five lines because whiptail sizes the text
+    # area once and clips updates to it; five is what ota_ui_feed sends (3 header + blank + phase), change both together.
     local placeholder=$' \n \n \n \n '
     # (NEWT_COLORS has no effect on this whiptail's own "+---+" border: ota_frame paints that ring of cells black on the
     # framebuffer instead.)
@@ -1062,19 +1023,11 @@ configure_one_iface() {
         [ -n "${OTA_NET_GW:-}" ] && ip route replace default via "$OTA_NET_GW" dev "$iface" || true
     else
         if type configure_networking >/dev/null 2>&1; then
-            # initramfs-tools' configure_networking() (sourced into this shell) calls _set_netdev_from_ip_param(), which
-            # does `set -- ${IP}; ...; [ -n "$6" ]`: any $IP with fewer than 6 colon-separated fields makes that a
-            # reference beyond $#, fatal under nounset. It is third-party code not written for -u, so nounset is
-            # disabled for this one call.
-            #
-            # configure_networking() ends in klibc's ipconfig, which can block waiting for a DHCP reply and ignore its
-            # own -t timeout (Debian #552554). There is no `timeout` binary in this initramfs, so a hard wall-clock
-            # bound is enforced by backgrounding the call and killing it by PID. Backgrounding is safe because the
-            # interface gets its address through ipconfig's ioctls, and the result is read back with `ip addr show`.
-            #
-            # configure_networking()'s own status lines go straight to stdout, and this function is called as
-            # `myip=$(configure_networking_ota || true)`, so they would leak into $myip. Its output goes to /dev/kmsg
-            # (as log() does) instead.
+            # initramfs-tools' configure_networking() is not written for nounset (_set_netdev_from_ip_param reads $6 of a
+            # short $IP), so nounset is disabled for this call.
+            # It ends in klibc's ipconfig, which can block on DHCP ignoring its -t timeout, and there is no `timeout` here:
+            # the call is backgrounded and killed by PID after a wall-clock budget (the address is read back with `ip addr show`).
+            # Its stdout goes to /dev/kmsg so it does not leak into `myip=$(configure_networking_ota ...)`.
             local cn_rc=0 cn_pid cn_waited=0 cn_budget=30
             set +u
             ( IP=dhcp DEVICE="$iface" configure_networking 2>&1 \
@@ -1173,15 +1126,10 @@ configure_networking_ota() {
     return 1
 }
 
-# PWR and ACT blink in alternation (50/50 duty) for the whole OTA session, an unmistakable "maintenance mode" signal.
-# Called from cmd_serve_fallback, so it covers the resident fallback and the system's own OTA-capable initramfs.
-# Best-effort and silent: amd64 has no such sysfs path, and each LED is handled independently.
-#
-# The half-period offset is what makes them alternate: the kernel's timer trigger starts a LED in the ON phase, so
-# arming both back-to-back makes them blink in unison; the second arm is offset by half a period.
-#
-# The wait is a bash busy-loop on EPOCHREALTIME, not `sleep 0.5`, because klibc's sleep parses whole seconds only.
-# It burns ~500ms of CPU once per OTA session.
+# PWR and ACT blink in alternation for the whole OTA session ("maintenance mode"). Called from cmd_serve_fallback;
+# best-effort and silent (amd64 has no such sysfs path; each LED is handled independently).
+# The timer trigger starts a LED in the ON phase, so the second is armed half a period later to alternate.
+# The wait is a bash busy-loop on EPOCHREALTIME because klibc's sleep parses whole seconds only (~500ms of CPU).
 ota_led_maintenance() {
     local half_ms=500
     local have_pwr=0 have_act=0
@@ -1254,16 +1202,11 @@ ota_logo() {
     return 0
 }
 
-# A rounded frame around the progress dialog, drawn on the framebuffer for any screen resolution.
-#
-# The geometry comes from the console: columns/rows from the tty (stty), cell size = framebuffer size / console size, and
-# the dialog is where newt centers it (72x14 cells, fewer on a small screen). Around it:
-#   1. whiptail's own border (the outer ring of its cells) is painted black; whiptail redraws only cells that change, so
-#      what is painted over it stays;
-#   2. the frame is laid out in the margin outside the dialog: radius from the cell height (the nearest pre-rendered one
-#      that fits, thickness following it), four pre-rendered anti-aliased corners, and straight edges cut from a
-#      solid-colour line blob.
-# Only the frame's pixels and the blank ring are written, never the dialog interior. Formats: 32, 24 and 16 bits per pixel.
+# A rounded frame around the progress dialog, drawn on the framebuffer for any resolution.
+# Geometry: console columns/rows (stty), cell size = framebuffer / console size, dialog centered by newt (72x14
+# cells, fewer on small screens). whiptail's own border ring is painted black (it redraws only changed cells), then
+# the frame is laid out in the margin: pre-rendered anti-aliased corners sized from the cell height, straight edges
+# cut from a solid-colour line. Only the frame and blank ring are written, never the interior. Formats: 32/24/16 bpp.
 # Returns 1 (and says why on stderr) if there is no usable framebuffer.
 ota_frame() {
     # OTA_FB_DEV / OTA_FB_SYS / OTA_CONSOLE_SIZE ("rows cols") replace the real devices, so the layout can be tested on
@@ -1397,12 +1340,10 @@ cmd_serve_fallback() {
     # root's password (fixed, same as unitotem/common.sh's ROOT_PASSWORD) is baked into /etc/shadow at build time
     # (see unitotem/files/ota-hook); dropbear below accepts password auth by default.
 
-    # The progress gauge stays up for the whole session and reports what each step does (a one-shot --infobox would be
-    # overwritten, and /dev/console is the serial port here, see ota_ui_start).
-    # `|| true` is required: a `||` context suppresses errexit and the ERR trap for the whole function body, so a
-    # broken UI can at worst fail to draw and never aborts serve-fallback.
-    # An update is the normal reason to be here, so it is the default title; "recovery" is reserved for a fault the
-    # device detected by itself (missing/damaged root, repeated failed boots).
+    # The gauge stays up for the whole session (a one-shot --infobox would be overwritten; /dev/console is the serial
+    # port, see ota_ui_start). `|| true` is required: a `||` context suppresses errexit and the ERR trap for the whole
+    # function body, so a broken UI can fail to draw but never aborts serve-fallback.
+    # "recovery" in the title is reserved for faults the device detected itself; an update is the default.
     local kind_title="OTA update mode"
     [ "${ARG[kind]:-update}" = recovery ] && kind_title="OTA recovery mode"
     ota_ui_start "${kind_title}
@@ -1581,12 +1522,10 @@ cmd_init_premount() {
         return
     fi
 
-    # All checks passed: let mountroot proceed. Increment the boot counter now (unitotem-boot-ok.service clears it after
-    # multi-user.target): this is the only layer that catches "boots fine, then userspace dies". Best-effort: a write
-    # failure must never abort an otherwise-healthy boot via the ERR trap.
-    #
-    # /boot-ota is already mounted (read-only) by the check_flag_file call that matched a label; it is reused here,
-    # because a second mount of the same device would get the existing read-only superblock and the write would fail.
+    # All checks passed: let mountroot proceed, incrementing the boot counter (unitotem-boot-ok.service clears it); this
+    # is the only layer that catches "boots fine, then userspace dies". Best-effort: a write failure must not abort
+    # a healthy boot. /boot-ota is still mounted read-only by check_flag_file and is reused: a second mount of the
+    # same device would get the existing read-only superblock.
     if mountpoint -q /boot-ota; then
         if mount -o remount,rw /boot-ota 2>/dev/null; then
             local n=0

@@ -1,19 +1,11 @@
 # Hardware video decode for the kiosk browser.
 #
-# UniTotem shows images, video and web pages through Chromium (driven by the manager over the DevTools
-# protocol), so the codecs and acceleration that matter are Chromium's.
-#
-# Chromium leaves video decode acceleration OFF by default on Linux; --enable-gpu-rasterization covers
-# compositing only. Without the flags below a 1080p H.264 stream is decoded on the CPU.
-#
-# Feature names were checked against the actual binary (they change between releases and a misspelled
-# one is silently ignored). Present in 150.0.7871.181: AcceleratedVideoDecodeLinuxGL,
-# AcceleratedVideoDecodeLinuxZeroCopyGL, VaapiVideoDecoder. Absent, so not requested:
-# VaapiVideoDecodeLinuxGL, V4L2FlatVideoDecoder, PlatformHEVCDecoderSupport. HEVC therefore does not
-# play (MediaSource.isTypeSupported says no); H.264, AAC, MP3, VP9, AV1 and Opus do.
-#
-# --ignore-gpu-blocklist: Chromium blocklists many Linux GPU/driver combinations and falls back to
-# software, which is the wrong trade on an appliance whose job is hardware video playback.
+# Chromium leaves video decode acceleration OFF by default on Linux (--enable-gpu-rasterization covers compositing
+# only), so without these flags 1080p H.264 is decoded on the CPU.
+# Feature names were checked against the binary (a misspelled one is silently ignored): present are
+# AcceleratedVideoDecodeLinuxGL, AcceleratedVideoDecodeLinuxZeroCopyGL, VaapiVideoDecoder. Absent, so not
+# requested: VaapiVideoDecodeLinuxGL, V4L2FlatVideoDecoder, PlatformHEVCDecoderSupport (HEVC does not play).
+# --ignore-gpu-blocklist: the blocklist forces software fallback, the wrong trade for a video appliance.
 
 export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist"
 export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --enable-features=@UNITOTEM_ACCEL_FEATURES@"

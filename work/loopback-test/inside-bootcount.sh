@@ -1,15 +1,9 @@
 #!/bin/bash
-# Fault injection for the boot counter that decides when a system that boots but never confirms
-# itself is handed back to the fallback. The loopback rounds drive the OTA from the outside
-# (restore, trial, promote) and never reach cmd_init_premount, so this has its own harness.
-#
-# cmd_init_premount has a trial_reset branch: a trial boot ignores a count left on disk by an
-# unrelated earlier failure streak. That branch shares a condition with the non-trial path, where
-# three unconfirmed boots in a row must still hand control to the fallback. Both directions are
-# asserted, because asserting only the trial path would pass on code that never falls back.
-#
-# Arch-independent: cmd_init_premount is blkid/mount/e2fsck logic with no arm64-specific branch,
-# so this runs in a plain amd64 container.
+# Fault injection for the boot counter that hands a system that boots but never confirms itself back to the
+# fallback. The loopback rounds never reach cmd_init_premount, so this has its own harness.
+# cmd_init_premount's trial_reset branch ignores a stale count on a trial boot; it shares a condition with the
+# non-trial path, where three unconfirmed boots must still fall back. Both directions are asserted.
+# Arch-independent (blkid/mount/e2fsck logic), so it runs in a plain amd64 container.
 set -Eeuo pipefail
 
 log() { echo ">>> $*"; }

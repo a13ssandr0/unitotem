@@ -5,9 +5,8 @@
 #   tools/release/backup-keys.sh verify  OUT.enc      # decrypts to memory, checks the keys still sign/verify
 #   tools/release/backup-keys.sh restore OUT.enc DIR  # unpacks into DIR (refuses to overwrite)
 #
-# The passphrase is typed by the person running this; nothing here stores or generates it. Keep the .enc
-# in at least three places that do not share a failure with this PC (password manager attachment, offline
-# disk/USB elsewhere, printed copy of the base64 text), and the passphrase apart from them.
+# The passphrase is typed by the operator; nothing here stores or generates it. Keep the .enc in at least three
+# places that do not share a failure with this PC, and the passphrase apart from them.
 set -euo pipefail
 KEYDIR="${UNITOTEM_KEYDIR:-$HOME/.config/unitotem-release}"
 ENC=(openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt)

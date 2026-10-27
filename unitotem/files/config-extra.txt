@@ -6,16 +6,6 @@ boot_delay=0
 # its choice, overscan included; with it mode setting is left to the kernel from the EDID (full KMS,
 # dtoverlay=vc4-kms-v3d below). disable_overscan=1 turns off the firmware's overscan compensation;
 # with KMS overscan is not applied by shrinking the framebuffer, so the framebuffer size proves nothing.
-disable_fw_kms_setup=1 is the more consequential of the two: without it the
-# FIRMWARE performs the display setup and the kernel inherits whatever it
-# chose, overscan included. With it, mode setting is left to the kernel from
-# the EDID, which is the intended arrangement when running full KMS
-# (dtoverlay=vc4-kms-v3d, enabled below).
-#
-# disable_overscan=1 then turns off the firmware's overscan compensation
-# itself. Note this is NOT contradicted by a framebuffer that measures a full
-# 1920x1080: with KMS the overscan is not applied by shrinking the
-# framebuffer, so the size alone proves nothing either way.
 disable_fw_kms_setup=1
 disable_overscan=1
 

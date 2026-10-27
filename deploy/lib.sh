@@ -72,21 +72,11 @@ _sshpass() {
 SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
           -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 
-# ---------------------------------------------------------------------------
-# Privilege on the REAL system's channel.
-#
-# A device being adopted usually has root SSH disabled, yet nearly everything done to a running target is
-# privileged (probing block devices with blkid/dumpe2fs, writing the boot partition, rebooting). So when the
-# login user is not root, escalate with sudo.
-#
-# sudo -A (askpass helper) rather than sudo -S (password on stdin), because
-# several call sites pipe a script into `bash -s` and -S would eat it. The
-# helper is written to the target's own /tmp with umask 077 and removed by
-# clear_target_privilege.
-#
-# None of this touches ota_ssh/ota_ssh_send: the fallback's dropbear always
-# runs as root, so the OTA session never needs escalation.
-# ---------------------------------------------------------------------------
+# Privilege on the REAL system's channel: a device being adopted usually has root SSH disabled, yet nearly
+# everything done to a target is privileged, so escalate with sudo when the login user is not root.
+# sudo -A (askpass helper), not -S, because several call sites pipe a script into `bash -s`. The helper lives in the
+# target's /tmp (umask 077) and is removed by clear_target_privilege. ota_ssh/ota_ssh_send never need it: the
+# fallback's dropbear runs as root.
 TARGET_SUDO=""
 TARGET_PRIV_READY=""
 OTA_ASKPASS_REMOTE="/tmp/.unitotem-ota-askpass"
@@ -208,13 +198,10 @@ wait_port_bound() {
     done
 }
 
-# Serve one file over plain TCP on $2/tcp, backgrounded, for the target to
-# pull via /dev/tcp - the DATA channel side of every restore-part/populate-
-# bootfs call. Prints the socat PID.
-#
-# socat's stdout/stderr MUST be redirected away from the function's own: callers use
-# `pid=$(serve_file_once ...)`, which returns only when every holder of the captured pipe closes it, so
-# the backgrounded socat would keep the substitution from ever returning.
+# Serve one file over plain TCP on $2/tcp, backgrounded, for the target to pull via /dev/tcp (DATA channel of
+# restore-part/populate-bootfs). Prints the socat PID.
+# socat's stdout/stderr MUST be redirected away: callers use `pid=$(serve_file_once ...)`, which would not return
+# while the backgrounded socat holds the captured pipe.
 serve_file_once() {
     local file="$1" port="$2"
     socat -u "FILE:${file}" "TCP-LISTEN:${port},reuseaddr" >/dev/null 2>&1 &

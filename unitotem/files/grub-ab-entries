@@ -1,25 +1,17 @@
 #!/bin/sh
 exec tail -n +3 "$0"
-# UniTotem A/B: two static entries, one per ROOT slot, found by filesystem label (the label is
-# set per slot, see unitotem-update; partclone copies the label with the data so the update
-# tool relabels after writing). Installed by unitotem/stage2-configure.sh at
-# /etc/grub.d/10_unitotem_ab. 'saved_entry' in grubenv picks the default; grub-reboot sets a
-# one-shot trial entry that GRUB clears before booting it, so a power cut or a crash during a
-# trial returns to the default slot with no software involved.
-# unitotem-grub-level: 2   (raise it whenever this file changes in a way the devices must pick up: unitotem-update copies the image's
-# grub.cfg over the ESP's only when the shipped level is HIGHER, so a rollback to an older image never downgrades the bootloader config)
-# Low resolution for every OTA entry (the screens must be readable from far away on 1080p/4K monitors): GRUB switches the
-# firmware framebuffer (UEFI GOP / BIOS VBE) to the first mode of gfxmode that exists and gfxpayload=keep hands exactly that to
-# the kernel; nomodeset stops the DRM drivers (i915, amdgpu, nouveau, ...) from taking over at the monitor's native size, so
-# the console and /dev/fb0 stay at that mode. The OTA environment needs only a console and the network. 640x480 first, so a
-# firmware without it lands on the next smallest instead of the native mode.
-# Self-healing boot: when the chosen slot cannot even be loaded (its filesystem is unreadable, so GRUB finds no kernel), GRUB tries
-# the OTHER slot, and when that fails too the resident OTA fallback, which waits for a host to write the disk (deploy recover).
-# ${default} is already the entry being booted here (saved_entry, or the one-shot next_entry of a trial), so the alternative is
-# always "the slot that is not this one".
-# GRUB reads the `fallback` list as entry NUMBERS only (names and ids are silently dropped: found in QEMU, GRUB then reports "Failed to
-# boot both default and fallback entries" without trying anything), so these are positions in this file: 0 slot A, 1 slot B, 4 the OTA
-# fallback (the entry at the bottom, after the two *-recover entries). Keep the order of the entries below in step with this.
+# UniTotem A/B: two static entries, one per ROOT slot, found by filesystem label (set per slot by unitotem-update).
+# Installed at /etc/grub.d/10_unitotem_ab. 'saved_entry' in grubenv picks the default; grub-reboot sets a one-shot
+# trial entry that GRUB clears before booting, so a crash during a trial returns to the default slot.
+# unitotem-grub-level: 2   (raise when devices must pick up a change: unitotem-update copies the image's grub.cfg over
+# the ESP's only when the shipped level is HIGHER, so a rollback never downgrades the bootloader config)
+# Low resolution for every OTA entry (readable from afar): GRUB sets the firmware framebuffer to the first existing
+# mode of gfxmode, gfxpayload=keep hands it to the kernel, nomodeset keeps DRM drivers from switching to native size.
+# 640x480 first so firmware without it lands on the next smallest.
+# Self-healing: if the chosen slot cannot be loaded GRUB tries the OTHER slot, then the resident OTA fallback.
+# ${default} is the entry being booted (saved_entry or the trial's next_entry), so the alternative is the other slot.
+# GRUB reads the `fallback` list as entry NUMBERS only (names/ids are silently dropped): 0 slot A, 1 slot B, 4 the
+# OTA fallback (bottom, after the two *-recover entries). Keep the entry order below in step with this.
 if [ "${default}" = slot-a ]; then
     set fallback="1 4"
 elif [ "${default}" = slot-b ]; then

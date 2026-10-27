@@ -1,10 +1,8 @@
 #!/bin/bash
-# Runs once per boot, After=multi-user.target (see unitotem-boot-ok.service): reaching this point
-# means the system came all the way up, not just its kernel/initrd. Two jobs:
-#   1. clear the boot counter on the boot FAT partition on every good boot, trial or not;
-#   2. if this boot was a trial one (unitotem.ota.bootcount=1 on the cmdline, set by ota-engine.sh's
-#      set-trial-boot), promote it to the permanent default, so a reboot no longer lands on the
-#      resident fallback.
+# Runs once per boot, After=multi-user.target: reaching it means the whole system came up. Two jobs:
+#   1. clear the boot counter on the boot FAT partition on every good boot;
+#   2. if this was a trial boot (unitotem.ota.bootcount=1 on the cmdline, from set-trial-boot), promote it to the
+#      permanent default so a reboot no longer lands on the resident fallback.
 set -euo pipefail
 
 BOOTFS_LABEL=FIRMWARE

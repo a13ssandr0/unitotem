@@ -1,12 +1,8 @@
 #!/bin/bash
-# Host wrapper: turns a built unitotem-*-$ARCH.img.xz into a parts set
-# (deploy/$ARCH/<name>.parts/) via the unitotem-parts-builder container (see Dockerfile.parts and
-# deploy/make-parts-image.sh). This script prepares the scratch decompressed image and drives docker.
-#
-# Independent of the kiosk build: unitotem/stage3-image.sh has its own optional MAKE_PARTS hook that
-# calls the same library on its loop device, while this path regenerates a parts set from an
-# already-built .img.xz without rebuilding.
-#
+# Host wrapper: turns a built unitotem-*-$ARCH.img.xz into a parts set (deploy/$ARCH/<name>.parts/) via the
+# unitotem-parts-builder container (Dockerfile.parts, deploy/make-parts-image.sh). It prepares the scratch
+# decompressed image and drives docker. unitotem/stage3-image.sh has its own optional MAKE_PARTS hook using the
+# same library; this path regenerates a parts set from an existing .img.xz without rebuilding.
 # Usage: ./deploy/make-parts.sh [--arch amd64|arm64] [--image PATH] [--out DIR] [--keep-scratch]
 set -euo pipefail
 

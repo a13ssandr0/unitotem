@@ -1,12 +1,9 @@
 #!/bin/bash
-# Power-cut tests for the A/B update path (amd64/UEFI, QEMU). Every scenario starts from a qcow2 overlay of a
-# prepared base disk, freezes unitotem-update at a named crashpoint (UPDATE_CRASHPOINT, see the tool), kills
-# QEMU with SIGKILL at that moment, boots the same disk again, and checks that the system comes up and that the
-# update can then be completed. SSH goes through deploy/lib.sh (_sshpass), as everywhere else in this repo.
-#
-# Model, and what it does NOT cover: kill -9 of QEMU drops everything the guest had not yet submitted to its
-# virtual disk (page cache), which is what a power cut does to the OS. It does not model a physical disk's
-# volatile write cache or write reordering, and it cannot cut inside a single block write.
+# Power-cut tests for the A/B update path (amd64/UEFI, QEMU). Each scenario starts from a qcow2 overlay of a base
+# disk, freezes unitotem-update at a named crashpoint (UPDATE_CRASHPOINT), kills QEMU with SIGKILL, boots the same
+# disk again and checks that the system comes up and the update can be completed. SSH goes through deploy/lib.sh.
+# kill -9 drops what the guest had not submitted to its virtual disk (page cache), as a power cut does; it does not
+# model a physical disk's volatile cache or write reordering, nor a cut inside a single block write.
 #
 #   powercut-ab.sh prep  BASE_RAW RELEASES_DIR   # build base0.qcow2 (A confirmed, nothing fetched)
 #   powercut-ab.sh fetched                       # base1.qcow2 = base0 + a completed fetch (the snapshot)
@@ -230,11 +227,10 @@ scn_torn_grubenv() {
 
 
 # ---------------------------------------------------------------------------
-# stress BASE CYCLES MIN MAX [CHECK_EVERY] : repeated hard power cycling, the thunderstorm case. Boot the SAME disk,
-# let it run a random MIN..MAX seconds, kill -9, again. At checkpoints (and at the end) the disk is converted to raw
-# and every filesystem is checked offline - on COPIES, journal replayed first, because a journaled filesystem that
-# needs recovery after a cut is normal; what matters is that it is clean afterwards and that nothing needed more
-# than preen. The last step is a normal boot with no cut, which must reach a working slot.
+# stress BASE CYCLES MIN MAX [CHECK_EVERY]: repeated hard power cycling. Boot the SAME disk, run a random MIN..MAX
+# seconds, kill -9, repeat. At checkpoints and the end the disk is converted to raw and every filesystem checked offline
+# on COPIES (journal replayed first: needing recovery after a cut is normal; it must be clean afterwards, needing no
+# more than preen). The last step is a normal boot with no cut, which must reach a working slot.
 stress() {
     local base="$1" cycles="$2" tmin="$3" tmax="$4" every="${5:-20}" n="stress" c
     new_run "$base" "$n"

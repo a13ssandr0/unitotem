@@ -1,13 +1,7 @@
 #!/bin/bash
-# Reboots into OTA mode when the machine is cabled but has no usable address,
-# so a device that is up yet unreachable can still be recovered remotely
-# instead of needing someone to walk to it.
-#
-# It fires only when a link has CARRIER but no global address. A unit that is simply not plugged
-# in (offline on local content) has no carrier and is never touched.
-#
-# Link-local-only counts as "no usable address": the rescue channel is up but the device is
-# misconfigured, and arming OTA gives the operator the full recovery toolset. The threshold is long
+# Reboots into OTA mode when the machine is cabled but has no usable address, so an unreachable device can be
+# recovered remotely. It fires only when a link has CARRIER but no global address; an unplugged unit is never touched.
+# Link-local-only counts as "no usable address" (rescue channel up, device misconfigured); the threshold is long
 # enough that someone fixing things over link-local is not rebooted.
 set -euo pipefail
 
@@ -41,12 +35,9 @@ if [ -n "$(ip -o addr show scope global 2>/dev/null)" ]; then
     exit 0
 fi
 
-# Cabled but with no usable address. Before counting towards a reboot, make sure the rescue
-# channel exists: NetworkManager sets disable_ipv6=1 on an interface with no active connection,
-# and without IPv6 there is no link-local address, so the device is unreachable by every channel.
-# Re-enabling is idempotent and non-destructive and restores reachability without a reboot;
-# NetworkManager may turn it off again, and this runs every minute. The NM fallback profile
-# prevents the state, this recovers from it.
+# Cabled but no usable address: first make sure the rescue channel exists. NetworkManager sets disable_ipv6=1 on
+# an interface with no active connection, leaving no link-local address. Re-enabling is idempotent and runs every
+# minute because NM may turn it off again; the NM fallback profile prevents the state, this recovers from it.
 for iface in "${CARRIER_IFACES[@]}"; do
     d="/proc/sys/net/ipv6/conf/${iface}/disable_ipv6"
     if [ -w "$d" ] && [ "$(cat "$d" 2>/dev/null || echo 0)" = 1 ]; then

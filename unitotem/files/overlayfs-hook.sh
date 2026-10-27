@@ -41,25 +41,16 @@ if ! mount -t ext4 -o noatime,nodiratime "$DATA_DEV" "${rootmnt}/mnt/data"; then
     exit 0
 fi
 
-# The overlay status is recorded after the mounts (.unitotem-overlay-status on DATA) so the early-boot
-# state can be read back after boot. Keep that marker.
-#
-# The real util-linux mount/umount/losetup/mkfifo are force-copied into the initramfs by
-# unitotem/files/ota-hook, because the klibc stubs are not functional; the overlay module is
-# listed in conf/modules.
-#
-# --make-rshared/--make-shared below are required by the current mount arrangement.
-#
-# /var is overlaid like /etc: with a read-only root, everything under /var outside fstab's tmpfs
-# allowlist would stay read-only (journald could not use /var/log/journal and every reboot
-# discarded the logs; logrotate, dpkg-db-backup and wtmp could not write either). An overlay keeps
-# the lower layer visible (dpkg's database, /var/unitotem-venv) and only diverts writes; a tmpfs
-# over /var/lib would hide them.
-#
-# /var/lib/dpkg must NOT follow the overlay: it inventories the files installed on ROOT, and an OTA
-# replaces the whole partition, so database and files must stay one consistent pair. The ROOT copy
-# is no longer reachable once /var is overlaid, so it is bind-mounted to a stash first and bound
-# back over the overlay afterwards. Any drift in the DATA upper is discarded; ROOT is authoritative.
+# The overlay status is recorded after the mounts (.unitotem-overlay-status on DATA) so the early-boot state can be
+# read back after boot. Keep that marker.
+# The real util-linux mount/umount/losetup/mkfifo are force-copied in by ota-hook (the klibc stubs do not work); the
+# overlay module is listed in conf/modules. --make-rshared/--make-shared below are required by the mount arrangement.
+# /var is overlaid like /etc: with a read-only root, everything outside fstab's tmpfs allowlist would stay read-only
+# (journald, logrotate, wtmp...). An overlay keeps the lower layer visible (dpkg database, /var/unitotem-venv); a
+# tmpfs over /var/lib would hide it.
+# /var/lib/dpkg must NOT follow the overlay: it inventories the files on ROOT and an OTA replaces the whole partition,
+# so they must stay one consistent pair. It is bind-mounted to a stash first and bound back over the overlay
+# afterwards; drift in the DATA upper is discarded, ROOT is authoritative.
 DPKG_STASH="${rootmnt}/mnt/data/.dpkg-lower"
 dpkg_pin=skip
 if [ -d "${rootmnt}/var/lib/dpkg" ]; then
