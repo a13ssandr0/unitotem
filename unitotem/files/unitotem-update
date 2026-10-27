@@ -11,7 +11,7 @@ Everything is JSON with --json; progress for long operations goes to /run/unitot
 line rewritten atomically. `fetch` runs detached (systemd-run) unless --foreground, so a manager restart
 does not interrupt it; poll `status`.
 """
-import argparse, fcntl, glob, hashlib, json, os, shutil, signal, ssl, subprocess, sys, tempfile, time
+import argparse, datetime, fcntl, glob, hashlib, json, os, shutil, signal, ssl, subprocess, sys, tempfile, time
 import urllib.request, urllib.error
 sys.path.insert(0, "/usr/lib/unitotem")          # unitotem_identity (the account merge)
 
@@ -499,6 +499,8 @@ def cmd_status(a, conf):
         out["other_version"] = st[o].get("version")
         out["rollback_available"] = bool(st[o].get("valid") and st[o].get("confirmed") and not pid)
         out["armed"] = pend if (pend and pend.get("slot") != cur) else None
+        out["staged"] = bool(out["armed"] and out["armed"].get("staged"))
+        out["auto"] = {"policy": auto_policy(conf), "state": read_state(conf, "auto-state.json", {}) or {}}
         out["identity_merge"] = read_state(conf, "identity-merge.json")
         try:
             out["default_slot"] = be_default_slot(conf)
@@ -699,7 +701,8 @@ def cmd_fetch(a, conf):
     if op_running(conf):
         raise Fail("busy", "un'altra operazione di aggiornamento e' in corso", rc=12)
     cmd = [sys.executable, os.path.abspath(__file__), "--json", "fetch", "--foreground"] + (["--force"] if a.force else [])
-    run_out("systemd-run", "--unit", "unitotem-update-fetch", "--collect", "--quiet", *cmd)
+    # lowest CPU and idle I/O priority: the kiosk keeps playing while ~3 GB are written
+    run_out("systemd-run", "--unit", "unitotem-update-fetch", "--collect", "--quiet", "-p", "Nice=19", "-p", "IOSchedulingClass=idle", *cmd)
     return 0, {"started": True, "unit": "unitotem-update-fetch"}
 
 
@@ -730,7 +733,7 @@ def cmd_apply(a, conf):
                                        "armed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     # A Raspberry trial only exists for a boot requested with the tryboot flag, so arming without the
     # reboot would leave a tryboot.txt that nothing consumes: refuse instead of pretending it is armed.
-    if backend(conf) == "rpi" and not a.reboot:
+    if backend(conf) == "rpi" and not a.reboot and not getattr(a, "stage", False):
         raise Fail("needs-reboot", "su Raspberry l'avvio di prova richiede il riavvio contestuale: usare apply --reboot")
     # One-shot: GRUB clears next_entry before booting it (Raspberry: the firmware reads tryboot.txt only on the
     # tryboot boot), so a crash/power cut during the trial lands back on the current slot with no software involved.
@@ -816,6 +819,10 @@ def cmd_boot_ok(a, conf):
             try: cmd_repair(argparse.Namespace(foreground=False, auto=True, force=False), conf)
             except Exception as e: event(conf, f"repair not started: {e}")
         return 0, {"trial": False}
+    if pend.get("slot") != cur and pend.get("staged") and not pend.get("trial_requested"):
+        # armed by the automatic policy and never started (no tryboot reboot requested yet; on GRUB the one-shot is still in grubenv)
+        if backend(conf) == "rpi" or grubenv_get(conf, "next_entry") == f"slot-{pend['slot']}":
+            return 0, {"trial": False, "staged": True}
     if pend.get("slot") != cur:
         # We are on the old slot although a trial was armed: the trial slot did not come back.
         try: os.unlink(state_path(conf, "pending.json"))
@@ -1071,6 +1078,187 @@ def note_failover(conf):
         pass
 
 
+# ---------------------------------------------------------------------------
+# automatic updates (policy on the device; the manager's settings page only sets it)
+# ---------------------------------------------------------------------------
+AUTO_MODES = ("off", "download", "stage", "reboot", "scheduled")
+#   off        never touches anything by itself
+#   download   fetch as soon as a newer release is found, nothing else
+#   stage      fetch, then arm it: the new system starts at the NEXT reboot (not forced)
+#   reboot     fetch, arm and reboot at once
+#   scheduled  fetch, arm, and reboot only inside the daily window that starts at `time` (HH:MM, local time)
+AUTO_DEFAULT = {"mode": "off", "time": "04:00"}
+AUTO_CHECK_EVERY = 6 * 3600       # at most this often asks the server (the timer ticks every 10 minutes)
+AUTO_SETTLE_S = 600               # after boot: let boot-ok, repair and the manager settle first
+AUTO_WINDOW_S = 3600              # scheduled reboot: how long after `time` the reboot is still allowed (a missed tick, a busy device)
+
+
+def auto_policy(conf):
+    pol = dict(AUTO_DEFAULT); pol.update(read_state(conf, "auto.json", {}) or {})
+    if pol["mode"] not in AUTO_MODES: pol["mode"] = "off"
+    return pol
+
+
+def _valid_time(t):
+    import re
+    m = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", t or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def cmd_policy(a, conf):
+    pol = auto_policy(conf)
+    if a.set_mode is not None or a.time is not None:
+        mode = a.set_mode if a.set_mode is not None else pol["mode"]
+        t = a.time if a.time is not None else pol["time"]
+        if mode not in AUTO_MODES:
+            raise Fail("bad-mode", f"modalita' ammesse: {', '.join(AUTO_MODES)}", rc=2)
+        if _valid_time(t) is None:
+            raise Fail("bad-time", "l'orario va scritto HH:MM (00:00-23:59)", rc=2)
+        pol = {"mode": mode, "time": t}
+        write_state(conf, "auto.json", pol)
+    return 0, {"policy": pol, "auto": read_state(conf, "auto-state.json", {}) or {}}
+
+
+def _uptime_s():
+    try: return float(open("/proc/uptime").read().split()[0])
+    except OSError: return 1e9
+
+
+def _staged(conf, st=None):
+    """The armed update waiting for a reboot (pending.json for the OTHER slot), or None."""
+    cur = cur_slot(conf)
+    pend = read_state(conf, "pending.json")
+    return pend if (cur and pend and pend.get("slot") != cur) else None
+
+
+def auto_arm(conf):
+    """Arm the downloaded update without rebooting. Same steps as `apply`, plus `staged` so a boot of the OLD slot before the trial boot is
+    not mistaken for a failed trial."""
+    cur = cur_slot(conf); new = other_slot(cur)
+    st = slots_state(conf)
+    if not (st[new].get("valid") and st[new].get("prepared")):
+        raise Fail("nothing-fetched", f"lo slot {new} non contiene una release verificata")
+    slot_check(conf, new, st)
+    write_state(conf, "pending.json", {"slot": new, "from": cur, "from_version": current_version(conf), "version": st[new]["version"],
+                                       "armed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "staged": True})
+    import_whitelist(conf, new, cur, state_path(conf, "preserve.list"))
+    merge_identity_into(conf, new)
+    be_arm_trial(conf, new)
+    set_last_result(conf, op="apply", result="armed", version=st[new]["version"], slot=new, staged=True)
+    event(conf, f"auto: armed {st[new]['version']} on slot {new} (staged)")
+
+
+def auto_refresh(conf):
+    """A staged update may wait for days: account changes made meanwhile must still reach the new slot, so redo the two merges."""
+    pend = _staged(conf)
+    if not pend: return
+    cur = cur_slot(conf); new = pend["slot"]
+    import_whitelist(conf, new, cur, state_path(conf, "preserve.list"))
+    merge_identity_into(conf, new)
+
+
+def do_reboot_now(conf):
+    """Reboot into the staged update when there is one (the Raspberry needs the tryboot flag on the reboot request itself)."""
+    pend = _staged(conf)
+    if pend:
+        pend["trial_requested"] = True
+        write_state(conf, "pending.json", pend)
+        be_reboot(conf, trial=True, delay=3)
+    else:
+        be_reboot(conf, trial=False, delay=3)
+    return bool(pend)
+
+
+def cmd_reboot(a, conf):
+    need_backend(conf)
+    return 0, {"rebooting": True, "into_update": do_reboot_now(conf)}
+
+
+def _in_window(now, hhmm):
+    h, m = _valid_time(hhmm)
+    start = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if now < start:                                   # the window that began yesterday may still be open after midnight
+        start = start - datetime.timedelta(days=1)
+    return 0 <= (now - start).total_seconds() < AUTO_WINDOW_S, start.date().isoformat()
+
+
+def cmd_auto(a, conf):
+    """One tick of the automatic update policy (run by unitotem-update-auto.timer, idempotent, never blocks for long)."""
+    need_backend(conf)
+    pol = auto_policy(conf)
+    ast = read_state(conf, "auto-state.json", {}) or {}
+    def done(**kw):
+        ast.update(kw); ast["tick_at"] = int(time.time()); write_state(conf, "auto-state.json", ast)
+        return 0, {"policy": pol, "state": kw}
+    mode = pol["mode"]
+    if mode == "off":
+        return 0, {"policy": pol, "state": {"action": "off"}}
+    if op_running(conf):
+        return 0, {"policy": pol, "state": {"action": "busy"}}
+    cur = cur_slot(conf)
+    if cur is None:
+        return 0, {"policy": pol, "state": {"action": "not-ab"}}
+    pend = read_state(conf, "pending.json")
+    if pend and pend.get("slot") == cur:
+        return 0, {"policy": pol, "state": {"action": "trial-running"}}      # boot-ok decides, not us
+    if _uptime_s() < AUTO_SETTLE_S and not a.now:
+        return 0, {"policy": pol, "state": {"action": "settling"}}
+
+    staged = _staged(conf)
+    if staged:
+        auto_refresh(conf)
+        if mode == "reboot":
+            event(conf, "auto: rebooting into the staged update")
+            do_reboot_now(conf)
+            return done(action="rebooting", version=staged.get("version"))
+        if mode == "scheduled":
+            import datetime as _dt
+            ok, day = _in_window(_dt.datetime.now(), pol["time"])
+            if ok and ast.get("last_scheduled_day") != day:
+                ast["last_scheduled_day"] = day
+                event(conf, f"auto: scheduled reboot into the staged update ({day} {pol['time']})")
+                do_reboot_now(conf)
+                return done(action="rebooting", version=staged.get("version"), last_scheduled_day=day)
+            return done(action="waiting-for-schedule", version=staged.get("version"), at=pol["time"])
+        return done(action="staged", version=staged.get("version"))         # download/stage: it waits for whoever reboots
+
+    # nothing armed: is there something downloaded, or something to download?
+    st = slots_state(conf); new = other_slot(cur)
+    downloaded = bool(st[new].get("valid") and st[new].get("prepared") and st[new].get("version")
+                      and vkey(st[new]["version"]) > vkey(current_version(conf)))
+    if not downloaded:
+        now = time.time()
+        if now < ast.get("retry_after", 0) and not a.now:
+            return done(action="backoff")
+        if now - ast.get("checked_at", 0) < AUTO_CHECK_EVERY and not a.now and ast.get("available") is False:
+            return done(action="idle")
+        try:
+            rc, chk = cmd_check(argparse.Namespace(), conf)
+        except Fail as e:
+            ast["fail"] = ast.get("fail", 0) + 1
+            return done(action="check-failed", error=str(e), retry_after=now + min(86400, 3600 * 2 ** min(ast["fail"], 5)))
+        ast["checked_at"] = int(now); ast["available"] = bool(chk["available"]); ast["version"] = chk["version"]
+        if not chk["available"]:
+            ast["fail"] = 0
+            return done(action="up-to-date")
+        if chk.get("needs_layout_migration"):
+            return done(action="needs-manual", reason="layout migration")        # never automatic
+        try:
+            do_fetch(argparse.Namespace(force=False), conf)
+        except Fail as e:
+            ast["fail"] = ast.get("fail", 0) + 1
+            return done(action="fetch-failed", error=str(e), retry_after=now + min(86400, 3600 * 2 ** min(ast["fail"], 5)))
+        ast["fail"] = 0
+        st = slots_state(conf)
+    if mode == "download":
+        return done(action="downloaded", version=st[new].get("version"))
+    auto_arm(conf)                                                           # stage / reboot / scheduled
+    if mode == "reboot":
+        do_reboot_now(conf)
+        return done(action="rebooting", version=st[new].get("version"))
+    return done(action="staged", version=st[new].get("version"))
+
+
 def cmd_cancel(a, conf):
     pid = op_running(conf)
     if not pid:
@@ -1087,14 +1275,17 @@ def main():
         sp.add_parser(n)
     f = sp.add_parser("fetch"); f.add_argument("--foreground", action="store_true"); f.add_argument("--force", action="store_true")
     f.add_argument("--accept-changes", help="accettato e ignorato: in A/B lo slot corrente resta intatto")
+    po = sp.add_parser("policy"); po.add_argument("--set-mode", dest="set_mode", choices=AUTO_MODES); po.add_argument("--time")
+    au = sp.add_parser("auto"); au.add_argument("--now", action="store_true", help="skip the settle delay and the check rate limit")
+    sp.add_parser("reboot")
     r = sp.add_parser("repair"); r.add_argument("--foreground", action="store_true"); r.add_argument("--auto", action="store_true")
     r.add_argument("--force", action="store_true", help="copy even when the other slot passes the check")
     for n in ("apply", "rollback"):
-        x = sp.add_parser(n); x.add_argument("--reboot", action="store_true")
+        x = sp.add_parser(n); x.add_argument("--reboot", action="store_true"); x.add_argument("--stage", action="store_true", help="apply: arm without rebooting (Raspberry too)")
     a = ap.parse_args()
     conf = load_conf()
     table = {"status": cmd_status, "check": cmd_check, "fetch": cmd_fetch, "apply": cmd_apply, "confirm": cmd_confirm,
-             "boot-ok": cmd_boot_ok, "rollback": cmd_rollback, "cancel": cmd_cancel, "repair": cmd_repair}
+             "boot-ok": cmd_boot_ok, "rollback": cmd_rollback, "cancel": cmd_cancel, "repair": cmd_repair, "policy": cmd_policy, "auto": cmd_auto, "reboot": cmd_reboot}
     try:
         rc, out = table[a.cmd](a, conf)
     except Fail as e:

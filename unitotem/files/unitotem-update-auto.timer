@@ -1,0 +1,10 @@
+[Unit]
+Description=UniTotem automatic update policy (every 10 minutes; the policy itself decides whether anything happens)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -271,3 +271,26 @@ Pi 4 Model B rev 1.5, EEPROM 2026/05/17, immagine arm64 A/B 2026.10.6/10.7 (mana
 - Aggiornamento in sede A->B (fetch di 744 MB dal finto GitHub, scrittura di ROOT_B, bootfiles in `slotb/`, `apply --reboot` con tryboot, conferma) e rollback manuale B->A: riusciti.
 - Errori trovati solo sull'hardware: dtb/overlays spostati invece che copiati (fallback senza device tree = arcobaleno), scadenza della verifica di salute su orologio di sistema (nessun RTC), tar con chown su vfat (rc=2).
 - NON verificato: nessun taglio di corrente sul Pi (vietato); HDMI: il kernel segnala HDMI-A-1/2 `disconnected` e la cattura e' nera, quindi nessuna immagine vista; manager 2.x non utilizzabile come kiosk su root in sola lettura; Pi 3/Zero 2 (senza tryboot) non coperti.
+
+## Aggiornamento automatico (politica sul dispositivo, 2026-10-27)
+
+`unitotem-update-auto.timer` (ogni 10 minuti, 10 dopo l'avvio) esegue `unitotem-update --json auto` a priorità minima (Nice=19, I/O idle).
+La politica sta in `<stato>/auto.json` e si legge/imposta con `unitotem-update --json policy [--set-mode MODE] [--time HH:MM]`
+(la pagina impostazioni del manager la chiama); lo stato dell'ultimo giro è in `status` (`auto.policy`, `auto.state`, `staged`).
+
+| modo | cosa fa quando trova una release più nuova |
+|---|---|
+| `off` (default) | niente |
+| `download` | scarica nello slot inattivo e si ferma |
+| `stage` | scarica e "arma" l'avvio di prova **senza riavviare**: il sistema nuovo parte al prossimo riavvio |
+| `reboot` | scarica, arma e riavvia subito |
+| `scheduled` | scarica e arma; riavvia solo nella finestra di un'ora che inizia a `time` (ora locale), al massimo una volta al giorno |
+
+Regole: mai mentre gira un'altra operazione o una prova d'avvio, mai nei primi 10 minuti dopo l'avvio, domanda al server al massimo ogni 6 ore,
+backoff esponenziale (1 h … 24 h) dopo un errore di rete o di download, mai in automatico se la release richiede una migrazione di layout.
+Un update armato ("staged") rifà ogni 10 minuti la fusione di account e /etc, così le modifiche fatte nell'attesa arrivano nello slot nuovo.
+
+Differenza tra i due backend per `stage`/`scheduled`: **GRUB** (PC) avvia il sistema nuovo al prossimo riavvio di qualunque tipo (next_entry è
+one-shot). **Raspberry**: il firmware legge `tryboot.txt` solo se il riavvio è richiesto con il flag tryboot, quindi l'update armato parte solo con
+`unitotem-update reboot` (usato dalla politica `reboot`/`scheduled` e da chiunque lo chiami, es. il pulsante Riavvia del manager); un riavvio normale
+o un taglio di corrente avvia lo slot vecchio e l'update resta armato (`staged`), senza essere scambiato per una prova fallita.
