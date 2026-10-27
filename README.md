@@ -65,7 +65,7 @@ UniTotem system image creation is based on [pi-gen](https://github.com/RPi-Distr
 
 For further information about the building process refer to the pi-gen repository page.
 
-## Bugs and TODO
+## Known bugs
 These sections have been moved to [UniTotem-manger #Known-bugs](https://github.com/a13ssandr0/unitotem-manager#known-bugs)
 
 #

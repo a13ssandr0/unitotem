@@ -59,7 +59,7 @@ line of text to `/run/unitotem-ota-changes.progress`. It is meant for a status b
   "digest": "<sha256>",
   "packages": {
     "added":   ["sl", "libgpm2"],
-    "removed": ["vecchio-pacchetto"],
+    "removed": ["old-package"],
     "changed": [{"name": "curl", "from": "7.88.1-10", "to": "7.88.1-11"}]
   },
   "files": {
