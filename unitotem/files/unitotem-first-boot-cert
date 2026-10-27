@@ -1,9 +1,8 @@
 #!/bin/bash
 # Generates this device's own TLS certificate+key (/etc/ssl/unitotem.pem) on the first boot that finds it missing.
 #
-# The image does not contain it (stage 1 removes it, verify-image.sh checks), so every device has its own
-# private key, also used for client/server mutual authentication. /etc is an overlay on DATA, so the file
-# persists across reboots, and the OTA whitelist (ssl/unitotem.pem) carries it across updates.
+# The image does not contain it (stage 1 removes it, verify-image.sh checks), so each device has its own private
+# key. /etc is an overlay on DATA and the OTA whitelist (ssl/unitotem.pem) carries it across updates.
 #
 # Safe to run twice and to be cut off at any point: the pair is built in temporary files and moved into
 # place with one rename, so the file is either absent (regenerated at next boot) or complete.

@@ -220,14 +220,11 @@ if [ "$ARCH" = "amd64" ]; then
         --boot-directory="${GRUB_BOOTDIR}" \
         "${LOOP}"
 
-    # (--no-uefi-secure-boot above matters: with shim-signed and grub-efi-amd64-signed installed,
-    # grub-install would otherwise put shim at EFI/BOOT/BOOTX64.EFI by itself.)
-    # Secure Boot chain, staged but not active: EFI/BOOT/BOOTX64.EFI stays the unsigned GRUB,
-    # which a machine without Secure Boot needs. The deploy swaps in this chain (shim as
-    # BOOTX64.EFI) only when the target has Secure Boot enabled and the operator chose "install
-    # with shim" (ota-engine populate-bootfs --secure-boot shim). The signed GRUB has a fixed
-    # prefix and finds only grub.cfg stubs, which hand over to the real configuration
-    # (grub.cfg + grubenv in unitotem-grub/ on this same partition).
+    # (--no-uefi-secure-boot above matters: otherwise grub-install would put shim at EFI/BOOT/BOOTX64.EFI itself.)
+    # Secure Boot chain, staged but not active: BOOTX64.EFI stays the unsigned GRUB, which machines without Secure Boot
+    # need. The deploy swaps in shim only when the target has Secure Boot on and the operator chose "install with shim"
+    # (ota-engine populate-bootfs --secure-boot shim). The signed GRUB has a fixed prefix and finds only grub.cfg
+    # stubs, which hand over to the real configuration (grub.cfg + grubenv in unitotem-grub/ on this partition).
     if [ "$AB_LAYOUT" = 1 ]; then
         SBDIR=${IMG_MNT}/boot/efi/EFI/unitotem-sb
         mkdir -p "$SBDIR"

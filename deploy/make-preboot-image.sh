@@ -3,19 +3,17 @@
 #
 #   deploy/make-preboot-image.sh [--parts DIR] [--recovery-dir DIR] [--out FILE] [--size-mib N] [--no-xz]
 #
-# Write the result to an SD card (dd or any imager), put it in the Pi and power on: the board boots the fallback
-# kernel + initramfs from RAM (the same environment a deployed device falls back to), gets an address by DHCP on every
-# wired interface, shows it on screen and waits (no idle timeout) for the host, which then writes the real system:
+# Write the result to an SD card and power on the Pi: it boots the fallback kernel + initramfs from RAM, gets an
+# address by DHCP on every wired interface, shows it on screen and waits (no idle timeout) for the host:
 #
 #   deploy/remote-deploy.sh recover <address-shown-on-screen> --parts deploy/arm64/<parts set> --yes
 #
-# `recover` finds no UniTotem partitions on this card, so it lays the whole card out from scratch (partition table, boot
-# partition, slots A and B, DATA) and reboots into the real system.
+# `recover` finds no UniTotem partitions, so it lays out the whole card (partition table, boot partition, slots A
+# and B, DATA) and reboots into the real system.
 #
-# Contents of the one FAT partition (MBR, type 0c, from 1 MiB): the Raspberry Pi firmware (start*.elf, fixup*.dat, bootcode.bin, the device
-# trees) taken from the parts set's own boot partition, the fallback kernel + initramfs from deploy/arm64/recovery-*, config.txt
-# and cmdline.txt. No overlays and no slot directories: the fallback drives the firmware framebuffer and needs only a console
-# and the network. About 60 MiB of content; the default image is 128 MiB.
+# The single FAT partition (MBR, type 0c, from 1 MiB) holds the firmware (start*.elf, fixup*.dat, bootcode.bin,
+# device trees) from the parts set's boot partition, the fallback kernel + initramfs from deploy/arm64/recovery-*,
+# config.txt and cmdline.txt; no overlays or slot directories. About 60 MiB; the default image is 128 MiB.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH=arm64

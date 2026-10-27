@@ -1,11 +1,9 @@
 #!/bin/bash
-# Runs once per boot, Before=ssh.service (see unitotem-ssh-hostkey.service):
-# ensures this device's SSH host key is unique and persisted on DATA, instead of the key the image
-# carries from openssh-server's postinst (identical on every device built from that image).
-# Two idempotent branches:
-#   - DATA has a saved key: restore it into /etc/ssh, overwriting the image's.
-#   - DATA has none (first boot on this DATA): discard the image's key, run ssh-keygen -A and save
-#     the new keys to DATA. The key then survives every OTA that preserves DATA (--wipe-data starts over).
+# Runs once per boot, Before=ssh.service: keeps this device's SSH host key unique and persisted on DATA instead of
+# the key the image carries (identical on every device). Two idempotent branches:
+#   - DATA has a saved key: restore it into /etc/ssh.
+#   - DATA has none: discard the image's key, run ssh-keygen -A and save the new keys to DATA (survives every OTA
+#     that preserves DATA; --wipe-data starts over).
 set -euo pipefail
 
 DATA_DIR=/mnt/data/unitotem/ssh-host-keys

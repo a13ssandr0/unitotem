@@ -1,9 +1,7 @@
 #!/bin/bash
-# Two-stage OTA deploy orchestrator, host side. Drives deploy/ota-engine.sh on the target entirely over
-# SSH: the system's sshd until the target reboots into OTA mode, then dropbear (fallback/recovery
-# initramfs, ephemeral host key, port 2222, see ota_ssh() in deploy/lib.sh) for every ota-engine.sh
-# subcommand. Bulk partition data goes over a separate plain-netcat connection (serve_file_once/
-# wait_port_bound in deploy/lib.sh), never through SSH.
+# Two-stage OTA deploy orchestrator (host side). Drives deploy/ota-engine.sh on the target over SSH (the system's
+# sshd, then dropbear on port 2222 in the fallback initramfs, see ota_ssh() in lib.sh); bulk partition data goes
+# over a separate netcat connection (serve_file_once/wait_port_bound in lib.sh), never through SSH.
 #
 # Usage:
 #   ./deploy/remote-deploy.sh probe   root@host
@@ -18,8 +16,7 @@
 #   ./deploy/remote-deploy.sh recover HOST[:PORT] [--parts DIR] ...
 #   ./deploy/remote-deploy.sh serve   [--parts DIR] ...
 #
-# See API-OTA.md for the machine-readable contract behind `changes` and `--accept-changes`, which the
-# UniTotem web interface drives.
+# Machine-readable contract for `changes` and `--accept-changes` (used by the web interface): API-OTA.md.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -234,15 +231,10 @@ REMOTE_EOF
         echo "${P[MODEL]}" | grep -qiE "raspberry pi (3|4|5|.*zero 2)" \
             || die "detected model (${P[MODEL]}) is not 64-bit: the deployed image is always arm64 and cannot be installed here"
         ARCH=arm64; FIRMWARE=rpi
-        # Tryboot needs two things:
-        #  1. FIRMWARE: an EEPROM bootloader that understands tryboot (detected above from
-        #     /proc/device-tree/chosen/bootloader).
-        #  2. KERNEL: the "0 tryboot" reboot(2) argument reaches the firmware only on the raspberrypi/linux
-        #     kernel. The reboot is issued from the resident fallback initrd, which
-        #     unitotem/stage1-recovery-initrd.sh builds from the rpi kernel (linux-image-rpi-v8), so the
-        #     kernel doing it is always ours.
-        # Boards that fail check 1 (Pi 3 / Zero 2, no EEPROM bootloader) use rpi-legacy: a direct config.txt
-        # swap protected by the initramfs integrity checks and the boot counter.
+        # Tryboot needs (1) an EEPROM bootloader that understands it (detected above) and (2) the raspberrypi/linux
+        # kernel, since the "0 tryboot" reboot(2) argument reaches the firmware only there; the resident fallback initrd
+        # (built from linux-image-rpi-v8) issues the reboot, so that always holds. Boards failing (1) (Pi 3 / Zero 2)
+        # use rpi-legacy: a direct config.txt swap protected by the initramfs checks and the boot counter.
         TRYBOOT_CAPABLE="${P[TRYBOOT]:-0}"
     elif [ "${P[EFI]}" = 1 ]; then
         ARCH=amd64; FIRMWARE=uefi; TRYBOOT_CAPABLE=0
@@ -431,12 +423,10 @@ do_reboot() {
     ssh_t "sync; systemd-run --on-active=3s --no-block systemctl reboot >/dev/null 2>&1 || nohup reboot >/dev/null 2>&1 &" || true
 }
 
-# ---------------------------------------------------------------------------
-# Wait for the OTA dropbear session to come up (after a push) or for the already-armed target to answer it.
-# ---------------------------------------------------------------------------
-# The fallback gets its address by DHCP on whichever wired port has the cable, not necessarily the port (and
-# address) the running system used. After a minute without an answer the local subnet is scanned for a dropbear
-# on port 2222: exactly one hit is taken as the fallback (OTA_FOUND_HOST), several are listed.
+# Wait for the OTA dropbear session to come up (after a push) or for the armed target to answer.
+# The fallback gets its address by DHCP on whichever wired port has the cable, maybe not the running system's. After
+# a minute without an answer the local subnet is scanned for dropbear on port 2222: one hit is taken as the fallback
+# (OTA_FOUND_HOST), several are listed.
 discover_fallback() {
     local src prefix h open=() ban
     src=$(ip -o route get "$1" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
@@ -477,12 +467,8 @@ wait_ota_reachable() {
     [ -z "$OTA_FOUND_HOST" ] || log "OTA session reached at ${OTA_FOUND_HOST}."
 }
 
-# ---------------------------------------------------------------------------
-# The two-stage sequence, driven entirely by ota-engine.sh subcommands over the OTA SSH session once it is
-# reachable.
-# ---------------------------------------------------------------------------
-# populate-bootfs for the parts set's boot-partition tarball. One place, because it runs in stage 1 for A/B
-# parts sets and in stage 2 otherwise.
+# The two-stage sequence, driven by ota-engine.sh subcommands over the OTA SSH session.
+# populate-bootfs for the parts set's boot tarball: one place, as it runs in stage 1 for A/B parts and stage 2 otherwise.
 populate_bootfs_step() {
     local host="$1" disk="$2" bootfs_part="$3"
     local hostip="${P[SSHCLIENT]:-}"
@@ -881,13 +867,9 @@ cmd_serve() {
     while :; do sleep 3600; done
 }
 
-# ---------------------------------------------------------------------------
-# What has been changed on the target since its image was built.
-#
-# An OTA replaces ROOT wholesale, so anything installed or edited on the running system is destroyed. The work
-# is done on the target (/usr/sbin/unitotem-ota-changes, which needs dpkg and so cannot live in the fallback's
-# ota-engine.sh); this side only presents the result and gates on it.
-# ---------------------------------------------------------------------------
+# What has changed on the target since its image was built. An OTA replaces ROOT wholesale, so local edits are lost.
+# The scan runs on the target (/usr/sbin/unitotem-ota-changes needs dpkg, so it cannot live in the fallback's
+# ota-engine.sh); this side presents the result and gates on it.
 
 # exit 0 = nothing changed, 1 = changes found, 2 = the check itself failed. 127 means the target has no such
 # command (an image that predates it), which does not block a deploy.

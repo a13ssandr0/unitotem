@@ -313,13 +313,9 @@ chroot "${ROOTFS}" systemctl enable \
     unitotem-net-watchdog.timer \
     unitotem-update-auto.timer
 
-# ---------- Disable unattended apt ----------
-# - /var/lib/dpkg is pinned to the read-only ROOT (see unitotem/files/overlayfs-hook.sh), so these
-#   timers cannot take dpkg's lock and would fail on every run.
-# - Updates go through OTA, which replaces whole partitions.
-# - unitotem-ota-changes reports local modifications relative to the image; a background timer
-#   mutating packages would add changes nobody made.
-# `mask`, not `disable`: package updates pull these units back in.
+# Disable unattended apt: /var/lib/dpkg is pinned to the read-only ROOT (overlayfs-hook.sh) so these timers
+# cannot take dpkg's lock, updates go through OTA, and background package changes would show up as local
+# modifications in unitotem-ota-changes. `mask`, not `disable`: package updates pull the units back in.
 chroot "${ROOTFS}" systemctl mask apt-daily.timer apt-daily-upgrade.timer \
     apt-daily.service apt-daily-upgrade.service
 

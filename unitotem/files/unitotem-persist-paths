@@ -1,12 +1,8 @@
 #!/bin/bash
-# Runs once per boot (see unitotem-persist-paths.service), before cron and the manager: bind-mounts
-# directories that hold user data from DATA over their place under /var. An OTA resets /var's overlay
-# upper layer (migrate-etc-overlay moves it to history/), so data must live on DATA itself.
-#
-# Whole directories, never single files: crontab(1) replaces its file with a rename, which fails on a
-# bind-mounted file.
-#
-# First boot on a DATA with no copy yet: seed it from whatever is already at the target.
+# Runs once per boot, before cron and the manager: bind-mounts user-data directories from DATA over their place under
+# /var (an OTA resets /var's overlay upper layer, so the data must live on DATA).
+# Whole directories, never single files: crontab(1) replaces its file with a rename, which fails on a bind-mounted file.
+# First boot on a DATA with no copy yet: seed it from whatever is at the target.
 set -euo pipefail
 
 PERSIST=/mnt/data/unitotem/persist

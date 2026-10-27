@@ -1,13 +1,9 @@
 #!/bin/bash
-# Builds the resident OTA fallback: a standalone kernel+initrd pair produced
-# from work/$ARCH/stage1.tar.gz, before the kiosk configuration (X11, plymouth,
-# unitotem-manager, ...) is added in stage2. Stage1 carries everything
-# ota-engine.sh needs and nothing else, and unitotem/files/ota-hook is the same
-# hook the real system's `update-initramfs` uses, so the two cannot drift apart.
-#
-# Output: /deploy/$ARCH/recovery-vmlinuz-$ARCH, recovery-initrd-$ARCH.img,
-# recovery.manifest - consumed by unitotem/stage3-image.sh (baked into every
-# image, boot FAT partition) and by deploy/remote-deploy.sh.
+# Builds the resident OTA fallback: a standalone kernel+initrd from work/$ARCH/stage1.tar.gz, before the kiosk
+# configuration is added in stage2. It reuses unitotem/files/ota-hook, the same hook as the real system's
+# `update-initramfs`, so the two cannot drift apart.
+# Output: /deploy/$ARCH/recovery-vmlinuz-$ARCH, recovery-initrd-$ARCH.img, recovery.manifest (baked into every
+# image's boot FAT partition by stage3-image.sh, and used by deploy/remote-deploy.sh).
 set -euo pipefail
 source /unitotem/common.sh
 
@@ -30,11 +26,9 @@ mount_chroot
 install_policy_rc
 
 # ---------- OTA hook + unconditional entry point ----------
-# The hook itself is already installed in stage1.tar.gz (shared with the real
-# system's initramfs). The init-premount script is not: the real system uses the
-# conditional dispatcher (unitotem/files/ota-init-premount, installed by stage2),
-# while this recovery initrd always serves OTA. It is installed into this
-# throwaway chroot so it never reaches stage1.tar.gz.
+# The hook is already in stage1.tar.gz. The init-premount script is not: the real system uses the conditional
+# dispatcher (ota-init-premount, stage2), while this initrd always serves OTA. It is installed in this throwaway
+# chroot so it never reaches stage1.tar.gz.
 mkdir -p "${ROOTFS}/etc/initramfs-tools/scripts/init-premount"
 install -m 755 /unitotem/files/ota-recovery-init-premount \
     "${ROOTFS}/etc/initramfs-tools/scripts/init-premount/zz-unitotem-ota"

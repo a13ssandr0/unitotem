@@ -1,11 +1,7 @@
-# iocharset=iso8859-1 explicit: without it, vfat falls back to the kernel's
-# default ("ascii") iocharset, which needs the separate nls_ascii module loaded on demand; when that
-# load fails boot-firmware.mount fails ("FAT-fs: IO charset ascii not found") and boot drops to the
-# emergency shell. The initramfs module set is handled separately (manual_add_modules in
-# unitotem/files/ota-hook).
-# ro + nofail: the FAT holds the firmware and bootloader and is the one partition without a journal, so it is not
-# mounted writable at runtime (the tools that must write it - unitotem-update, unitotem-boot-ok, unitotem-ota-arm -
-# remount it rw for the moment they need), and a damaged one must not stop the boot: the kiosk does not need it to run.
+# iocharset=iso8859-1 explicit: the default "ascii" needs nls_ascii loaded on demand, and if that fails
+# boot-firmware.mount fails and boot drops to the emergency shell (initramfs modules: manual_add_modules in ota-hook).
+# ro + nofail: the FAT holds firmware and bootloader and has no journal, so it is mounted read-only (the tools that
+# write it remount rw briefly) and a damaged one must not stop the boot.
 LABEL=FIRMWARE /boot/firmware vfat  defaults,noatime,ro,nofail,x-systemd.device-timeout=15s,iocharset=iso8859-1 0 2
 LABEL=ROOT     /              ext4  defaults,noatime,ro                 0 1
 tmpfs          /tmp           tmpfs defaults,noatime,nosuid,nodev,size=256M  0 0

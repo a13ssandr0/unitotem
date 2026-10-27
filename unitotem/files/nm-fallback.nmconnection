@@ -1,16 +1,9 @@
-# Last-resort NetworkManager profile: guarantees that a wired interface ALWAYS has an active connection,
-# and therefore an IPv6 link-local address, so "ssh root@fe80::...%iface" is a rescue channel that
-# survives any IPv4 misconfiguration. NetworkManager sets disable_ipv6=1 on an interface with no active
-# connection, which would leave the device without IPv4 or link-local addresses.
-#
-# Two properties must be kept:
-#   ipv4 method=auto (not disabled): NetworkManager auto-generates its "Wired connection" only for devices
-#   that match NO profile, so this profile has to provide normal DHCP itself.
-#   may-fail=true on ipv4 with ipv6 method=link-local: link-local always succeeds, so the connection stays
-#   active even when DHCP finds no server.
-#
-# interface-name is unset so this matches any ethernet device (end0, eth0, enp*). autoconnect-priority is
-# strongly negative so any real profile (user-configured, or written by ota-engine.sh's apply-network) wins.
+# Last-resort NetworkManager profile: a wired interface ALWAYS has an active connection and so an IPv6 link-local
+# address ("ssh root@fe80::...%iface" rescue channel), because NM sets disable_ipv6=1 on interfaces with no connection.
+# ipv4 method=auto (not disabled): NM auto-generates "Wired connection" only for devices matching NO profile, so this
+# profile must provide DHCP itself. may-fail=true on ipv4 with ipv6 link-local keeps the connection active without DHCP.
+# interface-name is unset (matches end0, eth0, enp*); autoconnect-priority is strongly negative so any real profile
+# (user-configured or written by apply-network) wins.
 [connection]
 id=unitotem-fallback
 type=ethernet

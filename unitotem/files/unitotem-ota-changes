@@ -1,17 +1,10 @@
 #!/bin/bash
-# Reports what has changed on the ROOT partition since the image was built, so
-# an OTA can say what it is about to destroy instead of destroying it silently.
-#
-# One file does both halves: `baseline` runs at build time (unitotem/stage3-image.sh, against the
-# assembled image) and `check` runs on the device, sharing the same definition of "which files
-# count" and how a path is normalised.
-#
-# Scope: only what an OTA actually replaces AND the operator can actually see.
-# /etc, /var and /root are excluded: they are overlays backed by DATA (unitotem/files/overlayfs-hook.sh)
-# with their own deploy rules (/etc through the ota-preserve.list whitelist, /var reset wholesale).
-#
-# /var/lib/dpkg is the exception: it is read as a database, not scanned as files, because it is pinned
-# onto ROOT (see overlayfs-hook.sh) and so travels with the packages.
+# Reports what changed on ROOT since the image was built, so an OTA can say what it is about to destroy.
+# `baseline` runs at build time (stage3-image.sh) and `check` on the device, sharing the definition of which files
+# count and how a path is normalised.
+# Scope: only what an OTA replaces AND the operator can see. /etc, /var and /root are DATA-backed overlays
+# (overlayfs-hook.sh) with their own rules (ota-preserve.list; /var reset wholesale). Exception: /var/lib/dpkg is read
+# as a database, not scanned, because it is pinned onto ROOT and travels with the packages.
 set -uo pipefail
 
 BASELINE_DIR_DEFAULT=/usr/lib/unitotem/baseline
