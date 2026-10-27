@@ -37,7 +37,7 @@ bcdedit /set {fwbootmgr} bootsequence {GUID}               :: one-shot
 ## OTA environment started from Windows
 
 - Kernel + initrd from the FAT32 partition (`linux ($root)/vmlinuz unitotem.ota=1 nomodeset console=tty0 console=ttyS0,115200`, `initrd ($root)/initrd.img`) through the signed chain with Secure Boot on: the OTA environment starts, gets an address by DHCP (same IP and MAC as Windows), shows `OTA update mode ... Port: 2222`, and answers `ota_ssh`; `unitotem-ota-engine probe` works.
-- The legacy path (`unitotem.ota=1`) uses DHCP on the first interface; it does not read `unitotem-ota.conf`, and the recovery initrd has no Wi-Fi driver or firmware (only the Pi's `brcmfmac`). Wired Ethernet is required.
+- The `unitotem.ota=1` path uses DHCP on the first interface; it does not read `unitotem-ota.conf`, and the recovery initrd has no Wi-Fi driver or firmware (only the Pi's `brcmfmac`). Wired Ethernet is required.
 - A full install with `run_ota_sequence()` / `populate_bootfs_step()` (`SB_MODE=shim`, driven by `tools/win-lab/recover-driver.sh`) rewrites the GPT, restores ESP + ROOT_A + ROOT_B + DATA and boots UniTotem with Secure Boot on. The orphan `Boot#### "UniTotem OTA"` entry stays in NVRAM.
 
 ## Windows-side facts

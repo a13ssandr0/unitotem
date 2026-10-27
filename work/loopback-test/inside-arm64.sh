@@ -309,7 +309,7 @@ check "promoted config.txt enables KMS on Pi 3 too" \
     grep -q "^\[pi3\]" /mnt/ota-promote-check/config.txt
 check "tryboot.txt removed after promote-default" bash -c '[ ! -f /mnt/ota-promote-check/tryboot.txt ]'
 check "cmdline-trial.txt removed after promote-default" bash -c '[ ! -f /mnt/ota-promote-check/cmdline-trial.txt ]'
-check "recovery8.img still present dopo promote (mai cancellato)" test -f /mnt/ota-promote-check/recovery8.img
+check "recovery8.img still present after promote (never deleted)" test -f /mnt/ota-promote-check/recovery8.img
 umount /mnt/ota-promote-check
 
 log "=== ROUND 2: redeploy onto an ALREADY provisioned target (recreate_table=0) ==="
