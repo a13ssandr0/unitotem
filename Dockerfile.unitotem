@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         device-tree-compiler \
         initramfs-tools-core \
         cpio \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY unitotem/ /unitotem/
