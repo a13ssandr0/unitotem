@@ -10,7 +10,7 @@
   pkglock.py snapcheck LOCK                    repeatable from online repositories only? (Debian snapshot + the live Raspberry Pi archive)
   pkglock.py upgrade ARCH                      retire the lock: the next stage-1 build resolves fresh and freezes a new one
   pkglock.py check   LOCK [--json]             ask the archives NOW what is newer than the lock; report, with urgency
-        exit 0: nothing newer   10: updates, none security-related   20: security updates (the build must stop, see tools/build)
+        exit 0: nothing newer   10: updates, none security-related   20: security updates (build-unitotem.sh renews the lock)
 
 Lock line:   name==version        (an archive package, pinned)
              local name==version  (built by us - unitotem-*, the CEF wheel, the repackaged python libs - recorded, never pinned)
@@ -354,8 +354,7 @@ def print_report(r):
         for n, old, new in r["backports_available"][:40]:
             print("        %-38s %s -> %s" % (n, old, new))
     if nsec:
-        print("\n   *** SECURITY UPDATES PENDING: the image build is blocked until the lock is renewed (tools/pkglock.py upgrade %s)" % r["arch"])
-        print("   *** or, knowingly, built anyway with PKGLOCK_ACK_SECURITY=1")
+        print("\n   *** SECURITY UPDATES PENDING: the next build renews the lock (retired with `pkglock.py upgrade %s`, reinstalled from stage 1)" % r["arch"])
     elif ups:
         print("   Not urgent: renew the lock when you decide to (tools/pkglock.py upgrade %s); the build goes on with the locked versions." % r["arch"])
 

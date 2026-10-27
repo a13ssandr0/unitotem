@@ -335,8 +335,8 @@ and the moment (`apt-snapshot`) of the apt index it was installed from; our own 
   copy it to `unitotem/locks/<arch>.lock` and commit it.
 - **Check before every build** (`build-unitotem.sh`, also for later stages): `tools/pkglock.py check` queries the archives and prints what is newer than the lock. It changes nothing by itself.
   - **SECURITY** = the update comes from the `trixie-security` pocket, or the Debian changelog between the pinned and the new version cites CVEs.
-    **The build stops** (exit 20) with the reason. Decide by hand: `python3 tools/pkglock.py upgrade <arch>` retires the lock (the next build from stage 1 installs the current versions and freezes a new lock),
-    or `PKGLOCK_ACK_SECURITY=1` to build anyway.
+    **The build renews the lock by itself**: it retires the old lock (`pkglock.py upgrade <arch>`), reinstalls every package from stage 1 at the current
+    versions and freezes a new lock, which `build-unitotem.sh` stores in `unitotem/locks/<arch>.lock` (commit it). `PKGLOCK_KEEP=1` keeps the old lock whatever the check finds.
   - Other updates are only reported.
   - **Urgency:** apt does not expose it in its metadata. The pocket and the `urgency=` field (with CVEs) of the Debian changelog for each entry between the two versions are used;
     archives that publish no changelog (Raspberry Pi) show `urgency n/a` (only the pocket is known). Urgency alone does not block.

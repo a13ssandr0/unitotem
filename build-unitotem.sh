@@ -36,6 +36,16 @@ probe_pi() {
 # (ample space) and /unitotem, /work, /deploy are symlinks to it, the paths the
 # stage scripts hardcode. Always runs the full stage0-3 pass (no should_run
 # caching on this path).
+# A stage 1 that ran without a lock leaves work/<arch>/<arch>.lock.new: it becomes the lock (commit it).
+adopt_lock() {
+    local f="${DIR}/work/${ARCH}/${ARCH}.lock.new"
+    if [ -f "$f" ] && [ ! -f "${DIR}/unitotem/locks/${ARCH}.lock" ]; then
+        mkdir -p "${DIR}/unitotem/locks"
+        mv "$f" "${DIR}/unitotem/locks/${ARCH}.lock"
+        echo "[${ARCH}] new package lock: unitotem/locks/${ARCH}.lock (commit it)"
+    fi
+}
+
 build_natively_on_pi() {
     echo "[arm64] Pi reachable (${PI_HOST}): native build, no qemu emulation"
 
@@ -64,6 +74,7 @@ build_natively_on_pi() {
     _pi_rsync -r --delete "${DIR}/unitotem/" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/"
     _pi_rsync "${DIR}/deploy/ota-engine.sh" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/files/ota-engine.sh"
     _pi_rsync "${DIR}/deploy/parts-lib.sh" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/deploy-parts-lib.sh" 2>/dev/null || true
+    _pi_rsync "${DIR}/tools/pkglock.py" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/pkglock.py"
     # Locally supplied packages (work/extra-debs/<arch>/*.deb) - the manager package among them - are inputs of stage 1 and
     # must be on the Pi too; the arm64 manager package is generated there from the amd64 one.
     if [ -d "${DIR}/work/extra-debs" ]; then
@@ -89,7 +100,7 @@ build_natively_on_pi() {
         { mountpoint -q /var/lib/dpkg && mount -o remount,rw /var/lib/dpkg; } || true; \
         apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             debootstrap qemu-user-static dosfstools e2fsprogs gdisk parted kpartx util-linux \
-            xz-utils pigz zstd curl ca-certificates wget gnupg2 rsync git partclone \
+            xz-utils pigz zstd curl ca-certificates wget gnupg2 rsync git partclone python3 \
             device-tree-compiler initramfs-tools-core cpio >/dev/null; \
         for s in stage0-bootstrap.sh stage1-packages.sh stage1-recovery-initrd.sh \
                  stage2-configure.sh stage3-image.sh; do \
@@ -102,6 +113,7 @@ build_natively_on_pi() {
     mkdir -p "${DIR}/work/arm64" "${DIR}/deploy/arm64"
     _pi_rsync "${PI_HOST}:${PI_BUILD_BASE}/work/arm64/" "${DIR}/work/arm64/"
     _pi_rsync "${PI_HOST}:${PI_BUILD_BASE}/deploy/arm64/" "${DIR}/deploy/arm64/"
+    adopt_lock
     echo "[arm64] Native build complete."
 }
 
@@ -146,19 +158,18 @@ for ARCH in ${ARCHES}; do
     echo "  Building for ARCH=${ARCH}"
     echo "=================================================="
 
-    # Package lock gate: before anything is built, say what is newer than the locked versions and STOP on security updates.
-    # PKGLOCK=off skips it; PKGLOCK_ACK_SECURITY=1 builds anyway, knowingly, with the security updates pending.
+    # Package lock gate: report what is newer than the locked versions. Security updates renew the lock: the old one is retired and this
+    # build reinstalls every package from stage 1 at the current versions, freezing a new lock. Other updates are only reported.
+    # PKGLOCK=off skips the gate; PKGLOCK_KEEP=1 keeps the lock whatever the check finds.
     if [ "${PKGLOCK:-on}" != off ] && [ -f "${DIR}/unitotem/locks/${ARCH}.lock" ]; then
         set +e
         python3 "${DIR}/tools/pkglock.py" check "${DIR}/unitotem/locks/${ARCH}.lock"
         gate=$?
         set -e
-        if [ "$gate" = 20 ] && [ "${PKGLOCK_ACK_SECURITY:-0}" != 1 ]; then
-            echo "" >&2
-            echo "[${ARCH}] BUILD BLOCKED: there are SECURITY updates for the locked packages (listed above)." >&2
-            echo "[${ARCH}] Manual decision: 'python3 tools/pkglock.py upgrade ${ARCH}' retires the lock, and the next build installs the current versions from stage 1" >&2
-            echo "[${ARCH}] (and freezes a new lock); or set PKGLOCK_ACK_SECURITY=1 to build anyway with the locked versions." >&2
-            exit 20
+        if [ "$gate" = 20 ] && [ "${PKGLOCK_KEEP:-0}" != 1 ]; then
+            echo "[${ARCH}] security updates found: renewing the package lock, this build starts from stage 1" >&2
+            python3 "${DIR}/tools/pkglock.py" upgrade "${ARCH}"
+            FORCE_STAGE=1
         elif [ "$gate" = 2 ]; then
             echo "[${ARCH}] warning: update check failed (network?): continuing with the locked versions" >&2
         fi
@@ -276,6 +287,7 @@ for ARCH in ${ARCHES}; do
     echo "[${ARCH}] Stage 3: Creating disk image..."
     ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage3-image.sh
 
+    adopt_lock
     echo "[${ARCH}] Done! Image in: deploy/${ARCH}/"
 done
 
