@@ -1,14 +1,10 @@
 #!/bin/sh
 exec tail -n +3 "$0"
-# UniTotem: permanent (not one-shot) manual recovery entry - installed by
-# unitotem/stage2-configure.sh at /etc/grub.d/45_unitotem_ota so update-grub
-# always regenerates it. Boots the CURRENT system's own kernel/initrd (via
-# the stable /vmlinuz, /initrd.img symlinks every Debian kernel package
-# maintains) with unitotem.ota=recover appended - the real system's own
-# initramfs (already OTA-capable, see unitotem/files/ota-init-premount) handles
-# the rest. Needs GRUB_TIMEOUT>0 (see unitotem/files/grub-default) to actually
-# be reachable - the previous GRUB_TIMEOUT=0 hid every menu entry, this one
-# included.
+# UniTotem: permanent manual recovery entry, installed by unitotem/stage2-configure.sh at
+# /etc/grub.d/45_unitotem_ota so update-grub always regenerates it. Boots the current system's own
+# kernel/initrd (via the /vmlinuz and /initrd.img symlinks) with unitotem.ota=recover appended; the
+# system's initramfs (unitotem/files/ota-init-premount) handles the rest. Needs GRUB_TIMEOUT>0
+# (see unitotem/files/grub-default) to be reachable.
 menuentry 'UniTotem OTA recovery' {
     insmod part_gpt
     insmod part_msdos

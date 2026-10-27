@@ -1,15 +1,11 @@
 # Whitelist of paths re-imported from DATA's old /etc overlay after an OTA
 # update - read by deploy/ota-engine.sh's migrate-etc-overlay subcommand.
-# Additive only: the new image's own /etc always wins by default (see the
-# OTA redesign plan, DATA-preservation risk section); only what's listed
-# here gets pulled back in from the previous install. Never list structural
-# files here (fstab, systemd units, initramfs-tools config, PAM) - those
-# must always come from the new image.
+# Additive only: the new image's own /etc always wins; only what is listed here is pulled back in
+# from the previous install. Never list structural files (fstab, systemd units, initramfs-tools
+# config, PAM): those must always come from the new image.
 #
-# ssh/ssh_host_* deliberately NOT listed here: the real system's host key
-# is now handled by its own dedicated mechanism (unitotem-ssh-hostkey.service,
-# backed by /mnt/data/unitotem/ssh-host-keys/, restored on every boot before
-# ssh.service starts) rather than this once-per-OTA overlay migration.
+# ssh/ssh_host_* is deliberately NOT listed: host keys are handled by unitotem-ssh-hostkey.service
+# (backed by /mnt/data/unitotem/ssh-host-keys/, restored on every boot before ssh.service).
 OTA_PRESERVE_LIST_VERSION=1
 
 hostname

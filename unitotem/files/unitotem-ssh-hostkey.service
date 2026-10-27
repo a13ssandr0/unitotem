@@ -1,5 +1,5 @@
 [Unit]
-Description=UniTotem - host key SSH persistente su DATA
+Description=UniTotem - SSH host key persisted on DATA
 After=local-fs.target
 Before=ssh.service
 RequiresMountsFor=/mnt/data

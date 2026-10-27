@@ -3,18 +3,12 @@
 # so a device that is up yet unreachable can still be recovered remotely
 # instead of needing someone to walk to it.
 #
-# The discriminator is deliberate and is the whole design: it fires only when
-# a link has CARRIER but no global address. A totem that is simply not
-# plugged in - running offline on local content, which is a legitimate way to
-# use it - has no carrier, so it is never touched. Without that distinction
-# this watchdog would reboot perfectly healthy offline devices into recovery,
-# which would be far worse than the problem it solves.
+# It fires only when a link has CARRIER but no global address. A unit that is simply not plugged
+# in (offline on local content) has no carrier and is never touched.
 #
-# Link-local-only counts as "no usable address" on purpose. It means the
-# rescue channel is up but the device is still misconfigured, and arming OTA
-# gives the operator the full recovery toolset rather than a bare shell. The
-# threshold is long enough that somebody already fixing things over
-# link-local will not be rebooted out from under themselves.
+# Link-local-only counts as "no usable address": the rescue channel is up but the device is
+# misconfigured, and arming OTA gives the operator the full recovery toolset. The threshold is long
+# enough that someone fixing things over link-local is not rebooted.
 set -euo pipefail
 
 CONF=/etc/unitotem/net-watchdog.conf
@@ -47,25 +41,17 @@ if [ -n "$(ip -o addr show scope global 2>/dev/null)" ]; then
     exit 0
 fi
 
-# Cabled but with no usable address. Before counting towards a reboot, make
-# sure the RESCUE channel at least exists, because the most likely reason we
-# are here also destroys it: NetworkManager sets disable_ipv6=1 on an
-# interface that has no active connection, and an interface with IPv6
-# administratively off has no link-local address either - so the device is
-# unreachable by every remote channel at once, which is exactly the state
-# observed on real hardware.
-#
-# Re-enabling is cheap, idempotent and non-destructive, and it can restore
-# reachability immediately, without waiting out the threshold and without a
-# reboot. NetworkManager may well turn it off again; that is fine, this runs
-# every minute. It is the belt to the NM fallback profile's braces: that
-# profile prevents the state, this recovers from it if something still
-# manages to reach it.
+# Cabled but with no usable address. Before counting towards a reboot, make sure the rescue
+# channel exists: NetworkManager sets disable_ipv6=1 on an interface with no active connection,
+# and without IPv6 there is no link-local address, so the device is unreachable by every channel.
+# Re-enabling is idempotent and non-destructive and restores reachability without a reboot;
+# NetworkManager may turn it off again, and this runs every minute. The NM fallback profile
+# prevents the state, this recovers from it.
 for iface in "${CARRIER_IFACES[@]}"; do
     d="/proc/sys/net/ipv6/conf/${iface}/disable_ipv6"
     if [ -w "$d" ] && [ "$(cat "$d" 2>/dev/null || echo 0)" = 1 ]; then
         if echo 0 > "$d" 2>/dev/null; then
-            logger -t unitotem-net-watchdog "IPv6 era disabilitato su ${iface}: riabilitato per ripristinare il link-local di soccorso"
+            logger -t unitotem-net-watchdog "IPv6 was disabled on ${iface}: re-enabled to restore the rescue link-local address"
         fi
     fi
     # An interface can also be simply down, which likewise means no
@@ -77,10 +63,10 @@ n=$(( $(cat "$STATE" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$STATE"
 
 if [ "$n" -lt "$THRESHOLD_MIN" ]; then
-    logger -t unitotem-net-watchdog "cavo collegato ma nessun indirizzo utilizzabile (${n}/${THRESHOLD_MIN})"
+    logger -t unitotem-net-watchdog "cable connected but no usable address (${n}/${THRESHOLD_MIN})"
     exit 0
 fi
 
-logger -t unitotem-net-watchdog "nessun indirizzo utilizzabile da ${THRESHOLD_MIN} minuti con cavo collegato: riavvio in modalita' OTA"
+logger -t unitotem-net-watchdog "no usable address for ${THRESHOLD_MIN} minutes with cable connected: rebooting into OTA mode"
 rm -f "$STATE"
 exec unitotem-ota-arm --port 2222

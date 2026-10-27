@@ -2,8 +2,8 @@
 """Host-side release tooling: key generation, key-list signing, release assembly.
 
 Signatures are raw Ed25519 produced/checked with `openssl pkeyutl -rawin`, so the
-device needs nothing beyond the openssl it already ships. See AB-DESIGN.md,
-"Release e chiavi di firma su GitHub".
+device needs nothing beyond the openssl it already ships. See AB-DESIGN.md
+(release and signing keys).
 
   keygen      --dir D --name N            private key N.key (0600) + public N.pub
   sign-keys   --root-key K --pub P [--pub P ...] --seq N --out keys.json
@@ -40,7 +40,7 @@ def cmd_keygen(a):
     os.makedirs(a.dir, exist_ok=True)
     priv, pub = (os.path.join(a.dir, a.name + e) for e in (".key", ".pub"))
     if os.path.exists(priv):
-        sys.exit(f"{priv} esiste già: non lo sovrascrivo")
+        sys.exit(f"{priv} already exists: not overwriting it")
     old = os.umask(0o077)
     try:
         run("openssl", "genpkey", "-algorithm", "ED25519", "-out", priv)
@@ -56,7 +56,7 @@ def cmd_sign_keys(a):
     with open(a.out, "w") as f:
         json.dump(doc, f, indent=1, sort_keys=True)
     sign(a.root_key, a.out)
-    print(f"{a.out} (+.sig), {len(keys)} chiavi, seq={a.seq}")
+    print(f"{a.out} (+.sig), {len(keys)} keys, seq={a.seq}")
 
 
 def cmd_build(a):
@@ -91,7 +91,7 @@ def cmd_build(a):
     shutil.copy2(a.keys_json + ".sig", os.path.join(out, "keys.json.sig"))
     if a.channel != "stable":
         open(os.path.join(out, "PRERELEASE"), "w").close()
-    print(f"{out}: {len(parts)} asset, {sum(p['size'] for p in parts)/1e6:.0f} MB")
+    print(f"{out}: {len(parts)} assets, {sum(p['size'] for p in parts)/1e6:.0f} MB")
 
 
 def cmd_build_ab(a):
@@ -104,14 +104,14 @@ def cmd_build_ab(a):
     last = int(next(l for l in info.splitlines() if l.startswith("Last sector")).split(":")[1].split()[0])
     name = next(l for l in info.splitlines() if l.startswith("Partition name")).split("'")[1]
     if name != "ROOT_A":
-        sys.exit(f"partizione 2 e' '{name}', atteso ROOT_A: non e' un'immagine A/B")
+        sys.exit(f"partition 2 is '{name}', expected ROOT_A: not an A/B image")
     with tempfile.TemporaryDirectory(dir=a.out) as td:
         raw = os.path.join(td, "rootA.img")
         run("dd", f"if={a.image}", f"of={raw}", "bs=512", f"skip={first}", f"count={last - first + 1}", "status=none")
         ver = subprocess.run(["debugfs", "-R", "cat /usr/share/unitotem/release-version", raw],
                              capture_output=True, text=True).stdout.strip()
         if ver != a.version:
-            sys.exit(f"l'immagine dichiara versione '{ver}', richiesta '{a.version}' (ricostruire con RELEASE_VERSION={a.version})")
+            sys.exit(f"the image reports version '{ver}', requested '{a.version}' (rebuild with RELEASE_VERSION={a.version})")
         # The stream must not announce itself as a bootable slot. partclone copies the label and UUID along
         # with the data, so a device that loses power half-way through writing it would otherwise carry a second
         # filesystem labelled ROOT_A (same UUID as the real slot A) - and "root=LABEL=ROOT_A" or GRUB's
@@ -121,7 +121,7 @@ def cmd_build_ab(a):
         # tune2fs -U refuses a filesystem that was not freshly checked (an image straight out of the build was
         # mounted after its last check). The extracted copy is ours: check it (exit 1 = fixed, which is fine).
         if subprocess.run(["e2fsck", "-fp", raw], capture_output=True).returncode > 1:
-            sys.exit("e2fsck dell'immagine ROOT_A fallito")
+            sys.exit("e2fsck of the ROOT_A image failed")
         run("tune2fs", "-L", "ROOT_NEW", "-U", str(uuid.uuid4()), raw)
         dst = os.path.join(out, "root.ext4.pc.xz")
         with open(dst, "wb") as f:
@@ -129,7 +129,7 @@ def cmd_build_ab(a):
             xz = subprocess.Popen(["xz", "-T0", "-6"], stdin=pc.stdout, stdout=f)
             pc.stdout.close()
             if xz.wait() or pc.wait():
-                sys.exit("partclone/xz fallito")
+                sys.exit("partclone/xz failed")
     parts = [{"file": "root.ext4.pc.xz", "role": "root", "size": os.path.getsize(dst), "sha256": sha256(dst)}]
     if a.arch == "arm64":
         # Raspberry: the slot's kernel/initramfs/dtbs/overlays live on the FAT partition (p1), in slota/.
@@ -147,7 +147,7 @@ def cmd_build_ab(a):
                 tr = subprocess.Popen(["tar", "--owner=0", "--group=0", "--numeric-owner", "-C", os.path.join(td, "x", "slota"), "-cf", "-", "."], stdout=subprocess.PIPE)
                 xz2 = subprocess.Popen(["xz", "-T0", "-6"], stdin=tr.stdout, stdout=f); tr.stdout.close()
                 if xz2.wait() or tr.wait():
-                    sys.exit("tar/xz dei file di avvio fallito")
+                    sys.exit("tar/xz of the boot files failed")
         parts.append({"file": "bootfiles.tar.xz", "role": "bootfiles", "size": os.path.getsize(bf), "sha256": sha256(bf)})
     manifest = {"schema": 1, "version": a.version, "channel": a.channel, "arch": a.arch, "layout": 2, "min_updater": 1,
                 "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "parts": parts}

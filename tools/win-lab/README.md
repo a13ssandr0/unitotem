@@ -1,45 +1,46 @@
-# Laboratorio Windows 11 + OVMF Secure Boot (libvirt)
+# Windows 11 + OVMF Secure Boot lab (libvirt)
 
-Strumenti per provare, senza hardware, come partire da un Windows 11 in esecuzione e avviare l'ambiente OTA di UniTotem con Secure Boot
-ATTIVO. Risultati e metodo: `WINDOWS-INSTALL-NOTES.md`, sezione "Risultati del laboratorio". Questa cartella contiene solo gli helper:
-**niente chiavi o password** (la chiave SSH `id_lab`, `lab-password.txt` e i `labtools.*` restano in `work/win-lab/`, fuori da git).
+Tools to try, without hardware, how to start from a running Windows 11 and boot the UniTotem OTA environment with Secure Boot
+ON. Results and method: `WINDOWS-INSTALL-NOTES.md`. This folder contains only the helpers:
+**no keys or passwords** (the SSH key `id_lab`, `lab-password.txt` and the `labtools.*` files stay in `work/win-lab/`, outside git).
 
-## Il laboratorio
+## The lab
 
-- dominio libvirt `win11-lab` (`qemu:///system`) = clone completo di un Windows 11 Pro 24H2 italiano; il `win11` dell'utente non si tocca MAI.
-- UEFI con Secure Boot attivo e chiavi Microsoft (`OVMF_CODE_4M.ms.fd`), TPM 2.0 emulato (swtpm), 8 GB RAM, 4 vCPU, NIC e1000e su rete `default`, disco SATA 64 GB.
-- accesso: SSH come `lab` (amministratore, chiave `work/win-lab/id_lab`, PowerShell 5.1).
+- libvirt domain `win11-lab` (`qemu:///system`) = full clone of an Italian Windows 11 Pro 24H2; the user's own `win11` is NEVER touched.
+- UEFI with Secure Boot on and Microsoft keys (`OVMF_CODE_4M.ms.fd`), emulated TPM 2.0 (swtpm), 8 GB RAM, 4 vCPUs, e1000e NIC on the `default` network, 64 GB SATA disk.
+- access: SSH as `lab` (administrator, key `work/win-lab/id_lab`, PowerShell 5.1).
 
-## File
+## Files
 
-| File | Cosa fa |
+| File | What it does |
 |---|---|
-| `lab.sh` | `start`, `wait`, `stop`, `revert [SNAP]` (default `base-nvram`), `snap NAME`, `list`, `ssh 'comando powershell'`, `put LOCALE [REMOTO]`, `shot FILE.png` |
-| `winkeys.py` | digita nella console della VM con `virsh send-key`: `text` (layout italiano, per Windows), `ustext` (layout US, per GRUB e menu del firmware), `key`, `shot` |
-| `gcmd.sh` | scrive un comando al prompt di GRUB (layout US), Invio, screenshot |
-| `serialcap.sh` | cattura la console seriale (ttyS0) in un file: li' escono anche i messaggi di OVMF (`BdsDxe: loading Boot0005 ...`), che a schermo non si vedono |
-| `probe-windows.ps1` | sonda di sola lettura lato Windows (UEFI/BIOS, Secure Boot, db/KEK/PK decodificate, BitLocker, dischi, ESP, NIC, RAM): seme della futura sonda Windows |
-| `nvram-var.ps1` | legge/scrive variabili UEFI grezze da Windows e decodifica `Boot####`/`BootOrder`/`BootNext` |
+| `lab.sh` | `start`, `wait`, `stop`, `revert [SNAP]` (default `base-nvram`), `snap NAME`, `list`, `ssh 'powershell command'`, `put LOCAL [REMOTE]`, `shot FILE.png` |
+| `winkeys.py` | types into the VM console with `virsh send-key`: `text` (Italian layout, for Windows), `ustext` (US layout, for GRUB and firmware menus), `key`, `shot` |
+| `gcmd.sh` | writes a command at the GRUB prompt (US layout), Enter, screenshot |
+| `serialcap.sh` | captures the serial console (ttyS0) to a file: OVMF messages (`BdsDxe: loading Boot0005 ...`), which are not visible on screen, appear there |
+| `probe-windows.ps1` | read-only Windows-side probe (UEFI/BIOS, Secure Boot, decoded db/KEK/PK, BitLocker, disks, ESP, NIC, RAM) |
+| `nvram-var.ps1` | reads/writes raw UEFI variables from Windows and decodes `Boot####`/`BootOrder`/`BootNext` |
+| `recover-driver.sh` | runs the real `run_ota_sequence()`/`populate_bootfs_step()` from `remote-deploy.sh` against the OTA environment started from Windows |
 
-## Baseline e NVRAM: attenzione
+## Baseline and NVRAM: caveats
 
-1. **Il ripristino di uno snapshot libvirt NON ripristina l'NVRAM UEFI se questa e' un file `raw`** (default di libvirt): voci di boot, `BootOrder`
-   e variabili MOK restano quelle dopo l'esperimento (provato: una variabile `LabMarker` e un `BootOrder` modificato sopravvivevano al revert).
-   Il dominio e' quindi definito con `<nvram format='qcow2'>` su `work/win-lab/nvram/win11-lab_VARS.qcow2`, creato con
-   `qemu-img convert -f raw -O qcow2 /usr/share/OVMF/OVMF_VARS_4M.ms.fd ...` (libvirt 12 non converte il template da solo:
-   "conversione del template nvram in un altro formato target non e' supportata"). Gli snapshot interni includono allora anche l'NVRAM
-   (provato: marker assente e `BootOrder` originale dopo il revert). XML del dominio: `work/win-lab/lab-domain.xml`.
-2. Il baseline e' lo snapshot **`base-nvram`** (VM spenta). Prima di ogni esperimento: `lab.sh stop; lab.sh revert base-nvram; lab.sh start`.
-   `base-ssh` (il vecchio baseline) NON include l'NVRAM: non usarlo.
-3. **Lo stato di swtpm (TPM) non fa parte degli snapshot del disco.** Dopo un revert il disco torna indietro ma il TPM no: per BitLocker
-   significa che i protettori TPM sul disco (sigillati sotto la SRK) restano validi finche' la SRK e' la stessa, ma ogni stato nel TPM
-   (indici NV, contatori anti-hammering) e' quello "di adesso". Per esperimenti BitLocker conviene fare snapshot a VM spenta e sapere che
-   il TPM non torna indietro (vedi il capitolo BitLocker nelle note).
-4. Windows impiega alcuni minuti a rispondere via SSH dopo un avvio a freddo: i cicli di attesa vanno con timeout, in background.
+1. **Reverting a libvirt snapshot does NOT restore the UEFI NVRAM if it is a `raw` file** (libvirt default): boot entries, `BootOrder`
+   and MOK variables stay as they were after the experiment (a `LabMarker` variable and a modified `BootOrder` survived the revert).
+   The domain is therefore defined with `<nvram format='qcow2'>` on `work/win-lab/nvram/win11-lab_VARS.qcow2`, created with
+   `qemu-img convert -f raw -O qcow2 /usr/share/OVMF/OVMF_VARS_4M.ms.fd ...` (libvirt 12 does not convert the template itself:
+   "conversion of nvram template to another target format is not supported"). Internal snapshots then include the NVRAM too
+   (marker absent and original `BootOrder` after the revert). Domain XML: `work/win-lab/lab-domain.xml`.
+2. The baseline is the **`base-nvram`** snapshot (VM powered off). Before every experiment: `lab.sh stop; lab.sh revert base-nvram; lab.sh start`.
+   `base-ssh` (the old baseline) does NOT include the NVRAM: do not use it.
+3. **The swtpm (TPM) state is not part of the disk snapshots.** After a revert the disk goes back but the TPM does not: for BitLocker
+   this means TPM protectors on disk (sealed under the SRK) stay valid as long as the SRK is the same, but any state in the TPM
+   (NV indexes, anti-hammering counters) is the "current" one. For BitLocker experiments, snapshot with the VM powered off and remember that
+   the TPM does not roll back.
+4. Windows takes a few minutes to answer over SSH after a cold start: wait loops must have timeouts and run in the background.
 
-## Trucchi appresi
+## Tips
 
-- `Rd` in PowerShell e' un alias di `Remove-Item`: mai chiamare una funzione `Rd`.
-- Windows 11 24H2 cifra con BitLocker (chiave in chiaro, "protezione disattivata") anche le **nuove partizioni di dati** appena create: GRUB
-  vede `-FVE-FS-` e "unknown filesystem". Dopo la creazione serve `manage-bde -off X:`.
-- Partizioni: Windows e GRUB le numerano in modo diverso (GRUB per posizione): usare le etichette (`search --label`).
+- `Rd` in PowerShell is an alias of `Remove-Item`: never define a function called `Rd`.
+- Windows 11 24H2 BitLocker-encrypts (clear key, "protection off") even **newly created data partitions**: GRUB
+  sees `-FVE-FS-` and "unknown filesystem". After creation run `manage-bde -off X:`.
+- Partitions: Windows and GRUB number them differently (GRUB by position): use labels (`search --label`).

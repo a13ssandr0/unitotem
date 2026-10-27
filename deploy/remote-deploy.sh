@@ -1,14 +1,9 @@
 #!/bin/bash
-# Two-stage OTA deploy orchestrator - host side. Drives deploy/ota-engine.sh
-# on the target entirely over SSH: the real system's sshd for everything
-# before the target reboots into OTA mode, then dropbear (inside the
-# fallback/recovery initramfs, ephemeral host key, port 2222 - see
-# deploy/lib.sh's ota_ssh()) for every ota-engine.sh subcommand after that.
-# Bulk partition data always goes over a separate plain-netcat connection
-# (deploy/lib.sh's serve_file_once/wait_port_bound) - never through SSH.
-#
-# See ~/.claude/plans/prepara-uno-script-che-fluttering-koala.md
-# for the full design.
+# Two-stage OTA deploy orchestrator, host side. Drives deploy/ota-engine.sh on the target entirely over
+# SSH: the system's sshd until the target reboots into OTA mode, then dropbear (fallback/recovery
+# initramfs, ephemeral host key, port 2222, see ota_ssh() in deploy/lib.sh) for every ota-engine.sh
+# subcommand. Bulk partition data goes over a separate plain-netcat connection (serve_file_once/
+# wait_port_bound in deploy/lib.sh), never through SSH.
 #
 # Usage:
 #   ./deploy/remote-deploy.sh probe   root@host
@@ -20,10 +15,11 @@
 #                                     [--secure-boot shim|noshim|abort]
 #   ./deploy/remote-deploy.sh disarm  root@host
 #
-# See API-OTA.md for the machine-readable contract behind `changes` and
-# `--accept-changes` - it is what the UniTotem web interface drives.
 #   ./deploy/remote-deploy.sh recover HOST[:PORT] [--parts DIR] ...
 #   ./deploy/remote-deploy.sh serve   [--parts DIR] ...
+#
+# See API-OTA.md for the machine-readable contract behind `changes` and `--accept-changes`, which the
+# UniTotem web interface drives.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,9 +27,8 @@ source "${DIR}/deploy/lib.sh"
 
 require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip base64
 
-# The sudo askpass helper holds the target password, so it must not outlive
-# the run - including on failure or Ctrl-C. No-op when we were already root
-# or when sudo turned out to be passwordless.
+# The sudo askpass helper holds the target password, so it must not outlive the run (including failure or
+# Ctrl-C). No-op when logged in as root or when sudo is passwordless.
 trap clear_target_privilege EXIT
 
 # ---------------------------------------------------------------------------
@@ -42,28 +37,25 @@ SUBCMD="${1:-}"; shift || true
 case "$SUBCMD" in
     probe|deploy|disarm|changes)
         TARGET_USERHOST="${1:-}"; shift || true
-        [ -n "$TARGET_USERHOST" ] || { echo "Uso: $0 $SUBCMD user@host [opzioni]" >&2; exit 1; }
+        [ -n "$TARGET_USERHOST" ] || { echo "Usage: $0 $SUBCMD user@host [options]" >&2; exit 1; }
         ;;
     recover)
         RECOVER_HOSTPORT="${1:-}"; shift || true
-        [ -n "$RECOVER_HOSTPORT" ] || { echo "Uso: $0 recover HOST[:PORT] [opzioni]" >&2; exit 1; }
+        [ -n "$RECOVER_HOSTPORT" ] || { echo "Usage: $0 recover HOST[:PORT] [options]" >&2; exit 1; }
         ;;
     serve) ;;
-    *) echo "Uso: $0 {probe|deploy|changes|disarm|recover|serve} ... [opzioni]" >&2; exit 1 ;;
+    *) echo "Usage: $0 {probe|deploy|changes|disarm|recover|serve} ... [options]" >&2; exit 1 ;;
 esac
 
 OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
-# Empty by default rather than a fixed "tty0": build_legacy_cmdline() picks
-# an arch-appropriate console when this is unset (tty0 for amd64, tty1 +
-# serial for arm64 - matching every other cmdline.txt this project writes),
-# and still honors an explicit --console override when one is given.
+# Empty by default: build_legacy_cmdline() picks the console per architecture (tty0 for amd64, tty1 +
+# serial for arm64) unless --console is given.
 OPT_CONSOLE="" OPT_DEBUG=0 OPT_YES=0 OPT_FALLBACK_ONLY=0
-# What to do when the target has Secure Boot enabled (amd64/UEFI): shim | noshim | abort. Empty = ask (or refuse, when
-# non-interactive). See secure_boot_gate.
+# What to do when the target has Secure Boot enabled (amd64/UEFI): shim | noshim | abort. Empty = ask (or
+# refuse, when non-interactive). See secure_boot_gate.
 OPT_SECURE_BOOT="" SB_MODE=""
-# Non-interactive confirmation of a known change set. Carries the digest the
-# operator was actually shown, so a UI-driven deploy cannot proceed over a
-# different set of changes than the one that was approved - see cmd_changes.
+# Non-interactive confirmation of a known change set. Carries the digest the operator was shown, so a
+# UI-driven deploy cannot proceed over a different set of changes - see cmd_changes.
 OPT_ACCEPT_CHANGES="" OPT_JSON=0
 
 while [ $# -gt 0 ]; do
@@ -79,37 +71,28 @@ while [ $# -gt 0 ]; do
         --accept-changes) OPT_ACCEPT_CHANGES="$2"; shift 2 ;;
         --json)       OPT_JSON=1; shift ;;
         --secure-boot) OPT_SECURE_BOOT="$2"; shift 2
-                       case "$OPT_SECURE_BOOT" in shim|noshim|abort) ;; *) die "--secure-boot: valori ammessi shim, noshim, abort" ;; esac ;;
-        *) die "Opzione sconosciuta: $1" ;;
+                       case "$OPT_SECURE_BOOT" in shim|noshim|abort) ;; *) die "--secure-boot: allowed values are shim, noshim, abort" ;; esac ;;
+        *) die "Unknown option: $1" ;;
     esac
 done
 
-# A caller that supplies --accept-changes has already been shown what will be
-# destroyed and has confirmed it - that digest IS the confirmation, and it is
-# a stricter one than typing SI. Without this the generic prompts (disk
-# choice, final "procedo?") still block on a terminal that a web UI does not
-# have, so a UI-driven deploy could never actually complete. The digest is
-# still verified before anything is armed: changes_gate checks it before this
-# flag is ever consulted.
+# A caller that supplies --accept-changes has been shown what will be destroyed and has confirmed it: the
+# digest IS the confirmation. It implies --yes so the generic prompts do not block a UI-driven deploy. The
+# digest is verified by changes_gate before this flag is consulted.
 [ -n "$OPT_ACCEPT_CHANGES" ] && OPT_YES=1
 
 # ---------------------------------------------------------------------------
-# Probe: one SSH round-trip, parseable KEY: value / DISK: ... lines. Adds
-# to the pre-redesign do_probe(): UniTotem/DATA detection, tryboot
-# capability, and the network hints deploy/ota-engine.sh's recovery
-# environment needs to reach back out (see the plan's "sonda di rete").
+# Probe: one SSH round-trip, parseable KEY: value / DISK: ... lines: UniTotem/DATA detection, tryboot
+# capability, and the network hints deploy/ota-engine.sh's recovery environment needs to reach back out.
 # ---------------------------------------------------------------------------
 declare -A P
 DISKS=()
 
 do_probe() {
-    log "Interrogo ${TARGET_USERHOST}..."
+    log "Probing ${TARGET_USERHOST}..."
     local out
-    # ssh_t, not a raw ssh: the probe reads block devices (blkid, dumpe2fs,
-    # lsblk) to decide whether DATA exists and what the layout is, and an
-    # unprivileged reader gets permission denied on /dev/mmcblk*. That would
-    # not fail loudly - it would just report HAVE_DATA: 0 on a device that
-    # does have DATA, and the deploy would reformat it.
+    # ssh_t, not a raw ssh: the probe reads block devices (blkid, dumpe2fs, lsblk), and an unprivileged
+    # reader would silently report HAVE_DATA: 0 on a device that has DATA, which the deploy would reformat.
     out=$(ssh_t bash -s <<'REMOTE_EOF'
 set -u
 echo "UNAME_M: $(uname -m)"
@@ -117,16 +100,11 @@ echo "UNAME_M: $(uname -m)"
 MODEL=""
 [ -r /proc/device-tree/model ] && MODEL=$(tr -d '\0' < /proc/device-tree/model)
 echo "MODEL: ${MODEL:-none}"
-# Tryboot capability, straight from the device tree the Raspberry Pi
-# firmware injects into /proc/device-tree/chosen/bootloader - readable with
-# no vcgencmd and no rpi-eeprom package on the target (neither is installed
-# by this project). That node is published only by the EEPROM bootloader,
-# and only when it understands tryboot, so its mere presence IS the
-# capability signal; the SoC check then excludes the boards that have no
-# EEPROM bootloader at all (Pi 3 / Zero 2 boot bootcode.bin off the SD).
-# Note this describes hardware+firmware, not the running OS, so the answer
-# is the same whether we probe a stock Raspberry Pi OS or a deployed
-# UniTotem.
+# Tryboot capability, from the device tree the Raspberry Pi firmware injects into
+# /proc/device-tree/chosen/bootloader (no vcgencmd or rpi-eeprom needed). The node is published only by the
+# EEPROM bootloader and only when it understands tryboot, so its presence is the signal; the SoC check
+# excludes boards with no EEPROM bootloader (Pi 3 / Zero 2 boot bootcode.bin off the SD). It describes
+# hardware and firmware, not the running OS.
 SOC=""
 [ -r /proc/device-tree/compatible ] && SOC=$(tr -d '\0' < /proc/device-tree/compatible)
 echo "SOC: ${SOC:-none}"
@@ -190,18 +168,11 @@ echo "MEMAVAIL: $(awk '/MemAvailable/{printf "%d", $2*1024}' /proc/meminfo)"
 echo "ROOTFREE: $(df -B1 --output=avail / 2>/dev/null | tail -1 | tr -d ' ')"
 echo "BOOTFREE: $(df -B1 --output=avail "$BOOTMNT" 2>/dev/null | tail -1 | tr -d ' ')"
 
-# Network hints for the OTA payload's reconnection: interface/link type/
-# dhcp-vs-static as currently configured, plus WiFi credentials if that's
-# how this box is connected. See the plan's "sonda di rete" - the secret is
-# not deleted after use (see deploy/ota-engine.sh's serve-fallback and the
-# plan's reasoning: it is already in cleartext in NetworkManager/wpa_supplicant
-# config either way, so removing it from unitotem-ota.conf buys nothing).
-# SSH_CONNECTION is absent whenever this runs under sudo (env_reset strips
-# it), and this script runs with `set -u`, so it must be defaulted or the
-# whole probe dies with "unbound variable" the moment the target is reached
-# as a non-root user. Losing the value is harmless: run_ota_sequence already
-# falls back to `ip -o route get <target>` on the host side, which arguably
-# beats trusting the target to echo our own address back at us.
+# Network hints for the OTA payload's reconnection: interface, link type, dhcp or static, plus WiFi
+# credentials if connected that way. The secret is not deleted after use (it is already in cleartext in the
+# NetworkManager/wpa_supplicant config).
+# SSH_CONNECTION is absent under sudo (env_reset) and this script runs with `set -u`, so it is defaulted.
+# Losing the value is harmless: run_ota_sequence falls back to `ip -o route get <target>` on the host.
 SSHCLIENT_IP="${SSH_CONNECTION:-}"
 SSHCLIENT_IP="${SSHCLIENT_IP%% *}"
 echo "SSHCLIENT: ${SSHCLIENT_IP:-none}"
@@ -221,10 +192,8 @@ if [ -n "$NETIF" ]; then
         echo "NETMODE: static"
         echo "NETADDR: $(ip -o -4 addr show "$NETIF" 2>/dev/null | awk '{print $4; exit}')"
         echo "NETGW: $(ip -o route show default dev "$NETIF" 2>/dev/null | awk '{print $3; exit}')"
-        # Without this a statically-addressed device gets carried over with an
-        # address and a gateway but no resolver, which looks like a working
-        # network right up until the first name lookup. Semicolon-separated,
-        # which is the form NetworkManager keyfiles want.
+        # Resolvers, semicolon-separated as NetworkManager keyfiles want; without them a static device
+        # has an address and gateway but no name lookups.
         echo "NETDNS: $(awk '/^nameserver/{printf "%s%s", sep, $2; sep=";"}' /etc/resolv.conf 2>/dev/null)"
     fi
     if [ -e "/sys/class/net/${NETIF}/wireless" ]; then
@@ -250,7 +219,7 @@ while read -r name size type tran model; do
     echo "DISK: ${name}|${size}|${tran:-?}|${model:-?}|${bid}"
 done < <(lsblk -dpbn -o NAME,SIZE,TYPE,TRAN,MODEL 2>/dev/null)
 REMOTE_EOF
-) || die "impossibile contattare ${TARGET_USERHOST} via SSH"
+) || die "cannot reach ${TARGET_USERHOST} via SSH"
 
     while IFS= read -r line; do
         case "$line" in
@@ -259,32 +228,21 @@ REMOTE_EOF
         esac
     done <<< "$out"
 
-    [ ${#DISKS[@]} -gt 0 ] || die "nessun disco rilevato sul target"
+    [ ${#DISKS[@]} -gt 0 ] || die "no disk detected on the target"
 
     if echo "${P[MODEL]:-}" | grep -qi "raspberry pi"; then
         echo "${P[MODEL]}" | grep -qiE "raspberry pi (3|4|5|.*zero 2)" \
-            || die "modello rilevato (${P[MODEL]}) non risulta a 64-bit: l'immagine deployata e' sempre arm64, non installabile qui"
+            || die "detected model (${P[MODEL]}) is not 64-bit: the deployed image is always arm64 and cannot be installed here"
         ARCH=arm64; FIRMWARE=rpi
-        # Tryboot needs two independent things, so both are checked rather
-        # than assumed:
-        #  1. the FIRMWARE side - an EEPROM bootloader that understands
-        #     tryboot. Detected above from /proc/device-tree/chosen/bootloader,
-        #     which the firmware itself publishes (no vcgencmd/rpi-eeprom
-        #     needed on the target).
-        #  2. the KERNEL side - the "0 tryboot" reboot(2) argument only
-        #     reaches the firmware's PM_RSTS flag on the raspberrypi/linux
-        #     fork; it is silently ignored on a mainline/Debian generic
-        #     kernel (confirmed on this very hardware, and matching
-        #     raspberrypi/rpi-eeprom#716). That was the original blocker and
-        #     is now satisfied: unitotem/stage1-packages.sh installs
-        #     linux-image-rpi-v8, and - the part that actually matters here -
-        #     the reboot is issued from the RESIDENT FALLBACK initrd, which
-        #     unitotem/stage1-recovery-initrd.sh builds from that same rpi
-        #     kernel. So the kernel doing the tryboot reboot is always ours,
-        #     never whatever the probed system happens to run.
-        # Falls back to rpi-legacy (direct config.txt swap, protected by the
-        # initramfs integrity checks + boot counter) on any board that fails
-        # check 1 - Pi 3 / Zero 2, which have no EEPROM bootloader at all.
+        # Tryboot needs two things:
+        #  1. FIRMWARE: an EEPROM bootloader that understands tryboot (detected above from
+        #     /proc/device-tree/chosen/bootloader).
+        #  2. KERNEL: the "0 tryboot" reboot(2) argument reaches the firmware only on the raspberrypi/linux
+        #     kernel. The reboot is issued from the resident fallback initrd, which
+        #     unitotem/stage1-recovery-initrd.sh builds from the rpi kernel (linux-image-rpi-v8), so the
+        #     kernel doing it is always ours.
+        # Boards that fail check 1 (Pi 3 / Zero 2, no EEPROM bootloader) use rpi-legacy: a direct config.txt
+        # swap protected by the initramfs integrity checks and the boot counter.
         TRYBOOT_CAPABLE="${P[TRYBOOT]:-0}"
     elif [ "${P[EFI]}" = 1 ]; then
         ARCH=amd64; FIRMWARE=uefi; TRYBOOT_CAPABLE=0
@@ -294,34 +252,34 @@ REMOTE_EOF
 }
 
 print_probe() {
-    echo "Architettura target immagine : ${ARCH}  (${P[UNAME_M]}, modello: ${P[MODEL]})"
+    echo "Target image architecture    : ${ARCH}  (${P[UNAME_M]}, model: ${P[MODEL]})"
     if [ "${FIRMWARE}" = rpi ]; then
-        local tb_why="EEPROM bootloader senza supporto tryboot (o assente: Pi 3/Zero 2)"
-        [ "${TRYBOOT_CAPABLE}" = 1 ] && tb_why="rilevato via device-tree, SoC ${P[SOC]:-n/d}"
+        local tb_why="EEPROM bootloader without tryboot support (or absent: Pi 3/Zero 2)"
+        [ "${TRYBOOT_CAPABLE}" = 1 ] && tb_why="detected via device tree, SoC ${P[SOC]:-n/a}"
         echo "Firmware                     : ${FIRMWARE}  (tryboot: ${TRYBOOT_CAPABLE} - ${tb_why})"
-        echo "Modalita' boot di prova      : $([ "${TRYBOOT_CAPABLE}" = 1 ] && echo 'rpi-tryboot (protezione a livello firmware)' || echo 'rpi-legacy (swap config.txt + boot counter)')"
+        echo "Trial boot mode              : $([ "${TRYBOOT_CAPABLE}" = 1 ] && echo 'rpi-tryboot (firmware-level protection)' || echo 'rpi-legacy (config.txt swap + boot counter)')"
     else
         echo "Firmware                     : ${FIRMWARE}  (tryboot: ${TRYBOOT_CAPABLE})"
     fi
     if [ "${FIRMWARE}" = uefi ]; then
         case "${P[SECUREBOOT]:-unknown}" in
-            1) echo "Secure Boot                  : ATTIVO (il deploy chiedera' come procedere: vedi --secure-boot)" ;;
-            0) echo "Secure Boot                  : disattivato" ;;
-            *) echo "Secure Boot                  : non rilevabile" ;;
+            1) echo "Secure Boot                  : enabled (deploy will ask how to proceed: see --secure-boot)" ;;
+            0) echo "Secure Boot                  : disabled" ;;
+            *) echo "Secure Boot                  : cannot be detected" ;;
         esac
     fi
-    echo "Gia' UniTotem                : ${P[HAVE_UNITOTEM]}"
-    echo "DATA presente                : ${P[HAVE_DATA]}  (UUID: ${P[DATA_UUID]:-n/d})"
-    echo "RAM disponibile               : $(bytes_human "${P[MEMAVAIL]}")"
-    echo "Spazio libero su /            : $(bytes_human "${P[ROOTFREE]}")"
-    echo "Rete verso l'host             : interfaccia ${P[NETIF]:-?} (${P[NETLINK]:-?}, ${P[NETMODE]:-?})"
-    echo "Disco di avvio corrente       : ${P[ROOTDISK]:-?}"
-    echo "Dischi rilevati:"
+    echo "Already UniTotem             : ${P[HAVE_UNITOTEM]}"
+    echo "DATA present                 : ${P[HAVE_DATA]}  (UUID: ${P[DATA_UUID]:-n/a})"
+    echo "Available RAM                : $(bytes_human "${P[MEMAVAIL]}")"
+    echo "Free space on /              : $(bytes_human "${P[ROOTFREE]}")"
+    echo "Network towards the host     : interface ${P[NETIF]:-?} (${P[NETLINK]:-?}, ${P[NETMODE]:-?})"
+    echo "Current boot disk            : ${P[ROOTDISK]:-?}"
+    echo "Detected disks:"
     local i=1 d
     for d in "${DISKS[@]}"; do
         IFS='|' read -r name size tran model byid <<< "$d"
         local tag=""
-        [ "$name" = "${P[ROOTDISK]:-}" ] && tag="  <- disco di avvio corrente"
+        [ "$name" = "${P[ROOTDISK]:-}" ] && tag="  <- current boot disk"
         printf "  %2d) %-16s %8s  %-6s %-20s%s\n" "$i" "$name" "$(bytes_human "$size")" "$tran" "$model" "$tag"
         i=$((i + 1))
     done
@@ -337,7 +295,7 @@ select_disk() {
                 chosen="$d"; break
             fi
         done
-        [ -n "$chosen" ] || die "--disk $OPT_DISK non trovato tra i dischi rilevati (usa 'probe' per elencarli)"
+        [ -n "$chosen" ] || die "--disk $OPT_DISK not found among the detected disks (use 'probe' to list them)"
     fi
 
     if [ -z "$chosen" ] && [ ${#DISKS[@]} -eq 1 ] && [ "$OPT_YES" = 1 ]; then
@@ -349,48 +307,46 @@ select_disk() {
         if [ -n "$chosen" ]; then
             echo ""
             IFS='|' read -r name size tran model byid <<< "$chosen"
-            read -rp "Confermi la scrittura su ${name} ($(bytes_human "$size"))? [scrivi SI]: " ans
-            [ "$ans" = "SI" ] || die "annullato dall'utente"
+            read -rp "Confirm writing to ${name} ($(bytes_human "$size"))? [type YES]: " ans
+            [ "$ans" = "YES" ] || die "cancelled by the user"
         else
             echo ""
             local choice
-            read -rp "Su quale disco scrivere l'immagine? [1-${#DISKS[@]}]: " choice
+            read -rp "Which disk should the image be written to? [1-${#DISKS[@]}]: " choice
             [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#DISKS[@]} ] \
-                || die "scelta non valida"
+                || die "invalid choice"
             chosen="${DISKS[$((choice - 1))]}"
         fi
     fi
 
     IFS='|' read -r TARGET_DISK_NAME TARGET_DISK_SIZE _ _ TARGET_DISK_BYID <<< "$chosen"
-    [ "$TARGET_DISK_BYID" != none ] || die "nessun path stabile (by-id/by-path) per ${TARGET_DISK_NAME} - impossibile procedere in sicurezza"
+    [ "$TARGET_DISK_BYID" != none ] || die "no stable path (by-id/by-path) for ${TARGET_DISK_NAME}: cannot proceed safely"
     TARGET_DISK="$TARGET_DISK_NAME"
 
     if [ "$OPT_YES" != 1 ]; then
         echo ""
-        echo "!!! Il disco ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE")) verra' interamente riscritto. !!!"
-        read -rp "Digita 'SI' per procedere: " ans
-        [ "$ans" = "SI" ] || die "annullato dall'utente"
+        echo "!!! Disk ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE")) will be completely rewritten. !!!"
+        read -rp "Type 'YES' to proceed: " ans
+        [ "$ans" = "YES" ] || die "cancelled by the user"
     fi
 }
 
 # ---------------------------------------------------------------------------
-# Legacy-target arming: push the resident recovery kernel+initrd and boot it
-# via a one-shot entry (GRUB) or a config.txt swap (Pi) - verbatim from the
-# pre-redesign remote-deploy.sh, only the pushed artifacts changed (recovery
-# kernel/initrd instead of a dedicated flasher build).
+# Arming of a non-UniTotem target: push the resident recovery kernel+initrd and boot it via a one-shot
+# entry (GRUB) or a config.txt swap (Pi).
 # ---------------------------------------------------------------------------
 push_recovery_kernel() {
     local vmlinuz="${DIR}/deploy/${ARCH}/recovery-vmlinuz-${ARCH}"
     local initrd="${DIR}/deploy/${ARCH}/recovery-initrd-${ARCH}.img"
     [ -f "$vmlinuz" ] && [ -f "$initrd" ] \
-        || die "recovery kernel/initrd mancanti per ${ARCH}: esegui prima ./build-unitotem.sh (produce anche lo stage 1b)"
+        || die "recovery kernel/initrd missing for ${ARCH}: run ./build-unitotem.sh first (it also produces stage 1b)"
 
-    log "Copio kernel/initrd di fallback in ${P[BOOTMNT]}..."
+    log "Copying the fallback kernel/initrd to ${P[BOOTMNT]}..."
     ssh_t "mount -o remount,rw '${P[BOOTMNT]}' 2>/dev/null; true"
     scp_root "$vmlinuz" "${P[BOOTMNT]}/unitotem-recovery-vmlinuz" \
-        || die "copia del kernel di fallback fallita"
+        || die "copying the fallback kernel failed"
     scp_root "$initrd"  "${P[BOOTMNT]}/unitotem-recovery-initrd.img" \
-        || die "copia dell'initrd di fallback fallita"
+        || die "copying the fallback initrd failed"
 }
 
 build_legacy_cmdline() {
@@ -398,25 +354,21 @@ build_legacy_cmdline() {
     if [ -z "$console" ]; then
         [ "$ARCH" = arm64 ] && console="tty1 console=ttyS0,115200" || console="tty0"
     fi
-    # fbcon=font:TER16x32: the firmware framebuffer is often the monitor's native size (a 1080p screen with the 8x16 default font gets a 240x67
-    # console of tiny text); the 16x32 terminus font doubles every glyph (ignored by a kernel that lacks it).
+    # fbcon=font:TER16x32: the firmware framebuffer is often the monitor's native size, where the default 8x16 font is
+    # tiny; the 16x32 font doubles every glyph (ignored by a kernel that lacks it).
     echo "unitotem.ota=1 quiet loglevel=3 fbcon=font:TER16x32 console=${console}"
 }
 
 arm_grub() {
     local cmdline_b64; cmdline_b64=$(printf '%s' "$1" | base64 -w0)
-    log "Aggiungo la voce GRUB one-shot 'UniTotem OTA'..."
+    log "Adding the one-shot GRUB entry 'UniTotem OTA'..."
     ssh_t bash -s -- "$cmdline_b64" <<'REMOTE_EOF'
 set -eu
 CMDLINE="$(printf '%s' "$1" | base64 -d)"
 mount -o remount,rw / 2>/dev/null || true
 mount -o remount,rw /boot 2>/dev/null || true
-# 99 (not e.g. 09): grub-mkconfig sorts /etc/grub.d/* alphabetically, so a
-# lower number would make this menuentry index 0 - and on a stock
-# GRUB_DEFAULT=0 config, grub-reboot's one-shot clears next_entry back to
-# index 0 once consumed, which would then just be *this* entry again: an
-# infinite boot loop instead of falling back to the real OS. Sorting last
-# leaves index 0 as whatever it already was.
+# 99 so the entry sorts last: with GRUB_DEFAULT=0, an entry at index 0 would be booted again once
+# grub-reboot's one-shot is consumed (an endless boot loop instead of the original OS).
 cat > /etc/grub.d/99_unitotem_flash << EOF
 #!/bin/sh
 exec tail -n +3 "\$0"
@@ -424,8 +376,8 @@ menuentry 'UniTotem OTA' {
     insmod part_gpt
     insmod part_msdos
     insmod ext2
-    # low resolution for the OTA screens (readable from far away, same as unitotem/files/grub-ab-entries): GRUB sets a small firmware
-    # framebuffer mode, gfxpayload=keep hands it to the kernel and nomodeset stops the DRM driver from switching to the native size
+    # low resolution for the OTA screens (as unitotem/files/grub-ab-entries): a small firmware framebuffer mode,
+    # kept by gfxpayload=keep, with nomodeset stopping the DRM driver from switching to the native size
     insmod all_video
     insmod gfxterm
     set gfxmode=640x480x32,640x480,800x600x32,800x600,1024x768x32,1024x768,auto
@@ -441,7 +393,7 @@ if command -v update-grub >/dev/null 2>&1; then
 elif command -v grub-mkconfig >/dev/null 2>&1; then
     grub-mkconfig -o /boot/grub/grub.cfg
 else
-    echo "Ne' update-grub ne' grub-mkconfig trovati sul target" >&2
+    echo "Neither update-grub nor grub-mkconfig found on the target" >&2
     exit 1
 fi
 grub-reboot 'UniTotem OTA'
@@ -450,7 +402,7 @@ REMOTE_EOF
 
 arm_rpi() {
     local cmdline_b64; cmdline_b64=$(printf '%s' "$1" | base64 -w0)
-    log "Preparo config.txt/cmdline.txt per il boot one-shot del fallback..."
+    log "Preparing config.txt/cmdline.txt for the one-shot fallback boot..."
     ssh_t bash -s -- "$cmdline_b64" "${P[BOOTMNT]}" <<'REMOTE_EOF'
 set -eu
 CMDLINE="$(printf '%s' "$1" | base64 -d)"
@@ -458,16 +410,9 @@ BOOTMNT="$2"
 cd "$BOOTMNT"
 [ -f config.txt.unitotem-bak ]  || cp -a config.txt  config.txt.unitotem-bak
 [ -f cmdline.txt.unitotem-bak ] || cp -a cmdline.txt cmdline.txt.unitotem-bak
-# enable_uart=1 is not optional here even though nothing in this file reads
-# it: build_legacy_cmdline() pairs this config with console=ttyS0,115200,
-# and on a Pi the mini-UART derives its baud from the VPU core clock, which
-# only enable_uart=1 pins. Without it the serial console is silently dead -
-# and this config.txt replaces the target's own wholesale, so whatever the
-# previous OS had is gone. That matters precisely here: this is the legacy
-# arming path onto a foreign OS, where the very next boot is into the
-# fallback, and serial is the only diagnostic left if that boot misbehaves.
-# Every config.txt writer in deploy/ota-engine.sh already sets it; this one
-# was the outlier.
+# enable_uart=1 is required: build_legacy_cmdline() pairs this config with console=ttyS0,115200, and the
+# mini-UART baud derives from the VPU core clock, which only enable_uart=1 pins. Serial is the only
+# diagnostic if the fallback boot misbehaves.
 cat > config.txt << EOF
 arm_64bit=1
 enable_uart=1
@@ -480,26 +425,24 @@ REMOTE_EOF
 }
 
 do_reboot() {
-    log "Riavvio il target..."
-    # systemd-run first: a reboot started as a background child of the ssh/sudo session was silently lost on a KDE neon desktop target
-    # (the session was torn down first), the target stayed up and the whole deploy waited for a fallback that never came.
+    log "Rebooting the target..."
+    # systemd-run first: a reboot started as a background child of the ssh/sudo session can be lost when the
+    # session is torn down first.
     ssh_t "sync; systemd-run --on-active=3s --no-block systemctl reboot >/dev/null 2>&1 || nohup reboot >/dev/null 2>&1 &" || true
 }
 
 # ---------------------------------------------------------------------------
-# Wait for the OTA dropbear session to come up (legacy push) or for the
-# already-armed target to answer it (prepared path - same wait, just no
-# push/arm beforehand).
+# Wait for the OTA dropbear session to come up (after a push) or for the already-armed target to answer it.
 # ---------------------------------------------------------------------------
-# The fallback gets its address by DHCP on whichever wired port has the cable, which is not necessarily the port (and address) the running
-# system used - a two-NIC mini PC came up on a different address than the one this script was waiting on. After a minute without an answer
-# the local subnet is scanned for a dropbear on port 2222: exactly one hit is taken as the fallback (OTA_FOUND_HOST), several are listed.
+# The fallback gets its address by DHCP on whichever wired port has the cable, not necessarily the port (and
+# address) the running system used. After a minute without an answer the local subnet is scanned for a dropbear
+# on port 2222: exactly one hit is taken as the fallback (OTA_FOUND_HOST), several are listed.
 discover_fallback() {
     local src prefix h open=() ban
     src=$(ip -o route get "$1" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
     [ -n "$src" ] || return 1
     prefix="${src%.*}"
-    log "Nessuna risposta all'indirizzo atteso: cerco il fallback (dropbear, porta 2222) nella rete ${prefix}.0/24..."
+    log "No answer at the expected address: looking for the fallback (dropbear, port 2222) on ${prefix}.0/24..."
     for h in $(seq 1 254); do
         ( ban=$(timeout 2 bash -c "exec 3<>/dev/tcp/${prefix}.${h}/2222 && head -c 20 <&3" 2>/dev/null || true)
           case "$ban" in SSH-2.0-dropbear*) echo "${prefix}.${h}" >> "$OTA_SCAN_FILE" ;; esac ) &
@@ -510,17 +453,17 @@ discover_fallback() {
     case ${#open[@]} in
         0) return 1 ;;
         1) OTA_FOUND_HOST="${open[0]}"
-           if [ "$OTA_FOUND_HOST" = "$1" ]; then log "Fallback trovato a ${OTA_FOUND_HOST}."
-           else log "Fallback trovato a ${OTA_FOUND_HOST} (indirizzo diverso da quello atteso: la scheda di rete con il cavo non e' quella del sistema precedente)."; fi
+           if [ "$OTA_FOUND_HOST" = "$1" ]; then log "Fallback found at ${OTA_FOUND_HOST}."
+           else log "Fallback found at ${OTA_FOUND_HOST} (not the expected address: the cabled network port is not the one the previous system used)."; fi
            return 0 ;;
-        *) warn "piu' di un dropbear sulla porta 2222: ${open[*]}"; return 1 ;;
+        *) warn "more than one dropbear on port 2222: ${open[*]}"; return 1 ;;
     esac
 }
 
 wait_ota_reachable() {
     local host="$1" waited=0 scanned=0
     OTA_FOUND_HOST=""; OTA_SCAN_FILE=$(mktemp)
-    log "Attendo che ${host} risponda sulla sessione OTA (porta 2222, fino a 10 minuti)..."
+    log "Waiting for ${host} to answer on the OTA session (port 2222, up to 10 minutes)..."
     sleep 15
     while ! ota_ssh "$host" true 2>/dev/null; do
         sleep 10; waited=$((waited + 10))
@@ -528,28 +471,27 @@ wait_ota_reachable() {
             scanned=1
             if discover_fallback "$host"; then host="$OTA_FOUND_HOST"; continue; fi
         fi
-        [ "$waited" -lt 600 ] || { rm -f "$OTA_SCAN_FILE"; die "il target non e' entrato in modalita' OTA entro 10 minuti"; }
+        [ "$waited" -lt 600 ] || { rm -f "$OTA_SCAN_FILE"; die "the target did not enter OTA mode within 10 minutes"; }
     done
     rm -f "$OTA_SCAN_FILE"
-    [ -z "$OTA_FOUND_HOST" ] || log "Sessione OTA raggiunta su ${OTA_FOUND_HOST}."
+    [ -z "$OTA_FOUND_HOST" ] || log "OTA session reached at ${OTA_FOUND_HOST}."
 }
 
 # ---------------------------------------------------------------------------
-# The actual two-stage sequence, driven entirely by ota-engine.sh
-# subcommands over the OTA SSH session, once it is reachable. See the
-# plan's "sequenza a due stage".
+# The two-stage sequence, driven entirely by ota-engine.sh subcommands over the OTA SSH session once it is
+# reachable.
 # ---------------------------------------------------------------------------
-# populate-bootfs for the parts set's boot-partition tarball. One place, because A/B runs it in stage 1
-# and every other layout in stage 2.
+# populate-bootfs for the parts set's boot-partition tarball. One place, because it runs in stage 1 for A/B
+# parts sets and in stage 2 otherwise.
 populate_bootfs_step() {
     local host="$1" disk="$2" bootfs_part="$3"
     local hostip="${P[SSHCLIENT]:-}"
     [ -n "$hostip" ] && [ "$hostip" != none ] || hostip=$(ip -o route get "${host}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
-    [ -n "$hostip" ] || die "impossibile determinare l'IP dell'host verso il target"
+    [ -n "$hostip" ] || die "cannot determine the host IP towards the target"
     local bootfs_tar; bootfs_tar=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
     [ -n "$bootfs_tar" ] || return 0
     local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
-    wait_port_bound "$OPT_PORT" 10 || die "listener dati non pronto (bootfs)"
+    wait_port_bound "$OPT_PORT" 10 || die "data listener not ready (bootfs)"
     local lay=""; [ "${P_LAYOUT:-1}" = 2 ] && lay="--layout ab"
     [ "$SB_MODE" = shim ] && lay="$lay --secure-boot shim"
     # shellcheck disable=SC2086
@@ -562,13 +504,13 @@ run_ota_sequence() {
 
     local recreate_table=0
     if [ "${RECOVER_MODE:-0}" = 1 ]; then
-        # recover: the caller already judged the disk (see cmd_recover); the table is rewritten only when it is not usable as it is
+        # recover: the caller already judged the disk (see cmd_recover); the table is rewritten only when unusable
         [ "${RECOVER_KEEP_TABLE:-0}" = 1 ] || recreate_table=1
     else
         [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ "$OPT_WIPE_DATA" != 1 ] || recreate_table=1
     fi
 
-    log "Risolvo il disco sul target (probe engine)..."
+    log "Resolving the disk on the target (probe engine)..."
     local probe_out
     probe_out=$(ota_ssh "$host" "unitotem-ota-engine probe --disk '${disk_byid}'")
     declare -A E
@@ -576,14 +518,14 @@ run_ota_sequence() {
         [ -n "$line" ] && E["${line%%=*}"]="${line#*=}"
     done <<< "$probe_out"
     local disk="${E[UNITOTEM_DISK]:-}"
-    [ -n "$disk" ] || die "il target non risolve il disco richiesto"
+    [ -n "$disk" ] || die "the target does not resolve the requested disk"
 
     local bootfs_part="${P_BOOTFS_PART:-1}" data_part="${P_DATA_PART}"
     local firmware_grub="${FIRMWARE}"
 
-    log "=== Stage 1: installazione del fallback ==="
+    log "=== Stage 1: installing the fallback ==="
     if [ "$recreate_table" = 1 ]; then
-        log "Ripristino la tabella delle partizioni..."
+        log "Restoring the partition table..."
         local table_b64; table_b64=$(base64 -w0 < "${OPT_PARTS}/layout.sfdisk")
         local bootcode_arg=""
         if [ -f "${OPT_PARTS}/bootcode.bin" ]; then
@@ -602,12 +544,12 @@ run_ota_sequence() {
         # recover with the table and DATA intact but a damaged boot partition: format only that one
         local bootfs_label_r; bootfs_label_r=$([ "$ARCH" = arm64 ] && echo FIRMWARE || echo EFI)
         local volid_arg_r=""; [ -n "${P_BOOTFS_VOLID:-}" ] && volid_arg_r="--volid '${P_BOOTFS_VOLID}'"
-        log "Riformatto la sola partizione di boot (danneggiata)..."
+        log "Reformatting only the (damaged) boot partition..."
         # shellcheck disable=SC2086
         ota_ssh "$host" "unitotem-ota-engine prepare-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --fstype vfat --fresh 1 --label ${bootfs_label_r} ${volid_arg_r}"
     fi
 
-    log "Copio il kernel/initrd di fallback sulla partizione di boot..."
+    log "Copying the fallback kernel/initrd to the boot partition..."
     local recovery_name_vmlinuz recovery_name_initrd
     if [ "$ARCH" = arm64 ]; then
         recovery_name_vmlinuz=recovery8.img; recovery_name_initrd=recovery-initrd.img
@@ -622,52 +564,37 @@ run_ota_sequence() {
     ota_ssh_send "$host" "unitotem-ota-engine write-bootfile --disk '${disk}' --bootfs-part '${bootfs_part}' --name ${recovery_name_initrd} ${subdir}" \
         < "${DIR}/deploy/${ARCH}/recovery-initrd-${ARCH}.img"
 
-    # A/B (amd64): the boot partition's file-level content carries GRUB itself and the grub.cfg whose
-    # 'ota-recovery' entry set-default-recovery selects, so it has to be there BEFORE the default is
-    # switched - and it must not be repeated in stage 2.
+    # A/B: the boot partition's file-level content carries GRUB itself and the grub.cfg whose 'ota-recovery'
+    # entry set-default-recovery selects, so it must be there BEFORE the default is switched, and is not
+    # repeated in stage 2.
     local bootfs_populated=0
     if [ "${P_LAYOUT:-1}" = 2 ]; then
-        populate_bootfs_step "$host" "$disk" "$bootfs_part" || die "popolamento della partizione di boot fallito"
+        populate_bootfs_step "$host" "$disk" "$bootfs_part" || die "populating the boot partition failed"
         bootfs_populated=1
         ota_ssh "$host" "unitotem-ota-engine set-default-recovery --disk '${disk}' --firmware '${firmware_grub}' --bootfs-part '${bootfs_part}' --layout ab"
     else
         ota_ssh "$host" "unitotem-ota-engine set-default-recovery --disk '${disk}' --firmware '${firmware_grub}' --bootfs-part '${bootfs_part}'"
     fi
-    log "Stage 1 completato: da qui ogni perdita di alimentazione riavvia sul fallback."
+    log "Stage 1 complete: from here any power loss reboots into the fallback."
 
-    log "=== Stage 2: immagine UniTotem ==="
+    log "=== Stage 2: UniTotem image ==="
     local hostip="${P[SSHCLIENT]:-}"
     [ -n "$hostip" ] && [ "$hostip" != none ] || hostip=$(ip -o route get "${host}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
-    [ -n "$hostip" ] || die "impossibile determinare l'IP dell'host verso il target"
+    [ -n "$hostip" ] || die "cannot determine the host IP towards the target"
 
-    # Always populate the boot partition's file-level content (overlays/,
-    # bootcode.bin, README etc.) - not just on recreate_table (first
-    # provisioning). Found the hard way: real hardware kept an empty
-    # /boot/firmware/overlays/ across every OTA update it had ever received,
-    # since this whole block used to be recreate_table-gated - vc4/v3d
-    # loaded as kernel modules regardless, but with no .dtbo to apply, no
-    # DRM device was ever created (dtoverlay=vc4-kms-v3d in config.txt alone
-    # is not enough - see the config-extra.txt fix above for why config.txt
-    # itself needed a separate splice; this is the same class of gap for a
-    # different file). Safe on an already-provisioned target: cmd_populate_bootfs
-    # has its own exclude list protecting config.txt/cmdline.txt, the
-    # recovery kernel/initrd Stage 1 just wrote, and every unitotem-ota.*
-    # runtime state file.
+    # Always populate the boot partition's file-level content (overlays/, bootcode.bin, README...), not only
+    # when the table is recreated: without the .dtbo files in overlays/ no DRM device is created. Safe on an
+    # already-provisioned target: cmd_populate_bootfs excludes config.txt/cmdline.txt, the recovery
+    # kernel/initrd stage 1 just wrote, and every unitotem-ota.* runtime state file.
     if [ "$bootfs_populated" != 1 ]; then
-        log "Popolo il contenuto file-level della partizione di boot..."
-        populate_bootfs_step "$host" "$disk" "$bootfs_part" || die "popolamento della partizione di boot fallito"
+        log "Populating the file-level content of the boot partition..."
+        populate_bootfs_step "$host" "$disk" "$bootfs_part" || die "populating the boot partition failed"
     fi
 
     local -A block
     local partnum label cloner action used stream comp
-    # The manifest is fed on fd 9, not stdin, and read_kv_block is pointed at
-    # it explicitly. Belt and braces with ota_ssh's -n: this loop runs ssh on
-    # every iteration, and an ssh that inherits the loop's stdin eats the rest
-    # of the manifest, silently dropping every partition after the first
-    # restore. That exact failure shipped - a from-scratch deploy never
-    # reached the DATA block, so DATA got a GPT name but no filesystem. Fixing
-    # only ota_ssh would leave the same trap armed for the next command added
-    # here; decoupling the manifest from stdin removes the whole class.
+    # The manifest is fed on fd 9, not stdin, in addition to ota_ssh's -n: an ssh inheriting the loop's stdin
+    # would eat the rest of the manifest and drop every partition after the first restore.
     while read_kv_block block <&9; do
         partnum="${block[UNITOTEM_PART]:-}"
         [ -n "$partnum" ] || continue
@@ -679,9 +606,9 @@ run_ota_sequence() {
                 used="${block[UNITOTEM_PART_USED_BYTES]}"
                 stream="${block[UNITOTEM_PART_STREAM_FILE]}"
                 comp="${block[UNITOTEM_PART_COMP]:-xz}"
-                log "Restore partizione ${partnum} (${label}, ${cloner})..."
+                log "Restoring partition ${partnum} (${label}, ${cloner})..."
                 local pid; pid=$(serve_file_once "${OPT_PARTS}/${stream}" "$OPT_PORT")
-                wait_port_bound "$OPT_PORT" 10 || die "listener dati non pronto (partizione ${partnum})"
+                wait_port_bound "$OPT_PORT" 10 || die "data listener not ready (partition ${partnum})"
                 ota_ssh "$host" "unitotem-ota-engine restore-part --disk '${disk}' --part '${partnum}' --cloner '${cloner}' --comp '${comp}' --used-bytes '${used}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
                 wait "$pid" 2>/dev/null || true
                 ;;
@@ -698,7 +625,7 @@ run_ota_sequence() {
         esac
     done 9< "${OPT_PARTS}/parts.manifest"
 
-    log "Monto il sistema appena ripristinato..."
+    log "Mounting the restored system..."
     local mount_args="--disk '${disk}' --arch '${ARCH}' --root-part '${P_ROOT_PART}' --bootfs-part '${bootfs_part}' --data-part '${data_part}'"
     [ "$ARCH" = amd64 ] && [ -n "${P_BOOT_PART:-}" ] && mount_args="${mount_args} --boot-part '${P_BOOT_PART}'"
     # shellcheck disable=SC2086
@@ -706,20 +633,16 @@ run_ota_sequence() {
 
     if [ "$ARCH" = arm64 ] && [ "${P_LAYOUT:-1}" != 2 ]; then
         # (A/B images already carry their kernel, initramfs and dtbs in slota/ on the boot partition.)
-        log "Popolo kernel/initrd/dtb del sistema reale sulla partizione di boot..."
+        log "Populating the real system's kernel/initrd/dtb on the boot partition..."
         ota_ssh "$host" "unitotem-ota-engine populate-real-kernel"
     fi
 
     local slot_arg=""; [ "${P_LAYOUT:-1}" = 2 ] && slot_arg="--slot a"
-    ota_ssh "$host" "unitotem-ota-engine migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data ${slot_arg}" || warn "migrazione /etc fallita (non fatale, il sistema nuovo usa comunque il proprio /etc)"
+    ota_ssh "$host" "unitotem-ota-engine migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data ${slot_arg}" || warn "/etc migration failed (non-fatal: the new system uses its own /etc)"
 
-    # Carry the probed network settings onto the installed system. This is
-    # what makes ADOPTION keep working: a foreign device's configuration
-    # lives in the root filesystem being overwritten, so migrate-etc-overlay
-    # (which only rescues what DATA already held) has nothing to restore for
-    # it. Skips itself when a profile was migrated, and when the link is
-    # wired DHCP and therefore needs no profile at all. Non-fatal: a target
-    # that cannot be reconfigured is still better off booting.
+    # Carry the probed network settings onto the installed system. A non-UniTotem device's configuration lives
+    # in the root filesystem being overwritten, so migrate-etc-overlay (which only rescues what DATA held) has
+    # nothing to restore. Skipped when a profile was migrated and when the link is wired DHCP. Non-fatal.
     local net_args="${slot_arg} --data-mnt /mnt/newroot/mnt/data --link '${P[NETLINK]:-wired}' --mode '${P[NETMODE]:-dhcp}'"
     [ -n "${P[NETADDR]:-}" ]        && net_args="${net_args} --addr '${P[NETADDR]}'"
     [ -n "${P[NETGW]:-}" ]          && net_args="${net_args} --gw '${P[NETGW]}'"
@@ -728,7 +651,7 @@ run_ota_sequence() {
     [ -n "${P[WIFI_PSK_B64]:-}" ]   && net_args="${net_args} --psk-b64 '${P[WIFI_PSK_B64]}'"
     # shellcheck disable=SC2086
     ota_ssh "$host" "unitotem-ota-engine apply-network ${net_args}" \
-        || warn "applicazione dei parametri di rete fallita (non fatale)"
+        || warn "applying the network settings failed (non-fatal)"
 
     local trial_mode="$FIRMWARE"
     [ "$FIRMWARE" = rpi ] && trial_mode=$([ "$TRYBOOT_CAPABLE" = 1 ] && echo rpi-tryboot || echo rpi-legacy)
@@ -744,21 +667,12 @@ run_ota_sequence() {
 
     ota_ssh "$host" "unitotem-ota-engine umount-target" || true
 
-    log "Riavvio in prova sul sistema reale..."
-    # rpi-tryboot needs the literal argument "0 tryboot" passed through to
-    # the kernel's reboot(2) syscall for the Pi's firmware to read
-    # tryboot.txt on the next boot instead of config.txt (which still points
-    # at the fallback by design, until promote-default runs) - a plain
-    # reboot does not do this at all, it would just boot the fallback again.
-    # rpi-legacy doesn't need it (config.txt was already swapped directly by
-    # set-trial-boot above) and neither does uefi/bios (grub-reboot's
-    # one-shot is picked up by any normal reboot). See unitotem/files/ota-hook
-    # for why this needs the real systemd-provided reboot binary, not
-    # BusyBox's (which doesn't support this argument at all), and why a
-    # plain `reboot ARG` alone is not enough either - `-f` is what skips the
-    # logind/D-Bus path this initrd has no way to satisfy (no systemd
-    # running), verified empirically, not just from reading systemd's
-    # source.
+    log "Rebooting into the real system for a trial..."
+    # rpi-tryboot needs the literal argument "0 tryboot" passed to reboot(2) so the firmware reads tryboot.txt
+    # instead of config.txt (which points at the fallback until promote-default runs); a plain reboot would
+    # boot the fallback again. rpi-legacy (config.txt already swapped by set-trial-boot) and uefi/bios
+    # (grub-reboot's one-shot) need nothing special. The real systemd reboot binary is required, not BusyBox's
+    # (see unitotem/files/ota-hook), and `-f` skips the logind/D-Bus path that this initrd cannot satisfy.
     if [ "$trial_mode" = rpi-tryboot ]; then
         ota_ssh "$host" "sync; reboot -f '0 tryboot'" 2>/dev/null || true
     else
@@ -770,12 +684,11 @@ run_ota_sequence() {
 load_parts() {
     OPT_PARTS="${OPT_PARTS:-$(ls -td "${DIR}/deploy/${ARCH}/"*.parts 2>/dev/null | head -1)}"
     [ -n "$OPT_PARTS" ] && [ -d "$OPT_PARTS" ] \
-        || die "nessun parts set trovato per ${ARCH} (usa --parts o esegui prima deploy/make-parts.sh)"
+        || die "no parts set found for ${ARCH} (use --parts or run deploy/make-parts.sh first)"
 
     P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${OPT_PARTS}/parts.manifest")
     P_BOOTFS_PART=$(awk -F= '/^UNITOTEM_BOOTFS_PART=/{print $2}' "${OPT_PARTS}/parts.manifest")
-    # Partition number for a given label: scan blocks, remember the last
-    # UNITOTEM_PART= seen, print it when the matching label line is hit.
+    # Partition number for a label: remember the last UNITOTEM_PART= seen, print it at the matching label line.
     part_num_for_label() {
         awk -F= -v want="$1" '
             /^UNITOTEM_PART=/{n=$2}
@@ -786,7 +699,7 @@ load_parts() {
     P_LAYOUT="${P_LAYOUT:-1}"
     if [ "$P_LAYOUT" = 2 ]; then
         { [ "$ARCH" = amd64 ] && [ "$FIRMWARE" = uefi ]; } || { [ "$ARCH" = arm64 ] && [ "$FIRMWARE" = rpi ] && [ "$TRYBOOT_CAPABLE" = 1 ]; } \
-            || die "il layout A/B e' implementato per amd64/UEFI e per Raspberry con tryboot (target: ${ARCH}/${FIRMWARE}, tryboot=${TRYBOOT_CAPABLE:-0}); BIOS legacy e Raspberry senza tryboot non ancora"
+            || die "the A/B layout is supported on amd64/UEFI and on Raspberry with tryboot (target: ${ARCH}/${FIRMWARE}, tryboot=${TRYBOOT_CAPABLE:-0}); legacy BIOS and Raspberry without tryboot are not supported"
         P_ROOT_PART=$(part_num_for_label ROOT_A)
     else
         P_ROOT_PART=$(part_num_for_label ROOT)
@@ -802,46 +715,39 @@ cmd_deploy() {
     load_parts
     local min_disk; min_disk=$(awk -F= '/^UNITOTEM_MIN_DISK_BYTES=/{print $2}' "${OPT_PARTS}/parts.manifest")
     [ "$TARGET_DISK_SIZE" -ge "$min_disk" ] \
-        || die "${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE")) e' piu' piccolo del minimo richiesto ($(bytes_human "$min_disk"))"
+        || die "${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE")) is smaller than the required minimum ($(bytes_human "$min_disk"))"
 
     echo ""
     echo "Parts set   : $(basename "$OPT_PARTS")"
-    echo "Disco target: ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE"))"
-    echo "Target      : $([ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && echo 'gia'\'' UniTotem (percorso preparato)' || echo 'sistema legacy (push del fallback)')"
+    echo "Target disk : ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE"))"
+    echo "Target      : $([ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && echo 'already UniTotem (prepared path)' || echo 'other system (fallback push)')"
 
     secure_boot_gate
     changes_gate
 
     if [ "$OPT_YES" != 1 ]; then
-        read -rp "Procedo con il deploy? [scrivi SI]: " ans
-        [ "$ans" = "SI" ] || die "annullato dall'utente"
+        read -rp "Proceed with the deploy? [type YES]: " ans
+        [ "$ans" = "YES" ] || die "cancelled by the user"
     fi
 
     local target_ip="${TARGET_USERHOST##*@}"
 
     if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ]; then
-        log "Armo l'OTA dal sistema in esecuzione..."
+        log "Arming OTA from the running system..."
         local wipe_arg=""; [ "$OPT_WIPE_DATA" = 1 ] && wipe_arg="--wipe-data"
         # shellcheck disable=SC2086
-        # Not `|| die`: this command's job is to reboot the target, so ssh's
-        # exit status is a race, not a result. The reboot tears sshd down and
-        # the session dies with it ("Connection closed by remote host"), which
-        # ssh reports as failure even though the arming succeeded - observed
-        # every single time on real hardware, and worked around by hand each
-        # time. The actual verdict is wait_ota_reachable below: if arming
-        # really failed, the target simply stays up and the fallback never
-        # appears, which that call reports clearly. The target-side script
-        # also defers its reboot now (see unitotem/files/unitotem-ota-arm), but
-        # this stays tolerant regardless - a target still running an older
-        # image has the old script, and the race is timing-dependent anyway.
+        # Not `|| die`: this command reboots the target, so ssh's exit status is a race ("Connection closed by
+        # remote host" even when arming succeeded). The verdict is wait_ota_reachable below: if arming failed
+        # the fallback never appears. The target-side script defers its reboot (unitotem/files/unitotem-ota-arm),
+        # and this stays tolerant for targets running an older image.
         ssh_t "unitotem-ota-arm --port 2222 ${wipe_arg}" \
-            || warn "sessione SSH chiusa durante l'arming (atteso: il target si sta riavviando) - verifico la comparsa del fallback"
+            || warn "SSH session closed while arming (expected: the target is rebooting) - checking for the fallback to appear"
     else
         push_recovery_kernel
         if [ "$FIRMWARE" = rpi ]; then
             arm_rpi "$(build_legacy_cmdline)"
         else
-            [ "${P[GRUB_REBOOT]}" = 1 ] || die "grub-reboot non trovato sul target: impossibile armare una voce one-shot"
+            [ "${P[GRUB_REBOOT]}" = 1 ] || die "grub-reboot not found on the target: cannot arm a one-shot entry"
             arm_grub "$(build_legacy_cmdline)"
         fi
         do_reboot
@@ -850,7 +756,7 @@ cmd_deploy() {
     wait_ota_reachable "$target_ip"
     target_ip="${OTA_FOUND_HOST:-$target_ip}"
     if [ "$OPT_FALLBACK_ONLY" = 1 ]; then
-        log "Fallback pronto a ${target_ip}:2222. Nessuna scrittura sul disco (--fallback-only)."
+        log "Fallback ready at ${target_ip}:2222. Nothing written to the disk (--fallback-only)."
         return 0
     fi
     run_ota_sequence "$target_ip" "$TARGET_DISK_BYID"
@@ -858,48 +764,46 @@ cmd_deploy() {
     if [ "$SB_MODE" = noshim ]; then
         echo ""
         echo "=============================================================="
-        echo " INSTALLAZIONE COMPLETATA, MA IL SISTEMA NON PARTIRA' DA SOLO"
+        echo " INSTALLATION COMPLETE, BUT THE SYSTEM WILL NOT BOOT BY ITSELF"
         echo "=============================================================="
-        echo " Secure Boot e' attivo e hai scelto di installare senza shim: al riavvio il firmware mostra 'Security Violation'."
-        echo " Serve un INTERVENTO FISICO: entra nel setup del firmware e disattiva Secure Boot, poi riavvia."
+        echo " Secure Boot is active and you chose to install without shim: at reboot the firmware shows 'Security Violation'."
+        echo " A PHYSICAL INTERVENTION is needed: enter the firmware setup, disable Secure Boot, then reboot."
         echo "=============================================================="
         return 0
     fi
 
-    # The account to check afterwards is root@, NOT whatever we logged in as:
-    # the machine that comes back is the freshly deployed UniTotem, whose only
-    # known account is root. The user we armed from (a stock "pi", say) exists
-    # on the OS that was just replaced and is gone. The askpass helper written
-    # for that old user is gone with it, so escalation state is dropped too.
+    # The account to check afterwards is root@, not the login user: the machine that comes back is the freshly
+    # deployed UniTotem, whose only known account is root. The askpass helper written for the old user is gone
+    # with the replaced OS, so the escalation state is dropped too.
     local post="root@${target_ip}"
     clear_target_privilege
     TARGET_USERHOST="$post"; TARGET_SUDO=""; TARGET_PRIV_READY=1
 
-    log "Sequenza OTA inviata. Attendo che ${post} torni raggiungibile sul sistema reale (fino a 10 minuti)..."
+    log "OTA sequence sent. Waiting for ${post} to become reachable on the real system (up to 10 minutes)..."
     local waited=0
     sleep 30
     while ! OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" true 2>/dev/null; do
         sleep 10; waited=$((waited + 10))
-        [ "$waited" -lt 600 ] || { warn "il target non e' tornato raggiungibile entro 10 minuti - verificare manualmente (potrebbe essere ancora in stage 2, o nel fallback in attesa)"; return 0; }
+        [ "$waited" -lt 600 ] || { warn "the target did not become reachable within 10 minutes - check manually (it may still be in stage 2, or waiting in the fallback)"; return 0; }
     done
 
     if OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" "[ -f /etc/unitotem/ota-preserve.list ]" 2>/dev/null; then
-        log "Deploy completato: ${post} e' raggiungibile sul nuovo sistema."
+        log "Deploy complete: ${post} is reachable on the new system."
     else
-        warn "${post} e' raggiungibile ma non sembra il sistema nuovo - potrebbe essere ancora il fallback in attesa di comandi."
+        warn "${post} is reachable but does not look like the new system - it may still be the fallback waiting for commands."
         return 1
     fi
 }
 
 # ---------------------------------------------------------------------------
 cmd_recover() {
-    # The target is ALREADY in the OTA fallback (it got there by itself: both slots unusable, or a boot failure it could
-    # not repair). Nothing to arm, no running system to ask: everything is learned from the engine's own probe. DATA is
-    # kept whenever the partition table still has the expected shape and DATA passes a read-only fsck; otherwise the
-    # disk is laid out again from scratch (and DATA is lost) - only with --wipe-data, or when there is nothing to keep.
+    # The target is already in the OTA fallback (both slots unusable, or an unrepairable boot failure): nothing to
+    # arm, everything is learned from the engine's probe. DATA is kept when the partition table still has the
+    # expected shape and DATA passes a read-only fsck; otherwise (or with --wipe-data) the disk is laid out again
+    # and DATA is lost.
     local host="${RECOVER_HOSTPORT%%:*}"
-    log "Mi collego al target in fallback (${host})..."
-    ota_ssh "$host" true || die "impossibile raggiungere ${host} sulla sessione OTA (porta 2222)"
+    log "Connecting to the target in fallback (${host})..."
+    ota_ssh "$host" true || die "cannot reach ${host} on the OTA session (port 2222)"
 
     # Disk: --disk, else the one that carries our partitions, else the only disk.
     local disk="$OPT_DISK" cand d
@@ -911,7 +815,7 @@ cmd_recover() {
             if ota_ssh "$host" "blkid -L DATA; blkid -L ROOT_A; blkid -L ROOT; blkid -L EFI; blkid -L FIRMWARE" 2>/dev/null | grep -q "^${d}"; then cand="$d"; break; fi
         done
         [ -n "${cand:-}" ] || { [ "$n" = 1 ] && cand="$disks"; }
-        [ -n "${cand:-}" ] || die "impossibile scegliere il disco da solo: ripeti con --disk /dev/..."
+        [ -n "${cand:-}" ] || die "cannot choose the disk automatically: repeat with --disk /dev/..."
         disk="$cand"
     fi
 
@@ -919,29 +823,29 @@ cmd_recover() {
     local line probe_out
     probe_out=$(ota_ssh "$host" "unitotem-ota-engine probe --disk '${disk}'")
     while IFS= read -r line; do [ -n "$line" ] && E["${line%%=*}"]="${line#*=}"; done <<< "$probe_out"
-    [ -n "${E[UNITOTEM_DISK]:-}" ] || die "il target non risolve il disco ${disk}"
+    [ -n "${E[UNITOTEM_DISK]:-}" ] || die "the target does not resolve the disk ${disk}"
 
     case "${E[UNITOTEM_ARCH_HOST]:-}" in
         aarch64) ARCH=arm64; FIRMWARE=rpi; TRYBOOT_CAPABLE="${E[UNITOTEM_TRYBOOT]:-0}" ;;
         x86_64)  ARCH=amd64; FIRMWARE=$([ "${E[UNITOTEM_EFI]:-0}" = 1 ] && echo uefi || echo bios); TRYBOOT_CAPABLE=0 ;;
-        *) die "architettura del target non riconosciuta: ${E[UNITOTEM_ARCH_HOST]:-?}" ;;
+        *) die "unrecognised target architecture: ${E[UNITOTEM_ARCH_HOST]:-?}" ;;
     esac
     load_parts
 
-    # The table must still have the shape the parts set would write: same number of partitions, DATA on the expected number AND at the
-    # expected start sector (restore-part would otherwise write the slots over a different geometry than the one DATA lives in).
+    # The table must still have the shape the parts set would write: same number of partitions, DATA on the expected
+    # number and start sector (otherwise restore-part would write the slots over a different geometry than DATA's).
     local nparts_exp data_start_exp
     nparts_exp=$(grep -c ' : start=' "${OPT_PARTS}/layout.sfdisk")
     data_start_exp=$(grep -E "(^|[^0-9])${P_DATA_PART}[[:space:]]*:" "${OPT_PARTS}/layout.sfdisk" | head -1 | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
     # asked here, not of the engine: the recovery initrd on the target may be older than this script
     E[UNITOTEM_DATA_START]=$(ota_ssh "$host" 'd=$(blkid -L DATA 2>/dev/null) && cat /sys/class/block/${d##*/}/start' 2>/dev/null || true)
     local keep=1 why=""
-    [ "$OPT_WIPE_DATA" != 1 ]                                  || { keep=0; why="richiesto --wipe-data"; }
-    [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ]                      || { keep=0; why="la partizione DATA non e' leggibile"; }
-    [ "${E[UNITOTEM_DATA_FSCK]:-x}" = 0 ]                      || { keep=0; why="DATA non supera il controllo in sola lettura (fsck=${E[UNITOTEM_DATA_FSCK]:-n/d})"; }
-    [ "$(echo ${E[UNITOTEM_DATA_PARTN]:-x})" = "$P_DATA_PART" ]    || { keep=0; why="DATA non e' sulla partizione ${P_DATA_PART} attesa"; }
-    [ "${E[UNITOTEM_DATA_START]:-x}" = "$data_start_exp" ]     || { keep=0; why="DATA non inizia al settore atteso (${E[UNITOTEM_DATA_START]:-?} invece di ${data_start_exp})"; }
-    [ "${E[UNITOTEM_NPARTS]:-0}" = "$nparts_exp" ]             || { keep=0; why="la tabella ha ${E[UNITOTEM_NPARTS]:-0} partizioni, ne servono ${nparts_exp}"; }
+    [ "$OPT_WIPE_DATA" != 1 ]                                  || { keep=0; why="--wipe-data requested"; }
+    [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ]                      || { keep=0; why="the DATA partition is not readable"; }
+    [ "${E[UNITOTEM_DATA_FSCK]:-x}" = 0 ]                      || { keep=0; why="DATA fails the read-only check (fsck=${E[UNITOTEM_DATA_FSCK]:-n/a})"; }
+    [ "$(echo ${E[UNITOTEM_DATA_PARTN]:-x})" = "$P_DATA_PART" ]    || { keep=0; why="DATA is not on the expected partition ${P_DATA_PART}"; }
+    [ "${E[UNITOTEM_DATA_START]:-x}" = "$data_start_exp" ]     || { keep=0; why="DATA does not start at the expected sector (${E[UNITOTEM_DATA_START]:-?} instead of ${data_start_exp})"; }
+    [ "${E[UNITOTEM_NPARTS]:-0}" = "$nparts_exp" ]             || { keep=0; why="the table has ${E[UNITOTEM_NPARTS]:-0} partitions, ${nparts_exp} are needed"; }
     RECOVER_MODE=1; RECOVER_KEEP_TABLE=$keep
     RECOVER_BOOTFS_FRESH=0
     if [ "${E[UNITOTEM_HAVE_BOOTFS]:-0}" != 1 ] || { [ -n "${E[UNITOTEM_BOOTFS_FSCK]:-}" ] && [ "${E[UNITOTEM_BOOTFS_FSCK]}" != 0 ]; }; then
@@ -954,44 +858,39 @@ cmd_recover() {
     [ "${E[UNITOTEM_SECUREBOOT]:-}" = 1 ] && SB_MODE=shim
 
     echo ""
-    echo "Recupero    : ${host}  disco ${disk}  (${ARCH}/${FIRMWARE})"
+    echo "Recovery    : ${host}  disk ${disk}  (${ARCH}/${FIRMWARE})"
     echo "Parts set   : $(basename "$OPT_PARTS")"
     if [ "$keep" = 1 ]; then
-        echo "DATA        : INTEGRA, verra' PRESERVATA (tabella invariata)"
-        [ "$RECOVER_BOOTFS_FRESH" = 1 ] && echo "Boot        : partizione di boot danneggiata, verra' riformattata"
+        echo "DATA        : INTACT, will be PRESERVED (table unchanged)"
+        [ "$RECOVER_BOOTFS_FRESH" = 1 ] && echo "Boot        : boot partition damaged, will be reformatted"
     else
-        echo "DATA        : NON preservabile (${why}) - il disco viene riscritto da zero"
+        echo "DATA        : NOT preservable (${why}) - the disk is rewritten from scratch"
     fi
     if [ "$OPT_YES" != 1 ]; then
-        read -rp "Procedo con il recupero? [scrivi SI]: " ans
-        [ "$ans" = "SI" ] || die "annullato dall'utente"
+        read -rp "Proceed with the recovery? [type YES]: " ans
+        [ "$ans" = "YES" ] || die "cancelled by the user"
     fi
 
     run_ota_sequence "$host" "$disk"
-    log "Sequenza di recupero inviata: il target si riavvia sul sistema ripristinato."
+    log "Recovery sequence sent: the target reboots into the restored system."
 }
 
 cmd_serve() {
-    log "In ascolto per un target che richiama casa (reverse tunnel dropbear, porta 2222)..."
-    log "Nessuna azione automatica ulteriore: usa 'ssh -p 2222 root@localhost' una volta stabilito il tunnel."
+    log "Listening for a target calling home (dropbear reverse tunnel, port 2222)..."
+    log "No further automatic action: use 'ssh -p 2222 root@localhost' once the tunnel is up."
     while :; do sleep 3600; done
 }
 
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 # What has been changed on the target since its image was built.
 #
-# An OTA replaces ROOT wholesale, so anything installed or edited on the
-# running system is destroyed by it. Saying so beforehand is the difference
-# between an update and a surprise. The heavy lifting is on the target
-# (/usr/sbin/unitotem-ota-changes, which needs dpkg and so cannot live in the
-# fallback's ota-engine.sh); this side only presents it and gates on it.
+# An OTA replaces ROOT wholesale, so anything installed or edited on the running system is destroyed. The work
+# is done on the target (/usr/sbin/unitotem-ota-changes, which needs dpkg and so cannot live in the fallback's
+# ota-engine.sh); this side only presents the result and gates on it.
 # ---------------------------------------------------------------------------
 
-# exit 0 = nothing changed, 1 = changes found, 2 = the check itself failed.
-# Anything else means the target has no such command, which is the normal
-# state of a device whose image predates it - not an error worth blocking a
-# deploy over.
+# exit 0 = nothing changed, 1 = changes found, 2 = the check itself failed. 127 means the target has no such
+# command (an image that predates it), which does not block a deploy.
 CHANGES_OUT="" CHANGES_RC=0
 run_changes_check() {
     local flag="${1:-}"
@@ -1008,140 +907,136 @@ cmd_changes() {
     fi
     case "$CHANGES_RC" in
         0|1) printf '%s\n' "$CHANGES_OUT" ;;
-        127) die "il target non ha unitotem-ota-changes (immagine anteriore a questa funzione)" ;;
-        *)   die "controllo delle modifiche fallito sul target: ${CHANGES_OUT}" ;;
+        127) die "the target has no unitotem-ota-changes (image predates this feature)" ;;
+        *)   die "change check failed on the target: ${CHANGES_OUT}" ;;
     esac
     return "$CHANGES_RC"
 }
 
-# Secure Boot (amd64/UEFI). The firmware refuses to run anything not signed by a key it trusts. UniTotem's own GRUB is unsigned, so
-# there are two ways in and the operator must pick one explicitly: boot through Debian's Microsoft-signed shim (the chain is staged in
-# the image and activated by populate-bootfs --secure-boot shim), or install as-is and fix the firmware afterwards. The choice is
-# never made silently, because both can need someone standing at the machine.
+# Secure Boot (amd64/UEFI). The firmware refuses anything not signed by a key it trusts, and UniTotem's own GRUB is
+# unsigned. The operator must pick explicitly: boot through Debian's Microsoft-signed shim (the chain is staged in the
+# image and activated by populate-bootfs --secure-boot shim), or install as-is and fix the firmware afterwards. Both
+# can need someone at the machine, so the choice is never made silently.
 secure_boot_gate() {
     [ "$ARCH" = amd64 ] && [ "$FIRMWARE" = uefi ] || return 0
     case "${P[SECUREBOOT]:-unknown}" in
-        0) [ -z "$OPT_SECURE_BOOT" ] || warn "--secure-boot ${OPT_SECURE_BOOT}: ignorato, Secure Boot non e' attivo sul target"; return 0 ;;
+        0) [ -z "$OPT_SECURE_BOOT" ] || warn "--secure-boot ${OPT_SECURE_BOOT}: ignored, Secure Boot is not active on the target"; return 0 ;;
         1) ;;
-        *) warn "stato di Secure Boot non rilevabile sul target: procedo come se fosse disattivato (se e' attivo, il sistema installato non partira')"; return 0 ;;
+        *) warn "Secure Boot state cannot be detected on the target: proceeding as if it were off (if it is on, the installed system will not boot)"; return 0 ;;
     esac
 
-    # An UniTotem already running with Secure Boot on is booting through some trusted path: keep the shim chain.
-    # (only with an A/B parts set: the shim chain is staged only in those images; with another layout fall through to the choice)
+    # A UniTotem already running with Secure Boot on boots through a trusted path: keep the shim chain (only with an
+    # A/B parts set, the only one that stages it; otherwise fall through to the choice).
     if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ "${P_LAYOUT:-1}" = 2 ] && [ -z "$OPT_SECURE_BOOT" ]; then
-        log "Secure Boot attivo e il target e' gia' UniTotem: mantengo la catena shim"
+        log "Secure Boot is active and the target is already UniTotem: keeping the shim chain"
         SB_MODE=shim; return 0
     fi
 
     if [ -z "$OPT_SECURE_BOOT" ]; then
         [ "$OPT_YES" != 1 ] \
-            || die "Secure Boot e' ATTIVO sul target: scegli esplicitamente --secure-boot shim | noshim (oppure disattivalo nel firmware e rilancia)"
+            || die "Secure Boot is ACTIVE on the target: choose explicitly with --secure-boot shim | noshim (or disable it in the firmware and run again)"
         echo ""
         echo "=============================================================="
-        echo " SECURE BOOT e' ATTIVO sul target"
+        echo " SECURE BOOT is ACTIVE on the target"
         echo "=============================================================="
-        echo " Il firmware accetta solo programmi di avvio firmati con una chiave che conosce."
-        echo " Il GRUB di UniTotem non e' firmato. Come procedo?"
+        echo " The firmware only accepts boot programs signed with a key it knows."
+        echo " UniTotem's GRUB is not signed. How should I proceed?"
         echo ""
-        echo "  1) INSTALLA CON SHIM"
-        echo "     L'avvio passa da shim (firmato Microsoft) -> GRUB e kernel firmati Debian: parte senza toccare il firmware."
-        echo "     ATTENZIONE, puo' servire un INTERVENTO FISICO sulla macchina:"
-        echo "       - con una GPU NVIDIA il driver proprietario e' un modulo non firmato: va registrata una chiave (MOK)"
-        echo "         dalla console al primo avvio, altrimenti niente driver video accelerato;"
-        echo "       - se il firmware non si fida della CA Microsoft UEFI (Secure Boot personalizzato) shim e' rifiutato."
-        echo "     Se il sistema attuale non e' Debian, il primo passaggio (voce GRUB una tantum) puo' fallire: il suo shim"
-        echo "     rifiuta il kernel Debian (\"bad shim signature\") e la macchina si ferma al prompt di GRUB."
+        echo "  1) INSTALL WITH SHIM"
+        echo "     Boot goes through shim (Microsoft-signed) -> Debian-signed GRUB and kernel: no change to the firmware needed."
+        echo "     WARNING, a PHYSICAL INTERVENTION on the machine may be needed:"
+        echo "       - with an NVIDIA GPU the proprietary driver is an unsigned module: a key (MOK) must be enrolled"
+        echo "         from the console at first boot, otherwise there is no accelerated video driver;"
+        echo "       - if the firmware does not trust the Microsoft UEFI CA (custom Secure Boot), shim is rejected."
+        echo "     If the current system is not Debian, the first step (one-shot GRUB entry) may fail: its shim"
+        echo "     rejects the Debian kernel (\"bad shim signature\") and the machine stops at the GRUB prompt."
         echo ""
-        echo "  2) INSTALLA SENZA SHIM"
-        echo "     L'installazione termina, ma al riavvio il firmware rifiutera' il GRUB non firmato (\"Security Violation\")."
-        echo "     Un INTERVENTO FISICO e' NECESSARIO per forza: disattivare Secure Boot dal firmware (o registrarne l'hash)."
+        echo "  2) INSTALL WITHOUT SHIM"
+        echo "     The install completes, but at reboot the firmware rejects the unsigned GRUB (\"Security Violation\")."
+        echo "     A PHYSICAL INTERVENTION is REQUIRED: disable Secure Boot in the firmware (or enroll the hash)."
         echo ""
-        echo "  3) ANNULLA"
-        echo "     Non viene toccato nulla. Disattiva Secure Boot nel firmware e rilancia il deploy."
+        echo "  3) ABORT"
+        echo "     Nothing is touched. Disable Secure Boot in the firmware and run the deploy again."
         echo "=============================================================="
         local c
-        read -rp "Scelta [1/2/3]: " c
+        read -rp "Choice [1/2/3]: " c
         case "$c" in 1) OPT_SECURE_BOOT=shim ;; 2) OPT_SECURE_BOOT=noshim ;; *) OPT_SECURE_BOOT=abort ;; esac
     fi
 
     case "$OPT_SECURE_BOOT" in
-        abort)  die "annullato: Secure Boot e' attivo sul target. Disattivalo nel firmware (o scegli --secure-boot shim|noshim) e rilancia" ;;
+        abort)  die "aborted: Secure Boot is active on the target. Disable it in the firmware (or choose --secure-boot shim|noshim) and run again" ;;
         shim)
-            [ "${P_LAYOUT:-1}" = 2 ] || die "la catena shim e' staged solo nelle immagini A/B: questo parts set non la contiene (usa un'immagine A/B o --secure-boot noshim)"
+            [ "${P_LAYOUT:-1}" = 2 ] || die "the shim chain is staged only in A/B images: this parts set does not contain it (use an A/B image or --secure-boot noshim)"
             SB_MODE=shim
-            warn "Secure Boot: installo con shim. Se il target ha una GPU NVIDIA servira' registrare la chiave MOK dalla console (intervento fisico)."
+            warn "Secure Boot: installing with shim. With an NVIDIA GPU the MOK key must be enrolled from the console (physical intervention)."
             ;;
         noshim)
             SB_MODE=noshim
-            warn "Secure Boot: installo SENZA shim. Al riavvio il firmware mostrera' 'Security Violation': serve un intervento fisico (disattivare Secure Boot)."
+            warn "Secure Boot: installing WITHOUT shim. At reboot the firmware will show 'Security Violation': a physical intervention is needed (disable Secure Boot)."
             ;;
     esac
 }
 
 changes_gate() {
-    # A foreign device being adopted has no baseline to compare against, and
-    # nothing on it is being preserved anyway - the whole disk is going.
+    # A non-UniTotem device has no baseline to compare against, and the whole disk is overwritten anyway.
     if [ "${P[HAVE_UNITOTEM]:-0}" != 1 ]; then
         return 0
     fi
 
-    log "Controllo le modifiche fatte sul target dall'installazione..."
+    log "Checking the changes made on the target since installation..."
     run_changes_check
 
     if [ "$CHANGES_RC" = 127 ]; then
-        # Expected on the first deploy that installs the tool: the image
-        # running right now was built before it existed.
-        warn "il target non espone unitotem-ota-changes: impossibile dire cosa verra' sovrascritto"
+        # Expected when the running image predates the tool.
+        warn "the target does not provide unitotem-ota-changes: cannot tell what will be overwritten"
         return 0
     fi
     if [ "$CHANGES_RC" -gt 1 ]; then
-        warn "controllo delle modifiche non riuscito (${CHANGES_OUT}) - proseguo senza"
+        warn "change check failed (${CHANGES_OUT}) - continuing without it"
         return 0
     fi
     if [ "$CHANGES_RC" = 0 ]; then
-        log "Nessuna modifica rispetto all'immagine installata."
+        log "No changes from the installed image."
         return 0
     fi
 
     local verdict digest
-    verdict=$(printf '%s\n' "$CHANGES_OUT" | awk '/^Esito:/{print $2; exit}')
+    verdict=$(printf '%s\n' "$CHANGES_OUT" | awk '/^Verdict:/{print $2; exit}')
     digest=$(printf '%s\n' "$CHANGES_OUT" | awk '/^Digest:/{print $2; exit}')
 
     echo ""
     echo "=============================================================="
-    echo " Il deploy sostituisce ROOT: quanto segue andrebbe PERDUTO."
+    echo " The deploy replaces ROOT: the following would be LOST."
     echo "=============================================================="
     printf '%s\n' "$CHANGES_OUT"
     echo "=============================================================="
 
-    # A digest supplied by the caller must still describe what is on the
-    # device *now*. If someone installed a package between the moment the
-    # operator looked at the list and the moment they confirmed, this is what
-    # stops the deploy from silently destroying something nobody was shown.
+    # A caller-supplied digest must still describe what is on the device now, so a package installed between the
+    # operator's review and the confirmation cannot be destroyed unseen.
     if [ -n "$OPT_ACCEPT_CHANGES" ]; then
         if [ "$OPT_ACCEPT_CHANGES" = "$digest" ]; then
-            log "Modifiche accettate (digest corrispondente)."
+            log "Changes accepted (digest matches)."
             return 0
         fi
-        die "il digest fornito non corrisponde alle modifiche attuali (atteso ${digest}) - il sistema e' cambiato da quando e' stato mostrato"
+        die "the supplied digest does not match the current changes (expected ${digest}) - the system changed since it was shown"
     fi
 
     if [ "$OPT_YES" = 1 ]; then
-        warn "--yes: procedo sovrascrivendo le modifiche elencate sopra (esito: ${verdict})"
+        warn "--yes: proceeding and overwriting the changes listed above (verdict: ${verdict})"
         return 0
     fi
 
     local ans
     case "$verdict" in
-        packages-only) read -rp "Sono solo pacchetti installati. Procedo e li perdo? [scrivi SI]: " ans ;;
-        *)             read -rp "Ci sono anche file modificati NON spiegati da pacchetti. Procedo? [scrivi SI]: " ans ;;
+        packages-only) read -rp "Only installed packages are affected. Proceed and lose them? [type YES]: " ans ;;
+        *)             read -rp "Files were also changed that packages do NOT explain. Proceed? [type YES]: " ans ;;
     esac
-    [ "$ans" = "SI" ] || die "annullato dall'utente"
+    [ "$ans" = "YES" ] || die "cancelled by the user"
 }
 
 cmd_disarm() {
     do_probe
-    log "Rimuovo l'arming su ${TARGET_USERHOST} (${FIRMWARE})..."
+    log "Removing the arming on ${TARGET_USERHOST} (${FIRMWARE})..."
     if [ "$FIRMWARE" = rpi ]; then
         ssh_t bash -s -- "${P[BOOTMNT]}" <<'REMOTE_EOF'
 set -eu
@@ -1160,7 +1055,7 @@ rm -f "$(findmnt -no TARGET /boot 2>/dev/null || echo /boot)/unitotem-recovery-v
       "$(findmnt -no TARGET /boot 2>/dev/null || echo /boot)/unitotem-recovery-initrd.img"
 REMOTE_EOF
     fi
-    log "Disarmato. Il target riavviera' normalmente."
+    log "Disarmed. The target will reboot normally."
 }
 
 case "$SUBCMD" in

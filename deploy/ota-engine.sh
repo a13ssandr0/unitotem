@@ -1,44 +1,28 @@
 #!/bin/bash
-# Shared OTA engine: every operation deploy/remote-deploy.sh needs on a
-# target, exposed as subcommands driven over SSH (control channel) with bulk
-# partition data pulled over a plain netcat connection (data channel) - see
-# the OTA redesign plan for why the control channel is SSH rather than a
-# hand-rolled protocol (deploy/ota-commands.md documents this CLI).
+# Shared OTA engine: every operation deploy/remote-deploy.sh needs on a target, exposed as subcommands driven
+# over SSH (control channel), with bulk partition data pulled over a plain netcat connection (data channel).
+# deploy/ota-commands.md documents this CLI.
 #
-# Installed at /usr/lib/unitotem/ota-engine.sh (symlinked from
-# /usr/sbin/unitotem-ota-engine) inside the rootfs by unitotem/stage1-packages.sh,
-# so it ships both in the resident fallback initrd (unitotem/stage1-recovery-initrd.sh,
-# built from that same stage1 rootfs) and in the real system's own initramfs
-# (unitotem/stage2-configure.sh installs the init-premount/local-bottom wrappers
-# that call it). Every subcommand below takes its own --disk, so it is also
-# runnable standalone on any Linux box (against a loop device instead of a
-# real disk) with no initramfs involved at all - what makes the host-side
-# loopback verification loop possible without a VM or real hardware (see
-# the plan's verification section). Only init-premount/serve-fallback/
-# local-bottom-verify assume they are actually running inside an initramfs.
+# Installed at /usr/lib/unitotem/ota-engine.sh (symlinked from /usr/sbin/unitotem-ota-engine) by
+# unitotem/stage1-packages.sh, so it ships in the resident fallback initrd (unitotem/stage1-recovery-initrd.sh)
+# and in the system's own initramfs (unitotem/stage2-configure.sh installs the init-premount/local-bottom
+# wrappers that call it). Every subcommand takes its own --disk, so it also runs standalone on any Linux box
+# (against a loop device). Only init-premount/serve-fallback/local-bottom-verify assume an initramfs.
 #
-# Bash on purpose (not dash): needs pipefail, /dev/tcp, and process
-# substitution for the progress gauge - this initrd already carries bash for
-# it (see unitotem/files/ota-hook).
+# Bash, not dash: it needs pipefail, /dev/tcp and process substitution for the progress gauge (the initrd
+# carries bash, see unitotem/files/ota-hook).
 set -Eeuo pipefail
 . /scripts/functions 2>/dev/null || true   # only present inside an initramfs
 
-# stderr, never stdout: several callers capture a function's real output via
-# $(...) (configure_networking_ota's returned IP, cmd_probe's KEY=VALUE
-# lines, etc.) - a log()/warn() call anywhere in that function must not leak
-# into the captured value. Confirmed happening for real: a network warning
-# during configure_networking_ota ended up as cmd_serve_fallback's "myip",
-# shown as the address in the OTA whiptail screen instead of any real IP.
+# stderr, never stdout: several callers capture a function's output via $(...) (configure_networking_ota's
+# returned IP, cmd_probe's KEY=VALUE lines), which a log()/warn() must not leak into.
 # kmsg LINE: into the kernel log at debug level (<7>): readable with dmesg, never printed on the console/screen.
 kmsg() { printf '<7>%s\n' "$*" > /dev/kmsg 2>/dev/null || true; }
 log()  { echo "unitotem-ota: $*" >&2; kmsg "unitotem-ota: $*"; }
 warn() { log "WARNING: $*"; }
 
 # ---------------------------------------------------------------------------
-# Reused verbatim from the old whole-disk flasher script (removed from the
-# repo once this two-stage design replaced it - see PLAN.md's history for why
-# each of these looks the way it does: two real races and one bitmask
-# footgun, all found in earlier live testing).
+# Device helpers
 # ---------------------------------------------------------------------------
 pdev_target() {
     case "$1" in
@@ -49,16 +33,10 @@ pdev_target() {
 
 partnum_of() { printf '%s\n' "${1##*[!0-9]}"; }
 
-# Mount a boot-fs device for writing, tolerating it already being mounted
-# read-only elsewhere - which it always is on the resident fallback, where
-# /boot-ota stays mounted ro for the whole session (bootcount/flag reads,
-# unitotem-ota.conf). Confirmed as a real bug on hardware, not theoretical:
-# a plain `mount -t vfat "$dev" "$mnt"` here silently degrades to read-only
-# (libmount prints "source write-protected, mounted read-only") whenever the
-# kernel already has the same block device mounted ro somewhere else - Linux
-# won't hand out a second, independent read-write superblock for a device
-# that already has an active reader. Reusing the existing mount (remounted
-# rw, bind-mounted to the caller's expected path) avoids that entirely.
+# Mount a boot-fs device for writing, tolerating it already being mounted read-only elsewhere (on the resident
+# fallback /boot-ota stays mounted ro for the whole session). A plain `mount -t vfat` silently comes up
+# read-only when the same block device is already mounted ro, so the existing mount is remounted rw and
+# bind-mounted to the caller's path.
 ota_mount_bootfs_rw() {
     local dev="$1" mnt="$2" existing
     mkdir -p "$mnt"
@@ -72,10 +50,8 @@ ota_mount_bootfs_rw() {
     fi
 }
 
-# Companion to ota_mount_bootfs_rw: unmount the caller's path, and if the
-# device is still mounted elsewhere (the persistent /boot-ota reader), put
-# that back to read-only rather than leaving it writable for the rest of the
-# session outside an explicit write operation.
+# Companion to ota_mount_bootfs_rw: unmount the caller's path, and put a remaining mount of the device
+# (the persistent /boot-ota reader) back to read-only.
 ota_umount_bootfs_rw() {
     local dev="$1" mnt="$2" existing
     umount "$mnt" 2>/dev/null || true
@@ -83,10 +59,9 @@ ota_umount_bootfs_rw() {
     [ -n "$existing" ] && mount -o remount,ro "$existing" 2>/dev/null || true
 }
 
-# The root slot is mounted read-only and nothing is supposed to write it, so the boot-time check must not write
-# either: the old `e2fsck -fy` rewrote the superblock (and "fixed" whatever it saw, unattended) on every boot, which
-# is one more write in flight each time the power drops. Look first; only if that finds something let preen make
-# the repairs that are safe, then judge again. Anything still wrong goes to the fallback, where a person decides.
+# The root slot is mounted read-only, so the boot-time check must not write either (an `e2fsck -fy` would
+# rewrite the superblock on every boot). Look first; only if that finds something let preen make the safe
+# repairs, then judge again. Anything still wrong goes to the fallback, where a person decides.
 check_root_readonly() {
     local dev="$1" rc=0
     e2fsck -fn "$dev" >/dev/null 2>&1 || rc=$?
@@ -121,11 +96,8 @@ resolve_disk() {
     echo "$resolved"
 }
 
-# KEY=VALUE lines, blank-line terminated, whitelisted keys and value
-# charset - used for local files only (flag file, unitotem-ota.conf,
-# parts.manifest): those are trusted once read off disk, but the format
-# hardening is kept anyway since it costs nothing and the flag file's
-# content did, at one point, come over the network during arming.
+# KEY=VALUE lines, blank-line terminated, whitelisted keys and value charset. Used for local files only (flag
+# file, unitotem-ota.conf, parts.manifest); the flag file's content is written by the arming host.
 read_kv_lines() {
     local line key val
     while IFS= read -r line; do
@@ -142,22 +114,14 @@ read_kv_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# Failure handling. Phase-dependent per the plan: before the partition table
-# is (re)written, a failure can still roll back to whatever booted this
-# initrd (the legacy push path's one-shot entry self-reverts on GRUB, and
-# rollback_config_swap() below undoes the Pi config.txt swap); once the
-# table has been rewritten there is nothing to roll back to, so fail() past
-# that point must never reboot - it drops into the same fallback console
-# every automatic-recovery trigger uses, keeping the machine remotely
-# reachable instead of bouncing into a half-written disk.
+# Failure handling. Before the partition table is (re)written, a failure can still roll back to whatever
+# booted this initrd (a GRUB one-shot entry self-reverts, rollback_config_swap() below undoes the Pi
+# config.txt swap). Once the table has been rewritten there is nothing to roll back to, so fail() must never
+# reboot: it drops into the fallback console, keeping the machine remotely reachable.
 # ---------------------------------------------------------------------------
 DEBUG="${UNITOTEM_OTA_DEBUG:-0}"
-# Persisted to disk (/run survives across separate ssh_t invocations within
-# the same boot, which is what each of these subcommands is - a fresh
-# process every time) rather than kept only as an in-process variable:
-# restore-table and restore-part run as *separate* SSH-driven invocations of
-# this same script, so a plain shell variable set in one process would not
-# be visible to fail() in another.
+# Kept in /run (not a shell variable) because restore-table and restore-part run as separate invocations of
+# this script.
 NO_RETURN_MARKER=/run/unitotem-ota-point-of-no-return
 mark_point_of_no_return() { : > "$NO_RETURN_MARKER"; }
 past_point_of_no_return() { [ -f "$NO_RETURN_MARKER" ]; }
@@ -195,9 +159,7 @@ parse_args() {
 need() { [ -n "${ARG[$1]:-}" ] || fail "--$1 required"; }
 
 # ---------------------------------------------------------------------------
-# probe: facts about the current target, printed as KEY=VALUE so the caller
-# (remote-deploy.sh, over SSH) can parse them the same way it already parses
-# do_probe()'s output.
+# probe: facts about the current target, printed as KEY=VALUE for remote-deploy.sh to parse.
 # ---------------------------------------------------------------------------
 cmd_probe() {
     parse_args "$@"
@@ -226,7 +188,7 @@ cmd_probe() {
         echo "UNITOTEM_DISK=$disk"
         echo "UNITOTEM_DISKSIZE=$size"
 
-        # Single-root layout has ROOT, A/B has ROOT_A + ROOT_B. Each slot is judged on its own: the label exists, the
+        # Slots are ROOT_A + ROOT_B (ROOT on older layouts). Each slot is judged on its own: the label exists, the
         # filesystem mounts read-only and carries the "is a UniTotem root" marker. (A destroyed slot has no label.)
         local lbl slotdev have_root=0 have_unitotem=0
         for lbl in ROOT ROOT_A ROOT_B; do
@@ -274,24 +236,16 @@ cmd_probe() {
 
     command -v partclone.restore >/dev/null 2>&1 \
         && echo "UNITOTEM_PARTCLONE_VERSION=$(partclone.restore -v 2>&1 | head -1 | awk '{print $2}')"
-    # No `tr` here on purpose: bash command substitution already stores C
-    # strings internally and truncates at the first NUL byte, which is
-    # exactly the (single, trailing) NUL these device-tree string properties
-    # end with - same effective result as `tr -d '\0'` without depending on
-    # an external binary that may be missing from a minimal initramfs
-    # (confirmed missing on real hardware, see unitotem/files/ota-hook).
+    # No `tr` here: command substitution drops the trailing NUL of device-tree string properties, and tr may be
+    # missing from a minimal initramfs.
     [ -f /proc/device-tree/model ] && echo "UNITOTEM_MODEL=$(cat /proc/device-tree/model 2>/dev/null)"
     true
 }
 
 # ---------------------------------------------------------------------------
-# restore-table: sfdisk restore with the two corrections that matter (see
-# the plan's "dettagli del restore sfdisk"): last-lba stripped so the usable
-# area isn't capped at the source disk's size, and the tail partition's
-# size= recomputed against the REAL disk rather than trusted as dumped.
-# Table arrives base64'd on the command line (same reasoning as
-# remote-deploy.sh's arm_grub/arm_rpi: no whitespace survives an ssh argv
-# round-trip otherwise).
+# restore-table: sfdisk restore with two corrections: last-lba stripped so the usable area is not capped at the
+# source disk's size, and the tail partition's size= recomputed against the real disk. The table arrives
+# base64'd on the command line (whitespace does not survive an ssh argv round-trip).
 # ---------------------------------------------------------------------------
 cmd_restore_table() {
     ota_status_set "Writing the partition table"
@@ -304,12 +258,8 @@ cmd_restore_table() {
     local patched
     patched=$(printf '%s\n' "$table" | grep -v '^last-lba:')
 
-    # sfdisk --dump lines are keyed by the FULL device path of each
-    # partition (e.g. "/dev/sda3 : start=..., size=..., ..."), on the disk
-    # the dump was taken from - which is generally not $disk here (the dump
-    # comes from the parts set, generated against a loop device on the
-    # build host). Match on the trailing "<tail_part> :" instead of the
-    # whole path, which is stable across both.
+    # sfdisk --dump lines are keyed by the full device path of the disk the dump was taken from (a loop device
+    # on the build host), which is not $disk here: match on the trailing "<tail_part> :" instead.
     local disk_sectors tail_start
     disk_sectors=$(blockdev --getsz "$disk")
     tail_start=$(printf '%s\n' "$patched" | grep -E "(^|[^0-9])${tail_part}[[:space:]]*:" | head -1 \
@@ -327,8 +277,8 @@ cmd_restore_table() {
             print line
         }')
 
-    # The boot partition is mounted read-only at /boot-ota for the whole fallback session; rewriting the table under a
-    # mounted partition makes the kernel keep the OLD geometry (the re-read fails with EBUSY) when the new table moves it.
+    # The boot partition is mounted read-only at /boot-ota for the whole fallback session; rewriting the table under
+    # a mounted partition makes the kernel keep the old geometry (the re-read fails with EBUSY) if it moves.
     umount /boot-ota 2>/dev/null || true
     log "Writing the partition table on $disk (total sectors: $disk_sectors)..."
     printf '%s\n' "$patched" | sfdisk --force --no-reread "$disk" || fail "sfdisk restore failed"
@@ -347,13 +297,9 @@ cmd_restore_table() {
 }
 
 # ---------------------------------------------------------------------------
-# restore-part: pull one partclone stream over the DATA connection (plain
-# netcat, target connects out - see the plan for why) and restore it
-# in-place. -C is only ever passed after WE have verified the used bytes
-# actually fit the real target partition (never trusting partclone's blunter
-# total-size gate blindly, and never passing -C unconditionally either -
-# see the plan's partclone risk section for the reasoning and the verified
-# partclone.restore behaviour it's based on).
+# restore-part: pull one partclone stream over the DATA connection (plain netcat, the target connects out) and
+# restore it in place. -C is passed only after verifying that the used bytes (plus margin) fit the real target
+# partition, instead of relying on partclone's coarser total-size check.
 # ---------------------------------------------------------------------------
 cmd_restore_part() {
     parse_args "$@"
@@ -372,36 +318,20 @@ cmd_restore_part() {
     fi
 
     log "Restoring partition ${ARG[part]} ($part_dev, cloner=${ARG[cloner]}) from ${ARG[data-host]}:${ARG[data-port]}..."
-    # partclone.restore always tries to open /var/log/partclone.log and
-    # fails outright ("open logfile ... error") if the directory doesn't
-    # exist - confirmed as a real hardware bug, not theoretical: this
-    # initrd's /var is a bare tmpfs with nothing pre-creating /var/log, so
-    # every restore-part call failed immediately, before ever touching the
-    # data connection.
+    # partclone.restore fails ("open logfile ... error") if /var/log does not exist, and this initrd's /var is a
+    # bare tmpfs.
     mkdir -p /var/log
     exec 4<>"/dev/tcp/${ARG[data-host]}/${ARG[data-port]}"
 
     local restore_flags=(-o "$part_dev" -s -)
     [ "$allow_smaller" = 1 ] && [ "${ARG[cloner]}" != dd ] && restore_flags=(-C "${restore_flags[@]}")
 
-    # Restore always goes through partclone.restore regardless of which
-    # partclone.<fstype> made the image (that binary choice only matters on
-    # the generation side, in deploy/make-parts.sh) - it reads the image's
-    # own header to know how to lay the blocks back out.
-    # pv sits after decompression so it measures the payload, which is what
-    # --used-bytes describes; measuring the compressed side would give a
-    # percentage against a total nobody knows. -n makes it emit a bare integer
-    # per update, which ota_ui_feed reads back. Its stderr goes to a file
-    # rather than a pipe on purpose: the UI runs in a different process, and a
-    # pipe would couple the transfer's fate to the reader's.
-    # pv is inserted ONLY when it exists, and the no-pv branch is the exact
-    # original pipeline. This is not defensive padding: adding pv
-    # unconditionally broke the restore outright where pv was absent - the
-    # missing binary took the middle of the pipe out, partclone saw immediate
-    # EOF and reported "Device size: 0 Byte" with a bitmap CRC error, so a
-    # progress indicator destroyed the data path it was meant to report on.
-    # Progress is a nicety; the restore is not, and it must never depend on
-    # something optional being present.
+    # Restore always goes through partclone.restore whichever partclone.<fstype> made the image (it reads the
+    # image header). pv sits after decompression so it measures the payload that --used-bytes describes; -n
+    # emits a bare integer per update, which ota_ui_feed reads back. Its stderr goes to a file, not a pipe: the UI
+    # is a different process and a pipe would couple the transfer to the reader.
+    # pv is used only when present: without it the pipeline would break (partclone would see an immediate EOF),
+    # and the restore must never depend on the optional progress display.
     ota_status_set "Writing partition ${ARG[part]} (${ARG[cloner]})"
     local have_pv=0
     command -v pv >/dev/null 2>&1 && have_pv=1
@@ -451,8 +381,8 @@ cmd_format_part() {
 # because this is the one place that decides what the next boot is.
 grubenv_write() {
     local file="$1"; shift
-    # Built with += and $'\n', not $(...): command substitution strips the trailing newline, which would
-    # fuse the '#' padding onto the last value ("ota-recovery####...") and silently change what GRUB reads.
+    # Built with += and $'\n', not $(...), which strips the trailing newline and would fuse the '#' padding
+    # onto the last value ("ota-recovery####...").
     local body="# GRUB Environment Block"$'\n' kv
     for kv in "$@"; do body+="$kv"$'\n'; done
     local pad=$((1024 - ${#body}))
@@ -481,11 +411,9 @@ cmd_data_op() {
 }
 
 # ---------------------------------------------------------------------------
-# write-bootfile: file-level write onto the boot FAT partition (EFI/
-# FIRMWARE), used both for the recovery kernel/initrd (stage 1) and the real
-# system's own kernel8.img/initramfs8/dtbs (stage 2, populate-bootfs step) -
-# one code path, so stage 2 can never clobber what stage 1 wrote by
-# accident: content arrives on stdin, target path is always explicit.
+# write-bootfile: file-level write onto the boot FAT partition (EFI/FIRMWARE), used for the recovery
+# kernel/initrd (stage 1) and the real system's kernel8.img/initramfs8/dtbs (stage 2). Content arrives on
+# stdin and the target path is always explicit, so stage 2 cannot clobber what stage 1 wrote by accident.
 # ---------------------------------------------------------------------------
 cmd_write_bootfile() {
     parse_args "$@"
@@ -510,19 +438,17 @@ cmd_prepare_bootfs() {
     local disk; disk=$(resolve_disk "${ARG[disk]}")
     local bootfs_dev; bootfs_dev=$(pdev_target "$disk" "${ARG[bootfs-part]}")
     if [ "${ARG[fresh]:-0}" = 1 ]; then
-        # When the fallback was entered through the flag file, init-premount left this very partition mounted
-        # read-only on /boot-ota (it keeps it for the whole session), and mkfs.fat refuses a mounted device:
-        # "contains a mounted filesystem" - after sfdisk had already rewritten the table. Let go of it first.
-        # (Other mounts of the device are released too; ota_mount_bootfs_rw mounts it afresh when needed.)
+        # init-premount keeps this partition mounted read-only on /boot-ota for the whole session, and mkfs.fat
+        # refuses a mounted device: release it (and any other mount of it) first; ota_mount_bootfs_rw mounts it
+        # again when needed.
         umount /boot-ota 2>/dev/null || true
         local m
         while m=$(awk -v d="$bootfs_dev" '$1==d{print $2; exit}' /proc/mounts) && [ -n "$m" ]; do
             umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || break
         done
         log "Formatting the boot partition ($bootfs_dev, ${ARG[fstype]})..."
-        # --volid: the FAT serial of the image's own boot partition. GRUB's EFI/BIOS images locate the
-        # directory holding grub.cfg by that serial (search.fs_uuid), so a freshly formatted partition
-        # with a random one boots to a bare grub prompt.
+        # --volid: the FAT serial of the image's boot partition. GRUB's EFI/BIOS images locate the directory holding
+        # grub.cfg by that serial (search.fs_uuid); a random serial boots to a bare grub prompt.
         local volid_args=()
         [ -n "${ARG[volid]:-}" ] && volid_args=(-i "${ARG[volid]//-/}")
         mkfs.fat -F32 "${volid_args[@]}" -n "${ARG[label]:-BOOT}" "$bootfs_dev" || fail "mkfs.fat on $bootfs_dev failed"
@@ -530,31 +456,16 @@ cmd_prepare_bootfs() {
     echo "UNITOTEM_BOOTFS_READY=1"
 }
 
-# populate-bootfs: pulls the boot-fs filecopy tarball over the DATA
-# connection (same /dev/tcp pull as restore-part) and extracts it, always
-# EXCLUDING anything that belongs to the resident fallback - a real restore
-# must never be able to clobber recovery8.img/recovery-vmlinuz/-initrd.img,
-# unitotem-ota.* state, or the trial-boot markers, whether the target is
-# brand new or already prepared.
+# populate-bootfs: pulls the boot-fs filecopy tarball over the DATA connection (same /dev/tcp pull as
+# restore-part) and extracts it, always excluding anything that belongs to the resident fallback
+# (recovery8.img/recovery-vmlinuz/-initrd.img, unitotem-ota.* state, trial-boot markers).
 #
-# config.txt/cmdline.txt are excluded too, and this one matters a lot more
-# than it looks: on arm64 those files live directly on this same FIRMWARE
-# partition (there's no separate ext4 BOOT partition like amd64 has), so the
-# source image's own tar of this partition necessarily contains its own
-# copy of them - already pointing at the *real* kernel8.img, since that's
-# what a normal built image ships. Without this exclude, this step would
-# silently overwrite the fallback-pointing config.txt that Stage 1's
-# set-default-recovery just wrote, for the entire window between here and
-# promote-default - meaning a power cut during the rest of Stage 2 (ROOT
-# restore, DATA mkfs) would boot straight into an untested, half-written
-# real system instead of the fallback, defeating the whole point of Level 1
-# of the fallback guarantee. Confirmed happening for real via the arm64
-# loopback test (§11.1) before this exclude was added. config.txt's only
-# legitimate writers are set-default-recovery (Stage 1: point at the
-# fallback) and promote-default (after a confirmed boot: point at the real
-# kernel) - nothing else, including this file-level populate, should ever
-# touch it. (No-op on amd64: grub.cfg lives on the ext4 BOOT partition
-# there, never on the FAT ESP this tar covers.)
+# config.txt/cmdline.txt are excluded too: on arm64 they live on this same FIRMWARE partition, and the source
+# image's copies point at the real kernel8.img. Overwriting the fallback-pointing config.txt that stage 1's
+# set-default-recovery wrote would make a power cut during the rest of stage 2 boot a half-written real system
+# instead of the fallback. config.txt's only writers are set-default-recovery (point at the fallback) and
+# promote-default (after a confirmed boot, point at the real kernel). (No-op on amd64: grub.cfg lives on the
+# ext4 BOOT partition there, not on the FAT ESP this tar covers.)
 cmd_populate_bootfs() {
     ota_status_set "Copying boot files (firmware, dtb, overlays)"
     parse_args "$@"
@@ -566,9 +477,9 @@ cmd_populate_bootfs() {
 
     log "Populating the file-level content of the boot partition from ${ARG[data-host]}:${ARG[data-port]}..."
     exec 4<>"/dev/tcp/${ARG[data-host]}/${ARG[data-port]}"
-    # tar's default exclude matching is unanchored: 'cmdline.txt' also drops slota/cmdline.txt, which an A/B image
-    # needs (os_prefix makes the firmware read it from there). With --layout ab the names are anchored to the top
-    # of the archive ("./name"), so only the real top-level files are protected.
+    # tar's exclude matching is unanchored: 'cmdline.txt' would also drop slota/cmdline.txt, which an A/B image needs
+    # (os_prefix makes the firmware read it from there). With --layout ab the names are anchored to the top of the
+    # archive ("./name"), so only the top-level files are protected.
     local anch="" pre=""
     if [ "${ARG[layout]:-1}" = ab ]; then anch="--anchored"; pre="./"; fi
     unxz -dc <&4 | tar -C "$mnt" -xf - $anch \
@@ -582,9 +493,9 @@ cmd_populate_bootfs() {
         || fail "bootfs extraction failed"
     exec 4<&-
     sync
-    # --secure-boot shim: the image only STAGES the signed chain (EFI/unitotem-sb/, see unitotem/stage3-image.sh); this activates it.
-    # Everything the chain needs is copied first and BOOTX64.EFI - the one file the firmware loads - is replaced last, through a
-    # temporary name and a rename, so a cut leaves either the old loader or the complete new chain, never a half-written shim.
+    # --secure-boot shim: the image only stages the signed chain (EFI/unitotem-sb/, see unitotem/stage3-image.sh); this
+    # activates it. Everything the chain needs is copied first and BOOTX64.EFI (the file the firmware loads) is replaced
+    # last through a temporary name and a rename, so a power cut leaves either the old loader or the complete new chain.
     if [ "${ARG[secure-boot]:-}" = shim ]; then
         local sb="$mnt/EFI/unitotem-sb" bt="$mnt/EFI/BOOT" f
         for f in shimx64.efi mmx64.efi grubx64.efi grub.cfg; do
@@ -632,10 +543,9 @@ cmd_set_default_recovery() {
 
     case "${ARG[firmware]}" in
         rpi)
-            # hdmi_group=2 hdmi_mode=4 is the DMT 640x480@60 mode: the deploy/recovery screen is a text UI, and on a large
-            # high-resolution monitor seen from a distance (the real case) 80 columns at 640x480 are readable where
-            # the same text at 1080p/4K is a few pixels high. DMT 640x480 is accepted by essentially every display.
-            # Only the resident fallback has it; the real system's own config.txt is untouched.
+            # hdmi_group=2 hdmi_mode=4 is the DMT 640x480@60 mode: the deploy/recovery screen is a text UI that must
+            # stay readable on large high-resolution monitors seen from a distance, and DMT 640x480 is accepted by
+            # essentially every display. Only the resident fallback has it; the real system's config.txt is untouched.
             cat > "$mnt/config.txt" << 'EOF'
 arm_64bit=1
 enable_uart=1
@@ -644,18 +554,14 @@ hdmi_mode=4
 kernel=recovery8.img
 initramfs recovery-initrd.img followkernel
 EOF
-            # ttyS1 = mini-UART on the GPIO14/15 header pins. Deliberately not
-            # console=serial0: that alias means the PL011 (Bluetooth pins) under
-            # the mainline/Debian DTBs we ship, the opposite of what it means
-            # under Raspberry Pi's own DTBs - see the longer note in
-            # unitotem/stage2-configure.sh. Pairs with enable_uart=1 above.
+            # ttyS0 = mini-UART on the GPIO14/15 header pins, paired with enable_uart=1 above. Not console=serial0:
+            # under the mainline/Debian DTBs that alias is the PL011 (Bluetooth pins), see unitotem/stage2-configure.sh.
             echo "unitotem.ota=1 console=tty1 console=ttyS0,115200" > "$mnt/cmdline.txt"
             ;;
         uefi|bios)
             if [ "${ARG[layout]:-1}" = ab ]; then
-                # A/B: GRUB lives in unitotem-grub/ on this partition (put there by populate-bootfs, which
-                # must have run). Its grub.cfg has an 'ota-recovery' entry; making it the saved default is
-                # the whole job, and it is a plain file write.
+                # A/B: GRUB lives in unitotem-grub/ on this partition (put there by populate-bootfs, which must have
+                # run). Its grub.cfg has an 'ota-recovery' entry; making it the saved default is a plain file write.
                 [ -f "$mnt/unitotem-grub/grub/grub.cfg" ] \
                     || { ota_umount_bootfs_rw "$bootfs_dev" "$mnt"; fail "A/B: unitotem-grub/grub/grub.cfg missing (populate-bootfs not run?)"; }
                 grubenv_write "$mnt/unitotem-grub/grub/grubenv" "saved_entry=ota-recovery"
@@ -682,22 +588,15 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# set-trial-boot / promote-default: the real system boots "on trial" (GRUB
-# one-shot, tryboot on Pi4/5, or a verified config.txt swap on legacy
-# firmware) with the fallback staying default until unitotem-boot-ok.service
-# confirms; only then does promote-default flip the permanent default.
+# set-trial-boot / promote-default: the real system boots "on trial" (GRUB one-shot, tryboot on Pi 4/5, or a
+# config.txt swap on legacy firmware) with the fallback staying default until unitotem-boot-ok.service confirms;
+# only then does promote-default flip the permanent default.
 #
-# Both rpi branches below write a hardcoded, minimal config.txt/tryboot.txt
-# (just the kernel=/initramfs= boot-selection lines they themselves own) -
-# on purpose, since these functions must never depend on a full untrusted
-# copy of the real image's config.txt to keep the fallback guarantee simple.
-# unitotem/files/config.txt itself never actually reaches a real device's boot
-# partition through this pipeline for that same reason. Any OTHER boot
-# config (dtoverlay=, dtparam=, framebuffer/splash tuning - anything that
-# isn't boot-selection) has to be spliced back in explicitly: this appends
-# unitotem/files/config-extra.txt, installed onto ROOT at build time
-# (unitotem/stage2-configure.sh), after the hardcoded lines. Best-effort - a
-# missing file (e.g. amd64, which has no config.txt at all) is not an error.
+# The rpi branches write a minimal config.txt/tryboot.txt with only the kernel=/initramfs= boot-selection lines
+# they own, so the fallback guarantee never depends on a copy of the real image's config.txt (unitotem/files/
+# config.txt does not reach the device's boot partition through this pipeline). Any other boot config (dtoverlay=,
+# dtparam=, framebuffer/splash tuning) comes from unitotem/files/config-extra.txt, installed onto ROOT at build time
+# (unitotem/stage2-configure.sh) and appended after those lines. A missing file (amd64) is not an error.
 append_config_extra() {
     local extra_file="$1" dest="$2"
     [ -f "$extra_file" ] && cat "$extra_file" >> "$dest"
@@ -733,15 +632,11 @@ cmd_set_trial_boot() {
                 grubenv_write "$ge" "saved_entry=ota-recovery" "next_entry=slot-a"
                 sync
                 ota_final_status
-                ota_final_status
-    echo "UNITOTEM_TRIAL_ARMED=1"
+                echo "UNITOTEM_TRIAL_ARMED=1"
                 return 0
             fi
-            # This runs inside the fallback/recovery environment, not on the
-            # target - every grub-* command below has to operate on the
-            # just-restored system at ${ARG[target]} (/mnt/newroot, already
-            # mounted by mount-target), not on the recovery environment's
-            # own (nonexistent, in any persistent sense) /boot/grub.
+            # This runs in the fallback environment: every grub-* command below operates on the restored system at
+            # ${ARG[target]} (/mnt/newroot, mounted by mount-target), not on the fallback's own /boot/grub.
             need target
             local t="${ARG[target]}"
             cat > "${t}/etc/grub.d/99_unitotem_trial" << 'EOF'
@@ -776,10 +671,10 @@ EOF
                 local bootfs_dev; bootfs_dev=$(pdev_target "$disk" "${ARG[bootfs-part]}")
                 local mnt=/tmp/ota-bootfs
                 ota_mount_bootfs_rw "$bootfs_dev" "$mnt"
-                # The trial config is a COMPLETE config (the firmware reads tryboot.txt instead of config.txt, never
-                # both): slot A's kernel/initramfs/dtbs/cmdline come from slota/ through os_prefix. config.txt keeps
-                # pointing at the fallback until unitotem-boot-ok confirms - a power cut, a hang or an unbootable
-                # slot all end on the fallback at the next plain boot.
+                # The trial config is a complete config (the firmware reads tryboot.txt instead of config.txt, never both):
+                # slot A's kernel/initramfs/dtbs/cmdline come from slota/ through os_prefix. config.txt keeps pointing at
+                # the fallback until unitotem-boot-ok confirms, so a power cut, a hang or an unbootable slot ends on the
+                # fallback at the next plain boot.
                 {
                     echo "[all]"
                     echo "arm_64bit=1"
@@ -792,8 +687,7 @@ EOF
                 sync; ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
                 ab_write_pending "$t"
                 ota_final_status
-                ota_final_status
-    echo "UNITOTEM_TRIAL_ARMED=1"
+                echo "UNITOTEM_TRIAL_ARMED=1"
                 return 0
             fi
             local disk; disk=$(resolve_disk "${ARG[disk]}")
@@ -859,10 +753,8 @@ enable_uart=1
 kernel=kernel8.img
 initramfs initramfs8 followkernel
 EOF
-            # promote-default runs post-boot, via unitotem-boot-ok on the
-            # real system itself (not from within the fallback against a
-            # /mnt/newroot that isn't booted yet) - so the extra-config file
-            # is this system's own local /etc/unitotem, not /mnt/newroot's.
+            # promote-default runs post-boot via unitotem-boot-ok on the real system, so the extra-config file is this
+            # system's own /etc/unitotem, not /mnt/newroot's.
             append_config_extra /etc/unitotem/config-extra.txt "$mnt/config.txt"
             echo "console=tty1 console=ttyS0,115200 root=LABEL=ROOT rootfstype=ext4 rootwait ro quiet" > "$mnt/cmdline.txt"
             rm -f "$mnt/tryboot.txt" "$mnt/cmdline-trial.txt" \
@@ -875,11 +767,8 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# mount-target / umount-target: the just-restored ROOT (plus BOOT/EFI on
-# amd64), mounted at /mnt/newroot for migrate-etc-overlay and set-trial-boot
-# --target to operate on before the target is ever booted. DATA is mounted
-# separately at /mnt/data by data-op/restore-part's own callers before this
-# runs - this only handles the disk being deployed onto.
+# mount-target / umount-target: the restored ROOT (plus BOOT/EFI on amd64), mounted at /mnt/newroot for
+# migrate-etc-overlay and set-trial-boot --target to operate on before the target is booted.
 # ---------------------------------------------------------------------------
 cmd_mount_target() {
     ota_status_set "Mounting the newly written system"
@@ -898,11 +787,8 @@ cmd_mount_target() {
         # arm64: FAT partition IS /boot/firmware directly (no separate BOOT).
         local bootfs_mnt=/mnt/newroot/boot/efi
         [ "${ARG[arch]:-amd64}" = arm64 ] && bootfs_mnt=/mnt/newroot/boot/firmware
-        # ota_mount_bootfs_rw, not a plain mount: this is the same FIRMWARE/
-        # EFI device that /boot-ota keeps mounted ro for the whole fallback
-        # session (see the function's own comment) - a plain mount here
-        # silently degrades to read-only too, confirmed on hardware
-        # (populate-real-kernel's cp failing with "Read-only file system").
+        # ota_mount_bootfs_rw, not a plain mount: /boot-ota keeps this device mounted ro for the whole session, and a
+        # plain mount would silently come up read-only too.
         ota_mount_bootfs_rw "$(pdev_target "$disk" "${ARG[bootfs-part]}")" "$bootfs_mnt"
     fi
     if [ -n "${ARG[data-part]:-}" ]; then
@@ -918,32 +804,22 @@ cmd_umount_target() {
     umount -lf /mnt/newroot/boot/firmware 2>/dev/null || true
     umount -lf /mnt/newroot/boot         2>/dev/null || true
     umount -lf /mnt/newroot              2>/dev/null || true
-    # Best-effort: put the persistent /boot-ota reader back to read-only -
-    # ota_mount_bootfs_rw (mount-target's bootfs mount) remounted its
-    # underlying device rw, and the lazy unmounts above only detach the
-    # bind-mounted copy under /mnt/newroot, not that original mount.
+    # Best-effort: put the persistent /boot-ota reader back to read-only (the lazy unmounts above only detach the
+    # bind-mounted copy under /mnt/newroot, not the original mount that ota_mount_bootfs_rw remounted rw).
     local fw_dev; fw_dev=$(blkid -L FIRMWARE -o device 2>/dev/null || blkid -L EFI -o device 2>/dev/null || true)
     [ -n "$fw_dev" ] && ota_umount_bootfs_rw "$fw_dev" /nonexistent 2>/dev/null || true
     echo "UNITOTEM_UNMOUNTED=1"
 }
 
-# populate-real-kernel: arm64 only - the RPi firmware reads kernel8.img/
-# initramfs8/dtbs ONLY from the FAT firmware partition, never from ROOT, so
-# once ROOT is restored (which carries the real system's own
-# /boot/vmlinuz-*, /boot/initrd.img-*, dtbs under /usr/lib/linux-image-*)
-# those need copying across. File-level, and deliberately never touches the
-# recovery8.img/recovery-initrd.img/recovery.sha256 files already on that
-# same partition. amd64 needs no equivalent: its real kernel lives directly
-# on the restored BOOT ext4 partition, and GRUB's trial-boot entry already
-# points at /mnt/newroot's own /vmlinuz,/initrd.img symlinks.
+# populate-real-kernel: arm64 only. The Pi firmware reads kernel8.img/initramfs8/dtbs only from the FAT firmware
+# partition, so the restored ROOT's /boot/vmlinuz-*, /boot/initrd.img-* and dtbs (/usr/lib/linux-image-*) are copied
+# across at file level, never touching the recovery8.img/recovery-initrd.img/recovery.sha256 files. amd64 needs no
+# equivalent: its kernel lives on the BOOT ext4 partition and GRUB's trial entry uses its /vmlinuz,/initrd.img symlinks.
 cmd_populate_real_kernel() {
     ota_status_set "Installing the system kernel"
     parse_args "$@"
     [ -d /mnt/newroot/boot/firmware ] || { echo "UNITOTEM_KERNEL_POPULATED=skip"; return 0; }
-    # No `ls` here on purpose: this initrd's `ls` doesn't parse options at
-    # all (confirmed on hardware - even a bare `-1` gets treated as a
-    # filename, "No such file or directory") - a bash glob sidesteps it
-    # entirely, same reasoning as the basename/dirname/tr removals above.
+    # A bash glob instead of `ls`: this initrd's `ls` does not parse options.
     local kver=""
     for _d in /mnt/newroot/lib/modules/*/; do kver="${_d%/}"; kver="${kver##*/}"; break; done
     [ -n "$kver" ] || fail "no kernel found in /mnt/newroot/lib/modules"
@@ -955,18 +831,17 @@ cmd_populate_real_kernel() {
 }
 
 # ---------------------------------------------------------------------------
-# etc-overlay migration (plan §7.2): new image's /etc always wins; DATA's
-# old overlay content is moved aside wholesale, then only an explicit
-# whitelist is reintroduced.
+# etc-overlay migration: the new image's /etc always wins; DATA's old overlay content is moved aside wholesale,
+# then only an explicit whitelist is reintroduced.
 # ---------------------------------------------------------------------------
 cmd_migrate_etc_overlay() {
     ota_status_set "Migrating configuration from DATA"
     parse_args "$@"
     need root-mnt; need data-mnt
     local root="${ARG[root-mnt]}" data="${ARG[data-mnt]}"
-    # A/B: the new system is slot A and keeps its overlay state in upper/<d>.a (see
-    # unitotem/files/overlayfs-hook.sh). Slot B is about to be formatted empty, so whatever a previous
-    # install left for it, and the update bookkeeping that described it, is stale and goes.
+    # A/B: the new system is slot A and keeps its overlay state in upper/<d>.a (see unitotem/files/overlayfs-hook.sh).
+    # Slot B is about to be formatted empty, so what a previous install left for it and the update bookkeeping
+    # describing it are stale and removed.
     local sfx=""
     if [ -n "${ARG[slot]:-}" ]; then
         sfx=".${ARG[slot]}"
@@ -977,26 +852,14 @@ cmd_migrate_etc_overlay() {
         done
         rm -f "$data/unitotem/update/pending.json" "$data/unitotem/update/slots.json" "$data/unitotem/update/last-result.json"
     fi
-    # No `date` here on purpose: this is just a history-directory name (no
-    # format consumed elsewhere), and `date` is one more external binary
-    # missing from the resident fallback (same class of bug as the
-    # basename/dirname/tr/ls removals elsewhere in this file - confirmed on
-    # hardware: "date: command not found" made this whole function fail).
-    # bash's own printf %()T builtin (bash 4.2+, confirmed present as 5.2 on
-    # this initrd) needs no external process at all.
+    # bash's printf %()T builtin instead of `date`, which is missing from the fallback (this is only a
+    # history-directory name).
     local ts; TZ=UTC0 printf -v ts '%(%Y%m%dT%H%M%SZ)T' -1
-    # /var is archived and reset alongside /etc, and for this one it is not a
-    # nicety but a correctness requirement. /var is overlaid too now (see
-    # unitotem/files/overlayfs-hook.sh), and an OTA replaces the whole ROOT
-    # partition: left in place, the previous image's upper would shadow the
-    # new image's /var - its dpkg database, and /var/unitotem-venv, the
-    # manager's Python environment. The new system would be running with the
-    # old one's idea of what is installed.
-    #
-    # No whitelist for /var, unlike /etc: everything under it is either
-    # image-derived state that the new image supplies itself, or logs, and the
-    # logs are not lost - the whole upper is moved into history/ where it can
-    # still be read after the fact.
+    # /var is archived and reset alongside /etc: it is overlaid too (see unitotem/files/overlayfs-hook.sh) and an OTA
+    # replaces the whole ROOT partition, so the previous image's upper would shadow the new image's /var (its dpkg
+    # database and /var/unitotem-venv, the manager's Python environment).
+    # No whitelist for /var: everything under it is image-derived state or logs, and the whole upper is moved into
+    # history/, where the logs can still be read.
     local d
     for d in etc var; do
         if [ -d "$data/upper/$d$sfx" ]; then
@@ -1023,28 +886,18 @@ cmd_migrate_etc_overlay() {
 }
 
 # ---------------------------------------------------------------------------
-# apply-network: carry the target's existing network settings onto the system
-# being installed.
+# apply-network: carry the target's existing network settings onto the system being installed.
 #
-# migrate-etc-overlay only rescues what is already on DATA, which covers a
-# UniTotem being updated but does nothing when ADOPTING a foreign device: its
-# configuration lives in the root filesystem we are about to overwrite, and
-# no DATA overlay ever held it. Without this the machine comes back on
-# NetworkManager's defaults - fine for wired DHCP, but it silently strands
-# any device on a static address, and takes a WiFi-only device off the
-# network entirely with no way back short of physical access.
+# migrate-etc-overlay only rescues what is already on DATA, which covers a UniTotem being updated but not a
+# non-UniTotem device whose configuration lives in the root filesystem about to be overwritten. Without this the
+# machine comes back on NetworkManager's defaults, which strands a static-address device and takes a WiFi-only
+# device off the network.
 #
-# The values come from remote-deploy.sh's probe, which already collects them
-# for the fallback's own dial-home; this just stops throwing them away
-# afterwards. Written into DATA's upper/etc, not the new root's /etc, so the
-# profile survives later OTAs through the ota-preserve.list whitelist rather
-# than being replaced by the next image.
+# The values come from remote-deploy.sh's probe. They are written into DATA's upper/etc, not the new root's /etc,
+# so the profile survives later OTAs through the ota-preserve.list whitelist.
 #
-# interface-name is deliberately NOT pinned: predictable names differ between
-# distributions (Raspberry Pi OS calls the built-in NIC eth0, this image
-# calls it end0), so a pinned name from the OS being replaced would match
-# nothing here. Leaving it out lets NetworkManager bind the profile to
-# whatever device of that type exists.
+# interface-name is NOT pinned: predictable names differ between systems (eth0 vs end0), so NetworkManager binds
+# the profile to whatever device of that type exists.
 # ---------------------------------------------------------------------------
 cmd_apply_network() {
     parse_args "$@"
@@ -1055,26 +908,23 @@ cmd_apply_network() {
     local ssid_b64="${ARG[ssid-b64]:-}" psk_b64="${ARG[psk-b64]:-}"
     local dir="$data/upper/etc${ARG[slot]:+.${ARG[slot]}}/NetworkManager/system-connections"
 
-    # Never clobber a profile that migrate-etc-overlay just restored: that one
-    # is the device's own established configuration and outranks anything
-    # inferred from a probe.
+    # Never clobber a profile that migrate-etc-overlay restored: it is the device's own configuration and outranks
+    # anything inferred from a probe.
     if ls "$dir"/*.nmconnection >/dev/null 2>&1; then
-        echo "UNITOTEM_NET_APPLIED=skip-esistente"
+        echo "UNITOTEM_NET_APPLIED=skip-existing"
         return 0
     fi
-    # Wired DHCP needs no profile at all - NetworkManager brings such a link
-    # up on its own, and an explicit profile would only be one more thing to
-    # disagree with it.
+    # Wired DHCP needs no profile: NetworkManager brings such a link up on its own.
     if [ "$link" = wired ] && [ "$mode" = dhcp ]; then
-        echo "UNITOTEM_NET_APPLIED=non-necessario"
+        echo "UNITOTEM_NET_APPLIED=not-needed"
         return 0
     fi
 
     mkdir -p "$dir"
-    local f="$dir/unitotem-adottata.nmconnection"
+    local f="$dir/unitotem-adopted.nmconnection"
     {
         echo "[connection]"
-        echo "id=unitotem-adottata"
+        echo "id=unitotem-adopted"
         [ "$link" = wifi ] && echo "type=wifi" || echo "type=ethernet"
         echo "autoconnect=true"
         echo ""
@@ -1102,19 +952,15 @@ cmd_apply_network() {
         echo "[ipv6]"
         echo "method=auto"
     } > "$f"
-    # NetworkManager refuses to load a keyfile that others can read, and it
-    # holds the WiFi passphrase in cleartext.
+    # NetworkManager refuses a keyfile that others can read, and it holds the WiFi passphrase in cleartext.
     chmod 600 "$f"
     echo "UNITOTEM_NET_APPLIED=1"
 }
 
 # ---------------------------------------------------------------------------
-# serve-fallback: the automatic-recovery / manual-arm entry point. Brings up
-# networking, starts dropbear (ephemeral host key, generated fresh every
-# time - see the plan for why a build-time-baked key would be a shared
-# secret across every shipped image) and blocks, showing a whiptail screen
-# with reachability info. Every path into OTA mode (explicit request or a
-# failed boot-integrity check) ends up here.
+# serve-fallback: the automatic-recovery / manual-arm entry point. Brings up networking, starts dropbear
+# (ephemeral host key generated at every start, since a baked-in key would be shared by every image) and blocks,
+# showing a whiptail screen with reachability info. Every path into OTA mode ends up here.
 # ---------------------------------------------------------------------------
 CONSOLE_TERM_FOR() {
     case "$1" in
@@ -1124,36 +970,25 @@ CONSOLE_TERM_FOR() {
 }
 
 # ---------------------------------------------------------------------------
-# On-screen status. Every subcommand is a SEPARATE process invoked over SSH by
-# the host, so none of them can own the display; the only long-lived process on
-# the target is serve-fallback. They therefore publish phase and progress to
-# files under /run, and serve-fallback runs one loop that redraws a whiptail
-# gauge from them.
+# On-screen status. Every subcommand is a separate process invoked over SSH, so none can own the display; the only
+# long-lived process on the target is serve-fallback. They publish phase and progress to files under /run, and
+# serve-fallback runs one loop that redraws a whiptail gauge from them.
 #
-# The gauge is drawn on /dev/tty1, deliberately NOT /dev/console. With the
-# cmdline this project writes (console=tty1 console=ttyS0,115200) the kernel
-# makes the LAST entry /dev/console, so /dev/console is the serial port - the
-# previous code wrote the whiptail box there and it went out the UART instead
-# of appearing on the screen, which is why the display stayed blank during an
-# OTA. Serial keeps the kernel log; the screen gets the UI.
+# The gauge is drawn on /dev/tty1, not /dev/console: with console=tty1 console=ttyS0,115200 the kernel makes the
+# last entry /dev/console, i.e. the serial port. Serial keeps the kernel log; the screen gets the UI.
 #
-# Two files rather than one: the phase is set once per step, while pv appends a
-# percentage per update, so mixing them would mean rewriting the phase
-# thousands of times. Both live in /run, which is a tmpfs here, so nothing
-# survives to confuse the next boot.
+# Two files: the phase is set once per step, while pv appends a percentage per update. Both live in /run (tmpfs).
 # ---------------------------------------------------------------------------
 OTA_STATUS_FILE=/run/unitotem-ota.status
 OTA_PCT_FILE=/run/unitotem-ota.pct
 
-# Announce a step. Clears any stale percentage so a finished transfer's 100%
-# is not shown against the next, not-yet-started one.
+# Announce a step. Clears any stale percentage so a finished transfer's 100% is not shown against the next step.
 ota_status_set() {
     printf '%s\n' "${1:-}" > "$OTA_STATUS_FILE" 2>/dev/null || true
     : > "$OTA_PCT_FILE" 2>/dev/null || true
 }
 
-# Feeds whiptail's gauge protocol: a XXX-delimited block carrying the new
-# percentage and the new text.
+# Feeds whiptail's gauge protocol: an XXX-delimited block carrying the new percentage and text.
 ota_ui_feed() {
     local phase pct
     while :; do
@@ -1161,41 +996,26 @@ ota_ui_feed() {
         [ -r "$OTA_STATUS_FILE" ] && read -r phase < "$OTA_STATUS_FILE" 2>/dev/null
         pct=""
         if [ -s "$OTA_PCT_FILE" ]; then
-            # tail is copy_exec'd into this initrd; the substitution strips
-            # anything that is not a digit without needing tr, which is NOT
-            # present here (confirmed on hardware: "tr: not found").
+            # The substitution strips non-digits without tr, which is not available here.
             pct=$(tail -n1 "$OTA_PCT_FILE" 2>/dev/null)
             pct="${pct//[!0-9]/}"
         fi
         [ -n "$pct" ] || pct=0
         [ "$pct" -le 100 ] 2>/dev/null || pct=100
-        # Header (3 lines) + a blank separator + the phase = 5 lines, which is
-        # exactly what ota_ui_start sizes the text area for. Keep the two in
-        # step: anything beyond that height is silently dropped, not wrapped.
+        # Header (3 lines) + a blank separator + the phase = 5 lines, the height ota_ui_start sizes the text area for;
+        # anything beyond it is dropped.
         printf 'XXX\n%s\n%s\n\n%s\nXXX\n' "$pct" "${OTA_UI_HEADER:-}" "${phase:-Waiting for commands over SSH...}"
         sleep 1
     done
 }
 
-# Best-effort throughout: a board with no /dev/tty1 (amd64 serial-only, or a
-# headless unit) simply gets no UI, and that must never hold up an OTA.
+# Best-effort: a board with no /dev/tty1 (serial-only or headless) gets no UI, which never holds up an OTA.
 #
-# Two details here are not stylistic, both learned by watching it fail on real
-# hardware:
+#   setsid + opening /dev/tty1 as fd 0 gives the process a controlling terminal. Redirecting whiptail's stdout is
+#   not enough: newt opens /dev/tty, and without a controlling terminal it exits with "Failed to open terminal".
+#   A process acquires one only by opening it as a session leader, hence setsid.
 #
-#   setsid + opening /dev/tty1 as fd 0 is what gives the process a CONTROLLING
-#   terminal. Redirecting whiptail's stdout to /dev/tty1 is not enough: newt
-#   opens /dev/tty rather than using stdout, so without a controlling terminal
-#   it exits immediately with "Failed to open terminal" - which is exactly what
-#   happened, silently, while the status files underneath were updating
-#   correctly the whole time. A process only acquires a controlling terminal by
-#   opening one as a session leader, hence setsid.
-#
-#   The gauge is fed through a FIFO rather than a pipe because stdin is spoken
-#   for: fd 0 has to be the tty to establish it as controlling, so the
-#   percentage stream needs its own channel. PLAN.md's original sketch already
-#   said the gauge would be fed by a FIFO; that detail turned out to be
-#   load-bearing rather than incidental.
+#   The gauge is fed through a FIFO because fd 0 has to be the tty, so the percentage stream needs its own channel.
 OTA_UI_FIFO=/run/unitotem-ota.gauge
 
 ota_ui_start() {
@@ -1207,24 +1027,15 @@ ota_ui_start() {
     ota_status_set ""
     rm -f "$OTA_UI_FIFO" 2>/dev/null
     mkfifo "$OTA_UI_FIFO" 2>/dev/null || return 0
-    # The redirections belong to setsid, NOT to the inner shell. setsid -c
-    # applies TIOCSCTTY to its OWN stdin, so the tty has to be there; with the
-    # redirection inside the child it failed with "Inappropriate ioctl for
-    # device". Letting the child open the tty instead does not work either -
-    # shells open with O_NOCTTY, so newt still died on "open /dev/tty: No such
-    # device or address". Both were seen on hardware before this form worked.
+    # The redirections belong to setsid, not to the inner shell: setsid -c applies TIOCSCTTY to its own stdin, and a
+    # shell opening the tty itself uses O_NOCTTY, so newt would fail on /dev/tty.
     #
-    # The initial --gauge text is five blank-ish lines, and its LINE COUNT is
-    # the point, not its content: whiptail sizes the text area once, when the
-    # dialog is created, and clips every later update to that height. An empty
-    # initial text gave a zero-line area, so no update ever showed anything; a
-    # one-line one showed only the first line of each update - which is what a
-    # real OTA looked like on screen, header only, no reason, no address, no
-    # phase. Five lines is what ota_ui_feed sends (3 header + blank + phase);
-    # change one and change the other.
+    # The initial --gauge text has five lines because whiptail sizes the text area once, when the dialog is created,
+    # and clips every update to that height. Five is what ota_ui_feed sends (3 header + blank + phase); change both
+    # together.
     local placeholder=$' \n \n \n \n '
-    # (NEWT_COLORS was tried to hide whiptail's own "+---+" border and has no effect on this whiptail: ota_frame paints that ring of
-    # cells black on the framebuffer instead.)
+    # (NEWT_COLORS has no effect on this whiptail's own "+---+" border: ota_frame paints that ring of cells black on the
+    # framebuffer instead.)
     setsid -c sh -c "TERM=linux TERMINFO=/lib/terminfo exec whiptail \
             --backtitle 'UniTotem OTA' --gauge '$placeholder' 14 72 0 < '$OTA_UI_FIFO'" \
         < /dev/tty1 > /dev/tty1 2>/dev/null &
@@ -1251,56 +1062,21 @@ configure_one_iface() {
         [ -n "${OTA_NET_GW:-}" ] && ip route replace default via "$OTA_NET_GW" dev "$iface" || true
     else
         if type configure_networking >/dev/null 2>&1; then
-            # initramfs-tools' configure_networking() (sourced into this same
-            # shell, not a subprocess) calls its own _set_netdev_from_ip_param()
-            # first, which unconditionally does `set -- ${IP}; ...; [ -n "$6" ]`
-            # - any $IP value with fewer than 6 colon-separated fields (our
-            # "dhcp" shorthand included, or even empty) makes that a reference
-            # to a positional parameter beyond $#. Under nounset that's fatal
-            # to the shell, not just a nonzero return - confirmed by a real VM
-            # boot dying with "/scripts/functions: line 224: $6: unbound
-            # variable" here, which `|| warn` never got a chance to catch.
-            # It's third-party code not written for -u; disable nounset only
-            # for this one call rather than trying to fake a 6-field $IP.
+            # initramfs-tools' configure_networking() (sourced into this shell) calls _set_netdev_from_ip_param(), which
+            # does `set -- ${IP}; ...; [ -n "$6" ]`: any $IP with fewer than 6 colon-separated fields makes that a
+            # reference beyond $#, fatal under nounset. It is third-party code not written for -u, so nounset is
+            # disabled for this one call.
             #
-            # Also: configure_networking() ultimately calls klibc's ipconfig,
-            # which has a long-documented upstream bug (Debian #552554 and
-            # others) where it can block waiting for a DHCP reply and never
-            # honor its own -t timeout. Confirmed happening for real on this
-            # exact hardware: kernel reported the link up at 10s and stayed
-            # alive (still servicing interrupts/scheduling minutes later), but
-            # the fallback screen sat frozen on this exact step for 6+ minutes
-            # with no progress - a hang inside ipconfig's blocking wait, not a
-            # slow-but-finite retry. There is no `timeout` binary in this
-            # initramfs to wrap it externally, so enforce a hard wall-clock
-            # bound by backgrounding the call and killing it by PID if it
-            # doesn't return. This is safe to background even though it's a
-            # shell function: the actual effect we care about (the interface
-            # getting an address) happens via ipconfig's ioctls on the real
-            # kernel interface state, not through a shell variable that would
-            # be lost when the subshell exits - confirmed by the next line
-            # already reading the result back with `ip addr show`, never from
-            # anything configure_networking() itself sets.
-            # configure_networking()'s own log_begin_msg/_log_msg print
-            # straight to stdout (initramfs-tools code, quiet= isn't set on
-            # our cmdline so it's never suppressed) - and this whole function
-            # is itself invoked as `myip=$(configure_networking_ota || true)`
-            # by the caller, so every one of those internal status lines
-            # ("Begin: Waiting up to 180 secs for end0 to become available")
-            # was leaking straight into $myip, exactly the same class of bug
-            # already fixed for our own log()/warn() calls earlier, just in
-            # third-party code this time. Never visible until the DHCP-hang
-            # fix above let this call actually return - confirmed for real:
-            # once it did, the whiptail box's "Indirizzo:" field showed that
-            # exact leaked log text instead of an IP. Redirect its output to
-            # /dev/kmsg (same destination our own log() already uses) instead
-            # of /dev/null so the diagnostic content isn't lost, just kept out
-            # of the one stdout stream this function's caller actually reads.
+            # configure_networking() ends in klibc's ipconfig, which can block waiting for a DHCP reply and ignore its
+            # own -t timeout (Debian #552554). There is no `timeout` binary in this initramfs, so a hard wall-clock
+            # bound is enforced by backgrounding the call and killing it by PID. Backgrounding is safe because the
+            # interface gets its address through ipconfig's ioctls, and the result is read back with `ip addr show`.
+            #
+            # configure_networking()'s own status lines go straight to stdout, and this function is called as
+            # `myip=$(configure_networking_ota || true)`, so they would leak into $myip. Its output goes to /dev/kmsg
+            # (as log() does) instead.
             local cn_rc=0 cn_pid cn_waited=0 cn_budget=30
             set +u
-            # Labelled the same way as dropbear's output above: raw
-            # ipconfig/configure_networking chatter on the console is
-            # indistinguishable from every other source writing there.
             ( IP=dhcp DEVICE="$iface" configure_networking 2>&1 \
                 | while IFS= read -r cn_line; do
                       kmsg "unitotem-ota/net: $cn_line"
@@ -1313,34 +1089,22 @@ configure_one_iface() {
             if kill -0 "$cn_pid" 2>/dev/null; then
                 warn "configure_networking stuck beyond ${cn_budget}s (known ipconfig bug, it ignores its own -t): killed"
                 kill -9 "$cn_pid" 2>/dev/null
-                # wait on a just-kill -9'd job reports its signal-based exit
-                # status (137) - under set -e a bare `wait` here would abort
-                # this whole script right where it's supposed to recover.
+                # wait on a killed job reports 137, which would abort the script under set -e.
                 wait "$cn_pid" 2>/dev/null || true
-                # kill -9 on $cn_pid only kills the backgrounded subshell, not
-                # its own children - confirmed by hand that the actual hung
-                # ipconfig process survives as an orphan otherwise, still
-                # holding the interface. No pkill/killall in this initramfs
-                # (not worth adding just for this), so walk /proc directly -
-                # portable, zero new binary dependencies.
+                # kill -9 on $cn_pid kills only the backgrounded subshell; the hung ipconfig would survive as an
+                # orphan holding the interface. There is no pkill/killall in this initramfs, so walk /proc.
                 for _p in /proc/[0-9]*; do
                     _p=${_p#/proc/}
                     [ -r "/proc/$_p/cmdline" ] || continue
-                    # No `tr` (may be missing, see the UNITOTEM_MODEL comment
-                    # above): argv[0] is what we're matching against and it
-                    # comes before the first NUL either way, so plain `cat`
-                    # (truncated at that NUL by bash's C-string handling)
-                    # captures exactly as much as we need here.
+                    # No `tr`: argv[0] comes before the first NUL, where bash's command substitution truncates.
                     case "$(cat "/proc/$_p/cmdline" 2>/dev/null)" in
                         *ipconfig*) kill -9 "$_p" 2>/dev/null || true ;;
                     esac
                 done
                 cn_rc=124
             else
-                # Same errexit trap as above but for the normal path: wait's
-                # own exit status mirrors the waited job's, so a plain
-                # configure_networking failure (e.g. genuinely no DHCP
-                # server) would abort this script right here if unprotected.
+                # wait mirrors the job's exit status, so a plain configure_networking failure (e.g. no DHCP server)
+                # would abort the script here if unprotected.
                 wait "$cn_pid" || cn_rc=$?
             fi
             set -u
@@ -1352,17 +1116,14 @@ configure_one_iface() {
     ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1
 }
 
-# Network bring-up of the fallback: try EVERY wired interface that has a link (the cable may be in a different port than the one the
-# running system used - a mini PC with two NICs was left without an address on the second one), the one named in the deploy configuration
-# first. WiFi targets keep the configured interface. Prints the first address obtained, nothing if none got one.
+# Network bring-up of the fallback: try every wired interface that has a link (the cable may be in a different port than
+# the running system used), the one named in the deploy configuration first. WiFi targets keep the configured interface.
+# Prints the first address obtained, nothing if none got one.
 configure_networking_ota() {
     local conf=/boot-ota/unitotem-ota.conf iface addr="" ifs="" i w=0 first
     [ -f "$conf" ] && read_kv_lines < "$conf"
-    # Belt-and-braces before looking for an interface: don't just trust that
-    # udev's own coldplug already bound a driver by this point (confirmed
-    # failing in a real boot test - virtio_net.ko was present in the initrd
-    # but never got loaded, "ip link show" saw nothing but lo). Harmless
-    # no-ops on hardware where these modules don't exist or already loaded.
+    # Do not rely on udev's coldplug having bound a driver yet (virtio_net could be present but not loaded).
+    # No-ops where these modules do not exist or are already loaded.
     modprobe -a virtio_net genet bcmgenet 2>/dev/null || true
     udevadm trigger --subsystem-match=net 2>/dev/null || true
     udevadm settle --timeout=5 2>/dev/null || true
@@ -1412,30 +1173,15 @@ configure_networking_ota() {
     return 1
 }
 
-# PWR and ACT blink in ALTERNATION (one on while the other is off), 50/50
-# duty, for the whole OTA session - a visual "this device is in
-# maintenance/receiving mode" signal that is unmistakable at a glance,
-# unlike a single blinking LED which can read as normal activity. Called
-# from cmd_serve_fallback, so it covers both the resident fallback and the
-# real system's own OTA-capable initramfs (same function, both paths).
-# Best-effort and silent throughout: amd64 has no such sysfs path at all,
-# and each LED is handled independently so a board exposing only one of the
-# two still gets a blink.
+# PWR and ACT blink in alternation (50/50 duty) for the whole OTA session, an unmistakable "maintenance mode" signal.
+# Called from cmd_serve_fallback, so it covers the resident fallback and the system's own OTA-capable initramfs.
+# Best-effort and silent: amd64 has no such sysfs path, and each LED is handled independently.
 #
-# The half-period offset is what makes them alternate, and it is NOT
-# optional decoration: the kernel's timer trigger always starts a LED in the
-# ON phase (changing the trigger forces brightness to 0, and the first timer
-# tick then switches it on), so arming both back-to-back makes them blink in
-# UNISON - verified on a real Pi 4 by sampling both brightness files, not
-# assumed. Offsetting the second arm by half a period is what mirrors them.
+# The half-period offset is what makes them alternate: the kernel's timer trigger starts a LED in the ON phase, so
+# arming both back-to-back makes them blink in unison; the second arm is offset by half a period.
 #
-# The wait is a bash busy-loop on EPOCHREALTIME rather than `sleep 0.5`
-# because the resident fallback initramfs ships klibc's sleep, which parses
-# only whole seconds and rejects "0.5" outright (there is no busybox in this
-# initrd - see PLAN.md's note on that discovery). Burning ~500ms of CPU once
-# per OTA session, on a device that is about to sit idle waiting for the
-# network, is a fair price for keeping the documented 500ms rate instead of
-# slowing the blink to whole seconds just to fit klibc's sleep.
+# The wait is a bash busy-loop on EPOCHREALTIME, not `sleep 0.5`, because klibc's sleep parses whole seconds only.
+# It burns ~500ms of CPU once per OTA session.
 ota_led_maintenance() {
     local half_ms=500
     local have_pwr=0 have_act=0
@@ -1452,12 +1198,9 @@ ota_led_maintenance() {
 
     [ "$have_pwr" = 1 ] && _led_arm PWR
 
-    # Only worth offsetting when both LEDs are actually being driven.
-    # The [.,] pattern is deliberate: EPOCHREALTIME renders with the
-    # LC_NUMERIC decimal separator, which is a comma under this image's own
-    # it_IT.UTF-8 locale - stripping only "." would leave a comma in the
-    # string and break the arithmetic. $SECONDS caps the spin at ~3s so a
-    # missing or malformed EPOCHREALTIME can never hang the fallback here.
+    # Only worth offsetting when both LEDs are driven. The [.,] pattern is needed because EPOCHREALTIME uses the
+    # LC_NUMERIC decimal separator (a comma under it_IT.UTF-8). $SECONDS caps the spin at ~3s so a malformed
+    # EPOCHREALTIME can never hang the fallback.
     if [ "$have_pwr" = 1 ] && [ "$have_act" = 1 ] && [ -n "${EPOCHREALTIME:-}" ]; then
         local t0="${EPOCHREALTIME/[.,]/}"
         local target=$(( half_ms * 1000 ))
@@ -1471,10 +1214,9 @@ ota_led_maintenance() {
     return 0
 }
 
-# ota_idle_watchdog SECONDS : leave the fallback by rebooting if no host ever connects to dropbear (port 2222 =
-# 0x08AE in /proc/net/tcp*) within SECONDS. The fallback used to wait forever, which turned every transient trigger
-# (a few cut-short boots, a flaky read) into a device that stays dark until somebody with a laptop arrives. Once a
-# host HAS connected the watchdog stands down for good: whoever is repairing the device is in control. 0 = never.
+# ota_idle_watchdog SECONDS : leave the fallback by rebooting if no host connects to dropbear (port 2222 = 0x08AE in
+# /proc/net/tcp*) within SECONDS, so a transient trigger does not leave the device waiting indefinitely. Once a host has
+# connected the watchdog stands down for good. 0 = never.
 ota_idle_watchdog() {
     local limit="${1:-0}" waited=0
     [ "$limit" -gt 0 ] 2>/dev/null || return 0
@@ -1487,12 +1229,11 @@ ota_idle_watchdog() {
     reboot -f
 }
 
-# ota_splash TITLE LINE : paint the console right away - a logo, what is happening and what to expect - so the screen is
-# never an empty black rectangle while the network comes up (about ten seconds) before the progress screen can start. Plain
-# text on tty1 (fbcon draws it on the framebuffer), best effort: no tty, no splash, and nothing else depends on it.
-# The logo is the UniTotem wordmark of the manager's Plymouth theme, pre-rendered (tools/gen-logo.py) to raw 32-bit pixels and
-# written straight to the framebuffer: this initramfs has no image decoder. Returns 1 if there is no usable framebuffer or
-# logo, so the caller can fall back to text.
+# ota_splash TITLE LINE : paint the console right away (logo, what is happening, what to expect) so the screen is not
+# empty while the network comes up (about ten seconds). Plain text on tty1, best effort.
+# ota_logo writes the UniTotem wordmark of the manager's Plymouth theme, pre-rendered (tools/gen-logo.py) to raw pixels,
+# straight to the framebuffer (this initramfs has no image decoder). Returns 1 if there is no usable framebuffer or logo,
+# so the caller falls back to text.
 OTA_LOGO_DIR=${OTA_LOGO_DIR:-/usr/lib/unitotem}
 ota_logo() {
     local fb=/sys/class/graphics/fb0 W H bpp stride logo lw lh y0 x0 r
@@ -1513,20 +1254,20 @@ ota_logo() {
     return 0
 }
 
-# A rounded frame around the progress dialog, drawn on the framebuffer for WHATEVER resolution the screen has. whiptail draws its
-# own border at any size, so the replacement must too: nothing here is tied to one geometry.
+# A rounded frame around the progress dialog, drawn on the framebuffer for any screen resolution.
 #
-# The geometry comes from the console itself: columns/rows from the tty (stty), cell size = framebuffer size / console size, and
-# the dialog is where newt centers it - 72x14 cells (as many as fit on a small screen) in the middle. Around it:
-#   1. whiptail's own border (the outer ring of its cells) is painted black - it is drawn once and whiptail only redraws cells that
-#      change, so what is painted over it stays;
-#   2. the frame is laid out in the margin outside the dialog: radius from the cell height (the nearest pre-rendered one that fits,
-#      thickness following it), four pre-rendered anti-aliased corners, and straight edges cut from a solid-colour line blob.
-# Only the frame's own pixels and the blank ring are ever written - never the dialog interior, which belongs to whiptail.
-# Formats: 32, 24 and 16 bits per pixel. Returns 1 (and says why on stderr) only if there is no usable framebuffer at all.
+# The geometry comes from the console: columns/rows from the tty (stty), cell size = framebuffer size / console size, and
+# the dialog is where newt centers it (72x14 cells, fewer on a small screen). Around it:
+#   1. whiptail's own border (the outer ring of its cells) is painted black; whiptail redraws only cells that change, so
+#      what is painted over it stays;
+#   2. the frame is laid out in the margin outside the dialog: radius from the cell height (the nearest pre-rendered one
+#      that fits, thickness following it), four pre-rendered anti-aliased corners, and straight edges cut from a
+#      solid-colour line blob.
+# Only the frame's pixels and the blank ring are written, never the dialog interior. Formats: 32, 24 and 16 bits per pixel.
+# Returns 1 (and says why on stderr) if there is no usable framebuffer.
 ota_frame() {
-    # OTA_FB_DEV / OTA_FB_SYS / OTA_CONSOLE_SIZE ("rows cols") replace the real devices: the layout is tested on fake framebuffers
-    # of many sizes and depths (work/loopback-test/test-frame.sh), because only one of them can be on a screen at a time.
+    # OTA_FB_DEV / OTA_FB_SYS / OTA_CONSOLE_SIZE ("rows cols") replace the real devices, so the layout can be tested on
+    # fake framebuffers of many sizes and depths.
     local fb=${OTA_FB_SYS:-/sys/class/graphics/fb0} fbdev=${OTA_FB_DEV:-/dev/fb0} W H bpp stride ext bytes rows cols cw ch
     [ -w "$fbdev" ] && [ -r "$fb/virtual_size" ] || { echo "ota_frame: no framebuffer" >&2; return 1; }
     IFS=, read -r W H < "$fb/virtual_size"; read -r bpp < "$fb/bits_per_pixel"; read -r stride < "$fb/stride"
@@ -1618,8 +1359,7 @@ ota_splash() {
     printf '\n\n     %s\n\n     %s\n' "${1:-}" "${2:-}" > /dev/tty1 2>/dev/null || true
 }
 
-# The last thing an update shows before the machine restarts: say so, at 100%, instead of leaving the previous step on
-# screen until the screen goes dark.
+# The last thing an update shows before the machine restarts.
 ota_final_status() {
     ota_status_set "Update written. Restarting into the new system..."
     echo 100 > "$OTA_PCT_FILE" 2>/dev/null || true
@@ -1627,8 +1367,8 @@ ota_final_status() {
 
 cmd_serve_fallback() {
     parse_args "$@"
-    # The screen is the progress dialog: kernel messages only for emergencies, and this process's own stdout/stderr (log lines, library chatter)
-    # go to a file instead of the console (they stay in the kernel log at debug level, see kmsg/log).
+    # The screen is the progress dialog: kernel messages only for emergencies, and this process's own stdout/stderr go to
+    # a file instead of the console (they stay in the kernel log at debug level, see kmsg/log).
     echo "1 4 1 7" > /proc/sys/kernel/printk 2>/dev/null || true
     exec >> /run/ota-serve.log 2>&1
     local reason="${ARG[reason]:-requested explicitly}"
@@ -1638,8 +1378,7 @@ cmd_serve_fallback() {
     else
         ota_splash "OTA update mode" "Starting the network, please wait..."
     fi
-    # Automatic triggers wait 10 minutes for a host, requested ones 30 (the deploy that asked for it connects within
-    # a minute or two), `recover` forever. Overridable per call.
+    # Default wait for a host is 10 minutes; callers override it with idle-timeout (`recover` waits forever).
     ( ota_idle_watchdog "${ARG[idle-timeout]:-600}" ) </dev/null >/dev/null 2>&1 &
 
     ota_led_maintenance
@@ -1650,39 +1389,20 @@ cmd_serve_fallback() {
     dropbearkey -t ed25519 -f /run/dropbear_ed25519_host_key >/dev/null 2>&1 \
         || warn "dropbear key generation failed"
 
-    # systemd's reboot compat binary (unitotem/files/ota-hook force-copies the
-    # real one, not busybox's, so that "reboot -f '0 tryboot'" can reach the
-    # kernel) writes its parameter to /run/systemd/reboot-param before
-    # calling reboot(2) - confirmed on real hardware: without this directory
-    # it fails outright with "Failed to write reboot parameter file: No such
-    # file or directory" and never reaches the syscall at all. Nothing else
-    # in this initrd ever creates /run/systemd (no real systemd runs here).
+    # systemd's reboot binary (copied by unitotem/files/ota-hook so that "reboot -f '0 tryboot'" reaches the kernel)
+    # writes its parameter to /run/systemd/reboot-param and fails without this directory; nothing else in this initrd
+    # creates it.
     mkdir -p /run/systemd
 
-    # root's password (fixed value, same as unitotem/common.sh's ROOT_PASSWORD
-    # default) is baked into /etc/shadow at build time - see
-    # unitotem/files/ota-hook - rather than set here at runtime: this initrd's
-    # /etc/shadow doesn't exist at all otherwise (confirmed by extracting a
-    # real built initrd), and chpasswd/PAM aren't worth pulling in just to
-    # set one fixed, known value every boot. dropbear (below) accepts
-    # password auth by default; no flag needed for that.
+    # root's password (fixed, same as unitotem/common.sh's ROOT_PASSWORD) is baked into /etc/shadow at build time
+    # (see unitotem/files/ota-hook); dropbear below accepts password auth by default.
 
-    # Replaces a one-shot --infobox that was written to /dev/console. It had
-    # two independent faults: /dev/console is the serial port here (see
-    # ota_ui_start), and --infobox returns immediately without persisting, so
-    # even on the right device it would have been overwritten by the next
-    # message. The gauge below stays up for the whole session and reports what
-    # each step is doing.
-    # `|| true` is not decoration. The first version of this UI raised an
-    # unexpected error inside serve-fallback on real hardware - "ERRORE: errore
-    # inatteso alla riga 949", straight into the ERR trap and the rollback
-    # handler - so the comment above about the UI never holding up an OTA was
-    # an intention with nothing enforcing it. A `||` context suppresses errexit
-    # and the ERR trap for the whole function body, which makes it true: the
-    # worst a broken UI can now do is not draw.
-    # An update is the normal reason to be here, so it is the default: "OTA update mode". "Recovery" is reserved for the
-    # device having detected a fault by itself (missing/damaged root, repeated failed boots) - showing that word during an
-    # ordinary update would be a false alarm for whoever is standing in front of the screen.
+    # The progress gauge stays up for the whole session and reports what each step does (a one-shot --infobox would be
+    # overwritten, and /dev/console is the serial port here, see ota_ui_start).
+    # `|| true` is required: a `||` context suppresses errexit and the ERR trap for the whole function body, so a
+    # broken UI can at worst fail to draw and never aborts serve-fallback.
+    # An update is the normal reason to be here, so it is the default title; "recovery" is reserved for a fault the
+    # device detected by itself (missing/damaged root, repeated failed boots).
     local kind_title="OTA update mode"
     [ "${ARG[kind]:-update}" = recovery ] && kind_title="OTA recovery mode"
     ota_ui_start "${kind_title}
@@ -1698,22 +1418,10 @@ Address: ${myip:-none}   Port: 2222" || true
         fi
     fi
 
-    # dropbear -E logs to stderr as "[pid] date time message". On a screen
-    # where several things write to the same console that pid identifies
-    # nothing - you cannot tell which program produced a line, which is
-    # exactly the complaint this addresses. Relabel every line with the
-    # program name instead, dropping the pid.
-    #
-    # A bash read loop rather than sed/awk: this runs in the resident
-    # fallback, where the binary set is deliberately minimal and neither is
-    # guaranteed (the same reasoning that removed basename/dirname/tr/date
-    # from this file). Read loops are builtins and always available.
-    #
-    # No `exec` any more, so the pipeline has to be the thing that blocks.
-    # dropbear is started with -F and is never meant to return; if it ever
-    # does, park here instead of letting the caller fall through into a
-    # normal boot - not falling through is the entire point of the fallback.
-    # The console belongs to the progress screen: dropbear's log goes to a file and to the kernel log at debug level, never to the screen.
+    # dropbear -E logs "[pid] date time message"; every line is relabelled with the program name, dropping the pid. A
+    # bash read loop is used because sed/awk are not guaranteed in the minimal fallback. The pipeline is what blocks:
+    # dropbear runs with -F and never returns, and if it does, park here instead of falling through into a normal boot.
+    # The console belongs to the progress screen: dropbear's log goes to a file and to the kernel log at debug level.
     dropbear -F -E -p 2222 -r /run/dropbear_ed25519_host_key 2>&1 \
         | while IFS= read -r line; do
               printf 'dropbear: %s\n' "${line#\[*\] }" >> /run/ota-dropbear.log
@@ -1724,11 +1432,9 @@ Address: ${myip:-none}   Port: 2222" || true
 }
 
 # ---------------------------------------------------------------------------
-# init-premount entry point: decide whether to enter OTA mode at all, and
-# why (explicit flag file / cmdline, or a failed pre-mount integrity check).
-# Self-clearing flag handling per the plan: mount ro, stat, remount rw, read
-# into memory, rm, sync, umount - *then* act, so a crash after the rm always
-# resumes a normal boot rather than looping.
+# init-premount entry point: decide whether to enter OTA mode, and why (explicit flag file or cmdline, or a failed
+# pre-mount integrity check). The flag file is self-clearing: mount ro, stat, remount rw, read into memory, rm, sync,
+# umount, and only then act, so a crash after the rm resumes a normal boot instead of looping.
 # ---------------------------------------------------------------------------
 cmdline_get() {
     local tok c; c=$(cat /proc/cmdline)
@@ -1740,15 +1446,8 @@ cmdline_get() {
 
 check_flag_file() {
     local label="$1" fstype="$2" mnt=/boot-ota dev tries=0
-    # blkid -L can race udev this early in boot and find nothing even though
-    # the label genuinely exists - the same class of bug already found and
-    # fixed for DATA in unitotem/files/overlayfs-hook.sh (bounded retry, not a
-    # single settle beforehand: confirmed live that cmd_init_premount's own
-    # `udevadm settle --timeout=10` right before this call is not always
-    # enough on its own). Bound kept small (this runs on every single boot,
-    # for both FIRMWARE and EFI, only one of which will ever be valid on a
-    # given board - a large bound here would add real delay to every normal
-    # boot that never has an armed flag file at all).
+    # blkid -L can race udev this early in boot (as for DATA in unitotem/files/overlayfs-hook.sh), and a single settle
+    # is not always enough, so retry. The bound is small because this runs on every boot.
     dev=$(blkid -L "$label" 2>/dev/null) || true
     while [ -z "$dev" ] && [ "$tries" -lt 5 ]; do
         udevadm settle --timeout=2 2>/dev/null || true
@@ -1777,11 +1476,11 @@ check_bootcount() {
     [ "${count:-0}" -ge 3 ]
 }
 
-# Self-healing boot, initramfs half. The slot GRUB/the Pi firmware chose has a root that is missing or fails the read-only check:
-# if the OTHER slot is sound, make it the default and reboot straight into it (the running system then repairs the damaged one
-# from it, see unitotem-update repair). Returns 1 whenever it cannot (no A/B, other slot not sound, already failed over once):
-# the caller then goes to the OTA fallback and waits for a host. The guard file is written BEFORE the switch and removed by
-# userspace once a system has come up, so a pair of flaky slots cannot make the device ping-pong forever.
+# Self-healing boot, initramfs half. The slot GRUB/the Pi firmware chose has a root that is missing or fails the read-only
+# check: if the other slot is sound, make it the default and reboot into it (the running system then repairs the damaged
+# one, see unitotem-update repair). Returns 1 whenever it cannot (no A/B, other slot not sound, already failed over once):
+# the caller then goes to the OTA fallback and waits for a host. The guard file is written before the switch and removed
+# by userspace once a system has come up, so two flaky slots cannot make the device ping-pong forever.
 ab_failover() {
     local cur other odev guard=/boot-ota/unitotem-ota.failover
     cur=$(cmdline_get unitotem.slot 2>/dev/null) || return 1
@@ -1834,9 +1533,8 @@ cmd_init_premount() {
         return
     fi
 
-    # Only the boot partition that exists on THIS board is looked for: a Pi has FIRMWARE and no EFI, a PC the reverse, and
-    # check_flag_file retries a missing label for ~5 s (blkid can race udev). Asking for the absent one as well cost every
-    # Pi boot 5 s of black screen before the root was even mounted (measured 2026-10-17: root mounted at 9.5 s, SD ready at 1.9 s).
+    # Only the boot partition that exists on this board is looked for: a Pi has FIRMWARE and no EFI, a PC the reverse,
+    # and check_flag_file retries a missing label for ~5 s.
     local bootfs_label=FIRMWARE
     grep -qs 'Raspberry Pi' /proc/device-tree/model || bootfs_label=EFI   # amd64 images (UEFI or BIOS boot) carry the EFI partition
     if check_flag_file "$bootfs_label" vfat; then
@@ -1844,9 +1542,7 @@ cmd_init_premount() {
         return
     fi
 
-    # The slot to validate is the one the bootloader chose, named in root= on the command line
-    # (A/B layout: ROOT_A or ROOT_B). Checking a fixed "ROOT" here sent every A/B boot straight
-    # into OTA mode. Single-ROOT images carry root=LABEL=ROOT, so this is the same lookup as before.
+    # The slot to validate is the one the bootloader chose, named in root= on the command line (ROOT_A or ROOT_B).
     local root_label root_dev tries=0
     root_label=$(cmdline_get root 2>/dev/null || true)
     case "$root_label" in LABEL=*) root_label=${root_label#LABEL=} ;; *) root_label=ROOT ;; esac
@@ -1869,23 +1565,13 @@ cmd_init_premount() {
     fi
 
     mkdir -p /boot-ota
-    # set-trial-boot always seeds the new kernel's cmdline with
-    # unitotem.ota.bootcount=1 - the intent (per the parameter's own name)
-    # is plainly to start counting fresh for this specific trial run.
-    # Confirmed as a real, previously-undiscovered bug: nothing ever
-    # actually read this cmdline value, so a trial boot was silently judged
-    # against whatever count had *already* accumulated on disk from a
-    # completely unrelated earlier failure streak (here: a string of
-    # boot-firmware.mount emergency-mode loops, hours before this trial was
-    # even armed) - permanently defeating every future trial via
-    # check_bootcount's >=3 check regardless of whether the new image
-    # actually boots fine.
+    # set-trial-boot seeds the new kernel's cmdline with unitotem.ota.bootcount=1: a trial boot starts counting fresh
+    # instead of being judged against a count accumulated by an unrelated earlier failure streak.
     local trial_reset=""
     cmdline_get unitotem.ota.bootcount >/dev/null 2>&1 && trial_reset=1
-    # A/B images (unitotem.slot= on the command line) do not use the boot counter at all. Their safety net for a
-    # bad update is the one-shot trial plus the health gate, which need no FAT write; and the counter cannot tell
-    # a broken system from a supply that browns out: three boots cut short by a storm sent the device into the RAM
-    # fallback to wait for a host, and every boot also wrote the FAT that holds the bootloader.
+    # A/B images (unitotem.slot= on the command line) do not use the boot counter. Their safety net is the one-shot
+    # trial plus the health gate, which need no FAT write; the counter cannot tell a broken system from a brown-out,
+    # and every boot would also write the FAT that holds the bootloader.
     if cmdline_get unitotem.slot >/dev/null 2>&1; then
         umount /boot-ota 2>/dev/null || true
         return 0
@@ -1895,23 +1581,12 @@ cmd_init_premount() {
         return
     fi
 
-    # All checks passed: let mountroot proceed normally. Increment the boot
-    # counter now (unitotem-boot-ok.service clears it after multi-user.target
-    # is reached) - this is the only layer that catches "boots fine, then
-    # userspace dies".
-    # Best-effort only: this is telemetry for level-4 detection on the
-    # *next* boot, not a condition for this one - a write failure here
-    # (worn media, anything) must never abort an otherwise-healthy boot via
-    # the ERR trap.
+    # All checks passed: let mountroot proceed. Increment the boot counter now (unitotem-boot-ok.service clears it after
+    # multi-user.target): this is the only layer that catches "boots fine, then userspace dies". Best-effort: a write
+    # failure must never abort an otherwise-healthy boot via the ERR trap.
     #
-    # /boot-ota is already mounted at this point (read-only) by whichever
-    # check_flag_file call above matched a label, and check_bootcount just
-    # read from that same mount - reuse it here rather than mounting the
-    # *same device* a second time at /tmp/ota-bootcount. Confirmed as a real
-    # bug, not just untidy: the kernel handed the second mount request the
-    # existing (read-only) superblock instead of a fresh read-write one, so
-    # the write always failed with "Read-only file system" even though
-    # nothing was actually wrong with the disk or the boot.
+    # /boot-ota is already mounted (read-only) by the check_flag_file call that matched a label; it is reused here,
+    # because a second mount of the same device would get the existing read-only superblock and the write would fail.
     if mountpoint -q /boot-ota; then
         if mount -o remount,rw /boot-ota 2>/dev/null; then
             local n=0
@@ -1923,15 +1598,9 @@ cmd_init_premount() {
             warn "cannot remount /boot-ota read-write for the boot counter (non-fatal)"
         fi
     fi
-    # /boot-ota must never be left mounted across switch_root: it's a real
-    # block-device mount (FIRMWARE/EFI) made inside the initramfs's own tmpfs
-    # root, not a bind-mount switch_root knows to move or clean up. Confirmed
-    # as a real bug on hardware, not a theoretical one: left mounted here, the
-    # real system's own boot-firmware.mount fails with EBUSY on *every*
-    # single boot (local-fs.target dependency failure -> permanent emergency
-    # mode), because the device stays referenced by this orphaned mount even
-    # though it's unreachable (and invisible in /proc/self/mountinfo) from
-    # the new root once the old initramfs tmpfs is discarded.
+    # /boot-ota must never be left mounted across switch_root: it is a block-device mount inside the initramfs tmpfs,
+    # which switch_root does not move or clean up. Left mounted, the system's boot-firmware.mount fails with EBUSY on
+    # every boot (the device stays referenced by the orphaned mount) and boot ends in emergency mode.
     umount /boot-ota 2>/dev/null || true
     return 0
 }

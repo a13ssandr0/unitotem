@@ -1,33 +1,21 @@
 #!/bin/bash
-# Fault injection, PLAN.md §11.5 level 4: the boot counter that decides when a
-# system that boots but never confirms itself gets handed back to the fallback.
+# Fault injection for the boot counter that decides when a system that boots but never confirms
+# itself is handed back to the fallback. The loopback rounds drive the OTA from the outside
+# (restore, trial, promote) and never reach cmd_init_premount, so this has its own harness.
 #
-# This is the layer nothing else covers. §11.1's loopback rounds drive the OTA
-# from the outside (restore, trial, promote) and never reach cmd_init_premount
-# at all, and on real hardware the level-4 path only shows up as an absence -
-# a machine that quietly fails to fall back looks exactly like a machine that
-# had no reason to. So it gets its own harness rather than another round in
-# inside-arm64.sh.
+# cmd_init_premount has a trial_reset branch: a trial boot ignores a count left on disk by an
+# unrelated earlier failure streak. That branch shares a condition with the non-trial path, where
+# three unconfirmed boots in a row must still hand control to the fallback. Both directions are
+# asserted, because asserting only the trial path would pass on code that never falls back.
 #
-# The specific regression risk being pinned down: cmd_init_premount grew a
-# trial_reset branch (a trial boot must ignore whatever count already sat on
-# disk from an unrelated earlier failure streak, which was a real bug - it
-# permanently defeated every future trial). That fix touches the exact
-# condition guarding the NON-trial path too, and it is the non-trial path that
-# a silent regression would take out first: three unconfirmed boots in a row
-# must still hand control back to the fallback. Both directions are asserted
-# here, because only asserting the fixed one would pass on code that never
-# falls back at all.
-#
-# Arch-independent on purpose: cmd_init_premount is blkid/mount/e2fsck logic
-# with no arm64-specific branch, so this runs in a plain amd64 container
-# instead of paying qemu for nothing.
+# Arch-independent: cmd_init_premount is blkid/mount/e2fsck logic with no arm64-specific branch,
+# so this runs in a plain amd64 container.
 set -Eeuo pipefail
 
 log() { echo ">>> $*"; }
 
 export DEBIAN_FRONTEND=noninteractive
-log "Installo i pacchetti necessari nel container..."
+log "Installing the packages needed in the container..."
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
     util-linux fdisk e2fsprogs dosfstools coreutils gdisk parted procps >/dev/null
@@ -48,9 +36,8 @@ check() {
     fi
 }
 
-# --- disco minimo: FIRMWARE (vfat) + ROOT (ext4), gli unici due che
-# cmd_init_premount guarda davvero.
-log "Preparo un disco con FIRMWARE(vfat) + ROOT(ext4)..."
+# --- minimal disk: FIRMWARE (vfat) + ROOT (ext4), the only two cmd_init_premount looks at.
+log "Preparing a disk with FIRMWARE(vfat) + ROOT(ext4)..."
 rm -f "$IMG"
 truncate -s 2G "$IMG"
 sfdisk "$IMG" >/dev/null << 'EOF'
@@ -70,13 +57,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Il kernel legge la tabella e crea le partizioni (compaiono sotto
-# /sys/block/<loop>/), ma in questo container non gira udev, quindi nessuno
-# materializza i nodi in /dev e ogni mkfs fallirebbe con "No such file or
-# directory" su un device che di fatto esiste. Si creano a mano leggendo
-# major:minor da sysfs - deterministico e senza dipendere da un udev che qui
-# non c'e' (partx -a non aiuta: le partizioni ESISTONO gia' per il kernel,
-# infatti risponde "error adding partitions").
+# The kernel creates the partitions (under /sys/block/<loop>/) but the container runs no udev, so
+# the /dev nodes are created by hand from the major:minor in sysfs (partx -a does not help: the
+# partitions already exist for the kernel).
 lb=$(basename "$LOOP")
 for pdir in /sys/block/"$lb"/"$lb"p*; do
     [ -d "$pdir" ] || continue
@@ -84,7 +67,7 @@ for pdir in /sys/block/"$lb"/"$lb"p*; do
     IFS=: read -r maj min < "$pdir/dev"
     [ -b "/dev/$pn" ] || mknod "/dev/$pn" b "$maj" "$min"
 done
-[ -b "${LOOP}p1" ] || { echo "!!! ${LOOP}p1 non e' comparso" >&2; exit 1; }
+[ -b "${LOOP}p1" ] || { echo "!!! ${LOOP}p1 did not appear" >&2; exit 1; }
 
 mkfs.vfat -n FIRMWARE "${LOOP}p1" >/dev/null
 mkfs.ext4 -q -L ROOT -F "${LOOP}p2" >/dev/null
@@ -92,16 +75,11 @@ udevadm settle --timeout=10 2>/dev/null || true
 
 mkdir -p /mnt/fw
 
-# Il contatore vive sulla partizione FIRMWARE, che cmd_init_premount monta da
-# solo su /boot-ota: qui lo si scrive/rilegge montandola separatamente, per
-# non dipendere da come la funzione sotto test gestisce i propri mount.
-# Ogni caso di fallback lascia /boot-ota montato read-only (cmd_serve_fallback
-# non ritorna e non smonta), e il kernel riconsegnerebbe QUELLO stesso
-# superblocco a un mount successivo dello stesso device - il mount seguente
-# risulterebbe read-only anche chiedendolo in scrittura. E' la stessa trappola
-# gia' documentata dentro cmd_init_premount per il contatore di boot; qui va
-# neutralizzata tra un caso e l'altro, altrimenti il primo fallback rende
-# insensati tutti i controlli che lo seguono.
+# The counter lives on the FIRMWARE partition, which cmd_init_premount mounts itself on /boot-ota;
+# here it is written and read through a separate mount, independent of the function under test.
+# Every fallback case leaves /boot-ota mounted read-only (cmd_serve_fallback never returns), and
+# the kernel would hand the same superblock to a later mount of the device, which would then be
+# read-only too. drop_bootota clears that between cases.
 drop_bootota() {
     umount /boot-ota 2>/dev/null || umount -lf /boot-ota 2>/dev/null || true
 }
@@ -116,27 +94,22 @@ set_count() {
 get_count() {
     drop_bootota
     mount -o ro "${LOOP}p1" /mnt/fw
-    cat /mnt/fw/unitotem-ota.bootcount 2>/dev/null || echo "ASSENTE"
+    cat /mnt/fw/unitotem-ota.bootcount 2>/dev/null || echo "ABSENT"
     umount /mnt/fw
 }
 
-# cmdline_get legge /proc/cmdline direttamente. Il bind-mount di un file
-# sopra /proc/cmdline e' l'unico modo di esercitare il vero codice invece di
-# una copia modificata per il test - possibile solo perche' il container e'
-# privilegiato.
+# cmdline_get reads /proc/cmdline directly. Bind-mounting a file over /proc/cmdline exercises the
+# real code instead of a modified copy (possible because the container is privileged).
 set_cmdline() {
     echo "$1" > /tmp/fake-cmdline
     umount /proc/cmdline 2>/dev/null || true
     mount --bind /tmp/fake-cmdline /proc/cmdline
 }
 
-# cmd_serve_fallback non ritorna (resta in ascolto con dropbear): si osserva
-# la riga di log che stampa PRIMA di bloccarsi, con un timeout. E' la stessa
-# riga che comparirebbe su seriale in produzione.
-#
-# Il timeout che scatta e' l'esito ATTESO nei casi di fallback, quindi va
-# raccolto invece di propagato: senza `|| rc=$?` il set -e abortiva l'harness
-# proprio sul primo caso che doveva passare.
+# cmd_serve_fallback never returns (it listens with dropbear): the log line it prints before
+# blocking is observed, with a timeout. It is the same line seen on serial in production.
+# The timeout firing is the EXPECTED outcome in fallback cases, so it is collected (`|| rc=$?`)
+# instead of letting set -e abort the harness.
 run_init_premount() {
     drop_bootota
     local rc=0
@@ -145,109 +118,106 @@ run_init_premount() {
 }
 
 # ---------------------------------------------------------------------------
-log "=== 4a: boot NON di trial, contatore gia' a 3 -> deve cadere nel fallback ==="
-# Il caso che una regressione silenziosa colpirebbe per primo.
+log "=== 4a: NON-trial boot, counter already at 3 -> must fall back ==="
+# The case a silent regression would break first.
 set_count 3
 set_cmdline "console=tty1 root=LABEL=ROOT ro quiet"
 run_init_premount
 cat /tmp/premount.out
-check "4a: fallback innescato dai tre avvii non confermati" \
+check "4a: fallback triggered by the three unconfirmed boots" \
     grep -q 'three consecutive boots without confirmation' /tmp/premount.out
 
 # ---------------------------------------------------------------------------
-log "=== 4b: boot di trial con contatore gia' alto -> deve avviarsi lo stesso ==="
-# La direzione corretta dal fix: un trial non deve essere giudicato in base a
-# una serie di fallimenti precedenti e scollegata.
+log "=== 4b: trial boot with an already high counter -> must still boot ==="
+# A trial must not be judged by an earlier, unrelated failure streak.
 set_count 7
 set_cmdline "console=tty1 root=LABEL=ROOT ro quiet unitotem.ota.bootcount=1"
 run_init_premount
 cat /tmp/premount.out
-check "4b: nessun fallback su boot di trial" \
+check "4b: no fallback on a trial boot" \
     bash -c "! grep -q 'three consecutive boots' /tmp/premount.out"
-check "4b: init-premount ritorna 0 (mountroot prosegue)" \
+check "4b: init-premount returns 0 (mountroot continues)" \
     grep -q 'exit=0' /tmp/premount.out
-c=$(get_count); record "4b: contatore dopo il trial = $c (atteso 1, non 8)"
-check "4b: il trial azzera il contatore invece di ereditarlo" test "$c" = "1"
+c=$(get_count); record "4b: counter after the trial = $c (expected 1, not 8)"
+check "4b: the trial resets the counter instead of inheriting it" test "$c" = "1"
 
 # ---------------------------------------------------------------------------
-log "=== 4c: boot NON di trial sotto soglia -> prosegue e incrementa ==="
+log "=== 4c: NON-trial boot below the threshold -> continues and increments ==="
 set_count 2
 set_cmdline "console=tty1 root=LABEL=ROOT ro quiet"
 run_init_premount
-check "4c: nessun fallback a quota 2" \
+check "4c: no fallback at count 2" \
     bash -c "! grep -q 'three consecutive boots' /tmp/premount.out"
-check "4c: init-premount ritorna 0" grep -q 'exit=0' /tmp/premount.out
-c=$(get_count); record "4c: contatore dopo l'avvio = $c (atteso 3)"
-check "4c: contatore incrementato, non azzerato" test "$c" = "3"
+check "4c: init-premount returns 0" grep -q 'exit=0' /tmp/premount.out
+c=$(get_count); record "4c: counter after boot = $c (expected 3)"
+check "4c: counter incremented, not reset" test "$c" = "3"
 
 # ---------------------------------------------------------------------------
-log "=== 4d: primo avvio in assoluto, nessun contatore -> prosegue e lo crea ==="
+log "=== 4d: very first boot, no counter -> continues and creates it ==="
 set_count none
 set_cmdline "console=tty1 root=LABEL=ROOT ro quiet"
 run_init_premount
-check "4d: init-premount ritorna 0 senza contatore preesistente" \
+check "4d: init-premount returns 0 without a pre-existing counter" \
     grep -q 'exit=0' /tmp/premount.out
 
-# 4e qui e non piu' in fondo: get_count chiama drop_bootota, che smonterebbe
-# /boot-ota e renderebbe questo controllo vacuo (passerebbe su qualsiasi cosa).
-# Regressione gia' costata cara su hardware: lasciato montato, il
-# boot-firmware.mount del sistema reale fallisce con EBUSY a OGNI avvio e la
-# macchina finisce in emergency mode in modo permanente.
-log "=== 4e: /boot-ota non deve restare montato dopo un avvio normale ==="
-check "4e: /boot-ota smontato al ritorno di init-premount" \
+# 4e runs before get_count: get_count calls drop_bootota, which would unmount /boot-ota and make
+# this check vacuous. A /boot-ota left mounted makes the real system's boot-firmware.mount fail
+# with EBUSY on every boot and the machine ends up in emergency mode.
+log "=== 4e: /boot-ota must not stay mounted after a normal boot ==="
+check "4e: /boot-ota unmounted when init-premount returns" \
     bash -c '! mountpoint -q /boot-ota'
 
-c=$(get_count); record "4d: contatore creato = $c (atteso 1)"
-check "4d: contatore creato a 1" test "$c" = "1"
+c=$(get_count); record "4d: counter created = $c (expected 1)"
+check "4d: counter created at 1" test "$c" = "1"
 
 # ---------------------------------------------------------------------------
-log "=== 4f: ROOT assente -> fallback ==="
-# L'altro innesco indipendente dal contatore.
+log "=== 4f: ROOT missing -> fallback ==="
+# The other trigger, independent of the counter.
 set_cmdline "console=tty1 root=LABEL=ROOT ro quiet"
 e2label "${LOOP}p2" NOTROOT
 udevadm settle --timeout=10 2>/dev/null || true
 run_init_premount
-check "4f: fallback quando la partizione ROOT non esiste" \
+check "4f: fallback when the ROOT partition does not exist" \
     grep -q 'partition ROOT not found' /tmp/premount.out
 e2label "${LOOP}p2" ROOT
 
 # A/B: the slot to validate is the one named in root=, not a fixed "ROOT".
-log "=== 4g: layout A/B, root=LABEL=ROOT_B ==="
+log "=== 4g: A/B layout, root=LABEL=ROOT_B ==="
 e2label "${LOOP}p2" ROOT_B
 udevadm settle --timeout=10 2>/dev/null || true
 rm -f /boot-ota/unitotem-ota.bootcount 2>/dev/null || true
 set_cmdline "console=tty1 root=LABEL=ROOT_B ro quiet unitotem.slot=b"
 run_init_premount
-check "4g: nessun fallback se lo slot B nominato in root= esiste" \
+check "4g: no fallback if the slot B named in root= exists" \
     bash -c '! grep -q "not found\|filesystem errors" /tmp/premount.out'
 set_cmdline "console=tty1 root=LABEL=ROOT_A ro quiet unitotem.slot=a"
 run_init_premount
-check "4g: fallback se lo slot A nominato in root= non esiste (anche se ROOT_B c'e')" \
+check "4g: fallback if the slot A named in root= does not exist (even though ROOT_B does)" \
     grep -q 'partition ROOT_A not found' /tmp/premount.out
 e2label "${LOOP}p2" ROOT
 
-# --- A/B: nessun contatore, nessuna scrittura sul FAT -------------------------
-log "=== 4h: layout A/B -> il contatore non si usa e non si tocca ==="
+# --- A/B: no counter, no write to the FAT -------------------------------------
+log "=== 4h: A/B layout -> the counter is neither used nor touched ==="
 set_count 5
 set_cmdline "console=tty1 root=LABEL=ROOT ro quiet unitotem.slot=a"
 run_init_premount
-check "4h: A/B non cade nel fallback a contatore alto" bash -c '! grep -q "three consecutive" /tmp/premount.out'
-check "4h: A/B: init-premount ritorna 0" grep -q 'exit=0' /tmp/premount.out
-c=$(get_count); record "4h: contatore dopo l'avvio A/B = $c (atteso 5, intatto)"
-check "4h: A/B: il FAT non e' stato scritto (contatore invariato)" bash -c "[ '$c' = 5 ]"
-check "4h: A/B: /boot-ota smontato" bash -c '! mountpoint -q /boot-ota'
+check "4h: A/B does not fall back on a high counter" bash -c '! grep -q "three consecutive" /tmp/premount.out'
+check "4h: A/B: init-premount returns 0" grep -q 'exit=0' /tmp/premount.out
+c=$(get_count); record "4h: counter after the A/B boot = $c (expected 5, untouched)"
+check "4h: A/B: the FAT was not written (counter unchanged)" bash -c "[ '$c' = 5 ]"
+check "4h: A/B: /boot-ota unmounted" bash -c '! mountpoint -q /boot-ota'
 
-# --- il controllo della ROOT non deve scrivere ---------------------------------
-log "=== 4i: il controllo della ROOT e' in sola lettura ==="
+# --- the ROOT check must not write ---------------------------------------------
+log "=== 4i: the ROOT check is read-only ==="
 set_count none
 set_cmdline "console=tty1 root=LABEL=ROOT ro quiet"
 before=$(dumpe2fs -h "${LOOP}p2" 2>/dev/null | grep -E 'Last checked|Last write time|Filesystem state' | md5sum)
 run_init_premount
 after=$(dumpe2fs -h "${LOOP}p2" 2>/dev/null | grep -E 'Last checked|Last write time|Filesystem state' | md5sum)
-check "4i: il superblocco della ROOT non e' cambiato dopo init-premount (prima e' -fy lo riscriveva)" bash -c "[ '$before' = '$after' ]"
+check "4i: the ROOT superblock did not change after init-premount (e2fsck -fy would rewrite it)" bash -c "[ '$before' = '$after' ]"
 
-# --- watchdog del fallback --------------------------------------------------
-log "=== 4j: il fallback senza host si riavvia da solo ==="
+# --- fallback watchdog ------------------------------------------------------
+log "=== 4j: the fallback with no host reboots by itself ==="
 rm -f /tmp/reboot-called
 cat > /usr/local/bin/reboot << 'EOS'
 #!/bin/sh
@@ -255,18 +225,18 @@ echo "$@" > /tmp/reboot-called
 EOS
 chmod +x /usr/local/bin/reboot
 drop_bootota
-timeout 25 "${ENGINE[@]}" serve-fallback --reason "prova" --idle-timeout 10 > /tmp/idle.out 2>&1 || true
+timeout 25 "${ENGINE[@]}" serve-fallback --reason "test" --idle-timeout 10 > /tmp/idle.out 2>&1 || true
 # In this container dropbear does not exist, so serve-fallback returns at once; the watchdog it started in the
 # background is what is being tested, and it needs its 10 s.
 for _ in $(seq 1 20); do [ -f /tmp/reboot-called ] && break; sleep 1; done
-check "4j: nessun host connesso -> reboot richiesto dopo l'attesa" test -f /tmp/reboot-called
+check "4j: no host connected -> reboot requested after the wait" test -f /tmp/reboot-called
 rm -f /tmp/reboot-called /usr/local/bin/reboot
 
 echo
-log "=== RISULTATI ==="
+log "=== RESULTS ==="
 cat "$RESULTS"
 if grep -q '^FAIL:' "$RESULTS"; then
-    echo "!!! Ci sono controlli falliti" >&2
+    echo "!!! Some checks failed" >&2
     exit 1
 fi
-log "Tutti i controlli di livello 4 sono passati."
+log "All boot-counter checks passed."

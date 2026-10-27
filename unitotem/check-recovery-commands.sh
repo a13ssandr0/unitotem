@@ -2,8 +2,7 @@
 # Does the recovery initrd carry every external command the OTA engine runs?
 #   check-recovery-commands.sh ROOTFS INITRD ENGINE.sh
 # The engine runs inside that initramfs, where only what unitotem/files/ota-hook copied exists. A command that is in the image but not in the
-# initrd fails there, at the worst moment (`tr` and `cmp` were missing for the amd64 A/B and Secure Boot paths: set-default-recovery and
-# populate-bootfs --secure-boot shim died mid-deploy; found by actually running an install from Windows, not by any check).
+# initrd fails there, at the worst moment.
 # Heuristic: words in command position in the engine, that exist as executables in the image (so strings, arithmetic and case labels are
 # ignored) and are not shell builtins/keywords/engine functions. ALLOW lists the ones that legitimately run elsewhere or are optional.
 set -uo pipefail

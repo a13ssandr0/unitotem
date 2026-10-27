@@ -1,16 +1,11 @@
 #!/bin/bash
 # Host wrapper: turns a built unitotem-*-$ARCH.img.xz into a parts set
-# (deploy/$ARCH/<name>.parts/) via the unitotem-parts-builder container. See
-# Dockerfile.parts/deploy/make-parts-image.sh for what actually happens
-# inside; this script only prepares the scratch decompressed image and
-# drives docker.
+# (deploy/$ARCH/<name>.parts/) via the unitotem-parts-builder container (see Dockerfile.parts and
+# deploy/make-parts-image.sh). This script prepares the scratch decompressed image and drives docker.
 #
-# Deliberately decoupled from the kiosk build itself (unitotem/stage3-image.sh
-# has its own optional MAKE_PARTS hook that calls the same library against
-# the loop device it already has attached, for when a fresh build is
-# happening anyway) - the point of this standalone path is being able to
-# regenerate a parts set from an *already-built* .img.xz without a 40-minute
-# rebuild, since the parts format is expected to change a few times.
+# Independent of the kiosk build: unitotem/stage3-image.sh has its own optional MAKE_PARTS hook that
+# calls the same library on its loop device, while this path regenerates a parts set from an
+# already-built .img.xz without rebuilding.
 #
 # Usage: ./deploy/make-parts.sh [--arch amd64|arm64] [--image PATH] [--out DIR] [--keep-scratch]
 set -euo pipefail
@@ -29,7 +24,7 @@ while [ $# -gt 0 ]; do
         --image)        OPT_IMAGE="$2"; shift 2 ;;
         --out)          OPT_OUT="$2"; shift 2 ;;
         --keep-scratch) OPT_KEEP_SCRATCH=1; shift ;;
-        *) die "Opzione sconosciuta: $1" ;;
+        *) die "Unknown option: $1" ;;
     esac
 done
 
@@ -38,20 +33,20 @@ if [ -n "$OPT_IMAGE" ]; then
     [ -n "$OPT_ARCH" ] || case "$IMAGE" in
         *-amd64.img.xz) OPT_ARCH=amd64 ;;
         *-arm64.img.xz) OPT_ARCH=arm64 ;;
-        *) die "Impossibile dedurre l'architettura da $IMAGE, specifica --arch" ;;
+        *) die "Cannot infer the architecture from $IMAGE, pass --arch" ;;
     esac
 else
-    [ -n "$OPT_ARCH" ] || die "--arch richiesto quando non si specifica --image"
+    [ -n "$OPT_ARCH" ] || die "--arch is required when --image is not given"
     IMAGE=$(ls -t "${DIR}/deploy/${OPT_ARCH}/unitotem-"*"-${OPT_ARCH}.img.xz" 2>/dev/null | head -1)
-    [ -n "$IMAGE" ] || die "nessuna immagine trovata per ${OPT_ARCH}"
+    [ -n "$IMAGE" ] || die "no image found for ${OPT_ARCH}"
 fi
-[ -f "$IMAGE" ] || die "immagine non trovata: $IMAGE"
+[ -f "$IMAGE" ] || die "image not found: $IMAGE"
 ARCH="$OPT_ARCH"
 
 SETNAME=$(basename "$IMAGE" .img.xz)
 OUTDIR="${OPT_OUT:-${DIR}/deploy/${ARCH}/${SETNAME}.parts}"
 
-log "Costruisco l'immagine del container unitotem-parts-builder..."
+log "Building the unitotem-parts-builder container image..."
 ${DOCKER} build -f "${DIR}/Dockerfile.parts" -t unitotem-parts-builder "${DIR}"
 
 SCRATCH_DIR="${DIR}/work/parts-scratch.$$"
@@ -61,12 +56,12 @@ cleanup_scratch() {
 }
 trap cleanup_scratch EXIT
 
-log "Decomprimo ${IMAGE} in ${SCRATCH_DIR} (sparse)..."
+log "Decompressing ${IMAGE} into ${SCRATCH_DIR} (sparse)..."
 xz -dc "$IMAGE" | dd of="${SCRATCH_DIR}/$(basename "$IMAGE" .xz)" bs=4M conv=sparse status=progress
 
 mkdir -p "${DIR}/deploy/${ARCH}"
 
-log "Genero il parts set (${ARCH})..."
+log "Generating the parts set (${ARCH})..."
 ${DOCKER} run --rm --privileged \
     -v /dev:/dev \
     -v "${SCRATCH_DIR}:/scratch" \
@@ -75,5 +70,5 @@ ${DOCKER} run --rm --privileged \
     /parts/make-parts-image.sh \
         "/scratch/$(basename "$IMAGE" .xz)" "$ARCH" "$SETNAME" "$(basename "$IMAGE" .xz)"
 
-log "Fatto: deploy/${ARCH}/${SETNAME}.parts/"
+log "Done: deploy/${ARCH}/${SETNAME}.parts/"
 ls -lh "${OUTDIR}"

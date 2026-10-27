@@ -1,21 +1,14 @@
-# NOTE: this file's real-world reach is narrower than it looks. Every device
-# deployed through deploy/remote-deploy.sh (the only supported path - the
-# old whole-disk dd flasher is gone) gets its actual boot-partition
-# config.txt written at runtime by deploy/ota-engine.sh's
-# cmd_set_default_recovery/cmd_set_trial_boot/cmd_promote_default, not by
-# this file - it only ships as-is if someone dd's the built .img directly,
-# bypassing remote-deploy.sh entirely (not a documented/supported path).
-# unitotem/files/config-extra.txt is the actual live source of truth for the
-# [pi4]/[pi5] dtoverlay/dtparam content below (ota-engine.sh appends it onto
-# the boot-selection lines it owns) - keep the two in sync by hand, there is
-# no templating between them.
+# Devices deployed through deploy/remote-deploy.sh get their boot-partition config.txt written at runtime
+# by deploy/ota-engine.sh (cmd_set_default_recovery/cmd_set_trial_boot/cmd_promote_default); this file
+# ships as-is only in the built .img. unitotem/files/config-extra.txt is the source of the [pi4]/[pi5]
+# dtoverlay/dtparam content (ota-engine.sh appends it onto the boot-selection lines it owns); keep the
+# two in sync by hand.
 [all]
 arm_64bit=1
 max_framebuffers=2
 disable_splash=1
 boot_delay=0
-# Kept in sync with config-extra.txt by hand - see that file for why these
-# two matter and why a full-size framebuffer does not prove overscan is off.
+# Same as config-extra.txt (see that file for the reason).
 disable_fw_kms_setup=1
 disable_overscan=1
 enable_uart=1

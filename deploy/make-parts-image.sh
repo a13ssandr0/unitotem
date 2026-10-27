@@ -1,8 +1,6 @@
 #!/bin/bash
-# Runs INSIDE the unitotem-parts-builder container (see Dockerfile.parts and
-# deploy/make-parts.sh). Attaches the scratch image file as a loop device
-# and hands off to parts-lib.sh's make_parts() - see that file for the
-# actual per-partition logic.
+# Runs inside the unitotem-parts-builder container (see Dockerfile.parts and deploy/make-parts.sh).
+# Attaches the scratch image as a loop device and calls make_parts() from parts-lib.sh.
 set -euo pipefail
 source /parts/parts-lib.sh
 

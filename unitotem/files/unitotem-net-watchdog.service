@@ -1,5 +1,5 @@
 [Unit]
-Description=UniTotem - watchdog di rete (riavvio in OTA se irraggiungibile)
+Description=UniTotem - network watchdog (reboot into OTA mode when unreachable)
 Documentation=man:unitotem-net-watchdog
 After=network.target NetworkManager.service
 

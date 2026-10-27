@@ -20,11 +20,8 @@ firewall_start() {
   iptables -A INPUT -p tcp --dport 4443 -j ACCEPT                         # Paired nodes: the manager's mutual-TLS server<->client link (3.0.0~dev5)
   iptables -A INPUT -p udp --dport 5353 -j ACCEPT                         # Accept incoming avahi/zeroconf
 
-  # IPv6, mirroring the rules above. Previously absent entirely, which meant
-  # IPv4 defaulted to DROP while IPv6 was left wide open - the opposite of
-  # what the policy above intends. It matters more now that link-local IPv6
-  # is a guaranteed rescue channel (see unitotem/files/nm-fallback.nmconnection):
-  # that channel must be reachable, but only on the same ports IPv4 exposes.
+  # IPv6, mirroring the rules above: default DROP, with the same ports as IPv4. Link-local IPv6 is
+  # the rescue channel (see unitotem/files/nm-fallback.nmconnection) and must stay reachable.
   ip6tables -F
   ip6tables -P INPUT   DROP
   ip6tables -P FORWARD DROP
@@ -32,11 +29,8 @@ firewall_start() {
   ip6tables -A INPUT -i lo -j ACCEPT
   ip6tables -A INPUT -m conntrack --ctstate INVALID -j DROP
   ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  # ICMPv6 is accepted wholesale, unlike ICMP on IPv4 where it is a
-  # convenience. Here it is load-bearing: Neighbour Discovery, Router
-  # Solicitation/Advertisement and Duplicate Address Detection all ride on
-  # ICMPv6, so dropping it does not harden IPv6 - it breaks it, including
-  # the link-local address this rescue path depends on.
+  # ICMPv6 is accepted wholesale: Neighbour Discovery, Router Solicitation/Advertisement and Duplicate
+  # Address Detection depend on it, including the link-local address the rescue path uses.
   ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
   ip6tables -A INPUT -p tcp --dport 22 -j ACCEPT
   ip6tables -A INPUT -p tcp --dport 80  -j ACCEPT

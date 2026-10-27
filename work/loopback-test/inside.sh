@@ -1,19 +1,16 @@
 #!/bin/bash
 # Runs INSIDE a privileged throwaway container as root. Exercises the real
-# deploy/ota-engine.sh subcommand sequence exactly as deploy/remote-deploy.sh's
-# run_ota_sequence drives it over SSH in production, but locally against a
-# loop device standing in for the target disk - see the OTA redesign plan's
-# §11.1 (loopback verification). Mirrors run_ota_sequence's exact ordering
-# and flags (deploy/remote-deploy.sh:358-478), simulating a *fresh* (non-
-# UniTotem) target so the full table-recreate + DATA-mkfs path gets
-# exercised, not just a same-layout restore.
+# deploy/ota-engine.sh subcommand sequence as run_ota_sequence in deploy/remote-deploy.sh
+# drives it over SSH, against a loop device standing in for the target disk. It simulates a
+# fresh (non-UniTotem) target, so the full table-recreate + DATA-mkfs path runs, not just a
+# same-layout restore.
 set -Eeuo pipefail
 
 log() { echo ">>> $*"; }
-fail() { echo "!!! FALLITO: $*" >&2; exit 1; }
+fail() { echo "!!! FAILED: $*" >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
-log "Installo i pacchetti necessari nel container..."
+log "Installing the packages needed in the container..."
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
     partclone xz-utils util-linux fdisk e2fsprogs dosfstools coreutils gdisk parted \
@@ -38,7 +35,7 @@ check() {
 }
 
 SIZE_GIB="${TARGET_SIZE_GIB:-16}"
-log "Creo disco target da ${SIZE_GIB}GiB (sparse, piu' grande della sorgente da 11GiB apposta - esercita il ricalcolo size= di DATA, plan §7.4)..."
+log "Creating a ${SIZE_GIB}GiB target disk (sparse, deliberately larger than the 11GiB source - exercises the size= recalculation of DATA)..."
 rm -f "$TARGET_IMG"
 truncate -s "${SIZE_GIB}G" "$TARGET_IMG"
 
@@ -67,37 +64,31 @@ BOOTFS_PART="${M[UNITOTEM_BOOTFS_PART]}"
 log "manifest: DATA_PART=$DATA_PART BOOTFS_PART=$BOOTFS_PART HAS_ESP=${M[UNITOTEM_HAS_ESP]} RAW_SIZE=${M[UNITOTEM_RAW_SIZE]} TOTAL_USED=${M[UNITOTEM_TOTAL_USED_BYTES]}"
 
 # --- probe (empty disk, must not explode) ----------------------------------
-log "=== probe (disco vuoto) ==="
+log "=== probe (empty disk) ==="
 "${ENGINE[@]}" probe --disk "$LOOP" | tee /tmp/probe0.out
-check "probe su disco vuoto non segnala HAVE_UNITOTEM" grep -q 'UNITOTEM_HAVE_UNITOTEM=0' /tmp/probe0.out
+check "probe on an empty disk does not report HAVE_UNITOTEM" grep -q 'UNITOTEM_HAVE_UNITOTEM=0' /tmp/probe0.out
 
 # --- stage 1: restore-table + bootfs prep + recovery files + default -------
-log "=== Stage 1: tabella + fallback ==="
+log "=== Stage 1: table + fallback ==="
 TABLE_B64=$(base64 -w0 < "$PARTS/layout.sfdisk")
 BOOTCODE_ARG=()
 [ -f "$PARTS/bootcode.bin" ] && BOOTCODE_ARG=(--bootcode-b64 "$(base64 -w0 < "$PARTS/bootcode.bin")")
 "${ENGINE[@]}" restore-table --disk "$LOOP" --table-b64 "$TABLE_B64" --tail-part "$DATA_PART" "${BOOTCODE_ARG[@]}"
 
 sfdisk --dump "$LOOP" > /tmp/table-after.sfdisk
-record "--- tabella ripristinata (sfdisk --dump) ---"
+record "--- restored table (sfdisk --dump) ---"
 cat /tmp/table-after.sfdisk | tee -a "$RESULTS"
-# Note: sfdisk --dump always reports a last-lba: describing the disk's
-# current geometry - that's not a sign of the stripping bug, it's normal
-# output. What actually proves last-lba: was stripped from the *input* is
-# that DATA grew to fill the bigger target disk below, instead of staying
-# capped at its size in the (smaller) source.
+# sfdisk --dump always reports last-lba for the disk's current geometry. What proves
+# last-lba was stripped from the input is that DATA grew to fill the bigger target disk.
 # DATA (tail partition) must have grown well past its size in the 11GiB source
 data_size_sectors=$(grep -E "${LOOP}p${DATA_PART}[[:space:]]*:" /tmp/table-after.sfdisk | grep -oE 'size=[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
-log "DATA size dopo restore-table: ${data_size_sectors} settori (~$((data_size_sectors/2048))MiB)"
-check "DATA ricalcolata su disco piu' grande (>4GiB in settori, non la dimensione minuscola originale)" \
+log "DATA size after restore-table: ${data_size_sectors} sectors (~$((data_size_sectors/2048))MiB)"
+check "DATA recalculated on the bigger disk (>4GiB in sectors, not the small original size)" \
     bash -c "[ ${data_size_sectors:-0} -gt 8388608 ]"
 
-# This throwaway container has no running udevd, so the kernel's own
-# BLKRRPART re-read (which sfdisk/partx trigger just fine - confirmed via
-# sysfs) never gets turned into /dev/loopNpM nodes by anyone. Real targets
-# always have udev running, so ota-engine.sh's own partprobe/partx/udevadm
-# sequence is correct there; this is purely a test-container gap, worked
-# around by mknod'ing straight from sysfs's major:minor.
+# The container runs no udevd, so nothing turns the kernel's partition re-read into
+# /dev/loopNpM nodes (real targets run udev). The nodes are created with mknod from the
+# major:minor in sysfs.
 ensure_partition_nodes() {
     local loop="$1" base p majmin maj min
     base=$(basename "$loop")
@@ -114,20 +105,20 @@ ensure_partition_nodes "$LOOP"
 
 "${ENGINE[@]}" prepare-bootfs --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --fstype vfat --fresh 1 --label EFI
 
-log "Scrivo kernel/initrd di recovery..."
+log "Writing the recovery kernel/initrd..."
 "${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-vmlinuz --subdir unitotem \
     < "$REPO/deploy/amd64/recovery-vmlinuz-amd64"
 "${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-initrd.img --subdir unitotem \
     < "$REPO/deploy/amd64/recovery-initrd-amd64.img"
 
 "${ENGINE[@]}" set-default-recovery --disk "$LOOP" --firmware uefi --bootfs-part "$BOOTFS_PART"
-log "Stage 1 completato (barriera superata: da qui in poi un fallimento non deve piu' riavviare su un disco a meta')."
+log "Stage 1 complete (barrier passed: from here on a failure must not reboot into a half-written disk)."
 
 # --- stage 2: bootfs file-level content + per-partition restore + DATA -----
-log "=== Stage 2: contenuto reale ==="
+log "=== Stage 2: real content ==="
 BOOTFS_STREAM=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "$PARTS/parts.manifest")
 if [ -n "$BOOTFS_STREAM" ]; then
-    log "Popolo contenuto file-level della boot fs da ${BOOTFS_STREAM}..."
+    log "Populating the file-level content of the boot fs from ${BOOTFS_STREAM}..."
     socat -u "FILE:$PARTS/$BOOTFS_STREAM" "TCP-LISTEN:9700,reuseaddr" &
     NCPID=$!
     sleep 0.5
@@ -161,7 +152,7 @@ process_block() {
             wait "$ncpid" 2>/dev/null || true
             ;;
         data)
-            log "data-op mkfs su partizione $n (percorso 'sistema nuovo': tabella ricreata -> DATA formattata)"
+            log "data-op mkfs on partition $n ('new system' path: table recreated -> DATA formatted)"
             "${ENGINE[@]}" data-op --disk "$LOOP" --part "$n" --op mkfs
             ;;
     esac
@@ -181,7 +172,7 @@ done < "$PARTS/parts.manifest"
 process_block
 
 log "ROOT_PART=$ROOT_PART BOOT_PART=$BOOT_PART"
-check "ROOT individuata nel manifest" bash -c "[ -n '$ROOT_PART' ]"
+check "ROOT found in the manifest" bash -c "[ -n '$ROOT_PART' ]"
 
 # --- mount-target / populate-real-kernel(skip amd64) / migrate-etc-overlay -
 log "=== mount-target ==="
@@ -189,125 +180,120 @@ MOUNT_ARGS=(--disk "$LOOP" --arch amd64 --root-part "$ROOT_PART" --bootfs-part "
 [ -n "$BOOT_PART" ] && MOUNT_ARGS+=(--boot-part "$BOOT_PART")
 "${ENGINE[@]}" mount-target "${MOUNT_ARGS[@]}"
 
-check "ROOT montata ha /sbin/init o systemd" bash -c '[ -x /mnt/newroot/sbin/init ] || [ -x /mnt/newroot/usr/lib/systemd/systemd ]'
-check "ROOT montata ha /etc/unitotem (marker UniTotem)" test -d /mnt/newroot/etc/unitotem
-check "BOOT/ESP montata sotto /boot/efi ha grub" test -d /mnt/newroot/boot/efi/EFI
+check "mounted ROOT has /sbin/init or systemd" bash -c '[ -x /mnt/newroot/sbin/init ] || [ -x /mnt/newroot/usr/lib/systemd/systemd ]'
+check "mounted ROOT has /etc/unitotem (UniTotem marker)" test -d /mnt/newroot/etc/unitotem
+check "BOOT/ESP mounted under /boot/efi has grub" test -d /mnt/newroot/boot/efi/EFI
 
-check "unitotem-ota-changes installato" test -x /mnt/newroot/usr/sbin/unitotem-ota-changes
-check "baseline generata da stage3" test -s /mnt/newroot/usr/lib/unitotem/baseline/packages
-check "baseline: manifest dei file non posseduti non vuoto" \
+check "unitotem-ota-changes installed" test -x /mnt/newroot/usr/sbin/unitotem-ota-changes
+check "baseline generated by stage3" test -s /mnt/newroot/usr/lib/unitotem/baseline/packages
+check "baseline: manifest of unowned files is not empty" \
     test -s /mnt/newroot/usr/lib/unitotem/baseline/unowned.sha256
-# Il numero esatto varia, ma un ordine di grandezza sbagliato tradisce una
-# normalizzazione usr-merge rotta: senza, i "non posseduti" raddoppiano.
-check "baseline: conteggio dei non posseduti plausibile (<6000)" \
+# The exact number varies, but a wrong order of magnitude means a broken usr-merge
+# normalization: without it the "unowned" files double.
+check "baseline: plausible count of unowned files (<6000)" \
     bash -c '[ "$(wc -l < /mnt/newroot/usr/lib/unitotem/baseline/unowned.sha256)" -lt 6000 ]'
-check "baseline: il manifest non contiene se stesso" \
+check "baseline: the manifest does not list itself" \
     bash -c "! grep -q '/usr/lib/unitotem/baseline/' /mnt/newroot/usr/lib/unitotem/baseline/unowned.sha256"
-check "l'hook overlay ancora /var/lib/dpkg su ROOT" \
+check "the overlay hook pins /var/lib/dpkg to ROOT" \
     grep -q 'dpkg_pin' /mnt/newroot/etc/initramfs-tools/scripts/init-bottom/setup-overlays
-check "timer apt automatici mascherati" \
+check "automatic apt timers masked" \
     bash -c 'ls -l /mnt/newroot/etc/systemd/system/apt-daily.timer 2>/dev/null | grep -q /dev/null'
-check "unitotem-maintenance ferma i servizi reali, non sway" \
+check "unitotem-maintenance stops the real services, not sway" \
     bash -c "grep -q 'start-xorg.service' /mnt/newroot/usr/local/bin/unitotem-maintenance && ! grep -qE '^[^#]*pkill -x sway' /mnt/newroot/usr/local/bin/unitotem-maintenance"
 
-# La suite dell'immagine e le sue sources.list devono coincidere: un'immagine
-# costruita su trixie che punta apt a bookworm sembra sana finche' qualcuno non
-# entra in modo aggiornamento e apt propone un mezzo downgrade.
-check "l'immagine amd64 e' Debian 13 (trixie)" \
+# The image's suite and its sources.list must agree: otherwise apt proposes a half-downgrade
+# in maintenance mode.
+check "the amd64 image is Debian 13 (trixie)" \
     grep -q "VERSION_CODENAME=trixie" /mnt/newroot/etc/os-release
-check "le sources.list dell'immagine puntano a trixie, non a bookworm" \
+check "the image's sources.list point to trixie, not bookworm" \
     bash -c "grep -q ' trixie ' /mnt/newroot/etc/apt/sources.list && ! grep -q bookworm /mnt/newroot/etc/apt/sources.list"
-check "nessun residuo di backports nell'immagine" \
+check "no backports leftover in the image" \
     bash -c "! ls /mnt/newroot/etc/apt/sources.list.d/backports.list >/dev/null 2>&1"
 
-# --- Driver video amd64: l'immagine deve poter guidare NVIDIA, AMD e Intel
-# (ARC comprese) senza sapere in anticipo su che macchina finira'. Ognuno di
-# questi controlli corrisponde a un pezzo che, se manca, si scopre solo quando
-# il kiosk arriva su quell'hardware e resta a schermo nero.
-check "kernel 6.12+ (serve alle ARC)" \
+# --- amd64 video drivers: the image must drive NVIDIA, AMD and Intel (ARC included)
+# without knowing the machine in advance. Each check covers a piece whose absence would
+# otherwise show up only as a black screen on that hardware.
+check "kernel 6.12+ (needed by ARC)" \
     bash -c 'ls /mnt/newroot/lib/modules/ | grep -qE "^6\\.(1[2-9]|[2-9][0-9])"'
 check "Mesa 25.x (iris/ANV per DG2, RDNA3)" \
     bash -c 'chroot /mnt/newroot dpkg-query -W -f="\${Version}" libgl1-mesa-dri 2>/dev/null | grep -q "^25\\."'
-check "modulo NVIDIA costruito da DKMS nell'immagine" \
+check "NVIDIA module built by DKMS in the image" \
     bash -c 'ls /mnt/newroot/lib/modules/*/updates/dkms/nvidia-current.ko* >/dev/null 2>&1'
-check "driver X NVIDIA presente" \
+check "NVIDIA X driver present" \
     bash -c 'ls /mnt/newroot/usr/lib/xorg/modules/drivers/nvidia_drv.so >/dev/null 2>&1'
 check "VAAPI su NVDEC (nvidia-vaapi-driver)" \
     bash -c 'ls /mnt/newroot/usr/lib/x86_64-linux-gnu/dri/nvidia_drv_video.so >/dev/null 2>&1'
-check "driver VAAPI Intel iHD (copre ARC/DG2)" \
+check "Intel iHD VAAPI driver (covers ARC/DG2)" \
     test -e /mnt/newroot/usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
-check "driver VAAPI AMD (radeonsi via mesa-va-drivers)" \
+check "AMD VAAPI driver (radeonsi via mesa-va-drivers)" \
     test -e /mnt/newroot/usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
-check "driver X amdgpu presente" \
+check "amdgpu X driver present" \
     test -e /mnt/newroot/usr/lib/xorg/modules/drivers/amdgpu_drv.so
-check "firmware GPU aggiornato (2025, non 2023)" \
+check "GPU firmware is current (2025, not 2023)" \
     bash -c 'chroot /mnt/newroot dpkg-query -W -f="\${Version}" firmware-amd-graphics 2>/dev/null | grep -q "^2025"'
 
-# Stessi controlli di confezionamento del lato arm64: fstab-amd64 e' stato
-# modificato in parallelo a fstab-arm64, e "e' simmetrico quindi va bene" non
-# e' una verifica. L'hook overlay invece e' condiviso fra le due architetture.
-check "l'hook overlay copre anche /var" \
+# Same packaging checks as on the arm64 side: fstab-amd64 and fstab-arm64 are separate files.
+# The overlay hook is shared by both architectures.
+check "the overlay hook also covers /var" \
     grep -qE 'for d in etc root var' /mnt/newroot/etc/initramfs-tools/scripts/init-bottom/setup-overlays
-check "fstab non rimonta piu' tmpfs su /var/lib/* (maschererebbe l'overlay)" \
+check "fstab does not mount tmpfs on /var/lib/* (it would mask the overlay)" \
     bash -c "! grep -qE '^tmpfs[[:space:]]+/var/lib/' /mnt/newroot/etc/fstab"
-check "fstab tiene comunque /var/cache e /var/tmp su tmpfs (usura disco)" \
+check "fstab keeps /var/cache and /var/tmp on tmpfs (disk wear)" \
     bash -c "grep -qE '^tmpfs[[:space:]]+/var/cache' /mnt/newroot/etc/fstab && grep -qE '^tmpfs[[:space:]]+/var/tmp' /mnt/newroot/etc/fstab"
-check "journald chiede storage persistente" \
+check "journald asks for persistent storage" \
     bash -c "grep -rqs '^Storage=persistent' /mnt/newroot/etc/systemd/journald.conf.d/"
 
 DATA_MNT=/mnt/newroot/mnt/data
 mkdir -p "$DATA_MNT/upper/etc/cron.d" "$DATA_MNT/upper/var/lib/dpkg"
-echo "vecchio-db" > "$DATA_MNT/upper/var/lib/dpkg/status"
-echo "sostituiscimi" > "$DATA_MNT/upper/etc/cron.d/estraneo"
+echo "old-db" > "$DATA_MNT/upper/var/lib/dpkg/status"
+echo "replace-me" > "$DATA_MNT/upper/etc/cron.d/foreign"
 
 "${ENGINE[@]}" migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data
 
-check "migrate: upper/var azzerato (niente dpkg della vecchia immagine)" \
+check "migrate: upper/var cleared (no dpkg state of the old image)" \
     bash -c "! test -e '$DATA_MNT/upper/var/lib/dpkg/status'"
-check "migrate: il vecchio /var e' archiviato in history, non perso" \
+check "migrate: the old /var is archived in history, not lost" \
     bash -c "ls '$DATA_MNT'/history/*/var/lib/dpkg/status >/dev/null 2>&1"
-check "migrate: file /etc non in whitelist NON reimportato" \
-    bash -c "! test -e '$DATA_MNT/upper/etc/cron.d/estraneo'"
+check "migrate: /etc file not in the whitelist is NOT re-imported" \
+    bash -c "! test -e '$DATA_MNT/upper/etc/cron.d/foreign'"
 
-log "=== set-trial-boot (uefi, chroot sul target appena scritto) ==="
+log "=== set-trial-boot (uefi, chroot into the freshly written target) ==="
 "${ENGINE[@]}" set-trial-boot --firmware uefi --target /mnt/newroot
-check "voce grub di trial creata" test -f /mnt/newroot/etc/grub.d/99_unitotem_trial
-check "grub.cfg rigenerato menziona 'UniTotem (trial)'" grep -q 'UniTotem (trial)' /mnt/newroot/boot/grub/grub.cfg
-check "grubenv punta al trial come next entry" bash -c "grub-editenv /mnt/newroot/boot/grub/grubenv list 2>/dev/null | grep -q 'next_entry=.*UniTotem (trial)'"
+check "trial grub entry created" test -f /mnt/newroot/etc/grub.d/99_unitotem_trial
+check "regenerated grub.cfg mentions 'UniTotem (trial)'" grep -q 'UniTotem (trial)' /mnt/newroot/boot/grub/grub.cfg
+check "grubenv points to the trial as next entry" bash -c "grub-editenv /mnt/newroot/boot/grub/grubenv list 2>/dev/null | grep -q 'next_entry=.*UniTotem (trial)'"
 
 # --- verify recovery files were NOT clobbered by stage 2's bootfs populate -
-# bootfs is already mounted (by mount-target, above) at /mnt/newroot/boot/efi
-# - mounting the same partition a second time at /mnt/ota-bootfs would just
-# collide with that, so read it straight from where it already is.
-log "=== verifica: i file di recovery sopravvivono al populate-bootfs di stage 2 ==="
+# bootfs is already mounted by mount-target at /mnt/newroot/boot/efi; read it from there.
+log "=== verify: the recovery files survive the stage 2 populate-bootfs ==="
 BOOTFS_MNT=/mnt/newroot/boot/efi
-check "recovery-vmlinuz ancora presente" test -f "$BOOTFS_MNT/unitotem/recovery-vmlinuz"
-check "recovery-initrd.img ancora presente" test -f "$BOOTFS_MNT/unitotem/recovery-initrd.img"
+check "recovery-vmlinuz still present" test -f "$BOOTFS_MNT/unitotem/recovery-vmlinuz"
+check "recovery-initrd.img still present" test -f "$BOOTFS_MNT/unitotem/recovery-initrd.img"
 got_vmlinuz_sha=$(sha256sum "$BOOTFS_MNT/unitotem/recovery-vmlinuz" | cut -d' ' -f1)
 got_initrd_sha=$(sha256sum "$BOOTFS_MNT/unitotem/recovery-initrd.img" | cut -d' ' -f1)
 exp_vmlinuz_sha=$(awk -F= '/UNITOTEM_RECOVERY_VMLINUZ_SHA256/{print $2}' "$REPO/deploy/amd64/recovery.manifest")
 exp_initrd_sha=$(awk -F= '/UNITOTEM_RECOVERY_INITRD_SHA256/{print $2}' "$REPO/deploy/amd64/recovery.manifest")
 record "recovery-vmlinuz sha256: got=${got_vmlinuz_sha} expected=${exp_vmlinuz_sha}"
-check "recovery-vmlinuz sha256 corretto (riletto dal disco)" bash -c "[ '$got_vmlinuz_sha' = '$exp_vmlinuz_sha' ]"
+check "recovery-vmlinuz sha256 correct (re-read from disk)" bash -c "[ '$got_vmlinuz_sha' = '$exp_vmlinuz_sha' ]"
 record "recovery-initrd.img sha256: got=${got_initrd_sha} expected=${exp_initrd_sha}"
-check "recovery-initrd.img sha256 corretto (riletto dal disco)" bash -c "[ '$got_initrd_sha' = '$exp_initrd_sha' ]"
-check "BOOTX64.EFI presente (popolato da stage 2 file-level, non clobbera unitotem/)" test -f "$BOOTFS_MNT/EFI/BOOT/BOOTX64.EFI"
-check "grub.cfg di default-recovery ancora presente e punta al fallback" grep -q "recovery-vmlinuz" "$BOOTFS_MNT/grub/grub.cfg"
+check "recovery-initrd.img sha256 correct (re-read from disk)" bash -c "[ '$got_initrd_sha' = '$exp_initrd_sha' ]"
+check "BOOTX64.EFI present (populated by stage 2 at file level, does not clobber unitotem/)" test -f "$BOOTFS_MNT/EFI/BOOT/BOOTX64.EFI"
+check "default-recovery grub.cfg still present and points to the fallback" grep -q "recovery-vmlinuz" "$BOOTFS_MNT/grub/grub.cfg"
 
 log "=== umount-target ==="
 "${ENGINE[@]}" umount-target
 
-# --- fsck a freddo su ogni partizione ripristinata --------------------------
-log "=== fsck a freddo ==="
-check "fsck.ext4 pulito su ROOT" e2fsck -fn "${LOOP}p${ROOT_PART}"
-[ -n "$BOOT_PART" ] && check "fsck.ext4 pulito su BOOT" e2fsck -fn "${LOOP}p${BOOT_PART}"
-check "fsck.vfat pulito su bootfs (EFI)" fsck.vfat -n "${LOOP}p${BOOTFS_PART}"
-check "fsck.ext4 pulito su DATA (appena formattata)" e2fsck -fn "${LOOP}p${DATA_PART}"
-check "label DATA corretta" bash -c "[ \"\$(blkid -s LABEL -o value ${LOOP}p${DATA_PART})\" = DATA ]"
+# --- cold fsck of every restored partition ---------------------------------
+log "=== cold fsck ==="
+check "fsck.ext4 clean on ROOT" e2fsck -fn "${LOOP}p${ROOT_PART}"
+[ -n "$BOOT_PART" ] && check "fsck.ext4 clean on BOOT" e2fsck -fn "${LOOP}p${BOOT_PART}"
+check "fsck.vfat clean on bootfs (EFI)" fsck.vfat -n "${LOOP}p${BOOTFS_PART}"
+check "fsck.ext4 clean on DATA (just formatted)" e2fsck -fn "${LOOP}p${DATA_PART}"
+check "DATA label correct" bash -c "[ \"\$(blkid -s LABEL -o value ${LOOP}p${DATA_PART})\" = DATA ]"
 
-# --- promote-default: chroot nel target, esattamente come farebbe -----------
-# unitotem-boot-ok.service dopo un avvio confermato del sistema reale.
-log "=== promote-default (simulando boot confermato) ==="
+# --- promote-default: chroot into the target, as unitotem-boot-ok.service does after a
+# confirmed boot of the real system.
+log "=== promote-default (simulating a confirmed boot) ==="
 "${ENGINE[@]}" mount-target "${MOUNT_ARGS[@]}"
 cp "$REPO/deploy/ota-engine.sh" /mnt/newroot/tmp/ota-engine.sh
 mount --bind /dev  /mnt/newroot/dev
@@ -315,16 +301,16 @@ mount --bind /proc /mnt/newroot/proc
 mount --bind /sys  /mnt/newroot/sys
 chroot /mnt/newroot bash /tmp/ota-engine.sh promote-default --firmware uefi
 umount -lf /mnt/newroot/dev /mnt/newroot/proc /mnt/newroot/sys
-check "voce di trial rimossa dopo promote-default" bash -c '[ ! -f /mnt/newroot/etc/grub.d/99_unitotem_trial ]'
-check "grub.cfg rigenerato NON menziona piu' il trial dopo promote" bash -c '! grep -q "UniTotem (trial)" /mnt/newroot/boot/grub/grub.cfg'
+check "trial entry removed after promote-default" bash -c '[ ! -f /mnt/newroot/etc/grub.d/99_unitotem_trial ]'
+check "regenerated grub.cfg no longer mentions the trial after promote" bash -c '! grep -q "UniTotem (trial)" /mnt/newroot/boot/grub/grub.cfg'
 rm -f /mnt/newroot/tmp/ota-engine.sh
 "${ENGINE[@]}" umount-target
 
-log "=== RISULTATI ==="
+log "=== RESULTS ==="
 cat "$RESULTS"
 if grep -q '^FAIL' "$RESULTS"; then
-    log "ALCUNI CONTROLLI SONO FALLITI"
+    log "SOME CHECKS FAILED"
     exit 1
 else
-    log "TUTTI I CONTROLLI SONO PASSATI"
+    log "ALL CHECKS PASSED"
 fi

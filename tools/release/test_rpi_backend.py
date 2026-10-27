@@ -40,51 +40,51 @@ with tempfile.TemporaryDirectory() as td:
                 UPDATE_REBOOT_CMD=f"echo trial=$UNITOTEM_REBOOT_TRIAL >> {reboots}", UPDATE_HEALTH_URL="")
 
     uu.slot_check = lambda *a: None      # no real block device here
-    check("backend rpi riconosciuto", uu.need_backend(conf) == "rpi")
-    check("default slot letto da os_prefix", uu.be_default_slot(conf) == "a")
+    check("rpi backend recognised", uu.need_backend(conf) == "rpi")
+    check("default slot read from os_prefix", uu.be_default_slot(conf) == "a")
 
     # board without the EEPROM bootloader -> unsupported
-    try: uu.need_backend(dict(conf, UPDATE_DT_BOOTLOADER=os.path.join(td, "nope"))); check("senza tryboot rifiutata", False)
-    except uu.Fail as e: check("senza tryboot rifiutata", e.code == "backend-unsupported")
+    try: uu.need_backend(dict(conf, UPDATE_DT_BOOTLOADER=os.path.join(td, "nope"))); check("board without tryboot refused", False)
+    except uu.Fail as e: check("board without tryboot refused", e.code == "backend-unsupported")
 
     # apply without reboot is refused on Raspberry
     st = {"a": {"version": "1", "valid": True, "confirmed": True}, "b": {"version": "2", "valid": True, "prepared": True}}
     uu.write_state(conf, "slots.json", st)
     class A: reboot = False; json = True
-    try: uu.cmd_apply(A, conf); check("apply senza --reboot rifiutato", False)
-    except uu.Fail as e: check("apply senza --reboot rifiutato", e.code == "needs-reboot")
-    check("... e non lascia tryboot.txt", not os.path.exists(bf + "/tryboot.txt"))
+    try: uu.cmd_apply(A, conf); check("apply without --reboot refused", False)
+    except uu.Fail as e: check("apply without --reboot refused", e.code == "needs-reboot")
+    check("... and leaves no tryboot.txt", not os.path.exists(bf + "/tryboot.txt"))
 
     class B: reboot = True; json = True
     rc, out = uu.cmd_apply(B, conf)
     tb = open(bf + "/tryboot.txt").read()
-    check("apply scrive tryboot.txt con os_prefix=slotb/", "os_prefix=slotb/" in tb and "os_prefix=slota/" not in tb)
-    check("tryboot.txt conserva il resto della config", "[pi4]\narm_boost=1" in tb and "initramfs initramfs8 followkernel" in tb)
-    check("config.txt (default) intatto durante la prova", "os_prefix=slota/" in open(bf + "/config.txt").read())
+    check("apply writes tryboot.txt with os_prefix=slotb/", "os_prefix=slotb/" in tb and "os_prefix=slota/" not in tb)
+    check("tryboot.txt keeps the rest of the config", "[pi4]\narm_boost=1" in tb and "initramfs initramfs8 followkernel" in tb)
+    check("config.txt (default) untouched during the trial", "os_prefix=slota/" in open(bf + "/config.txt").read())
     time.sleep(0.3)
-    check("riavvio di prova richiesto (tryboot)", "trial=1" in (open(reboots).read() if os.path.exists(reboots) else ""))
+    check("trial reboot requested (tryboot)", "trial=1" in (open(reboots).read() if os.path.exists(reboots) else ""))
 
     # now "booted into b": confirm promotes
     open(cmdline, "w").write("root=LABEL=ROOT_B unitotem.slot=b\n")
     out = uu.confirm_now(conf)
-    check("confirm: config.txt punta a slotb", "os_prefix=slotb/" in open(bf + "/config.txt").read())
-    check("confirm: tryboot.txt rimosso", not os.path.exists(bf + "/tryboot.txt"))
-    check("confirm: default letto = b", uu.be_default_slot(conf) == "b")
+    check("confirm: config.txt points to slotb", "os_prefix=slotb/" in open(bf + "/config.txt").read())
+    check("confirm: tryboot.txt removed", not os.path.exists(bf + "/tryboot.txt"))
+    check("confirm: default read = b", uu.be_default_slot(conf) == "b")
 
     # rollback
     class R: reboot = True; json = True
     rc, out = uu.cmd_rollback(R, conf)
-    check("rollback: config.txt torna a slota", "os_prefix=slota/" in open(bf + "/config.txt").read())
+    check("rollback: config.txt goes back to slota", "os_prefix=slota/" in open(bf + "/config.txt").read())
     time.sleep(0.3)
-    check("rollback: riavvio normale (non tryboot)", open(reboots).read().strip().splitlines()[-1] == "trial=0")
+    check("rollback: plain reboot (not tryboot)", open(reboots).read().strip().splitlines()[-1] == "trial=0")
 
     # first deploy: config.txt is still the FALLBACK's, tryboot.txt is the only full description of slot A
     open(bf + "/config.txt", "w").write("arm_64bit=1\nenable_uart=1\nkernel=recovery8.img\ninitramfs recovery-initrd.img followkernel\n")
     open(bf + "/tryboot.txt", "w").write("[all]\narm_64bit=1\nenable_uart=1\nos_prefix=slota/\nkernel=kernel8.img\ninitramfs initramfs8 followkernel\n")
     uu.be_set_default(conf, "a")
     cfg = open(bf + "/config.txt").read()
-    check("promozione primo deploy: config.txt diventa la config completa dello slot", "kernel=kernel8.img" in cfg and "os_prefix=slota/" in cfg and "recovery8.img" not in cfg, cfg)
-    check("promozione primo deploy: tryboot.txt rimosso", not os.path.exists(bf + "/tryboot.txt"))
+    check("first-deploy promotion: config.txt becomes the slot's full config", "kernel=kernel8.img" in cfg and "os_prefix=slota/" in cfg and "recovery8.img" not in cfg, cfg)
+    check("first-deploy promotion: tryboot.txt removed", not os.path.exists(bf + "/tryboot.txt"))
 
     # whitelist import is repeatable: a change made between fetch and apply must reach the new slot
     data = conf["UPDATE_DATA"]; os.makedirs(data + "/upper/etc.a/unitotem"); os.makedirs(data + "/upper/etc.b")
@@ -94,8 +94,8 @@ with tempfile.TemporaryDirectory() as td:
     n1 = uu.import_whitelist(conf, "b", "a", pl)
     open(data + "/upper/etc.a/unitotem/update.conf", "w").write("v2\n")
     uu.import_whitelist(conf, "b", "a", pl)
-    check("whitelist: prima importazione", n1 >= 2 and open(data + "/upper/etc.b/hostname").read() == "kiosk\n")
-    check("whitelist: reimportazione sovrascrive (modifica tra fetch e apply)", open(data + "/upper/etc.b/unitotem/update.conf").read() == "v2\n")
+    check("whitelist: first import", n1 >= 2 and open(data + "/upper/etc.b/hostname").read() == "kiosk\n")
+    check("whitelist: re-import overwrites (change between fetch and apply)", open(data + "/upper/etc.b/unitotem/update.conf").read() == "v2\n")
 
     # ---- release builder (arm64) + bootfiles install, via the fake server ----
     img = os.path.join(td, "arm.img")
@@ -124,7 +124,7 @@ with tempfile.TemporaryDirectory() as td:
     sh(R_, "build-ab", "--image", img, "--version", "9.9.9", "--arch", "arm64", "--release-key", keys + "/release.key",
        "--keys-json", td + "/keys.json", "--out", rel)
     man = json.load(open(rel + "/v9.9.9/manifest.json"))
-    check("release arm64 ha root e bootfiles", sorted(p["role"] for p in man["parts"]) == ["bootfiles", "root"])
+    check("arm64 release has root and bootfiles", sorted(p["role"] for p in man["parts"]) == ["bootfiles", "root"])
 
     port = 18099
     srv = subprocess.Popen([sys.executable, os.path.join(HERE, "fake-github.py"), "--root", rel, "--bind", "127.0.0.1", "--port", str(port)],
@@ -133,17 +133,17 @@ with tempfile.TemporaryDirectory() as td:
         time.sleep(1)
         base = f"http://127.0.0.1:{port}/o/r/releases/latest/download/"
         uu.rpi_install_bootfiles(conf, "a", "b", man, base)
-        check("bootfiles installati in slotb/", all(os.path.isfile(f"{bf}/slotb/{f}") for f in ("kernel8.img", "initramfs8", "bcm2711-rpi-4-b.dtb", "overlays/vc4.dtbo")))
+        check("bootfiles installed in slotb/", all(os.path.isfile(f"{bf}/slotb/{f}") for f in ("kernel8.img", "initramfs8", "bcm2711-rpi-4-b.dtb", "overlays/vc4.dtbo")))
         cl = open(bf + "/slotb/cmdline.txt").read()
-        check("cmdline.txt di slotb punta a ROOT_B e slot=b", "root=LABEL=ROOT_B" in cl and "unitotem.slot=b" in cl and "ROOT_A" not in cl, cl)
-        check("nessuna directory temporanea residua", not any(n.endswith((".new", ".old")) for n in os.listdir(bf)))
+        check("slotb cmdline.txt points to ROOT_B and slot=b", "root=LABEL=ROOT_B" in cl and "unitotem.slot=b" in cl and "ROOT_A" not in cl, cl)
+        check("no temporary directory left behind", not any(n.endswith((".new", ".old")) for n in os.listdir(bf)))
         # corrupted asset is refused and leaves nothing behind
         bad = dict(man, parts=[dict(p, sha256="0" * 64) if p["role"] == "bootfiles" else p for p in man["parts"]])
-        try: uu.rpi_install_bootfiles(conf, "a", "b", bad, base); check("asset corrotto rifiutato", False)
-        except uu.Fail as e: check("asset corrotto rifiutato", e.code == "bad-checksum")
-        check("... senza toccare slotb esistente", os.path.isfile(bf + "/slotb/kernel8.img") and not os.path.exists(bf + "/slotb.new"))
+        try: uu.rpi_install_bootfiles(conf, "a", "b", bad, base); check("corrupted asset refused", False)
+        except uu.Fail as e: check("corrupted asset refused", e.code == "bad-checksum")
+        check("... without touching the existing slotb", os.path.isfile(bf + "/slotb/kernel8.img") and not os.path.exists(bf + "/slotb.new"))
     finally:
         srv.terminate()
 
-print(f"\n{ok} passati, {fail} falliti")
+print(f"\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

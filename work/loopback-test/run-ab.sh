@@ -3,7 +3,7 @@
 # work/loopback-test/scratch-ab/target.img so it can be booted in QEMU.
 set -Eeuo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PARTS_DIR="$(cd "${1:?uso: run-ab.sh <parts dir>}" && pwd)"
+PARTS_DIR="$(cd "${1:?usage: run-ab.sh <parts dir>}" && pwd)"
 mkdir -p "${DIR}/work/loopback-test/scratch-ab"
 docker run --rm --privileged --platform linux/amd64 -e ARCH="${ARCH:-amd64}" \
     -v "${DIR}:/repo:ro" -v "${PARTS_DIR}:/work/parts:ro" -v "${DIR}/work/loopback-test:/work/driver:ro" \

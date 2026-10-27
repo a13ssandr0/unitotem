@@ -3,18 +3,18 @@
 #
 #   deploy/make-preboot-image.sh [--parts DIR] [--recovery-dir DIR] [--out FILE] [--size-mib N] [--no-xz]
 #
-# Write the result to an SD card (dd / balenaEtcher / rpi-imager "use custom"), put it in the Pi and power on: the board boots the fallback
-# kernel + initramfs from RAM (the same environment a deployed device falls back to), gets an address by DHCP on every wired interface, shows
-# it on screen and waits (no idle timeout) for the host, which then writes the real system:
+# Write the result to an SD card (dd or any imager), put it in the Pi and power on: the board boots the fallback
+# kernel + initramfs from RAM (the same environment a deployed device falls back to), gets an address by DHCP on every
+# wired interface, shows it on screen and waits (no idle timeout) for the host, which then writes the real system:
 #
 #   deploy/remote-deploy.sh recover <address-shown-on-screen> --parts deploy/arm64/<parts set> --yes
 #
-# `recover` finds no UniTotem partitions on this card, so it lays the whole card out from scratch (partition table, boot partition, slots A
-# and B, DATA) and reboots into the real system. Nothing on the card is kept (there is nothing to keep).
+# `recover` finds no UniTotem partitions on this card, so it lays the whole card out from scratch (partition table, boot
+# partition, slots A and B, DATA) and reboots into the real system.
 #
 # Contents of the one FAT partition (MBR, type 0c, from 1 MiB): the Raspberry Pi firmware (start*.elf, fixup*.dat, bootcode.bin, the device
-# trees) taken from the parts set's own boot partition, the fallback kernel + initramfs from deploy/arm64/recovery-*, config.txt and
-# cmdline.txt. No overlays and no slot directories: the fallback drives the firmware framebuffer (nomodeset-style) and needs only a console
+# trees) taken from the parts set's own boot partition, the fallback kernel + initramfs from deploy/arm64/recovery-*, config.txt
+# and cmdline.txt. No overlays and no slot directories: the fallback drives the firmware framebuffer and needs only a console
 # and the network. About 60 MiB of content; the default image is 128 MiB.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,16 +27,16 @@ while [ $# -gt 0 ]; do
         --out) OUT="$2"; shift 2 ;;
         --size-mib) SIZE_MIB="$2"; shift 2 ;;
         --no-xz) XZ=0; shift ;;
-        *) echo "Opzione sconosciuta: $1" >&2; exit 1 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
-for c in sfdisk mkfs.fat mcopy dd tar xz truncate; do command -v "$c" >/dev/null || { echo "manca il comando $c" >&2; exit 1; }; done
+for c in sfdisk mkfs.fat mcopy dd tar xz truncate; do command -v "$c" >/dev/null || { echo "missing command $c" >&2; exit 1; }; done
 [ -n "$PARTS" ] || PARTS=$(ls -td "${DIR}/deploy/${ARCH}/"*.parts 2>/dev/null | head -1)
-[ -d "$PARTS" ] || { echo "nessun parts set arm64 (usa --parts)" >&2; exit 1; }
+[ -d "$PARTS" ] || { echo "no arm64 parts set (use --parts)" >&2; exit 1; }
 VMLINUZ="${REC}/recovery-vmlinuz-${ARCH}"; INITRD="${REC}/recovery-initrd-${ARCH}.img"
-[ -s "$VMLINUZ" ] && [ -s "$INITRD" ] || { echo "manca ${VMLINUZ} o ${INITRD}" >&2; exit 1; }
+[ -s "$VMLINUZ" ] && [ -s "$INITRD" ] || { echo "missing ${VMLINUZ} or ${INITRD}" >&2; exit 1; }
 TARBALL=$(ls "${PARTS}"/p1-FIRMWARE.bootfs.tar.* 2>/dev/null | head -1)
-[ -s "$TARBALL" ] || { echo "il parts set non ha p1-FIRMWARE.bootfs.tar.*" >&2; exit 1; }
+[ -s "$TARBALL" ] || { echo "the parts set has no p1-FIRMWARE.bootfs.tar.*" >&2; exit 1; }
 [ -n "$OUT" ] || OUT="${DIR}/deploy/${ARCH}/unitotem-preboot-${ARCH}.img"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/preboot.XXXXXX")
@@ -49,12 +49,12 @@ tar -C "$FW" -xf "$TARBALL" --wildcards --no-wildcards-match-slash --no-same-own
 # the Pi 3/4 firmware and the device trees are what the boards that run arm64 UniTotem need; drop the extra start*_x/_db variants
 rm -f "$FW"/start_x.elf "$FW"/start4x.elf "$FW"/start_db.elf "$FW"/start4db.elf "$FW"/fixup_x.dat "$FW"/fixup4x.dat "$FW"/fixup_db.dat "$FW"/fixup4db.dat
 for need in start4.elf fixup4.dat bcm2711-rpi-4-b.dtb; do
-    [ -s "$FW/$need" ] || { echo "il parts set non contiene $need" >&2; exit 1; }
+    [ -s "$FW/$need" ] || { echo "the parts set does not contain $need" >&2; exit 1; }
 done
 cp -- "$VMLINUZ" "$FW/recovery8.img"
 cp -- "$INITRD" "$FW/recovery-initrd.img"
-# Same description as the resident fallback of a deployed device (ota-engine.sh set-default-recovery): 640x480 DMT mode so the text is
-# readable from a distance on any monitor. ttyS0 is the header UART of Raspberry Pi's own device trees.
+# Same settings as the resident fallback of a deployed device (ota-engine.sh set-default-recovery): 640x480 DMT mode so the
+# text is readable from a distance. ttyS0 is the header UART.
 cat > "$FW/config.txt" <<'EOF'
 arm_64bit=1
 enable_uart=1
@@ -67,7 +67,7 @@ EOF
 echo "unitotem.ota=recover console=tty1 console=ttyS0,115200" > "$FW/cmdline.txt"
 
 CONTENT_KB=$(du -sk "$FW" | cut -f1)
-[ $((SIZE_MIB * 1024)) -gt $((CONTENT_KB + 8192)) ] || { echo "contenuto ${CONTENT_KB} KiB: serve --size-mib piu' grande" >&2; exit 1; }
+[ $((SIZE_MIB * 1024)) -gt $((CONTENT_KB + 8192)) ] || { echo "content is ${CONTENT_KB} KiB: a larger --size-mib is needed" >&2; exit 1; }
 
 # FAT32 partition from 1 MiB to the end (MBR: the firmware of every Pi reads it; FAT32 needs >= ~33 MiB)
 FAT_MIB=$((SIZE_MIB - 1))
@@ -77,7 +77,7 @@ truncate -s "${FAT_MIB}M" "$WORK/fat.img"
 mkfs.fat -F32 -n FIRMWARE -i 50524550 "$WORK/fat.img" >/dev/null
 MTOOLS_SKIP_CHECK=1 mcopy -i "$WORK/fat.img" -s "$FW"/* ::/
 dd if="$WORK/fat.img" of="$OUT" bs=1M seek=1 conv=notrunc status=none
-echo ">>> ${OUT}: $(du -h --apparent-size "$OUT" | cut -f1), contenuto ${CONTENT_KB} KiB, parts $(basename "$PARTS")"
+echo ">>> ${OUT}: $(du -h --apparent-size "$OUT" | cut -f1), content ${CONTENT_KB} KiB, parts $(basename "$PARTS")"
 if [ "$XZ" = 1 ]; then
     xz -T0 -f -k -- "$OUT"
     echo ">>> ${OUT}.xz: $(du -h "${OUT}.xz" | cut -f1)"

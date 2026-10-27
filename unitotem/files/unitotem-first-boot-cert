@@ -1,13 +1,12 @@
 #!/bin/bash
 # Generates this device's own TLS certificate+key (/etc/ssl/unitotem.pem) on the first boot that finds it missing.
 #
-# It used to be created by the manager package's postinst, i.e. while the IMAGE was being built, so every device flashed from
-# one image carried the same private key - and that file is also used for the mutual authentication between client and server.
-# The image no longer contains it (stage 1 removes it, verify-image.sh checks it is gone); /etc is an overlay on DATA, so what is
-# written here persists across reboots, and the OTA whitelist (ssl/unitotem.pem) carries it across updates.
+# The image does not contain it (stage 1 removes it, verify-image.sh checks), so every device has its own
+# private key, also used for client/server mutual authentication. /etc is an overlay on DATA, so the file
+# persists across reboots, and the OTA whitelist (ssl/unitotem.pem) carries it across updates.
 #
-# Safe to run twice and to be cut off at any point: the pair is built in temporary files and moved into place with one rename,
-# so the file is either absent (the next boot generates it again) or complete. Same parameters as the package's postinst.
+# Safe to run twice and to be cut off at any point: the pair is built in temporary files and moved into
+# place with one rename, so the file is either absent (regenerated at next boot) or complete.
 set -euo pipefail
 umask 077
 DEST=/etc/ssl/unitotem.pem

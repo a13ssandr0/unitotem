@@ -2,24 +2,16 @@
 # Reports what has changed on the ROOT partition since the image was built, so
 # an OTA can say what it is about to destroy instead of destroying it silently.
 #
-# One file does both halves on purpose. `baseline` runs at build time
-# (unitotem/stage3-image.sh, against the freshly assembled image) and `check`
-# runs on the device; if the two used separate implementations of "which files
-# count" or "how a path is normalised", any drift between them would surface as
-# phantom changes on every single device. Same code, same answer.
+# One file does both halves: `baseline` runs at build time (unitotem/stage3-image.sh, against the
+# assembled image) and `check` runs on the device, sharing the same definition of "which files
+# count" and how a path is normalised.
 #
 # Scope: only what an OTA actually replaces AND the operator can actually see.
-# /etc, /var and /root are excluded because they are overlays backed by DATA
-# (unitotem/files/overlayfs-hook.sh) and follow their own rules at deploy time -
-# /etc through the ota-preserve.list whitelist, /var reset wholesale. Including
-# them would be worse than useless: at build time /var is an ordinary directory
-# and at runtime it is an overlay, so every file under it would be reported
-# missing on every device.
+# /etc, /var and /root are excluded: they are overlays backed by DATA (unitotem/files/overlayfs-hook.sh)
+# with their own deploy rules (/etc through the ota-preserve.list whitelist, /var reset wholesale).
 #
-# /var/lib/dpkg is the deliberate exception to that exclusion, and it is not
-# scanned as files but read as a database: it is pinned back onto ROOT (see
-# overlayfs-hook.sh) precisely so that the package inventory travels with the
-# packages.
+# /var/lib/dpkg is the exception: it is read as a database, not scanned as files, because it is pinned
+# onto ROOT (see overlayfs-hook.sh) and so travels with the packages.
 set -uo pipefail
 
 BASELINE_DIR_DEFAULT=/usr/lib/unitotem/baseline
@@ -37,9 +29,7 @@ progress() {
 
 die() { echo "unitotem-ota-changes: $*" >&2; exit 2; }
 
-# usr-merge: dpkg records /bin/bash while the file lives at /usr/bin/bash.
-# Without this the two sides never line up - measured on hardware, 6681 files
-# looked unowned instead of the real 3042.
+# usr-merge: dpkg records /bin/bash while the file lives at /usr/bin/bash; normalise so the two sides match.
 norm_paths() { sed -E 's#^/(bin|sbin|lib|lib64)/#/usr/\1/#'; }
 
 # Every path any installed package claims, normalised and deduplicated.
@@ -65,13 +55,10 @@ unowned_files() {
 }
 
 # Output: "<sha256>\tpath", TAB-separated because a path may contain spaces -
-# splitting on whitespace truncated "/opt/x/file con spazi" to "/opt/x/file",
-# i.e. under-reported exactly the files someone puts there on purpose.
+# splitting on whitespace would truncate such paths.
 #
-# One sha256sum invocation over the whole list rather than one per file: the
-# per-file version forked 3043 times and that dominated everything else on a
-# Pi - a clean check took 1m31s, of which the hashing was almost all of it.
-# NUL-delimited so the spaces survive the hand-off to xargs too.
+# One sha256sum invocation over the whole list rather than one per file (forking per file dominates the
+# run time on a Pi). NUL-delimited so spaces survive the hand-off to xargs.
 sha_of() {
     local root="$1"
     if [ -n "$root" ]; then sed "s#^#${root}#"; else cat; fi \
@@ -89,36 +76,30 @@ pkg_list() {
 # baseline: run at build time against the assembled image.
 # ---------------------------------------------------------------------------
 cmd_baseline() {
-    # have_root, not [ -n "$root" ]: stripping the trailing slash turns the
-    # perfectly valid "--root /" into an empty string, which is also exactly
-    # the value the internals use to mean "the running system".
+    # have_root, not [ -n "$root" ]: stripping the trailing slash turns "--root /" into an empty
+    # string, which the internals use to mean "the running system".
     local root="" out="" have_root=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --root) root="${2%/}"; have_root=1; shift 2 ;;
             --out)  out="${2%/}"; shift 2 ;;
-            *) die "opzione sconosciuta: $1" ;;
+            *) die "unknown option: $1" ;;
         esac
     done
-    [ "$have_root" = 1 ] || die "--root richiesto"
-    [ -n "$out" ] || die "--out richiesto"
-    [ -d "$root/var/lib/dpkg" ] || die "$root non sembra un rootfs Debian"
+    [ "$have_root" = 1 ] || die "--root required"
+    [ -n "$out" ] || die "--out required"
+    [ -d "$root/var/lib/dpkg" ] || die "$root does not look like a Debian rootfs"
 
     mkdir -p "$out"
     pkg_list "$root" > "$out/packages"
 
-    # The baseline cannot contain its own hashes: the files are written into
-    # the very tree being hashed, so anything under $out is excluded here and
-    # the check side excludes it too.
+    # The baseline cannot contain its own hashes: anything under $out is excluded here and on the check side.
     local outrel="${out#"$root"}"
     unowned_files "$root" | grep -v "^${outrel}/" | sha_of "$root" > "$out/unowned.sha256"
 
-    # Deviations already present in a pristine image - stage2 overwrites a few
-    # conffiles that packages also ship, so dpkg considers them modified from
-    # the moment the image is built. Captured here so the check subtracts them
-    # instead of blaming an operator for them. Best-effort: on a cross-arch
-    # build the chroot may not run, and an empty file simply means nothing is
-    # subtracted (the scope filter alone already removed /etc and /var noise).
+    # Deviations already present in a pristine image (stage2 overwrites a few conffiles that packages
+    # also ship): captured so the check subtracts them. Best-effort: on a cross-arch build the chroot
+    # may not run, and an empty file means nothing is subtracted.
     if chroot "$root" dpkg -V > "$out/verify-expected.raw" 2>/dev/null; then
         scope_filter < "$out/verify-expected.raw" > "$out/verify-expected"
     else
@@ -133,7 +114,7 @@ cmd_baseline() {
         echo "scan_dirs=${SCAN_DIRS}"
     } > "$out/meta"
 
-    echo "baseline: $(wc -l < "$out/packages") pacchetti, $(wc -l < "$out/unowned.sha256") file non posseduti"
+    echo "baseline: $(wc -l < "$out/packages") packages, $(wc -l < "$out/unowned.sha256") unowned files"
 }
 
 # dpkg -V prints "<flags> <path>" or "<flags> c <path>" for conffiles. Keep
@@ -144,8 +125,7 @@ scope_filter() {
     local d pattern=""
     for d in $SCAN_DIRS; do pattern="${pattern}|^/${d}/"; done
     pattern="${pattern#|}"
-    # Strip dpkg -V's leading flag column (and the "c" conffile marker) rather
-    # than taking the last field: $NF would cut a path containing spaces.
+    # Strip dpkg -V's leading flag column (and the "c" conffile marker); $NF would cut paths with spaces.
     sed -E 's/^[^ ]+ +(c +)?//' | norm_paths | grep -E "$pattern" | sort -u
 }
 
@@ -158,19 +138,18 @@ cmd_check() {
         case "$1" in
             --json) as_json=1; shift ;;
             --baseline) baseline="${2%/}"; shift 2 ;;
-            *) die "opzione sconosciuta: $1" ;;
+            *) die "unknown option: $1" ;;
         esac
     done
-    [ -d "$baseline" ] || die "baseline assente in $baseline (immagine costruita senza?)"
+    [ -d "$baseline" ] || die "baseline missing in $baseline (image built without it?)"
 
-    # Global, not local: the EXIT trap fires after the function has returned,
-    # when a local would be out of scope - and under `set -u` that turns the
-    # cleanup into an "unbound variable" error on every successful run.
-    CHECK_TMP=$(mktemp -d) || die "mktemp fallito"
+    # Global, not local: the EXIT trap fires after the function returns, and under `set -u` a local
+    # would be an unbound variable.
+    CHECK_TMP=$(mktemp -d) || die "mktemp failed"
     trap 'rm -rf "${CHECK_TMP:-}"' EXIT
     local tmp="$CHECK_TMP"
 
-    progress "Confronto i pacchetti installati"
+    progress "Comparing installed packages"
     pkg_list "" > "$tmp/packages.now"
     # Added/removed by name; upgraded = same name, different version.
     cut -f1 "$baseline/packages" | sort -u > "$tmp/names.base"
@@ -180,11 +159,11 @@ cmd_check() {
     awk -F'\t' 'NR==FNR{v[$1]=$2; next} ($1 in v) && v[$1]!=$2 {print $1"\t"v[$1]"\t"$2}' \
         "$baseline/packages" "$tmp/packages.now" | sort > "$tmp/pkg.changed"
 
-    progress "Verifico l'integrita' dei file di pacchetto"
+    progress "Verifying package file integrity"
     dpkg -V 2>/dev/null | scope_filter > "$tmp/verify.now"
     comm -23 "$tmp/verify.now" "$baseline/verify-expected" > "$tmp/pkgfiles.modified"
 
-    progress "Confronto i file non appartenenti a pacchetti"
+    progress "Comparing files not owned by packages"
     local outrel="${baseline}"
     unowned_files "" | grep -v "^${outrel}/" | sha_of "" > "$tmp/unowned.now"
     # Compare by path first so added/removed/modified are distinguishable.
@@ -195,12 +174,10 @@ cmd_check() {
     awk -F'\t' 'NR==FNR{h[$2]=$1; next} ($2 in h) && h[$2]!=$1 {print $2}' \
         "$baseline/unowned.sha256" "$tmp/unowned.now" | sort > "$tmp/unowned.modified"
 
-    # Attribution. A file that belongs to a package which was itself added or
-    # upgraded is explained by that operation; the same file changing under a
-    # package that did not move is not. Without this split, a routine
-    # `apt install` would look identical to someone editing a binary in place,
-    # which is exactly the distinction the confirmation prompt is built on.
-    progress "Attribuisco le modifiche"
+    # Attribution: a file of a package that was itself added or upgraded is explained by that operation;
+    # the same file changing under a package that did not move is not. This separates a routine
+    # `apt install` from editing a binary in place.
+    progress "Attributing changes"
     cat "$tmp/pkg.added" <(cut -f1 "$tmp/pkg.changed") | sort -u > "$tmp/pkg.touched"
     : > "$tmp/paths.touched"
     if [ -s "$tmp/pkg.touched" ]; then
@@ -211,9 +188,7 @@ cmd_check() {
                 && cat "/var/lib/dpkg/info/${p}:$(dpkg --print-architecture).list"
         done < "$tmp/pkg.touched" | norm_paths | sort -u > "$tmp/paths.touched"
     fi
-    # Regenerating the initramfs is what `unitotem-maintenance exit --initramfs` does,
-    # so it is a consequence of the package work rather than an unexplained
-    # edit. Same for the linker cache.
+    # Kernel and initramfs files are a consequence of package work (`unitotem-maintenance exit --initramfs`).
     side_effect() { grep -Eq '^/boot/(initrd\.img|vmlinuz)|^/usr/lib/modules/' <<< "$1"; }
 
     : > "$tmp/unexplained"
@@ -232,9 +207,8 @@ cmd_check() {
     else verdict=mixed
     fi
 
-    # The digest covers exactly what gets shown to the operator, so a deploy
-    # confirmed against it cannot silently proceed over a different set of
-    # changes than the one that was approved.
+    # The digest covers exactly what is shown to the operator, so a confirmed deploy cannot proceed
+    # over a different set of changes.
     local digest
     digest=$( { cat "$tmp/pkg.added" "$tmp/pkg.removed" "$tmp/pkg.changed" "$tmp/unexplained"; } \
         | sha256sum | cut -d' ' -f1)
@@ -296,19 +270,19 @@ emit_json() {
 
 emit_text() {
     local t="$1" verdict="$2" digest="$3"
-    echo "Esito: $verdict"
+    echo "Verdict: $verdict"
     echo "Digest: $digest"
-    if [ -s "$t/pkg.added" ];   then echo; echo "Pacchetti installati:"; sed 's/^/  + /' "$t/pkg.added"; fi
-    if [ -s "$t/pkg.removed" ]; then echo; echo "Pacchetti rimossi:";    sed 's/^/  - /' "$t/pkg.removed"; fi
-    if [ -s "$t/pkg.changed" ]; then echo; echo "Pacchetti aggiornati:";
+    if [ -s "$t/pkg.added" ];   then echo; echo "Packages installed:"; sed 's/^/  + /' "$t/pkg.added"; fi
+    if [ -s "$t/pkg.removed" ]; then echo; echo "Packages removed:";      sed 's/^/  - /' "$t/pkg.removed"; fi
+    if [ -s "$t/pkg.changed" ]; then echo; echo "Packages upgraded:";
         awk -F'\t' '{printf "  ~ %s (%s -> %s)\n", $1, $2, $3}' "$t/pkg.changed"; fi
-    if [ -s "$t/unexplained" ]; then echo; echo "File modificati NON spiegati da operazioni sui pacchetti:";
+    if [ -s "$t/unexplained" ]; then echo; echo "Files changed that package operations do NOT explain:";
         sed 's/^/  ! /' "$t/unexplained"; fi
-    [ "$verdict" = clean ] && { echo; echo "Nessuna modifica rispetto all'immagine."; }
+    [ "$verdict" = clean ] && { echo; echo "No changes from the image."; }
 }
 
 case "${1:-}" in
     baseline) shift; cmd_baseline "$@" ;;
     check)    shift; cmd_check "$@" ;;
-    *) echo "Uso: unitotem-ota-changes {baseline --root DIR --out DIR | check [--json]}" >&2; exit 2 ;;
+    *) echo "Usage: unitotem-ota-changes {baseline --root DIR --out DIR | check [--json]}" >&2; exit 2 ;;
 esac

@@ -1,24 +1,17 @@
 #!/bin/bash
 # Runs once per boot, Before=ssh.service (see unitotem-ssh-hostkey.service):
-# ensures this device's SSH host key is unique per-device and persisted on
-# DATA, rather than the one baked into the build image at build time by
-# openssh-server's own postinst (ssh-keygen -A during the chroot install) -
-# which is the *same* key on every device built from that image until this
-# runs. Two branches, both idempotent:
-#   - DATA already has a saved key (every boot after the first on this
-#     DATA, and any reinstall that preserves DATA): restore it into
-#     /etc/ssh, overwriting whatever the image shipped.
-#   - DATA has no saved key yet (first boot ever on this DATA): the image's
-#     baked-in key would be shared across devices, so discard it and force
-#     ssh-keygen -A to generate fresh ones, then save those to DATA - from
-#     here on this device keeps the same key across every future OTA that
-#     preserves DATA (--wipe-data starts over, by design).
+# ensures this device's SSH host key is unique and persisted on DATA, instead of the key the image
+# carries from openssh-server's postinst (identical on every device built from that image).
+# Two idempotent branches:
+#   - DATA has a saved key: restore it into /etc/ssh, overwriting the image's.
+#   - DATA has none (first boot on this DATA): discard the image's key, run ssh-keygen -A and save
+#     the new keys to DATA. The key then survives every OTA that preserves DATA (--wipe-data starts over).
 set -euo pipefail
 
 DATA_DIR=/mnt/data/unitotem/ssh-host-keys
 SSH_DIR=/etc/ssh
 
-[ -d /mnt/data ] || { echo "unitotem-ssh-hostkey: /mnt/data non montato, salto" >&2; exit 0; }
+[ -d /mnt/data ] || { echo "unitotem-ssh-hostkey: /mnt/data not mounted, skipping" >&2; exit 0; }
 
 mkdir -p "$DATA_DIR"
 

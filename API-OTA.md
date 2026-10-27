@@ -1,65 +1,57 @@
-# API OTA — rilevazione modifiche e conferma del deploy
+# OTA API — change detection and deploy confirmation
 
-Documento per chi implementa il frontend nel progetto `unitotem-manager`. Qui c'è solo il **contratto
-backend**: comandi, formato dei dati, codici di uscita e la sequenza da rispettare. Nessuna scelta di
-interfaccia è imposta.
+Document for whoever implements the frontend in the `unitotem-manager` project. It contains only the **backend
+contract**: commands, data formats, exit codes and the sequence to follow. No interface choices are imposed.
 
-## Il problema che risolve
+## The problem it solves
 
-Un OTA sostituisce **l'intera partizione ROOT**. Tutto ciò che è stato installato o modificato sul sistema
-in esecuzione viene distrutto. Prima non veniva nemmeno segnalato: l'aggiornamento e la perdita di lavoro
-altrui erano indistinguibili.
+An OTA replaces the **entire ROOT partition**. Everything that was installed or modified on the running
+system is destroyed. Without a report, an update and the loss of someone else's work are indistinguishable.
 
-Il backend risponde a due domande separate:
+The backend answers two separate questions:
 
-1. *cosa è cambiato rispetto all'immagine installata?* → `unitotem-ota-changes`
-2. *l'operatore ha visto e accettato proprio quelle modifiche?* → `--accept-changes <digest>`
+1. *what changed compared with the installed image?* → `unitotem-ota-changes`
+2. *did the operator see and accept exactly those changes?* → `--accept-changes <digest>`
 
-## Perimetro: cosa viene considerato
+## Scope: what is considered
 
-| Percorso | Supporto | Sopravvive all'OTA? | Nel rapporto? |
+| Path | Backing | Survives the OTA? | In the report? |
 |---|---|---|---|
-| `/usr` `/boot` `/opt` `/srv` `/home` `/media` `/mnt` | ROOT | **No** | **Sì** |
-| `/etc` | overlay su DATA | Solo la whitelist `ota-preserve.list` | No |
-| `/var` | overlay su DATA | No, azzerato | No |
-| `/root` | overlay su DATA | Sì | No |
-| `/var/lib/dpkg` | ROOT (ancorato) | No | Sì, come database |
+| `/usr` `/boot` `/opt` `/srv` `/home` `/media` `/mnt` | ROOT | **No** | **Yes** |
+| `/etc` | overlay on DATA | Only the `ota-preserve.list` whitelist | No |
+| `/var` | overlay on DATA | No, reset | No |
+| `/root` | overlay on DATA | Yes | No |
+| `/var/lib/dpkg` | ROOT (anchored) | No | Yes, as a database |
 
-`/etc`, `/var` e `/root` sono esclusi di proposito: sono overlay con regole proprie al momento del deploy.
-Includerli produrrebbe solo rumore — a build time `/var` è una directory normale, a runtime è un overlay,
-quindi ogni file sotto di esso risulterebbe mancante su ogni dispositivo.
+`/etc`, `/var` and `/root` are excluded on purpose: they are overlays with their own rules at deploy time.
+Including them would only produce noise — at build time `/var` is a plain directory, at runtime it is an overlay,
+so every file under it would appear missing on every device.
 
-## Comando sul dispositivo
+## Command on the device
 
 ```
 /usr/sbin/unitotem-ota-changes check [--json]
 ```
 
-**Codici di uscita** — da distinguere sempre, `1` non è un errore:
+**Exit codes** — always tell them apart, `1` is not an error:
 
-| Codice | Significato |
+| Code | Meaning |
 |---|---|
-| `0` | nessuna modifica |
-| `1` | modifiche rilevate (esito normale, non un errore) |
-| `2` | il controllo stesso è fallito (baseline assente, argomenti errati) |
-| `127` | comando assente: immagine anteriore a questa funzione |
+| `0` | no changes |
+| `1` | changes detected (normal outcome, not an error) |
+| `2` | the check itself failed (missing baseline, wrong arguments) |
+| `127` | command missing: image older than this feature |
 
-**Costo**: dipende dalla cache del filesystem, e la differenza è grande abbastanza da dover dimensionare i
-timeout sul caso peggiore. Misurato su Raspberry Pi 4: **~1m20s alla prima esecuzione dopo un riavvio**
-(cache fredda, legge 87 MB dalla SD e attraversa 44.000 file), **~11 s nelle esecuzioni successive**. Il
-tempo è quasi tutto I/O: la CPU usata resta sotto i 30 s in entrambi i casi. Non dare per scontato il caso
-caldo: la prima chiamata dopo l'avvio del dispositivo è proprio quella che un'interfaccia fa per prima.
+**Cost**: it depends on the filesystem cache, and the difference is large enough that timeouts must be sized for the
+worst case. Measured on a Raspberry Pi 4: **~1m20s on the first run after a reboot**
+(cold cache, reads 87 MB from the SD and walks 44,000 files), **~11 s on later runs**. The
+time is almost all I/O: CPU use stays under 30 s in both cases. Do not assume the warm case: the first call after
+the device boots is exactly the one an interface makes first.
 
-Nota storica, per non ripercorrere la stessa strada: una prima versione era lenta **anche a cache calda**
-(1m31s) perché calcolava lo sha256 con un processo per file, 3.043 fork. Quel costo è stato eliminato. Se
-un domani il caso caldo tornasse sopra i 15 s, il fork per file è il primo posto dove guardare; se invece a
-essere lenta è solo la prima esecuzione, è la cache fredda ed è normale.
+**Progress**: with `OTA_CHANGES_PROGRESS=1` in the environment, the current phase is written as a single
+line of text to `/run/unitotem-ota-changes.progress`. It is meant for a status bar, not for parsing.
 
-**Avanzamento**: con `OTA_CHANGES_PROGRESS=1` nell'ambiente, la fase corrente viene scritta come singola
-riga di testo in `/run/unitotem-ota-changes.progress`. È pensato per una barra di stato, non per essere
-parsato.
-
-### Schema JSON
+### JSON schema
 
 ```json
 {
@@ -80,100 +72,98 @@ parsato.
 }
 ```
 
-**`verdict`** è ciò su cui basare l'interfaccia:
+**`verdict`** is what the interface should be based on:
 
-- `clean` — nulla è cambiato, si può aggiornare senza chiedere niente
-- `packages-only` — solo installazioni/rimozioni/aggiornamenti di pacchetti. Mostrare `packages`, non serve
-  elencare file: sono tutti spiegati dalle operazioni sui pacchetti
-- `mixed` — c'è anche altro. Mostrare `files.unexplained`: sono le modifiche che **nessuna** operazione sui
-  pacchetti giustifica, quindi le più probabilmente intenzionali e le più facili da perdere senza accorgersene
+- `clean` — nothing changed, the update can proceed without asking anything
+- `packages-only` — only package installs/removals/upgrades. Show `packages`; there is no need to list files:
+  they are all explained by the package operations
+- `mixed` — there is something else too. Show `files.unexplained`: these are the changes that **no** package
+  operation accounts for, so they are the most likely to be intentional and the easiest to lose unnoticed
 
-**`files.unexplained` è già filtrato.** Un file appartenente a un pacchetto installato o aggiornato non
-compare: è conseguenza di quell'operazione, non una modifica a sé. Idem per gli effetti collaterali noti
-(`/boot/initrd.img-*` rigenerato, moduli del kernel). Gli altri campi di `files` sono di dettaglio,
-utili per una vista avanzata; per il flusso normale basta `unexplained`.
+**`files.unexplained` is already filtered.** A file belonging to an installed or upgraded package does not
+appear: it is a consequence of that operation, not a change in itself. The same goes for known side effects
+(regenerated `/boot/initrd.img-*`, kernel modules). The other `files` fields are detail,
+useful for an advanced view; for the normal flow `unexplained` is enough.
 
-**`digest`** copre esattamente ciò che viene mostrato (pacchetti + file non spiegati). Serve al passo di
-conferma.
+**`digest`** covers exactly what is shown (packages + unexplained files). It is used in the confirmation step.
 
-## Conferma del deploy
+## Deploy confirmation
 
-Dal lato host (chi orchestra il deploy):
+On the host side (whoever orchestrates the deploy):
 
 ```
 ./deploy/remote-deploy.sh changes root@host [--json]
 ./deploy/remote-deploy.sh deploy  root@host --parts DIR --accept-changes <digest>
 ```
 
-`--accept-changes` procede **solo se** il digest corrisponde ancora alle modifiche presenti sul
-dispositivo. Se qualcuno ha installato un pacchetto fra il momento in cui l'operatore ha visto l'elenco e
-quello in cui ha confermato, il deploy si ferma. È questa la proprietà che rende una conferma da
-interfaccia web sicura quanto un prompt da terminale: non si può approvare un insieme di modifiche e
-distruggerne un altro.
+`--accept-changes` proceeds **only if** the digest still matches the changes present on the
+device. If someone installed a package between the moment the operator saw the list and the moment they
+confirmed, the deploy stops. This is the property that makes a confirmation from a web interface as safe as a
+terminal prompt: one set of changes cannot be approved while another is destroyed.
 
-`--accept-changes` implica anche l'esecuzione **non interattiva**: sopprime la scelta del disco e la
-conferma finale, che altrimenti resterebbero in attesa su un terminale che un'interfaccia web non ha. Il
-digest resta comunque verificato prima di qualunque scrittura — è una conferma più stringente di quella da
-tastiera, non una scorciatoia per saltarla.
+`--accept-changes` also implies **non-interactive** execution: it suppresses the disk choice and the final
+confirmation, which would otherwise wait on a terminal that a web interface does not have. The
+digest is still verified before any write — it is a stricter confirmation than the keyboard one, not a
+shortcut around it.
 
-`--yes` esiste ancora e accetta tutto senza guardare. È per gli script, non per l'interfaccia.
+`--yes` accepts everything without looking. It is for scripts, not for the interface.
 
-### Sequenza consigliata
+### Recommended sequence
 
-1. `changes --json` → se `verdict` è `clean`, procedere al deploy
-2. altrimenti mostrare pacchetti e file non spiegati, e conservare `digest`
-3. l'utente conferma → `deploy --accept-changes <digest>`
-4. se il deploy si ferma per digest non corrispondente, tornare al passo 1: il sistema è cambiato
+1. `changes --json` → if `verdict` is `clean`, go ahead with the deploy
+2. otherwise show packages and unexplained files, and keep `digest`
+3. the user confirms → `deploy --accept-changes <digest>`
+4. if the deploy stops because the digest does not match, go back to step 1: the system has changed
 
-## Secure Boot (target amd64/UEFI)
+## Secure Boot (amd64/UEFI targets)
 
-`remote-deploy.sh probe` riporta una riga `Secure Boot : ATTIVO | disattivato | non rilevabile` (letta dalla variabile EFI
-`SecureBoot`, mai indovinata). Se è **attivo**, `deploy` non procede da solo: il firmware rifiuta il GRUB non firmato di UniTotem e
-ci sono due strade, entrambe con un possibile intervento fisico. La scelta è esplicita:
+`remote-deploy.sh probe` prints a line `Secure Boot : enabled | disabled | cannot be detected` (read from the EFI variable
+`SecureBoot`, never guessed). If it is **active**, `deploy` does not proceed on its own: the firmware rejects UniTotem's unsigned GRUB and
+there are two ways forward, both possibly needing physical intervention. The choice is explicit:
 
 ```
 ./deploy/remote-deploy.sh deploy root@host --parts DIR --secure-boot shim|noshim|abort
 ```
 
-| valore | cosa fa | intervento fisico |
+| value | what it does | physical intervention |
 |---|---|---|
-| `shim` | attiva la catena firmata già presente nell'immagine (`EFI/unitotem-sb/`): shim firmato Microsoft → GRUB e kernel firmati Debian | solo con GPU NVIDIA (modulo non firmato: registrare la chiave MOK dalla console) o firmware che non si fida della CA Microsoft UEFI; se il sistema di partenza non è Debian il primo passaggio può fallire ("bad shim signature") |
-| `noshim` | installa e basta | **sempre**: al riavvio "Security Violation", va disattivato Secure Boot dal firmware |
-| `abort` | non tocca nulla | disattivare Secure Boot e rilanciare |
+| `shim` | enables the signed chain already present in the image (`EFI/unitotem-sb/`): Microsoft-signed shim → Debian-signed GRUB and kernel | only with an NVIDIA GPU (unsigned module: enroll the MOK key from the console) or firmware that does not trust the Microsoft UEFI CA; if the source system is not Debian the first step may fail ("bad shim signature") |
+| `noshim` | just installs | **always**: at reboot "Security Violation", Secure Boot must be disabled in the firmware |
+| `abort` | touches nothing | disable Secure Boot and run again |
 
-Senza `--secure-boot` un deploy interattivo mostra le tre scelte; uno non interattivo (`--yes`, `--accept-changes`) **si rifiuta**
-di partire (exit ≠ 0, messaggio che elenca i valori). Un target già UniTotem che parte con Secure Boot attivo mantiene `shim`.
-`shim` richiede un parts set A/B (la catena è "staged" solo lì). Una UI deve quindi: leggere lo stato dal probe, mostrare le tre
-scelte con le avvertenze sopra, e passare la scelta con `--secure-boot`.
+Without `--secure-boot` an interactive deploy shows the three choices; a non-interactive one (`--yes`, `--accept-changes`) **refuses**
+to start (exit ≠ 0, message listing the values). A target that is already UniTotem and boots with Secure Boot active keeps `shim`.
+`shim` requires an A/B parts set (the chain is staged only there). A UI must therefore: read the state from the probe, show the three
+choices with the warnings above, and pass the choice with `--secure-boot`.
 
-## Installare pacchetti sul dispositivo
+## Installing packages on the device
 
-Root è read-only. Il varco è:
+Root is read-only. The way in is:
 
 ```
-unitotem-maintenance enter                     # ferma il kiosk e rimonta / in rw
+unitotem-maintenance enter                     # stops the kiosk and remounts / read-write
 apt-get update && apt-get install ...
-unitotem-maintenance exit [--initramfs]        # rimonta ro e RIAVVIA il dispositivo
+unitotem-maintenance exit [--initramfs]        # remounts read-only and REBOOTS the device
 ```
 
-Due cose che l'interfaccia deve sapere:
+Three things the interface must know:
 
-- **`unitotem-maintenance exit` riavvia**, sempre, dopo 5 secondi. Non è opzionale.
-- `enter` ferma `unitotem-manager.service` e `start-xorg.service`, quindi lo schermo si spegne e il manager
-  non risponde più finché il dispositivo non riparte. Se l'interfaccia gira **sul** dispositivo, perderà la
-  connessione con sé stessa: l'operazione va comandata in modo da sopravvivere alla propria esecuzione.
-- `--initramfs` serve solo se sono stati aggiornati kernel o moduli.
+- **`unitotem-maintenance exit` reboots**, always, after 5 seconds. It is not optional.
+- `enter` stops `unitotem-manager.service` and `start-xorg.service`, so the screen turns off and the manager
+  stops responding until the device restarts. If the interface runs **on** the device, it will lose its own
+  connection: the operation must be commanded so that it survives its own execution.
+- `--initramfs` is needed only if the kernel or modules were updated.
 
-Gli aggiornamenti automatici in background sono disattivati di proposito (`apt-daily.timer` e
-`apt-daily-upgrade.timer` sono mascherati): su questa immagine gli aggiornamenti passano dall'OTA, e un
-timer che modifica pacchetti da solo renderebbe questo rapporto rumoroso per modifiche che nessuno ha
-fatto.
+Automatic background updates are disabled on purpose (`apt-daily.timer` and
+`apt-daily-upgrade.timer` are masked): on this image updates go through the OTA, and a
+timer that modifies packages on its own would make this report noisy with changes nobody
+made.
 
-## Da dove viene la baseline
+## Where the baseline comes from
 
-Generata a build time in `/usr/lib/unitotem/baseline/` (`unitotem/stage3-image.sh`), come ultima operazione
-sull'immagine: `packages`, `unowned.sha256`, `verify-expected`, `meta`.
+Generated at build time in `/usr/lib/unitotem/baseline/` (`unitotem/stage3-image.sh`), as the last operation
+on the image: `packages`, `unowned.sha256`, `verify-expected`, `meta`.
 
-Se manca, `check` esce con `2`. Un'immagine costruita prima di questa funzione non ha la baseline e il
-dispositivo risponde `127` al comando: in entrambi i casi l'interfaccia dovrebbe dire che la rilevazione
-non è disponibile su quel dispositivo, non che non ci sono modifiche.
+If it is missing, `check` exits with `2`. An image built before this feature has no baseline
+and the device answers `127` to the command: in both cases the interface should say that detection
+is not available on that device, not that there are no changes.

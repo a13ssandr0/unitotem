@@ -1,5 +1,5 @@
 [Unit]
-Description=UniTotem OTA - conferma avvio riuscito
+Description=UniTotem OTA - confirm successful boot
 After=multi-user.target
 
 [Service]
