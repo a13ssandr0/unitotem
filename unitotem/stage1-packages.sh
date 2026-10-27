@@ -101,12 +101,6 @@ deb http://snapshot.debian.org/archive/debian/${SNAP}/ ${RELEASE} main contrib n
 deb http://snapshot.debian.org/archive/debian/${SNAP}/ ${RELEASE}-updates main contrib non-free non-free-firmware
 deb http://snapshot.debian.org/archive/debian-security/${SNAP}/ ${RELEASE}-security main contrib non-free non-free-firmware
 EOF
-    # The build's download cache as one more source: it still holds every version this lock was built from, including those an archive without
-    # snapshots (Raspberry Pi) has since dropped. Pins decide the version; this only supplies it when the archives no longer do.
-    if [ -d "${ROOTFS}/var/cache/apt/archives" ]; then
-        python3 /unitotem/pkglock.py index "${ROOTFS}/var/cache/apt/archives" --arch "${ARCH}" || true
-        echo "deb [trusted=yes] file:/var/cache/apt/archives ./" >> "${ROOTFS}/etc/apt/sources.list"
-    fi
     echo 'Acquire::Check-Valid-Until "false";' > "${ROOTFS}/etc/apt/apt.conf.d/99-pkglock"
     mkdir -p "${ROOTFS}/etc/apt/preferences.d"
     python3 /unitotem/pkglock.py prefs "$PKGLOCK_FILE" > "${ROOTFS}/etc/apt/preferences.d/99-unitotem-lock"

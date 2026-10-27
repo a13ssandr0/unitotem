@@ -7,8 +7,7 @@
   pkglock.py prefs   LOCK                      apt preferences that pin every locked package to its version (stage 1 installs with them)
   pkglock.py snapshot LOCK                     the snapshot timestamp (YYYYMMDDTHHMMSSZ) recorded in the lock
   pkglock.py verify  LOCK ROOTFS|tarball       the installed set must be exactly the lock (exit 1 and a list of differences otherwise)
-  pkglock.py snapcheck LOCK                    can the locked set be rebuilt from the recorded Debian snapshot? (lists what is gone)
-  pkglock.py index   DIR [--arch A]            index a directory of .debs as a flat apt repository (the build cache, as a fallback source)
+  pkglock.py snapcheck LOCK                    repeatable from online repositories only? (Debian snapshot + the live Raspberry Pi archive)
   pkglock.py upgrade ARCH                      retire the lock: the next stage-1 build resolves fresh and freezes a new one
   pkglock.py check   LOCK [--json]             ask the archives NOW what is newer than the lock; report, with urgency
         exit 0: nothing newer   10: updates, none security-related   20: security updates (the build must stop, see tools/build)
@@ -275,9 +274,9 @@ def cmd_check(a):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def cmd_snapcheck(a):
-    """Can the locked set be rebuilt from the Debian snapshot recorded in the lock? Lists the locked versions the snapshot does not offer."""
-    meta, pinned, _ = read_lock(a.lock)
+def _snapshot_missing(lock):
+    """The locked versions the Debian snapshot recorded in the lock does not offer -> (gone [(name, version)], names, ts), or an exit code on error."""
+    meta, pinned, _ = read_lock(lock)
     arch = meta.get("arch", "amd64"); release = meta.get("release", "trixie"); ts = snapshot_ts(meta)
     if not ts:
         print("the lock records no snapshot"); return 2
@@ -287,8 +286,6 @@ def cmd_snapcheck(a):
         src = ["deb [arch=%s trusted=yes] http://snapshot.debian.org/archive/debian/%s/ %s main contrib non-free non-free-firmware" % (arch, ts, release),
                "deb [arch=%s trusted=yes] http://snapshot.debian.org/archive/debian/%s/ %s-updates main contrib non-free non-free-firmware" % (arch, ts, release),
                "deb [arch=%s trusted=yes] http://snapshot.debian.org/archive/debian-security/%s/ %s-security main contrib non-free non-free-firmware" % (arch, ts, release)]
-        if arch == "arm64":
-            src.append("deb [arch=arm64 trusted=yes] http://archive.raspberrypi.org/debian/ %s main" % release)
         open(os.path.join(tmp, "etc/apt/sources.list"), "w").write("\n".join(src) + "\n")
         r = subprocess.run(["apt-get", *opts, "update", "-qq"], capture_output=True, text=True)
         if r.returncode != 0:
@@ -297,14 +294,44 @@ def cmd_snapcheck(a):
         for i in range(0, len(names), 400):
             pol.update(parse_policy(subprocess.run(["apt-cache", *opts, "policy", *names[i:i + 400]], capture_output=True, text=True).stdout))
         gone = [(n, pinned[n]) for n in names if n not in pol or pinned[n] not in pol[n]["versions"]]
-        if gone:
-            print("%d locked versions are NOT available from snapshot %s (%d of %d ok):" % (len(gone), ts, len(names) - len(gone), len(names)))
-            for n, v in gone[:60]: print("   %s==%s" % (n, v))
-            return 1
-        print("all %d locked packages are available from snapshot %s (+ the Raspberry Pi archive on arm64)" % (len(names), ts))
-        return 0
+        return gone, names, ts
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def cmd_snapcheck(a):
+    """Can the lock be rebuilt from online repositories only? Debian packages come from the snapshot recorded in the lock; the Raspberry Pi archive
+    (no snapshots) must still offer the locked versions. Lists what is not available from either."""
+    res = _snapshot_missing(a.lock)
+    if isinstance(res, int): return res
+    gone, names, ts = res
+    meta, pinned, _ = read_lock(a.lock)
+    if not gone:
+        print("repeatable: all %d locked packages are in Debian snapshot %s" % (len(names), ts)); return 0
+    if meta.get("arch") != "arm64":
+        print("%d locked versions are NOT in snapshot %s:" % (len(gone), ts))
+        for n, v in gone[:60]: print("   %s==%s" % (n, v))
+        return 1
+    # the rest has to come from the live Raspberry Pi archive
+    tmp = tempfile.mkdtemp(prefix="pkglock-rpi-")
+    try:
+        opts = apt_env("arm64", meta.get("release", "trixie"), tmp)
+        open(os.path.join(tmp, "etc/apt/sources.list"), "w").write("deb [arch=arm64 trusted=yes] http://archive.raspberrypi.org/debian/ %s main\n" % meta.get("release", "trixie"))
+        if subprocess.run(["apt-get", *opts, "update", "-qq"], capture_output=True, text=True).returncode != 0:
+            print("cannot reach the Raspberry Pi archive", file=sys.stderr); return 2
+        names2 = [n for n, _ in gone]; pol = {}
+        for i in range(0, len(names2), 400):
+            pol.update(parse_policy(subprocess.run(["apt-cache", *opts, "policy", *names2[i:i + 400]], capture_output=True, text=True).stdout))
+        lost = [(n, v) for n, v in gone if n not in pol or v not in pol[n]["versions"]]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if lost:
+        print("%d locked versions are no longer offered by any online repository (Raspberry Pi's archive keeps no old versions):" % len(lost))
+        for n, v in lost[:60]: print("   %s==%s" % (n, v))
+        print("   -> the lock has to be renewed: pkglock.py upgrade %s" % meta.get("arch")); return 1
+    print("repeatable: %d packages from Debian snapshot %s, %d from the Raspberry Pi archive (still online; it keeps no snapshots, so this part lasts as long as the archive keeps those versions)"
+          % (len(names) - len(gone), ts, len(gone)))
+    return 0
 
 
 def print_report(r):
@@ -333,28 +360,6 @@ def print_report(r):
         print("   Not urgent: renew the lock when you decide to (tools/pkglock.py upgrade %s); the build goes on with the locked versions." % r["arch"])
 
 
-def cmd_index(a):
-    """Index the .debs of a directory as a flat apt repository (Packages + Release): the build's download cache then also serves versions the
-    archives dropped (the Raspberry Pi archive keeps no snapshot). Used with [trusted=yes]: local files we downloaded ourselves."""
-    import hashlib
-    d = a.dir; stanzas = []
-    for fn in sorted(os.listdir(d)):
-        if not fn.endswith(".deb"): continue
-        path = os.path.join(d, fn)
-        ctl = subprocess.run(["dpkg-deb", "-f", path], capture_output=True, text=True)
-        if ctl.returncode != 0: continue
-        h = hashlib.sha256()
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""): h.update(chunk)
-        stanzas.append("%s\nFilename: ./%s\nSize: %d\nSHA256: %s\n" % (ctl.stdout.strip(), fn, os.path.getsize(path), h.hexdigest()))
-    pk = "\n".join(stanzas)
-    open(os.path.join(d, "Packages"), "w").write(pk)
-    ph = hashlib.sha256(pk.encode()).hexdigest()
-    open(os.path.join(d, "Release"), "w").write("Origin: unitotem-cache\nLabel: unitotem-cache\nSuite: cache\nCodename: cache\nDate: %s\nArchitectures: %s\nSHA256:\n %s %d Packages\n"
-                                                % (datetime.datetime.now(datetime.timezone.utc).strftime("%a, %d %b %Y %H:%M:%S UTC"), a.arch, ph, len(pk.encode())))
-    print("indexed %d packages in %s" % (len(stanzas), d)); return 0
-
-
 def cmd_upgrade(a):
     """Retire the lock: the next stage-1 build resolves everything fresh from the live archives and writes a new lock."""
     path = os.path.join(LOCK_DIR, "%s.lock" % a.arch)
@@ -378,9 +383,9 @@ def main():
     c = sp.add_parser("check"); c.add_argument("lock"); c.add_argument("--json", action="store_true")
     u = sp.add_parser("upgrade"); u.add_argument("arch")
     sc = sp.add_parser("snapcheck"); sc.add_argument("lock")
-    ix = sp.add_parser("index"); ix.add_argument("dir"); ix.add_argument("--arch", default="amd64")
+
     a = ap.parse_args()
-    return {"freeze": cmd_freeze, "prefs": cmd_prefs, "snapshot": cmd_snapshot, "verify": cmd_verify, "check": cmd_check, "upgrade": cmd_upgrade, "snapcheck": cmd_snapcheck, "index": cmd_index}[a.cmd](a)
+    return {"freeze": cmd_freeze, "prefs": cmd_prefs, "snapshot": cmd_snapshot, "verify": cmd_verify, "check": cmd_check, "upgrade": cmd_upgrade, "snapcheck": cmd_snapcheck}[a.cmd](a)
 
 
 if __name__ == "__main__":
