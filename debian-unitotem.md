@@ -1264,7 +1264,7 @@ Una build non dipende più da "quello che gli archivi offrono oggi". Il lock ele
 (`unitotem-*`, la ruota CEF, le librerie Python ripacchettate) sono registrati come `local` ma non bloccati: sono il prodotto, non una dipendenza.
 
 - **Stage 1 con lock:** gli archivi Debian si leggono da `snapshot.debian.org` alla data del lock, ogni pacchetto è fissato alla sua versione
-  (preferenze apt 1001), la cache dei .deb della build è una fonte di riserva (l'archivio Raspberry Pi non ha snapshot), e a fine stage
+  (preferenze apt 1001), e a fine stage
   l'insieme installato deve coincidere ESATTAMENTE col lock (`pkglock.py verify`): una differenza ferma la build.
 - **Senza lock** (prima build o dopo `upgrade`): si usano gli archivi vivi e a fine stage 1 viene scritto `work/<arch>/<arch>.lock.new`,
   da copiare in `unitotem/locks/<arch>.lock` e committare.
@@ -1278,4 +1278,6 @@ Una build non dipende più da "quello che gli archivi offrono oggi". Il lock ele
     versioni; gli archivi che non pubblicano changelog (Raspberry Pi) mostrano `urgency n/a` (solo il pocket è noto). L'urgenza da sola non blocca.
   - **Backports:** una sezione a parte elenca le versioni più nuove disponibili in `trixie-backports` per kernel, Mesa, NVIDIA, firmware, PipeWire...
     (non usate: sono decisioni, non aggiornamenti).
-- `tools/pkglock.py snapcheck <lock>` verifica che il lock sia ricostruibile dallo snapshot; `PKGLOCK=off` salta tutto.
+- I pacchetti si scaricano sempre dalle repository online; nel repository si salvano solo i numeri di versione. L'archivio Raspberry Pi (arm64) non ha snapshot: se
+  butta una versione bloccata la build si ferma con l'elenco e il lock va rinnovato (`upgrade`).
+- `tools/pkglock.py snapcheck <lock>` verifica che le versioni bloccate siano ancora online; `PKGLOCK=off` salta tutto.
