@@ -23,29 +23,13 @@ grep -n '\bssh \|\bscp \b' deploy/*.sh | grep -v '_sshpass\|ssh_t\|ota_ssh\|scp_
 ```
 If this command prints lines (other than comments/`require_cmd`), there is an unprotected call to fix.
 
-## arm64 builds: prefer the real Raspberry hardware when available
+## arm64 builds run on the real Raspberry Pi
 
-`build-unitotem.sh`'s arm64 pipeline runs under `qemu-aarch64` emulation via Docker on this x86_64 host.
-This is **structurally slow**, not a bug: `mkinitramfs` (via `copy_exec`'s use of `ldd`, which really
-runs the target binary's dynamic linker) and the postinst/trigger scripts of `apt-get install` (which
-invoke real binaries such as `ldconfig`, `depmod`, `systemctl`) execute real arm64 code, which has to go
-through binfmt_misc emulation — it is not "just copying files". Confirmed empirically by comparing with the
-pi-gen vendored in this same repo: that build uses **armhf**, not arm64
-(`scripts/common:12`, `BOOTSTRAP_ARGS+=(--arch armhf)`) — 32-bit emulation (`qemu-arm-static`) is
-historically more mature/faster than 64-bit emulation (`qemu-aarch64-static`), so the memory of faster pi-gen
-builds on this same host does not contradict the explanation, it confirms it (the comparison is not like for like on
-architecture).
-
-**Policy for every arm64 build from now on**: before launching the Docker+qemu pipeline, probe whether the
-test Raspberry Pi (`root@<pi-host>`, via SSH — see [[no-ssh-password-prompts]] in memory for the
-credentials) is reachable. If it is, prefer native execution on the Pi for the steps that are really slow
-under emulation (in particular `mkinitramfs`/stage1b) — already shown to be faster and more complete in this
-same project (~10 min against 12+ min and incomplete under qemu, see memory `ota-redesign-project`). If the
-Pi is not reachable, proceed with the current Docker+qemu-aarch64 build as a fallback.
-
-**Implementation note (2026-08-02)**: `build-unitotem.sh` does not implement this probe automatically
-— it is a manual procedural step to follow when starting an arm64 build, not encoded in the script.
-Before doing it by hand yet again, it is worth implementing it as part of the script itself.
+`build-unitotem.sh` probes the test Pi (`root@<pi-host>`, SSH through the `deploy/lib.sh` helpers; credentials in
+[[no-ssh-password-prompts]]) and, when it is reachable, runs the whole arm64 pipeline natively there. Only when the Pi is
+unreachable does it fall back to Docker + `qemu-aarch64` on the x86_64 host, which is structurally slow: `mkinitramfs`
+(`copy_exec` runs `ldd`, i.e. the target's dynamic linker) and the postinst/trigger scripts of `apt-get install`
+(`ldconfig`, `depmod`, `systemctl`) execute real arm64 code through binfmt_misc emulation.
 
 ## The test Pi's real SD card: never unbounded writes
 
