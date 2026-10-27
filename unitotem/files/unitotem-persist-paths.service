@@ -1,5 +1,5 @@
 [Unit]
-Description=UniTotem - media caricati e crontab persistenti su DATA
+Description=UniTotem - uploaded media and crontab persisted on DATA
 After=local-fs.target
 Before=cron.service unitotem-manager.service
 RequiresMountsFor=/mnt/data

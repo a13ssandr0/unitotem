@@ -1,14 +1,10 @@
 #!/bin/bash
-# Runs once per boot, After=multi-user.target (see unitotem-boot-ok.service):
-# reaching this point means the freshly-restored system came all the way up,
-# not just that its kernel/initrd booted. Two independent jobs:
-#   1. always clear the boot counter on the boot FAT partition (the
-#      "boots but userspace dies" fallback layer resets on every good boot,
-#      trial or not - see the OTA plan, fallback guarantee section);
-#   2. if this specific boot was a trial one (unitotem.ota.bootcount=1 on
-#      the cmdline, set by ota-engine.sh's set-trial-boot), also promote it
-#      to the permanent default - past this point a reboot no longer lands
-#      back on the resident fallback.
+# Runs once per boot, After=multi-user.target (see unitotem-boot-ok.service): reaching this point
+# means the system came all the way up, not just its kernel/initrd. Two jobs:
+#   1. clear the boot counter on the boot FAT partition on every good boot, trial or not;
+#   2. if this boot was a trial one (unitotem.ota.bootcount=1 on the cmdline, set by ota-engine.sh's
+#      set-trial-boot), promote it to the permanent default, so a reboot no longer lands on the
+#      resident fallback.
 set -euo pipefail
 
 BOOTFS_LABEL=FIRMWARE
@@ -21,10 +17,8 @@ grep -q 'unitotem.slot=' /proc/cmdline || BOOTFS_DEV=$(blkid -L "$BOOTFS_LABEL" 
 if [ -n "$BOOTFS_DEV" ]; then
     mnt=/run/unitotem-bootfs
     mkdir -p "$mnt"
-    # Reuse whatever mount of $BOOTFS_DEV already exists (normally
-    # /boot/firmware via fstab) instead of an independent second mount -
-    # same EBUSY/errors=remount-ro class of bug already fixed in
-    # unitotem-ota-arm and deploy/ota-engine.sh's ota_mount_bootfs_rw.
+    # Reuse the existing mount of $BOOTFS_DEV (normally /boot/firmware) instead of a second mount
+    # (see unitotem-ota-arm and ota_mount_bootfs_rw in deploy/ota-engine.sh).
     mounted=0
     if mountpoint -q "$mnt"; then
         mount -o remount,rw "$mnt" 2>/dev/null && mounted=1

@@ -1,10 +1,10 @@
 #!/bin/bash
-# Rules every shipped image must satisfy, checked against the finished, mounted tree - nothing here is left to chance.
+# Rules every shipped image must satisfy, checked against the finished, mounted tree.
 #   verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]   (ROOT_MOUNT has the boot FAT mounted under boot/efi or boot/firmware)
 # Runs from unitotem/stage3-image.sh before the image is compressed (a violation fails the build) and by hand on a mounted image.
 # Every check prints PASS/FAIL; all of them run, the exit status is 1 if any failed.
 set -uo pipefail
-R="${1:?uso: verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]}"; ARCH="${2:?arch}"; AB="${3:-0}"
+R="${1:?usage: verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]}"; ARCH="${2:?arch}"; AB="${3:-0}"
 fail=0; n=0
 ok()  { n=$((n+1)); echo "  PASS: $1"; }
 bad() { n=$((n+1)); fail=$((fail+1)); echo "  FAIL: $1" >&2; }
@@ -112,7 +112,7 @@ if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
     if [ "$ARCH" = arm64 ]; then INITRD="$FAT/initramfs8"; [ "$AB" = 1 ] && INITRD="$FAT/slota/initramfs8"
     else INITRD=$(ls -t "$R"/boot/initrd.img-* 2>/dev/null | head -1); fi
     if [ "$ARCH" = arm64 ]; then
-        # the Pi firmware reads the initramfs at ~5 MB/s: 40 MB was 8 s of black screen (measured 2026-10-17); slimmed it is ~26 MB
+        # the Pi firmware reads the initramfs at ~5 MB/s: 40 MB is 8 s of black screen; slimmed it is ~26 MB
         chk "the Pi initramfs is slim (< 32 MB, no hwdb.bin; unitotem/slim-initramfs.py)" bash -c "[ \$(stat -c %s '$INITRD') -lt 33554432 ] && ! lsinitramfs '$INITRD' | grep -q 'udev/hwdb.bin'"
         chk "the Pi initramfs carries the brcmfmac vendor module for the Pi's Wi-Fi chip (without brcmfmac-cyw the probe fails and there is no wlan0)" bash -c "lsinitramfs '$INITRD' | grep -q 'brcmfmac/cyw/brcmfmac-cyw.ko'"
         chk "the Pi initramfs has no plymouth label plugin (pango/cairo/X11 ~4 MB)" bash -c "! lsinitramfs '$INITRD' | grep -q 'plymouth/label'"

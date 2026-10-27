@@ -26,7 +26,7 @@ trap cleanup EXIT
 declare -A M
 while IFS= read -r line; do [ -z "$line" ] && break; M["${line%%=*}"]="${line#*=}"; done < "$PARTS/parts.manifest"
 DATA_PART="${M[UNITOTEM_DATA_PART]}"; BOOTFS_PART="${M[UNITOTEM_BOOTFS_PART]}"
-check "il parts set dichiara layout 2" test "${M[UNITOTEM_LAYOUT]:-1}" = 2
+check "the parts set declares layout 2" test "${M[UNITOTEM_LAYOUT]:-1}" = 2
 
 ensure_partition_nodes() {
     local base p majmin; base=$(basename "$LOOP")
@@ -45,10 +45,9 @@ ensure_partition_nodes
 
 BOOTFS_LABEL=EFI; [ "$ARCH" = arm64 ] && BOOTFS_LABEL=FIRMWARE
 
-# The property that matters is "the firmware can boot this config", not "the files I expect are there": for a Pi
-# config (config.txt or tryboot.txt) every file it makes the firmware load - kernel, initramfs, the device tree of the
-# board, cmdline.txt - must exist under the directory os_prefix selects. A fallback with no dtb passed every earlier
-# check and left a real Pi on the rainbow screen.
+# The property that matters is "the firmware can boot this config": for a Pi config (config.txt or
+# tryboot.txt) every file it makes the firmware load - kernel, initramfs, the board's device tree,
+# cmdline.txt - must exist under the directory os_prefix selects.
 pi_config_bootable() {   # pi_config_bootable MNT CONFIGFILE
     local mnt="$1" cfg="$2" prefix k i
     prefix=$(sed -n 's/^os_prefix=//p' "$mnt/$cfg" | tail -1)
@@ -56,19 +55,19 @@ pi_config_bootable() {   # pi_config_bootable MNT CONFIGFILE
     i=$(sed -n 's/^initramfs \([^ ]*\) followkernel.*/\1/p' "$mnt/$cfg" | tail -1)
     local d="$mnt/$prefix" ok=0 f
     for f in "$k" ${i:+"$i"} bcm2711-rpi-4-b.dtb cmdline.txt; do
-        if [ ! -s "$d$f" ]; then echo "MANCA: ${prefix}${f}" >&2; ok=1; fi
+        if [ ! -s "$d$f" ]; then echo "MISSING: ${prefix}${f}" >&2; ok=1; fi
     done
     return $ok
 }
-# Reproduce the flag-file fallback: init-premount leaves the boot partition mounted ro on /boot-ota, and prepare-bootfs
-# used to die in mkfs.fat ("contains a mounted filesystem") - found on the first real Pi deploy.
+# Reproduce the flag-file fallback: init-premount leaves the boot partition mounted ro on /boot-ota,
+# and prepare-bootfs must release it before mkfs.fat ("contains a mounted filesystem").
 mkfs.fat -F32 "${LOOP}p${BOOTFS_PART}" >/dev/null 2>&1
 mkdir -p /boot-ota; mount -t vfat -o ro "${LOOP}p${BOOTFS_PART}" /boot-ota
 VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "$PARTS/parts.manifest")
-check "il manifest registra il volid della partizione di boot" test -n "$VOLID"
+check "the manifest records the volid of the boot partition" test -n "$VOLID"
 "${ENGINE[@]}" prepare-bootfs --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --fstype vfat --fresh 1 --label "$BOOTFS_LABEL" --volid "$VOLID"
-check "prepare-bootfs ha rilasciato /boot-ota prima di formattare" bash -c '! mountpoint -q /boot-ota'
-check "il volid FAT e' stato preservato (GRUB lo cerca per UUID)" bash -c "[ \"\$(blkid -s UUID -o value ${LOOP}p${BOOTFS_PART})\" = '$VOLID' ]"
+check "prepare-bootfs released /boot-ota before formatting" bash -c '! mountpoint -q /boot-ota'
+check "the FAT volid was preserved (GRUB looks it up by UUID)" bash -c "[ \"\$(blkid -s UUID -o value ${LOOP}p${BOOTFS_PART})\" = '$VOLID' ]"
 
 if [ "$ARCH" = arm64 ]; then RNAME=recovery8.img; RSUB=(); else RNAME=recovery-vmlinuz; RSUB=(--subdir unitotem); fi
 "${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name "$RNAME" "${RSUB[@]}" < "$REPO/deploy/$ARCH/recovery-vmlinuz-$ARCH"
@@ -82,23 +81,23 @@ wait "$NC" 2>/dev/null || true
 "${ENGINE[@]}" set-default-recovery --disk "$LOOP" --firmware "$([ "$ARCH" = arm64 ] && echo rpi || echo uefi)" --bootfs-part "$BOOTFS_PART" --layout ab
 mkdir -p /mnt/esp; mount "${LOOP}p${BOOTFS_PART}" /mnt/esp
 if [ "$ARCH" = arm64 ]; then
-    check "config.txt punta al fallback dopo lo stage 1" grep -q '^kernel=recovery8.img$' /mnt/esp/config.txt
-    check "slota/kernel8.img presente (il populate ha portato la directory dello slot)" test -s /mnt/esp/slota/kernel8.img
-    check "slota/initramfs8 presente" test -s /mnt/esp/slota/initramfs8
-    check "slota/cmdline.txt sopravvissuto agli exclude di tar" test -s /mnt/esp/slota/cmdline.txt
-    check "slota/cmdline.txt: root=LABEL=ROOT_A e slot=a" bash -c "grep -q 'root=LABEL=ROOT_A' /mnt/esp/slota/cmdline.txt && grep -q 'unitotem.slot=a' /mnt/esp/slota/cmdline.txt"
-    check "cmdline.txt di primo livello e' quello del fallback (non quello dello slot)" grep -q 'unitotem.ota=1' /mnt/esp/cmdline.txt
-    check "slota/dtb presenti" bash -c "ls /mnt/esp/slota/bcm2711-rpi-4-b.dtb"
-    check "il firmware condiviso e' al primo livello (start4.elf)" test -f /mnt/esp/start4.elf
-    check "i file di recovery sono sopravvissuti al populate" test -s /mnt/esp/recovery-initrd.img
-    check "BOOT PROPERTY: il fallback (config.txt) ha tutto cio' che il firmware carica (kernel, initramfs, dtb, cmdline)" pi_config_bootable /mnt/esp config.txt
+    check "config.txt points to the fallback after stage 1" grep -q '^kernel=recovery8.img$' /mnt/esp/config.txt
+    check "slota/kernel8.img present (populate brought the slot directory)" test -s /mnt/esp/slota/kernel8.img
+    check "slota/initramfs8 present" test -s /mnt/esp/slota/initramfs8
+    check "slota/cmdline.txt survived the tar excludes" test -s /mnt/esp/slota/cmdline.txt
+    check "slota/cmdline.txt: root=LABEL=ROOT_A and slot=a" bash -c "grep -q 'root=LABEL=ROOT_A' /mnt/esp/slota/cmdline.txt && grep -q 'unitotem.slot=a' /mnt/esp/slota/cmdline.txt"
+    check "top-level cmdline.txt is the fallback's (not the slot's)" grep -q 'unitotem.ota=1' /mnt/esp/cmdline.txt
+    check "slota/dtb present" bash -c "ls /mnt/esp/slota/bcm2711-rpi-4-b.dtb"
+    check "the shared firmware is at the top level (start4.elf)" test -f /mnt/esp/start4.elf
+    check "the recovery files survived populate" test -s /mnt/esp/recovery-initrd.img
+    check "BOOT PROPERTY: the fallback (config.txt) has everything the firmware loads (kernel, initramfs, dtb, cmdline)" pi_config_bootable /mnt/esp config.txt
 else
     GE=/mnt/esp/unitotem-grub/grub/grubenv
     check "grubenv: 1024 byte" bash -c "[ \$(stat -c %s $GE) = 1024 ]"
-    check "grubenv: saved_entry=ota-recovery dopo lo stage 1" grep -q '^saved_entry=ota-recovery$' "$GE"
-    check "grub.cfg contiene la voce ota-recovery" grep -q -- '--id ota-recovery' /mnt/esp/unitotem-grub/grub/grub.cfg
-    check "BOOTX64.EFI presente" test -f /mnt/esp/EFI/BOOT/BOOTX64.EFI
-    check "i file di recovery sono sopravvissuti al populate" test -f /mnt/esp/unitotem/recovery-initrd.img
+    check "grubenv: saved_entry=ota-recovery after stage 1" grep -q '^saved_entry=ota-recovery$' "$GE"
+    check "grub.cfg has the ota-recovery entry" grep -q -- '--id ota-recovery' /mnt/esp/unitotem-grub/grub/grub.cfg
+    check "BOOTX64.EFI present" test -f /mnt/esp/EFI/BOOT/BOOTX64.EFI
+    check "the recovery files survived populate" test -f /mnt/esp/unitotem/recovery-initrd.img
 fi
 umount /mnt/esp
 
@@ -126,50 +125,50 @@ while IFS= read -r line || [ -n "$line" ]; do
     BLOCK["${line%%=*}"]="${line#*=}"
 done < "$PARTS/parts.manifest"
 process_block
-check "ROOT_A individuata" test -n "$ROOT_PART"
+check "ROOT_A found" test -n "$ROOT_PART"
 
 "${ENGINE[@]}" mount-target --disk "$LOOP" --arch "$ARCH" --root-part "$ROOT_PART" --bootfs-part "$BOOTFS_PART" --data-part "$DATA_PART"
-check "ROOT_A montata ha systemd" test -x /mnt/newroot/usr/lib/systemd/systemd
-check "release-version presente nell'immagine" test -s /mnt/newroot/usr/share/unitotem/release-version
-check "chiave radice reale installata" test -s /mnt/newroot/usr/share/unitotem/update-keys/root.pub
-check "fstab senza riga / e senza BOOT" bash -c "! grep -qE '^LABEL=(ROOT|BOOT)[[:space:]]' /mnt/newroot/etc/fstab"
+check "mounted ROOT_A has systemd" test -x /mnt/newroot/usr/lib/systemd/systemd
+check "release-version present in the image" test -s /mnt/newroot/usr/share/unitotem/release-version
+check "real root key installed" test -s /mnt/newroot/usr/share/unitotem/update-keys/root.pub
+check "fstab without a / line and without BOOT" bash -c "! grep -qE '^LABEL=(ROOT|BOOT)[[:space:]]' /mnt/newroot/etc/fstab"
 
 D=/mnt/newroot/mnt/data
 # stale state from a previous install: slot-b overlay and update bookkeeping must be reset, slot-a's old etc archived
 mkdir -p "$D/upper/etc.a" "$D/upper/etc.b" "$D/upper/var.a" "$D/unitotem/update"
 echo old > "$D/upper/etc.a/hostname"; echo stale > "$D/upper/etc.b/leftover"; echo '{}' > "$D/unitotem/update/pending.json"
 "${ENGINE[@]}" migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt "$D" --slot a
-check "migrate --slot a: la whitelist porta hostname nel nuovo etc.a" test -f "$D/upper/etc.a/hostname"
-check "migrate --slot a: l'overlay dello slot B obsoleto e' stato azzerato" bash -c "! test -e '$D/upper/etc.b'"
-check "migrate --slot a: pending.json obsoleto rimosso" bash -c "! test -e '$D/unitotem/update/pending.json'"
-check "migrate --slot a: nessun upper/etc senza suffisso creato" bash -c "! test -e '$D/upper/etc'"
+check "migrate --slot a: the whitelist carries hostname into the new etc.a" test -f "$D/upper/etc.a/hostname"
+check "migrate --slot a: the stale slot B overlay was cleared" bash -c "! test -e '$D/upper/etc.b'"
+check "migrate --slot a: stale pending.json removed" bash -c "! test -e '$D/unitotem/update/pending.json'"
+check "migrate --slot a: no suffix-less upper/etc created" bash -c "! test -e '$D/upper/etc'"
 
 if [ "$ARCH" = arm64 ]; then
     "${ENGINE[@]}" set-trial-boot --firmware rpi-tryboot --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --target /mnt/newroot --layout ab
     TB=/mnt/newroot/boot/firmware/tryboot.txt
     check "trial rpi: tryboot.txt con os_prefix=slota/" grep -q '^os_prefix=slota/$' "$TB"
-    check "trial rpi: tryboot.txt e' una config completa (kernel + initramfs)" bash -c "grep -q '^kernel=kernel8.img$' $TB && grep -q '^initramfs initramfs8 followkernel$' $TB"
-    check "trial rpi: config.txt resta sul fallback" grep -q '^kernel=recovery8.img$' /mnt/newroot/boot/firmware/config.txt
-    check "trial rpi: nessun cmdline=: la cmdline viene dallo slot via os_prefix" bash -c "! grep -q '^cmdline=' $TB"
-    check "BOOT PROPERTY: la prova (tryboot.txt) ha tutto cio' che il firmware carica" pi_config_bootable /mnt/newroot/boot/firmware tryboot.txt
-    check "BOOT PROPERTY: il fallback resta avviabile dopo la prova (config.txt)" pi_config_bootable /mnt/newroot/boot/firmware config.txt
+    check "trial rpi: tryboot.txt is a complete config (kernel + initramfs)" bash -c "grep -q '^kernel=kernel8.img$' $TB && grep -q '^initramfs initramfs8 followkernel$' $TB"
+    check "trial rpi: config.txt stays on the fallback" grep -q '^kernel=recovery8.img$' /mnt/newroot/boot/firmware/config.txt
+    check "trial rpi: no cmdline=: the cmdline comes from the slot via os_prefix" bash -c "! grep -q '^cmdline=' $TB"
+    check "BOOT PROPERTY: the trial (tryboot.txt) has everything the firmware loads" pi_config_bootable /mnt/newroot/boot/firmware tryboot.txt
+    check "BOOT PROPERTY: the fallback stays bootable after the trial (config.txt)" pi_config_bootable /mnt/newroot/boot/firmware config.txt
 else
     "${ENGINE[@]}" set-trial-boot --firmware uefi --target /mnt/newroot --layout ab
     GE=/mnt/newroot/boot/efi/unitotem-grub/grub/grubenv
-    check "trial: saved_entry resta sul fallback" grep -q '^saved_entry=ota-recovery$' "$GE"
+    check "trial: saved_entry stays on the fallback" grep -q '^saved_entry=ota-recovery$' "$GE"
     check "trial: next_entry=slot-a (one-shot)" grep -q '^next_entry=slot-a$' "$GE"
 fi
-check "trial: pending.json scritto sullo slot a" grep -q '"slot": "a"' "$D/unitotem/update/pending.json"
-check "trial: slots.json scritto" test -s "$D/unitotem/update/slots.json"
+check "trial: pending.json written for slot a" grep -q '"slot": "a"' "$D/unitotem/update/pending.json"
+check "trial: slots.json written" test -s "$D/unitotem/update/slots.json"
 "${ENGINE[@]}" umount-target
 
 check "fsck ROOT_A" e2fsck -fn "${LOOP}p${ROOT_PART}"
-check "fsck ROOT_B (appena formattata)" e2fsck -fn "${LOOP}p$((ROOT_PART+1))"
+check "fsck ROOT_B (just formatted)" e2fsck -fn "${LOOP}p$((ROOT_PART+1))"
 check "label ROOT_B" bash -c "[ \"\$(blkid -s LABEL -o value ${LOOP}p$((ROOT_PART+1)))\" = ROOT_B ]"
 check "label ROOT_A" bash -c "[ \"\$(blkid -s LABEL -o value ${LOOP}p${ROOT_PART})\" = ROOT_A ]"
 check "fsck.vfat bootfs" fsck.vfat -n "${LOOP}p${BOOTFS_PART}"
 check "fsck DATA" e2fsck -fn "${LOOP}p${DATA_PART}"
 
-log "=== RISULTATI ==="; cat "$RESULTS"
-grep -q '^FAIL' "$RESULTS" && { log "ALCUNI CONTROLLI SONO FALLITI"; exit 1; }
-log "TUTTI I CONTROLLI SONO PASSATI"
+log "=== RESULTS ==="; cat "$RESULTS"
+grep -q '^FAIL' "$RESULTS" && { log "SOME CHECKS FAILED"; exit 1; }
+log "ALL CHECKS PASSED"

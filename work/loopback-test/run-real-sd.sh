@@ -1,13 +1,11 @@
 #!/bin/bash
-# §11.4 step 2: run the OTA stage1+stage2 sequence against the real Pi SD
-# card (/dev/sdb), scoped to exactly that device's major:minor (8:16 for
-# the disk, 8:17-8:19 for its 3 partitions) - NOT --privileged, and NOT a
-# blanket major-8 rule, because this host also has /dev/sdc (a real 3.6TB
-# drive) on the same major number that must stay completely inaccessible.
+# Runs the OTA stage1+stage2 sequence against the real Pi SD card (/dev/sdb), scoped to
+# exactly that device's major:minor (8:16 for the disk, 8:17-8:19 for its 3 partitions):
+# not --privileged and not a blanket major-8 rule, so other disks on major 8 stay inaccessible.
 set -Eeuo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PARTS_DIR="${1:?uso: run-real-sd.sh <path ai .parts>}"
-[ -d "$PARTS_DIR" ] || { echo "non trovato: $PARTS_DIR" >&2; exit 1; }
+PARTS_DIR="${1:?usage: run-real-sd.sh <path to the .parts dir>}"
+[ -d "$PARTS_DIR" ] || { echo "not found: $PARTS_DIR" >&2; exit 1; }
 PARTS_DIR="$(cd "$PARTS_DIR" && pwd)"
 
 docker run --rm \

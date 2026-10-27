@@ -1,12 +1,8 @@
 # iocharset=iso8859-1 explicit: without it, vfat falls back to the kernel's
-# default ("ascii") iocharset, which needs the separate nls_ascii module
-# on-demand-loaded - confirmed failing for real on real hardware
-# (boot-firmware.mount stuck "failed", dropping to the emergency shell,
-# "FAT-fs: IO charset ascii not found" in dmesg), even though the module
-# exists in the kernel package - this is the real rootfs's own fstab-driven
-# mount, a different context from the initramfs's copy (already fixed
-# separately via manual_add_modules in unitotem/files/ota-hook, which only
-# covers the initramfs module set, not this).
+# default ("ascii") iocharset, which needs the separate nls_ascii module loaded on demand; when that
+# load fails boot-firmware.mount fails ("FAT-fs: IO charset ascii not found") and boot drops to the
+# emergency shell. The initramfs module set is handled separately (manual_add_modules in
+# unitotem/files/ota-hook).
 # ro + nofail: the FAT holds the firmware and bootloader and is the one partition without a journal, so it is not
 # mounted writable at runtime (the tools that must write it - unitotem-update, unitotem-boot-ok, unitotem-ota-arm -
 # remount it rw for the moment they need), and a damaged one must not stop the boot: the kiosk does not need it to run.
@@ -14,15 +10,10 @@ LABEL=FIRMWARE /boot/firmware vfat  defaults,noatime,ro,nofail,x-systemd.device-
 LABEL=ROOT     /              ext4  defaults,noatime,ro                 0 1
 tmpfs          /tmp           tmpfs defaults,noatime,nosuid,nodev,size=256M  0 0
 tmpfs          /run           tmpfs defaults,noatime,nosuid,nodev,mode=0755  0 0
-# /var/cache and /var/tmp stay tmpfs even though /var is overlaid now: they
-# are pure churn (apt archives, scratch files) with nothing worth keeping
-# across a reboot, and routing them to the SD card would buy wear and no
-# benefit. Everything else under /var is writable via the DATA overlay - see
-# unitotem/files/overlayfs-hook.sh.
+# /var/cache and /var/tmp stay tmpfs although /var is overlaid: they are pure churn (apt archives, scratch files)
+# and routing them to the SD card would only add wear. Everything else under /var is writable via the DATA overlay
+# (unitotem/files/overlayfs-hook.sh).
 tmpfs          /var/cache     tmpfs defaults,noatime,nosuid,nodev,size=512M  0 0
 tmpfs          /var/tmp       tmpfs defaults,noatime,nosuid,nodev,size=64M   0 0
-# The per-directory tmpfs allowlist that used to sit here (NetworkManager,
-# dhcp, systemd, haproxy) is gone: it was a workaround for /var not being
-# writable, it could only ever cover directories someone had already caught
-# failing, and with the overlay in place it would actively HIDE the
-# persistence those directories are supposed to have on a normal system.
+# No per-directory tmpfs allowlist for /var (NetworkManager, dhcp, systemd, haproxy): with the overlay in place it
+# would hide the persistence those directories need.

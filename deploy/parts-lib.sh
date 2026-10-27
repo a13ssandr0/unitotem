@@ -1,20 +1,14 @@
 #!/bin/bash
-# Parts-set generator library: make_parts() clones every restore-relevant
-# partition of an already-attached loop device into
-# deploy/$ARCH/<setname>.parts/. Callable from deploy/make-parts-image.sh
-# (in-container, from a scratch image file) or from unitotem/stage3-image.sh's
-# optional MAKE_PARTS hook (against the loop device it already has attached
-# while building the image) - one implementation, two call sites, per the
-# OTA redesign plan.
+# Parts-set generator library: make_parts() clones every restore-relevant partition of an attached loop
+# device into deploy/$ARCH/<setname>.parts/. Called by deploy/make-parts-image.sh (in the container,
+# from a scratch image file) and by unitotem/stage3-image.sh's optional MAKE_PARTS hook.
 #
 # Not meant to be executed directly.
 set -euo pipefail
 
-# Filesystem/cloner/action per partition LABEL. FIRMWARE/EFI are file-level
-# only (never partclone'd - see the plan's partition layout section: doing
-# so would risk clobbering the resident fallback kernel+initrd a real
-# restore must never touch), DATA is never streamed at all (24 KiB used on
-# a pristine image - always preserved or freshly mkfs'd instead).
+# Filesystem/cloner/action per partition LABEL. FIRMWARE/EFI are file-level only (never partclone'd, so a
+# restore cannot clobber the resident fallback kernel+initrd); DATA is never streamed (preserved or freshly
+# mkfs'd instead).
 parts_action_for_label() {
     case "$1" in
         EFI|FIRMWARE) echo "filecopy" ;;
@@ -35,12 +29,9 @@ parts_cloner_for_label() {
     esac
 }
 
-# ext4 used bytes via dumpe2fs - block count minus free blocks, times block
-# size. Used both to size the parts-set manifest (_PART_USED_BYTES) and, on
-# the restore side, to decide whether partclone.restore -C is safe for a
-# smaller-than-recorded target partition (see the plan's partclone risk
-# section for why -C is the right tool here, used deliberately rather than
-# avoided outright).
+# ext4 used bytes via dumpe2fs: (block count - free blocks) * block size. Sizes the parts-set manifest
+# (_PART_USED_BYTES) and decides on the restore side whether partclone.restore -C is safe for a target
+# partition smaller than the recorded one.
 ext4_used_bytes() {
     local dev="$1" total free bs
     total=$(dumpe2fs -h "$dev" 2>/dev/null | awk -F': *' '/^Block count:/{print $2}')
@@ -120,18 +111,12 @@ make_parts() {
                 continue
                 ;;
             filecopy)
-                # EFI/FIRMWARE is never partclone'd (a real restore must
-                # never risk clobbering the resident fallback recovery
-                # files living on the same partition - see the plan's
-                # partition layout section), but a *new* target still needs
-                # its static content (EFI/BOOT/BOOTX64.EFI on amd64;
-                # bootcode.bin/start*.elf/fixup*.dat/overlays on arm64) from
-                # somewhere. Capture it as a plain tar - deploy/ota-engine.sh's
-                # populate-bootfs subcommand extracts it with an explicit
-                # --exclude for anything recovery-owned, so applying it to
-                # an already-prepared target can never touch those files.
+                # EFI/FIRMWARE is never partclone'd (a restore must not clobber the resident fallback files on
+                # the same partition), but a new target needs its static content (EFI/BOOT/BOOTX64.EFI on amd64;
+                # bootcode.bin/start*.elf/fixup*.dat/overlays on arm64). Captured as a plain tar: ota-engine.sh's
+                # populate-bootfs extracts it excluding anything recovery-owned.
                 stream="p${n}-${label:-part${n}}.bootfs.tar.xz"
-                log_parts "Genero ${stream} (contenuto file-level di ${label})..."
+                log_parts "Generating ${stream} (file-level content of ${label})..."
                 mkdir -p /tmp/bootfs-src
                 mount -t "${fstype:-vfat}" -o ro "$dev" /tmp/bootfs-src
                 tar -C /tmp/bootfs-src -cf - . | xz -T0 -9 --check=sha256 > "$outdir/$stream"
@@ -154,10 +139,10 @@ make_parts() {
         total_used=$((total_used + used))
 
         stream="p${n}-${label:-part${n}}.${fstype:-raw}.pc.xz"
-        log_parts "Genero ${stream} (cloner=${cloner}, partizione ${n})..."
+        log_parts "Generating ${stream} (cloner=${cloner}, partition ${n})..."
         "partclone.${cloner}" -c -s "$dev" -o - -F -B 2>/dev/null \
             | xz -T0 -9 --check=sha256 > "$outdir/$stream" \
-            || { echo "partclone.${cloner} su $dev fallito" >&2; return 1; }
+            || { echo "partclone.${cloner} on $dev failed" >&2; return 1; }
 
         stream_bytes=$(stat -c%s "$outdir/$stream")
         stream_sha256=$(sha256sum "$outdir/$stream" | cut -d' ' -f1)
@@ -213,7 +198,7 @@ make_parts() {
 
     ( cd "$outdir" && sha256sum -- *.xz layout.sfdisk bootcode.bin > SHA256SUMS )
 
-    log_parts "Parts set completo: $outdir (${nparts} partizioni, $(bytes_human_local "$total_used") usati)"
+    log_parts "Parts set complete: $outdir (${nparts} partitions, $(bytes_human_local "$total_used") used)"
 }
 
 pdev_target_local() {

@@ -46,14 +46,10 @@ mkdir -p "${ROOTFS}/root/.ssh"
 chmod 700 "${ROOTFS}/root/.ssh"
 
 # ---------- Plymouth ----------
-# No theme is installed/pinned here: the unitotem-manager package installs
-# and selects the real "unitotem" theme (via update-alternatives AND
-# plymouth-set-default-theme, since plymouthd.conf's Theme= key takes
-# priority over the default.plymouth alternative - see
-# src/main.c:load_settings()/show_default_splash() upstream) when it's
-# installed on top of this image. Pinning a placeholder theme here would
-# leave plymouthd.conf's Theme= key pointing at it, which the manager's
-# update-alternatives call alone cannot override.
+# No theme is pinned here: the unitotem-manager package installs and selects the
+# "unitotem" theme (update-alternatives and plymouth-set-default-theme, because
+# plymouthd.conf's Theme= takes priority). A placeholder Theme= set here could not
+# be overridden by update-alternatives alone.
 
 mkdir -p "${ROOTFS}/etc/plymouth"
 install -m 644 /unitotem/files/plymouthd.conf "${ROOTFS}/etc/plymouth/plymouthd.conf"
@@ -77,29 +73,11 @@ fi
 if [ "$ARCH" = "arm64" ]; then
     mkdir -p "${ROOTFS}/boot/firmware"
     install -m 644 /unitotem/files/config.txt "${ROOTFS}/boot/firmware/config.txt"
-    # console=ttyS0 - and this value depends entirely on WHOSE device tree the
-    # image ships, so do not "correct" it without re-checking that.
-    #
-    # The serial console on the GPIO14/15 header pins is the mini-UART
-    # (serial@7e215040, brcm,bcm2835-aux-uart). The 8250 driver takes its tty
-    # INDEX from the DT serial alias, and the two DTB families disagree about
-    # that alias:
-    #  - mainline/Debian bcm283x.dtsi aliases serial0=&uart0 (the PL011, which
-    #    on a Pi 4 is pinmuxed to GPIO30/32 for Bluetooth) and serial1=&uart1,
-    #    so the header UART enumerated as ttyS1 and ttyS0 did not exist.
-    #  - Raspberry Pi's own DTBs alias serial0=&uart1, so the header UART is
-    #    ttyS0.
-    #
-    # This image used to ship the generic Debian kernel and therefore ttyS1.
-    # unitotem/stage1-packages.sh now installs linux-image-rpi-v8, which brings
-    # Raspberry Pi's DTBs and flips the convention - the previous version of
-    # this comment even warned to revisit it on exactly that switch, and it was
-    # missed: every UniTotem boot went silent on a known-good FT232 while a
-    # stock Raspberry Pi OS on the same hardware, same adapter, logged happily
-    # on ttyS0. That silence cost real diagnostic ability during a failure.
-    #
-    # Still needs enable_uart=1 in config.txt (the mini-UART derives its baud
-    # from the VPU core clock, and enable_uart=1 is what pins that clock).
+    # console=ttyS0: the header UART is the mini-UART, and its tty index follows the DT
+    # serial alias. Raspberry Pi's DTBs (linux-image-rpi-v8) alias serial0=&uart1, so it
+    # is ttyS0; the generic Debian DTBs would make it ttyS1. Re-check this value if the
+    # kernel/DTB source changes. Needs enable_uart=1 in config.txt (pins the core clock
+    # the mini-UART baud derives from).
     AB_SLOT_ARG=""; [ "$AB_LAYOUT" = 1 ] && AB_SLOT_ARG=" unitotem.slot=a"
     echo "console=tty1 console=ttyS0,115200 root=LABEL=${ROOT_LABEL} rootfstype=ext4 rootwait ro quiet splash loglevel=3 rd.systemd.show_status=false systemd.show_status=false plymouth.ignore-serial-consoles${AB_SLOT_ARG}" \
         > "${ROOTFS}/boot/firmware/cmdline.txt"
@@ -126,20 +104,18 @@ if [ "$AB_LAYOUT" = 1 ]; then
     # kernel command line (each slot's boot entry names its own), and systemd mounts it
     # from there. A fixed LABEL=ROOT line here would point the wrong slot at the wrong fs.
     sed -i '/^LABEL=ROOT[[:space:]]\+\/[[:space:]]/d' "${ROOTFS}/etc/fstab"
-    grep -q '^LABEL=ROOT[[:space:]]' "${ROOTFS}/etc/fstab" && { echo "fstab: riga / non rimossa" >&2; exit 1; }
+    grep -q '^LABEL=ROOT[[:space:]]' "${ROOTFS}/etc/fstab" && { echo "fstab: / line not removed" >&2; exit 1; }
     # amd64 A/B has no BOOT partition (kernels live in each slot's own /boot, GRUB on the ESP):
     # a leftover LABEL=BOOT line would make systemd wait for a device that does not exist.
     sed -i '/^LABEL=BOOT[[:space:]]/d' "${ROOTFS}/etc/fstab"
-    grep -q '^LABEL=BOOT' "${ROOTFS}/etc/fstab" && { echo "fstab: riga BOOT non rimossa" >&2; exit 1; }
+    grep -q '^LABEL=BOOT' "${ROOTFS}/etc/fstab" && { echo "fstab: BOOT line not removed" >&2; exit 1; }
 fi
 
 # ---------- NetworkManager ----------
 
 mkdir -p "${ROOTFS}/etc/netplan"
-# Same suite the image was actually built from - see unitotem/common.sh. Left
-# hardcoded this would point a running device's apt at a different release than
-# its own filesystem, which is the kind of thing that looks fine until someone
-# runs `unitotem-maintenance enter` and apt starts proposing a half-upgrade.
+# Same suite the image was built from (see unitotem/common.sh), so apt in
+# `unitotem-maintenance enter` does not propose a half-upgrade.
 cat > "${ROOTFS}/etc/apt/sources.list" << EOF
 deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
@@ -164,16 +140,16 @@ install -m 755 /unitotem/files/unitotem-maintenance "${ROOTFS}/usr/local/bin/uni
 # killed once the Wayland socket exists, VT1, Restart=always); this image only enables it. No login prompt may sit on VT1.
 ln -sf /dev/null "${ROOTFS}/etc/systemd/system/getty@tty1.service"
 
-# Debian's wayvnc package enables its own VNC server (wayvnc.service, user "vnc", PAM auth, listening on every address) and a control
-# service whose script does not exist (exit 127: the system came up "degraded"). Remote viewing is the manager's own feature, started by
-# it when asked, so the distro units must not run: mask them (found on the first Wayland image, 2026-10-25).
+# Debian's wayvnc package enables its own VNC server (all addresses, PAM auth) and a control
+# service whose script does not exist (exit 127, system "degraded"). Remote viewing is the
+# manager's own feature, so the distro units are masked.
 for u in wayvnc.service wayvnc-control.service wayvnc-generate-keys.service; do
     ln -sf /dev/null "${ROOTFS}/etc/systemd/system/${u}"
 done
 
-# PipeWire for root: Debian's pipewire/pipewire-pulse/wireplumber user units carry ConditionUser=!root, so on this image (everything runs as
-# root) sound never started ("start condition unmet"). An empty ConditionUser= in a drop-in clears the condition; root already has a user
-# manager (linger, see below) and the units are enabled by the packages. Verified live on the Pi: the HDMI sink appears, the browser plays.
+# PipeWire for root: Debian's pipewire/pipewire-pulse/wireplumber user units carry ConditionUser=!root,
+# and everything here runs as root. An empty ConditionUser= in a drop-in clears it; root has a user
+# manager (linger, see below) and the packages enable the units.
 for u in pipewire.socket pipewire.service pipewire-pulse.socket pipewire-pulse.service wireplumber.service; do
     mkdir -p "${ROOTFS}/etc/systemd/user/${u}.d"
     printf '[Unit]\nConditionUser=\n' > "${ROOTFS}/etc/systemd/user/${u}.d/10-root.conf"
@@ -187,12 +163,9 @@ echo "overlay" >> "${ROOTFS}/etc/initramfs-tools/modules"
 echo "FRAMEBUFFER=y" >> "${ROOTFS}/etc/initramfs-tools/initramfs.conf"
 
 # ---------- OTA: real system's own initramfs entry points ----------
-# ota-engine.sh and the unitotem-ota hook itself are already present (came
-# in via stage1.tar.gz, unitotem/stage1-packages.sh) - only the real-system-
-# specific dispatcher/verify wrappers and userspace-side pieces are added
-# here. See the OTA redesign plan's "fallback: come lo si raggiunge" section
-# for why the real system's initramfs needs to be OTA-capable too, not just
-# the resident recovery image.
+# ota-engine.sh and the unitotem-ota hook came in via stage1.tar.gz; only the
+# real-system dispatcher/verify wrappers and userspace pieces are added here.
+# The real system's initramfs must be OTA-capable too, not just the recovery image.
 
 mkdir -p "${ROOTFS}/etc/initramfs-tools/scripts/init-premount"
 install -m 755 /unitotem/files/ota-init-premount \
@@ -203,8 +176,7 @@ install -m 755 /unitotem/files/ota-local-bottom-verify \
     "${ROOTFS}/etc/initramfs-tools/scripts/local-bottom/zz-unitotem-verify"
 
 install -m 755 /unitotem/files/unitotem-ota-arm "${ROOTFS}/usr/sbin/unitotem-ota-arm"
-# Not in the fallback's ota-engine.sh: this one needs dpkg, which the resident
-# fallback initrd does not carry. It only ever runs on the booted system.
+# Needs dpkg, which the fallback initrd does not carry: runs on the booted system only.
 install -m 755 /unitotem/files/unitotem-ota-changes "${ROOTFS}/usr/sbin/unitotem-ota-changes"
 install -m 755 /unitotem/files/unitotem-boot-ok "${ROOTFS}/usr/sbin/unitotem-boot-ok"
 install -m 644 /unitotem/files/unitotem-boot-ok.service \
@@ -223,10 +195,10 @@ for unit in emergency rescue; do
     sed "s/systemd-sulogin-shell emergency/systemd-sulogin-shell ${unit}/" /unitotem/files/emergency-dropin.conf \
         > "${ROOTFS}/etc/systemd/system/${unit}.service.d/unitotem.conf"
 done
-# The manager package's postinst created the TLS key while the image was built - the same private key on every device flashed
-# from it. Remove it (and its temporary halves) and let each device generate its own on first boot.
+# The manager package's postinst created a TLS key at build time, identical on every device
+# flashed from the image. Remove it (and its intermediate files); each device generates its own on first boot.
 rm -f -- "${ROOTFS}/etc/ssl/unitotem.pem" "${ROOTFS}/etc/ssl/unitotem_crt.pem" "${ROOTFS}/etc/ssl/unitotem_key.pem"
-[ ! -e "${ROOTFS}/etc/ssl/unitotem.pem" ] || { echo "ERRORE: il certificato e' ancora nell'immagine" >&2; exit 1; }
+[ ! -e "${ROOTFS}/etc/ssl/unitotem.pem" ] || { echo "ERROR: the certificate is still in the image" >&2; exit 1; }
 mkdir -p "${ROOTFS}/etc/systemd/system/unitotem-manager.service.d"
 install -m 644 /unitotem/files/unitotem-manager-wayland.conf "${ROOTFS}/etc/systemd/system/unitotem-manager.service.d/20-unitotem-wayland.conf"
 install -m 755 /unitotem/files/unitotem-first-boot-cert "${ROOTFS}/usr/sbin/unitotem-first-boot-cert"
@@ -236,8 +208,7 @@ install -m 644 /unitotem/files/unitotem-update-auto.service "${ROOTFS}/etc/syste
 install -m 644 /unitotem/files/unitotem-update-auto.timer "${ROOTFS}/etc/systemd/system/unitotem-update-auto.timer"
 install -d "${ROOTFS}/usr/lib/unitotem"
 install -m 644 /unitotem/files/unitotem_identity.py "${ROOTFS}/usr/lib/unitotem/unitotem_identity.py"
-# the web UI logs in through PAM with system accounts of this group (the unitotem-manager postinst creates it too; a rootfs built before that
-# package has none)
+# the web UI logs in through PAM with system accounts of this group (the manager postinst creates it too)
 chroot "${ROOTFS}" getent group unitotem >/dev/null || chroot "${ROOTFS}" addgroup --system unitotem
 # Public half of the update root key only. The private keys live outside the repo
 # (tools/release/backup-keys.sh); losing them means no fielded device accepts an update again.
@@ -253,11 +224,9 @@ install -m 644 /unitotem/files/unitotem-net-watchdog.service \
 install -m 644 /unitotem/files/unitotem-net-watchdog.timer \
     "${ROOTFS}/etc/systemd/system/unitotem-net-watchdog.timer"
 
-# Last-resort NetworkManager profile, so a wired link always has an active
-# connection and therefore always an IPv6 link-local address to be rescued
-# over. 600 and root-owned is not optional - NetworkManager refuses to load a
-# keyfile that anyone else can read. See the file's own comments for why it
-# must also do ordinary DHCP rather than only link-local.
+# Last-resort NetworkManager profile: a wired link always has an active connection and so an
+# IPv6 link-local address to be rescued over. Must be 600 and root-owned (NetworkManager refuses
+# other keyfiles); it also does ordinary DHCP (see the file's comments).
 mkdir -p "${ROOTFS}/etc/NetworkManager/system-connections"
 install -m 600 /unitotem/files/nm-fallback.nmconnection \
     "${ROOTFS}/etc/NetworkManager/system-connections/unitotem-fallback.nmconnection"
@@ -265,10 +234,8 @@ install -m 600 /unitotem/files/nm-fallback.nmconnection \
 mkdir -p "${ROOTFS}/etc/unitotem"
 install -m 644 /unitotem/files/ota-preserve.list "${ROOTFS}/etc/unitotem/ota-preserve.list"
 install -m 644 /unitotem/files/net-watchdog.conf "${ROOTFS}/etc/unitotem/net-watchdog.conf"
-# unitotem-update's boot-ok waits for the manager's /health before confirming a trial slot. The 2.x manager that the
-# repository ships (and every arm64 image so far) has no /health endpoint - and cannot even run on a read-only root - so
-# with the default URL every trial would sit out the full timeout and roll back. Only an image that carries the 3.x
-# manager (it provides /health) keeps the health gate.
+# unitotem-update's boot-ok waits for the manager's /health before confirming a trial slot. The 2.x
+# manager has no /health endpoint, so without a 3.x manager the health gate is disabled.
 if [ "$AB_LAYOUT" = 1 ] && [ ! -x "${ROOTFS}/usr/sbin/unitotem-manager" ]; then   # no 3.x manager in the rootfs
     printf '%s\n' '# no manager with /health in this image: confirm a trial without the health gate' 'UPDATE_HEALTH_URL=' \
         > "${ROOTFS}/etc/unitotem/update.conf"
@@ -303,14 +270,9 @@ install -m 750 /unitotem/files/iptables-firewall.sh \
     "${ROOTFS}/sbin/iptables-firewall.sh"
 
 # ---------- Chromium: hardware video decode ----------
-# Debian's chromium wrapper sources /etc/chromium.d/*, so the image can set
-# this without the manager knowing - it launches the browser over the DevTools
-# protocol and passes no acceleration flags of its own.
-#
-# The VAAPI feature is amd64-only on purpose. On a Pi there is no VAAPI driver
-# behind it, and asking Chromium for a decoder that cannot initialise risks it
-# giving up on acceleration rather than falling through to the V4L2 path that
-# does work there.
+# Debian's chromium wrapper sources /etc/chromium.d/*; the manager launches the browser over
+# DevTools and passes no acceleration flags. The VAAPI feature is amd64-only: a Pi has no VAAPI
+# driver, and a decoder that cannot initialise may make Chromium give up on the working V4L2 path.
 if [ "$ARCH" = "amd64" ]; then
     ACCEL_FEATURES="AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,VaapiVideoDecoder"
 else
@@ -321,7 +283,7 @@ sed "s/@UNITOTEM_ACCEL_FEATURES@/${ACCEL_FEATURES}/" /unitotem/files/chromium-ac
     > "${ROOTFS}/etc/chromium.d/50-unitotem-accel"
 chmod 644 "${ROOTFS}/etc/chromium.d/50-unitotem-accel"
 grep -q '@UNITOTEM_ACCEL_FEATURES@' "${ROOTFS}/etc/chromium.d/50-unitotem-accel" \
-    && { echo "ERRORE: placeholder delle feature Chromium non sostituito" >&2; exit 1; }
+    && { echo "ERROR: Chromium features placeholder not substituted" >&2; exit 1; }
 
 install -m 644 /unitotem/files/unitotem-maintenance-mode.service \
     "${ROOTFS}/etc/systemd/system/unitotem-maintenance-mode.service"
@@ -352,27 +314,17 @@ chroot "${ROOTFS}" systemctl enable \
     unitotem-update-auto.timer
 
 # ---------- Disable unattended apt ----------
-# Three independent reasons, any one of which would be enough:
-#
-#  - /var/lib/dpkg is pinned to the read-only ROOT (see
-#    unitotem/files/overlayfs-hook.sh), so these timers cannot take dpkg's lock
-#    and would fail on every run. They were among the failed units observed
-#    on hardware before that.
-#  - Updates on this image go through OTA, which replaces whole partitions.
-#    A package upgraded behind its back is undone at the next deploy anyway.
-#  - unitotem-ota-changes reports what has been modified relative to the
-#    image so an operator can decide before an OTA destroys it. A background
-#    timer mutating packages makes that report noisy for changes nobody made
-#    - and it was already happening: the dpkg status on DATA had drifted from
-#    the image's copy with no human involved.
-#
-# `mask`, not `disable`: apt ships these as static-ish units pulled in by
-# package updates, and disable alone has a habit of being undone.
+# - /var/lib/dpkg is pinned to the read-only ROOT (see unitotem/files/overlayfs-hook.sh), so these
+#   timers cannot take dpkg's lock and would fail on every run.
+# - Updates go through OTA, which replaces whole partitions.
+# - unitotem-ota-changes reports local modifications relative to the image; a background timer
+#   mutating packages would add changes nobody made.
+# `mask`, not `disable`: package updates pull these units back in.
 chroot "${ROOTFS}" systemctl mask apt-daily.timer apt-daily-upgrade.timer \
     apt-daily.service apt-daily-upgrade.service
 
 # ---------- amd64: the NVIDIA stack is installed for machines that have an NVIDIA GPU; on every other PC it must not make the system 'degraded' ----------
-# (found on a real Intel PC 2026-10-18: nvidia-persistenced and systemd-modules-load failed on every boot)
+
 if [ "$ARCH" = "amd64" ]; then
     mkdir -p "${ROOTFS}/etc/systemd/system/nvidia-persistenced.service.d" "${ROOTFS}/etc/systemd/system/systemd-modules-load.service.d"
     cat > "${ROOTFS}/etc/systemd/system/nvidia-persistenced.service.d/unitotem-only-with-nvidia.conf" <<'UNITEOF'
@@ -395,13 +347,13 @@ mkdir -p "${ROOTFS}/var/lib/systemd/linger"
 
 # ---------- Regenerate initramfs ----------
 
-# The initramfs carries a copy of the OTA engine, and its deploy/recovery SCREEN (texts, wording) is that copy's. stage1
-# installed an engine into the rootfs, but a stage1 tarball can be older than deploy/ota-engine.sh; refreshing it here,
-# right before the initramfs is regenerated, makes a stage 2 + 3 rebuild enough to pick up an engine change.
+# The initramfs carries a copy of the OTA engine and its deploy/recovery screen is that copy's.
+# The stage1 tarball can be older than deploy/ota-engine.sh, so it is refreshed here, right before
+# the initramfs is regenerated.
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 chroot "${ROOTFS}" update-initramfs -u -k all
-# arm64: the firmware loads kernel+initramfs from the SD at ~5 MB/s (measured), so shrink the initramfs: no hwdb.bin, only the Wi-Fi
-# firmware of Raspberry Pi chips (see unitotem/slim-initramfs.py). Measured on a Pi 4: -14 MB = -2.4 s before the kernel starts.
+# arm64: the firmware loads kernel+initramfs from the SD at ~5 MB/s, so the initramfs is shrunk:
+# no hwdb.bin, only the Wi-Fi firmware of Raspberry Pi chips (see unitotem/slim-initramfs.py).
 if [ "$ARCH" = "arm64" ]; then
     install -m 755 /unitotem/slim-initramfs.py "${ROOTFS}/tmp/slim-initramfs.py"
     for _initrd in "${ROOTFS}"/boot/initrd.img-*; do
@@ -412,18 +364,9 @@ if [ "$ARCH" = "arm64" ]; then
 fi
 
 # ---------- arm64: populate FIRMWARE with the real system's boot files ----------
-# Now that stage1 installs the real linux-image-rpi-v8 (not generic Debian
-# linux-image-arm64), raspi-firmware's own kernel/initramfs postinst hooks
-# (z50-raspi-firmware, which this project no longer needs to work around -
-# see PLAN.md's arm64 follow-up) *should* already have copied
-# kernel8.img/initramfs8/the dtbs during stage1's apt-get install. This
-# manual copy stays anyway as a defensive safety net: linux-image-rpi-v8 and
-# raspi-firmware are installed in the same apt-get transaction with no
-# explicit Depends between them, so dpkg's configure order across the two
-# isn't guaranteed - if the kernel's postinst happens to run before
-# raspi-firmware's hook file exists, this catches it. Idempotent either way,
-# and unitotem/stage3-image.sh's boot-ability assertions catch it immediately
-# if it ever regresses.
+# raspi-firmware's postinst hooks normally copy kernel8.img/initramfs8/the dtbs during stage1.
+# This copy is a safety net (kernel and raspi-firmware are configured in one apt transaction with
+# no ordering guarantee); it is idempotent, and stage3's boot-ability assertions catch a miss.
 if [ "$ARCH" = "arm64" ]; then
     KVER=$(cd "${ROOTFS}/lib/modules" && ls -1 | head -1)
     [ -n "${KVER}" ] || { echo "No kernel found under ${ROOTFS}/lib/modules" >&2; exit 1; }

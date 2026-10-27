@@ -1,9 +1,7 @@
 #!/bin/sh
-# initramfs-tools local-bottom script, real system only (installed by
-# unitotem/stage2-configure.sh). Runs right after mountroot, before
-# init-bottom/setup-overlays stacks the DATA overlay - catches "filesystem
-# mounts and passes fsck, but this isn't a working UniTotem system" (e.g. a
-# restore that wrote the wrong bytes but left a structurally valid ext4).
+# initramfs-tools local-bottom script, real system only (installed by unitotem/stage2-configure.sh).
+# Runs right after mountroot, before init-bottom/setup-overlays stacks the DATA overlay: catches a
+# filesystem that mounts and passes fsck but is not a working UniTotem system.
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case "$1" in prereqs) prereqs; exit 0 ;; esac

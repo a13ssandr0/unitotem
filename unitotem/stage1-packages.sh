@@ -14,11 +14,10 @@ ensure_qemu
 mount_chroot
 install_policy_rc
 
-# Build-time only: dpkg fsync()s every file it unpacks, which on the container's overlay filesystem dominates
-# the install and keeps the CPUs idle. The result is thrown into a tarball and re-checked later, so a crash
-# mid-build costs a rerun, not data. Removed again before the tarball is made (see "Clean up").
-# Downloaded .debs persist across builds in work/apt-cache (mounted at /aptcache by build-unitotem.sh). A rebuild
-# of stage 1 used to fetch ~2 GB again at the link speed - the CPUs sat ~95% idle meanwhile.
+# Build-time only: dpkg fsync()s every file it unpacks, which dominates the install on the
+# container's overlay filesystem. The result is tarred and re-checked, so a crash costs a rerun.
+# Removed again before the tarball is made (see "Clean up").
+# Downloaded .debs persist across builds in work/apt-cache (mounted at /aptcache).
 if [ -d /aptcache ]; then
     mkdir -p "/aptcache/${ARCH}/partial" "${ROOTFS}/var/cache/apt/archives"
     mount --bind "/aptcache/${ARCH}" "${ROOTFS}/var/cache/apt/archives"
@@ -28,11 +27,7 @@ echo 'Dpkg::Options { "--force-unsafe-io"; };' > "${ROOTFS}/etc/apt/apt.conf.d/9
 
 # ---------- APT sources ----------
 
-# Written from $RELEASE rather than hardcoded: the two architectures are on
-# different Debian releases (see unitotem/common.sh for why), and a hardcoded
-# suite here would have silently bootstrapped one base and then pointed apt at
-# the other - a mismatch that only shows up much later, as unresolvable
-# dependencies deep in a stage.
+# Written from $RELEASE so the suite always matches the bootstrapped base.
 cat > "${ROOTFS}/etc/apt/sources.list" << EOF
 deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
@@ -40,31 +35,14 @@ deb http://security.debian.org/debian-security ${RELEASE}-security main contrib 
 EOF
 
 if [ "$ARCH" = "arm64" ]; then
-    # NOT the legacy raspberrypi.gpg.key URL: that file is a fixed artifact
-    # Raspberry Pi stopped updating, still self-signed with SHA1, which
-    # Debian's OpenPGP policy has refused since 2026-02-01 - trixie's apt
-    # rejected the repo outright ("Sub-process /usr/bin/sqv returned an error
-    # code (1) ... SHA1 is not considered secure"). The packaged
-    # raspberrypi-archive-keyring is what pi-gen itself trusts (see
-    # stage0/00-configure-apt/01-packages in the vendored copy in this repo)
-    # and IS kept current: the copy published for trixie
-    # (raspberrypi-archive-keyring_2025.1+rpt1_all.deb, confirmed by
-    # downloading and inspecting it) carries the same signing key re-signed
-    # with SHA512. Fetched per-$RELEASE from the suite's own Packages index
-    # rather than a hardcoded filename, so this does not go stale again the
-    # same way when Raspberry Pi ships the next re-sign.
-    # No early `exit` in the awk program, on purpose: under set -e/pipefail
-    # (both active in this script) awk exiting while curl/gzip are still
-    # writing to the pipe delivers them a SIGPIPE, and pipefail turns that
-    # into a failed pipeline even though $RPI_KEYRING_DEB had already been
-    # captured correctly - the script aborted right after this line with no
-    # error text at all, reproduced in isolation and confirmed as the actual
-    # cause of a native-build failure that otherwise looked silent. The `f`
-    # flag is reset on every "Package: " line instead, so a later stanza
-    # cannot be mistaken for a match without needing an early exit to prevent it.
+    # The packaged raspberrypi-archive-keyring, not the legacy raspberrypi.gpg.key URL:
+    # that key is self-signed with SHA1, which trixie's apt refuses. The trixie package
+    # carries the same key re-signed with SHA512. The filename comes from the suite's
+    # Packages index. The awk program has no early `exit`: it would SIGPIPE curl/gzip
+    # and pipefail would abort the script silently.
     RPI_KEYRING_DEB=$(curl -fsSL "https://archive.raspberrypi.org/debian/dists/${RELEASE}/main/binary-${ARCH}/Packages.gz" \
         | gzip -dc | awk '/^Package: /{f=($0=="Package: raspberrypi-archive-keyring")} f&&/^Filename:/{print $2}')
-    [ -n "$RPI_KEYRING_DEB" ] || { echo "ERRORE: raspberrypi-archive-keyring non trovato per ${RELEASE}" >&2; exit 1; }
+    [ -n "$RPI_KEYRING_DEB" ] || { echo "ERROR: raspberrypi-archive-keyring not found for ${RELEASE}" >&2; exit 1; }
     curl -fsSL "https://archive.raspberrypi.org/debian/${RPI_KEYRING_DEB}" -o /tmp/rpi-keyring.deb
     dpkg-deb -x /tmp/rpi-keyring.deb /tmp/rpi-keyring
     install -Dm644 /tmp/rpi-keyring/usr/share/keyrings/raspberrypi-archive-keyring.gpg \
@@ -73,11 +51,7 @@ if [ "$ARCH" = "arm64" ]; then
     echo "deb http://archive.raspberrypi.org/debian/ ${RELEASE} main" \
         > "${ROOTFS}/etc/apt/sources.list.d/raspi.list"
 fi
-# No backports entry any more. amd64 used to assemble its GPU support out of
-# bookworm-backports because bookworm's own kernel and Mesa were too old for
-# recent hardware; on trixie every one of those packages comes from stable, at
-# the same version or newer, so the scaffolding is gone rather than carried
-# along out of habit.
+# No backports entry: every package comes from the stable suite.
 
 # UniTotem Manager repository
 curl -fsSL https://a13ssandr0.github.io/unitotem-manager/KEY.gpg \
@@ -94,7 +68,7 @@ PKGLOCK_FILE="/unitotem/locks/${ARCH}.lock"
 PKGLOCKED=0
 if [ "${PKGLOCK:-on}" != off ] && [ -f "$PKGLOCK_FILE" ]; then
     PKGLOCKED=1
-    SNAP=$(python3 /unitotem/pkglock.py snapshot "$PKGLOCK_FILE") || { echo "ERRORE: il lock non registra uno snapshot Debian" >&2; exit 1; }
+    SNAP=$(python3 /unitotem/pkglock.py snapshot "$PKGLOCK_FILE") || { echo "ERROR: the lock records no Debian snapshot" >&2; exit 1; }
     echo ">>> package lock: ${PKGLOCK_FILE}, Debian snapshot ${SNAP}"
     cat > "${ROOTFS}/etc/apt/sources.list" << EOF
 deb http://snapshot.debian.org/archive/debian/${SNAP}/ ${RELEASE} main contrib non-free non-free-firmware
@@ -116,14 +90,8 @@ fi
 # ---------- Kernel + firmware + bootloader ----------
 
 if [ "$ARCH" = "amd64" ]; then
-    # Kernel 6.12 and 2025 firmware, straight from trixie - the reason this
-    # architecture is on trixie at all (see unitotem/common.sh). On bookworm the
-    # same versions had to be assembled out of backports because Intel ARC
-    # cannot be driven by a 6.1 kernel.
-    #
-    # linux-headers-amd64 is here so the NVIDIA DKMS build later in this file
-    # has matching headers; it is deliberately kept in the shipped image, see
-    # the note beside that build.
+    # linux-headers-amd64 provides the headers for the NVIDIA DKMS build below and
+    # stays in the shipped image (see the note beside that build).
     apt_install --no-install-recommends \
         linux-image-amd64 \
         linux-headers-amd64 \
@@ -131,7 +99,7 @@ if [ "$ARCH" = "amd64" ]; then
         firmware-linux-nonfree \
         firmware-misc-nonfree \
         firmware-intel-graphics
-    # firmware-intel-graphics: i915 display (DMC), GuC and HuC firmware. Without it (found on a real Alder Lake PC, 2026-10-18) i915 logs
+    # firmware-intel-graphics: i915 display (DMC), GuC and HuC firmware. Without it i915 logs
     # 'failed to load i915/adlp_dmc.bin' and the iHD VA-API driver cannot initialise (vaInitialize failed): no hardware video decode.
     apt_install --no-install-recommends \
         grub-efi-amd64 \
@@ -145,31 +113,12 @@ if [ "$ARCH" = "amd64" ]; then
     apt_install --no-install-recommends shim-signed grub-efi-amd64-signed mokutil
 
 elif [ "$ARCH" = "arm64" ]; then
-    # linux-image-rpi-v8, not the generic Debian linux-image-arm64: the
-    # generic kernel's version string never matches raspi-firmware's own
-    # z50-raspi-firmware postinst hook (flavour "${kver#*-rpi-}" only
-    # recognises v8|v8-rt|2712|v6|v7|v7l), so that hook silently skipped
-    # copying kernel8.img/initramfs8/dtbs, and it ships no overlays/ at all
-    # (no KMS). The real rpi kernel fixes both: the hook now matches
-    # natively (verified against the actual package - flavour resolves to
-    # "v8", producing exactly kernel8.img/initramfs8, the filenames this
-    # project already expects) and ships overlays/ including
-    # vc4-kms-v3d(-pi5).dtbo, which unitotem/files/config.txt now enables. See
-    # PLAN.md's arm64 follow-up section for the full history.
-    # raspberrypi-bootloader is gone as of trixie - it does not exist in the
-    # archive at all any more (apt: "Unable to locate package"), not renamed,
-    # not a transitional dummy. Checked what actually replaced it rather than
-    # guessing: raspi-firmware's own package description now reads "contains
-    # all the proprietary files necessary to boot a Raspberry Pi board", and
-    # its .deb ships bootcode.bin/fixup*.dat/start*.elf under
-    # /usr/lib/raspi-firmware/ - the exact payload raspberrypi-bootloader used
-    # to provide directly under /boot/. Its postinst copies them into
-    # /boot/firmware/ on every install (`cp -r /usr/lib/raspi-firmware/*
-    # /boot/firmware/`), and that copy is NOT skipped inside this chroot: the
-    # postinst's mountpoint guard has `if ischroot; then true # skip mount
-    # point check`, and chroot(1) is exactly how apt-get is invoked here. So
-    # raspi-firmware alone is a complete replacement, confirmed by reading its
-    # actual postinst rather than assuming the merge was safe.
+    # linux-image-rpi-v8, not the generic linux-image-arm64: its version string
+    # matches raspi-firmware's z50-raspi-firmware postinst hook (flavour v8), which
+    # copies kernel8.img/initramfs8/dtbs, and it ships overlays/ (KMS, vc4-kms-v3d).
+    # raspi-firmware alone provides bootcode.bin/fixup*.dat/start*.elf: its postinst
+    # copies them into /boot/firmware/ even inside this chroot (ischroot only skips
+    # the mountpoint check).
     apt_install --no-install-recommends \
         linux-image-rpi-v8 \
         firmware-brcm80211 \
@@ -179,14 +128,9 @@ elif [ "$ARCH" = "arm64" ]; then
 fi
 
 # ---------- OTA payload (deploy/ota-engine.sh, unitotem/files/ota-hook) ----------
-# Installed in stage1 (not stage2) deliberately: unitotem/stage1-recovery-initrd.sh
-# builds the resident fallback kernel+initrd straight from this rootfs right
-# after this stage finishes, and stage2 builds the real system's own
-# initramfs from the same base later - one package list covers both, so the
-# fallback and the real system's initramfs are never out of sync with each
-# other. gdisk/parted are not on the automated OTA restore path (sfdisk
-# covers that) but are kept anyway for manual disaster recovery - see the
-# OTA redesign plan, decisions table.
+# Installed in stage1 so one package list covers both the resident fallback
+# (unitotem/stage1-recovery-initrd.sh builds it from this rootfs) and the real
+# system's initramfs (stage2). gdisk/parted are kept for manual disaster recovery.
 apt_install --no-install-recommends \
     partclone gdisk parted fdisk pv netcat-traditional dropbear-bin wpasupplicant whiptail dosfstools xz-utils
 
@@ -195,7 +139,7 @@ install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-eng
 ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
 # framebuffer frame of the deploy/recovery screen's progress dialog (pre-rendered by tools/gen-frame.py)
 for _f in /unitotem/files/unitotem-frame-line.* /unitotem/files/unitotem-frame-corners-*; do
-    [ -s "$_f" ] || { echo "ERRORE: pezzo del riquadro mancante: $_f" >&2; exit 1; }
+    [ -s "$_f" ] || { echo "ERROR: frame piece missing: $_f" >&2; exit 1; }
     install -m 644 "$_f" "${ROOTFS}/usr/lib/unitotem/"
 done
 # framebuffer logo of the deploy/recovery screen (pre-rendered by tools/gen-logo.py)
@@ -243,17 +187,13 @@ apt_install \
 # ---------- GPU drivers (arch-specific) ----------
 
 if [ "$ARCH" = "amd64" ]; then
-    # One image, three GPU vendors. That works because libglvnd dispatches GL
-    # to whichever vendor's driver is actually present at runtime, so Mesa
-    # (Intel/AMD) and the NVIDIA blob coexist without either being chosen at
-    # build time. The compositor (labwc) talks to the kernel's KMS drivers
-    # directly through libdrm/GBM: i915/xe for Intel, amdgpu for AMD, nvidia-drm
-    # for NVIDIA - there is no X driver to choose any more.
+    # One image, three GPU vendors: libglvnd dispatches GL to whichever driver is
+    # present at runtime, so Mesa (Intel/AMD) and the NVIDIA blob coexist. The
+    # compositor (labwc) uses the kernel KMS drivers (i915/xe, amdgpu, nvidia-drm)
+    # through libdrm/GBM.
 
-    # Mesa 25.0 from trixie: this is what actually makes Intel ARC work (iris +
-    # ANV for DG2) and it materially improves RDNA3. mesa-vulkan-drivers and
-    # mesa-va-drivers are not in the shared block above, so they are named
-    # here rather than being a redundant reinstall.
+    # Mesa from trixie (iris + ANV for Intel ARC, RDNA3). mesa-vulkan-drivers and
+    # mesa-va-drivers are not in the shared block above.
     apt_install \
         libgl1-mesa-dri mesa-vulkan-drivers mesa-va-drivers mesa-utils
 
@@ -266,69 +206,36 @@ if [ "$ARCH" = "amd64" ]; then
         i965-va-driver-shaders \
         libva2 libva-drm2 vainfo
 
-    # AMD. The kernel driver is in-tree; what is needed from userspace is the
-    # firmware (from backports, for RDNA3 and newer) and libdrm.
+    # AMD: the kernel driver is in-tree; userspace needs the firmware and libdrm.
     apt_install \
         firmware-amd-graphics libdrm-amdgpu1
 
-    # NVIDIA, proprietary. Two consequences worth being explicit about:
-    #
-    #  - it blacklists nouveau unconditionally (Debian ships that rule with
-    #    the package), and the 535 branch covers Maxwell onwards. On a
-    #    pre-Maxwell card nvidia will not bind and nouveau is blacklisted, so
-    #    that machine loses acceleration. That is the accepted cost of having
-    #    working NVDEC and full performance on everything newer.
-    #  - the module is built by DKMS here, against this image's own kernel.
-    #    DKMS's usual weakness - drifting out of sync when the kernel is
-    #    upgraded underneath it - cannot happen on this appliance: nothing is
-    #    upgraded in place, an OTA replaces the whole ROOT partition with an
-    #    image whose kernel and module were built together.
-    #
-    # nvidia-vaapi-driver bridges VAAPI onto NVDEC, so the same video path
-    # used for Intel and AMD works here too instead of falling back to CPU.
+    # NVIDIA, proprietary:
+    #  - it blacklists nouveau, and the 535 branch covers Maxwell onwards; a
+    #    pre-Maxwell card loses acceleration.
+    #  - the module is built by DKMS against this image's kernel. Nothing is upgraded
+    #    in place (an OTA replaces the whole ROOT), so kernel and module stay matched.
+    # nvidia-vaapi-driver bridges VAAPI onto NVDEC, as on Intel and AMD.
     apt_install \
         nvidia-driver \
         nvidia-vaapi-driver
 
-    # Fail the build rather than ship an image whose NVIDIA module silently
-    # did not build: DKMS failures are reported by apt as warnings, and the
-    # result would be an image that looks fine and has no NVIDIA support.
+    # Fail the build if the NVIDIA module did not build: apt only warns about DKMS failures.
     KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
     chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
-        || { echo "ERRORE: il modulo NVIDIA non e' stato costruito per ${KVER}" >&2; exit 1; }
-    echo "Modulo NVIDIA costruito per ${KVER}"
+        || { echo "ERROR: the NVIDIA module was not built for ${KVER}" >&2; exit 1; }
+    echo "NVIDIA module built for ${KVER}"
 
-    # linux-headers and the DKMS toolchain are deliberately NOT purged here,
-    # even though the module is already built and they are worth 94 MiB
-    # (measured, and the module does survive their removal). They are what
-    # lets DKMS rebuild if someone upgrades the kernel in place through
-    # `unitotem-maintenance enter`, which this image explicitly supports. Without them
-    # that upgrade would produce a running system with no NVIDIA module and no
-    # error anyone would notice until the screen stayed black.
+    # linux-headers and the DKMS toolchain are not purged here: they let DKMS rebuild
+    # the module after an in-place kernel upgrade through `unitotem-maintenance enter`.
 
 elif [ "$ARCH" = "arm64" ]; then
-    # No VAAPI driver or tooling here, deliberately - vainfo and
-    # gstreamer1.0-vaapi used to be installed on this branch, with a comment
-    # admitting they were inert and were kept only because the amd64 branch
-    # happened to share consumers, which is not a reason to ship them.
-    #
-    # libva2 itself does still land on the image: gstreamer1.0-plugins-bad
-    # depends on it outright, and that package carries elements worth having.
-    # So do not read its presence as a leftover - it is a shared library with
-    # no driver behind it, which is exactly the situation the removal above
-    # was meant to stop advertising. VideoCore has no VAAPI driver at all:
-    # hardware
-    # video decode on a Pi goes through V4L2 mem2mem devices instead
-    # (/dev/video10 "bcm2835-codec-decode" for H.264 on every model, plus
-    # /dev/video19 "rpi-hevc-dec" for HEVC on Pi 4 and later). Shipping the
-    # VAAPI stack here only invited the reading that VAAPI was available.
-    #
-    # What is left is diagnostics, not drivers, and each earns its place:
-    # v4l-utils gives v4l2-ctl to interrogate those decoders directly,
-    # gstreamer1.0-tools gives gst-inspect to confirm the media stack can see
-    # them, and raspi-utils gives vcgencmd - the only way to tell whether the
-    # board is thermally or voltage throttled. On a kiosk "the video stutters"
-    # and "the PSU is undersized" look identical from every other angle.
+    # No VAAPI driver or tooling on arm64: VideoCore has none. Hardware video
+    # decode goes through V4L2 mem2mem (/dev/video10 bcm2835-codec-decode for H.264,
+    # /dev/video19 rpi-hevc-dec for HEVC on Pi 4 and later). libva2 is still pulled
+    # in by gstreamer1.0-plugins-bad, as a library with no driver behind it.
+    # Diagnostics only: v4l2-ctl (v4l-utils), gst-inspect (gstreamer1.0-tools) and
+    # vcgencmd (raspi-utils, to detect thermal or voltage throttling).
     apt_install \
         v4l-utils \
         gstreamer1.0-tools \
@@ -336,10 +243,9 @@ elif [ "$ARCH" = "arm64" ]; then
 fi
 
 # ---------- Wayland session (labwc) + PipeWire ----------
-# The kiosk runs on Wayland only (decision 2026-10-20, see WAYLAND-IMAGE.md in the manager repo): the compositor is labwc, started by
+# The kiosk runs on Wayland only: the compositor is labwc, started by
 # unitotem-compositor.service (shipped, disabled, by the unitotem-viewer deb; enabled in stage 2). There is no X server on the image;
 # xwayland is installed only because labwc starts it lazily and logs an error without it (no X client is run).
-# Measured on a Pi 4 and an Intel PC: 60 fps at 1080p, no tearing, a window per output, hot-plug, touch mapping, VNC, screen power.
 
 # Screen control in the manager (DDC/CI, CEC): ddcutil >= 2.0 (trixie has 2.1), cec-ctl comes from v4l-utils (installed
 # above on arm64 only, so named here for both), i2c-tools; the i2c-dev module is loaded at boot (stage2).
@@ -353,10 +259,7 @@ apt_install \
     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
     gstreamer1.0-libav libspa-0.2-bluetooth
 
-# gstreamer1.0-vaapi is amd64-only: it is a VAAPI plugin, and on a Pi there is
-# no VAAPI driver for it to talk to. Leaving it in the shared list would also
-# have dragged libva back onto arm64 through dependencies, undoing the removal
-# above without anyone noticing.
+# gstreamer1.0-vaapi is amd64-only: on a Pi it has no VAAPI driver and would pull libva back in.
 if [ "$ARCH" = "amd64" ]; then
     apt_install \
         gstreamer1.0-vaapi
@@ -365,7 +268,7 @@ fi
 # ---------- UniTotem packages ----------
 
 # The manager (3.0.0~dev5 onwards) runs on the system Python with Debian's own packages: no virtualenv, so no pip/venv/-dev libraries
-# (python3-pip used to drag build-essential into the arm64 image only to have it purged again).
+# (python3-pip would pull build-essential into the arm64 image).
 # tigervnc-scraping-server: unitotem-node only RECOMMENDS it (VNC of the screen on demand, through a root-only UNIX socket, no TCP port) and the
 # local debs are installed with --no-install-recommends, so it is asked for here (0.6 MB plus libraries the image mostly has already).
 apt_install \
@@ -378,55 +281,52 @@ apt_install \
 #   identical on both architectures), python3-cefpython3 (the only binary one: amd64 or arm64), and the two libraries Debian does not ship
 #   (python3-fastapi-login, python3-sdbus-networkmanager). apt resolves everything else from Debian trixie (and the Raspberry Pi repository).
 LOCAL_DEB_DIR=/work/extra-debs/${ARCH}
-# There is no image without the 3.x manager: the repository's 2.x package is NOT a fallback. An image that boots into nothing
-# (or into a manager that cannot run on a read-only root) is not a degraded image, it is a wrong one, and building it only
-# hides that the package was not supplied. Fail here, early, instead of finding out on the device.
+# There is no image without the 3.x manager: the repository's 2.x package is not a
+# substitute. Fail here, early, instead of finding out on the device.
 if ! ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
-    echo "ERRORE: nessun pacchetto unitotem 3.x fornito (work/extra-debs/${ARCH}/)." >&2
-    echo "        Un'immagine senza il manager 3.x non va costruita." >&2
+    echo "ERROR: no unitotem 3.x package supplied (work/extra-debs/${ARCH}/)." >&2
+    echo "       An image without the 3.x manager must not be built." >&2
     exit 1
 fi
 # ...and the SET must be complete: a missing binary package would otherwise surface as an apt dependency error far from the cause.
 for pkg in unitotem_ unitotem-manager_ unitotem-node_ unitotem-viewer_ plymouth-theme-unitotem_ "python3-cefpython3_" python3-fastapi-login_ python3-sdbus-networkmanager_; do
     ls "$LOCAL_DEB_DIR"/${pkg}*.deb >/dev/null 2>&1 \
-        || { echo "ERRORE: manca ${pkg}*.deb in work/extra-debs/${ARCH}/ (serve il set completo del manager: vedi il commento sopra)" >&2; exit 1; }
+        || { echo "ERROR: ${pkg}*.deb missing in work/extra-debs/${ARCH}/ (the complete manager set is required, see the comment above)" >&2; exit 1; }
 done
 ls "$LOCAL_DEB_DIR"/python3-cefpython3_*_${ARCH}.deb >/dev/null 2>&1 \
-    || { echo "ERRORE: python3-cefpython3 per ${ARCH} non e' in work/extra-debs/${ARCH}/ (un .deb di un'altra architettura non si installa)" >&2; exit 1; }
+    || { echo "ERROR: python3-cefpython3 for ${ARCH} is not in work/extra-debs/${ARCH}/ (a .deb of another architecture cannot be installed)" >&2; exit 1; }
 
-# Local override: any .deb in work/extra-debs/<arch>/ is installed over what the apt repository provided. This is how
-# an image gets a manager build that is not published yet (e.g. one with the /health endpoint the A/B update
-# gate waits for). Empty/absent directory = nothing happens.
+# Every .deb in work/extra-debs/<arch>/ is installed over what the apt repository provided,
+# so an image can carry a manager build that is not published.
 if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
     mkdir -p "${ROOTFS}/tmp/extra-debs"
     printf 'local .deb installed: %s\n' "$LOCAL_DEB_DIR"/*.deb
     cp "$LOCAL_DEB_DIR"/*.deb "${ROOTFS}/tmp/extra-debs/"
     chroot "${ROOTFS}" sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --allow-downgrades /tmp/extra-debs/*.deb"
-    # The 2.x manager package pulled haproxy in as a dependency (it forwarded 80/443 to the app); the 3.x one binds
-    # those ports itself, and a still-enabled haproxy answers them with a 503 instead. Only when a local 3.x .deb
-    # replaced the repository package.
+    # haproxy (a dependency of the repository's 2.x manager) would answer ports 80/443
+    # with a 503; the 3.x manager binds them itself.
     if chroot "${ROOTFS}" dpkg -s haproxy >/dev/null 2>&1; then
         chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y haproxy
     fi
     rm -rf "${ROOTFS}/tmp/extra-debs"
-    # CEF starts its helper process by exec'ing cefpython3/subprocess. 3.0.0~dev5 of python3-cefpython3 shipped it as 0644 (the wheel is a zip
-    # and loses the exec bit): CEF then dies with "failed to execvp ... Cannot communicate with zygote" (SIGTRAP) and the manager restart-loops.
-    # dpkg-statoverride is the Debian way to fix a packaged file's mode without editing the package; a fixed package makes this a no-op.
+    # CEF execs cefpython3/subprocess; python3-cefpython3 3.0.0~dev5 shipped it as 0644,
+    # so CEF died with "Cannot communicate with zygote". dpkg-statoverride fixes the mode;
+    # a fixed package makes this a no-op.
     CEFSUB=/usr/lib/python3/dist-packages/cefpython3/subprocess
     if [ ! -x "${ROOTFS}${CEFSUB}" ]; then
         echo ">>> WARNING: ${CEFSUB} is not executable in the package: applying a dpkg-statoverride 0755 (fix python3-cefpython3)"
         chroot "${ROOTFS}" dpkg-statoverride --update --add root root 0755 "${CEFSUB}"
     fi
-    [ -x "${ROOTFS}${CEFSUB}" ] || { echo "ERRORE: ${CEFSUB} non e' eseguibile" >&2; exit 1; }
+    [ -x "${ROOTFS}${CEFSUB}" ] || { echo "ERROR: ${CEFSUB} is not executable" >&2; exit 1; }
     for pkg in unitotem unitotem-manager unitotem-node unitotem-viewer python3-cefpython3 plymouth-theme-unitotem; do
         v=$(chroot "${ROOTFS}" dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
-        case "$v" in 3.*) ;; *) echo "ERRORE: $pkg non e' installato alla versione 3.x (trovato: '${v}')" >&2; exit 1 ;; esac
+        case "$v" in 3.*) ;; *) echo "ERROR: $pkg is not installed at version 3.x (found: '${v}')" >&2; exit 1 ;; esac
     done
 fi
 
 # ---------- Package lock: verify or freeze ----------
 if [ "$PKGLOCKED" = 1 ]; then
-    python3 /unitotem/pkglock.py verify "$PKGLOCK_FILE" "${ROOTFS}" || { echo "ERRORE: l'immagine non coincide col lock dei pacchetti (vedi sopra): aggiornare il lock con tools/pkglock.py upgrade ${ARCH} se i pacchetti sono cambiati apposta" >&2; exit 1; }
+    python3 /unitotem/pkglock.py verify "$PKGLOCK_FILE" "${ROOTFS}" || { echo "ERROR: the image does not match the package lock (see above): run tools/pkglock.py upgrade ${ARCH} if the packages changed on purpose" >&2; exit 1; }
     # the shipped image does not carry the snapshot sources or the pins (a device never runs apt): back to the ordinary ones
     rm -f "${ROOTFS}/etc/apt/preferences.d/99-unitotem-lock" "${ROOTFS}/etc/apt/apt.conf.d/99-pkglock"
     cat > "${ROOTFS}/etc/apt/sources.list" << EOF
@@ -437,7 +337,7 @@ EOF
 elif [ "${PKGLOCK:-on}" != off ]; then
     mkdir -p "${WORK_DIR}"
     python3 /unitotem/pkglock.py freeze "${ROOTFS}" --arch "${ARCH}" --release "${RELEASE}" --snapshot "${PKGLOCK_FROZEN_AT}" --out "${WORK_DIR}/${ARCH}.lock.new"
-    echo ">>> NUOVO LOCK dei pacchetti in work/${ARCH}/${ARCH}.lock.new: copiarlo in unitotem/locks/${ARCH}.lock e committarlo"
+    echo ">>> NEW package lock in work/${ARCH}/${ARCH}.lock.new: copy it to unitotem/locks/${ARCH}.lock and commit it"
 fi
 
 # ---------- Clean up ----------
@@ -446,18 +346,13 @@ rm -f "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
 mountpoint -q "${ROOTFS}/var/cache/apt/archives" && umount "${ROOTFS}/var/cache/apt/archives"
 
 # ---------- Remove what the shipped system does not need ----------
-# Approved by the user (2026-10-11): Chromium and the compilers. Updates are whole images now, nothing is built or
-# upgraded in place at runtime, so the DKMS rebuild rationale for keeping the toolchain no longer applies.
-#
-# Chromium (arm64 only - amd64 never had it): pulled in as a RECOMMENDED dependency of the 2.x manager package, whose
-# viewer is Qt + CEF; ~500 MB. The compilers come in through python3-pip -> build-essential (arm64) and dkms ->
-# build-essential (amd64).
-#
-# What is removed is printed first (the dry run is in the build log) and the module that matters is asserted after.
+# Chromium and the compilers are removed: updates are whole images, nothing is built or
+# upgraded in place at runtime. Chromium (arm64 only) came in as a recommended dependency
+# of the 2.x manager; the compilers come in through build-essential (python3-pip on arm64,
+# dkms on amd64). The removal list is printed first and the NVIDIA module is asserted after.
 purge_list() { # names from $@ that are actually installed
     local p; for p in "$@"; do chroot "${ROOTFS}" dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' && echo "$p"; done
-    # Always succeed: the loop's own status is that of the LAST name, so with set -e an image where the last package is absent (arm64 since
-    # 3.0.0~dev5 has neither Chromium nor compilers) silently killed the build right after the package install, with no message.
+    # Always succeed: the loop's status is that of the last name, which would stop the build under set -e.
     return 0
 }
 if [ "$ARCH" = "arm64" ]; then
@@ -469,8 +364,8 @@ if [ "$ARCH" = "arm64" ]; then
         # shellcheck disable=SC2086
         chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE
     fi
-    # The compilers go with dpkg --force-depends, NOT with apt: a package that depends on cpp would be taken along by `apt-get purge cpp`
-    # (that is how the earlier X images lost xset). The price is an unmet-dependency note in `dpkg --audit`, harmless on an image that never runs apt.
+    # The compilers go with dpkg --force-depends, not apt: `apt-get purge cpp` would also take
+    # packages that depend on cpp. Harmless unmet-dependency note in `dpkg --audit`.
     REMOVE_CC=$(purge_list build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 \
                            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cpp-aarch64-linux-gnu \
                            gcc-14-aarch64-linux-gnu g++-14-aarch64-linux-gnu cpp-14-aarch64-linux-gnu)
@@ -479,12 +374,10 @@ if [ "$ARCH" = "arm64" ]; then
     [ -z "$REMOVE_CC" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $REMOVE_CC
     # the manager must still be there: apt may have taken it along if it had a hard dependency on any of the above
     chroot "${ROOTFS}" dpkg-query -W -f='${Status}' unitotem-manager | grep -q 'ok installed' \
-        || { echo "ERRORE: la rimozione di Chromium/compilatori ha portato via unitotem-manager" >&2; exit 1; }
+        || { echo "ERROR: removing Chromium/compilers also removed unitotem-manager" >&2; exit 1; }
 else
-    # dkms (and nvidia-kernel-dkms, which needs it) depend on the compilers, so apt would remove them too and their
-    # prerm would delete the built NVIDIA module. dpkg --force-depends removes only the compilers and leaves the
-    # module and the dkms packages alone; the price is an unmet-dependency note on dkms in `dpkg --audit`, which is
-    # harmless on an image that never builds anything (and is why this is not done with apt).
+    # dkms depends on the compilers, so apt would remove them and dkms's prerm would delete the
+    # built NVIDIA module. dpkg --force-depends removes only the compilers.
     REMOVE=$(purge_list build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 \
                         gcc-x86-64-linux-gnu g++-x86-64-linux-gnu cpp-x86-64-linux-gnu \
                         gcc-14-x86-64-linux-gnu g++-14-x86-64-linux-gnu cpp-14-x86-64-linux-gnu)
@@ -493,26 +386,25 @@ else
     [ -z "$REMOVE" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $REMOVE
     KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
     chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
-        || { echo "ERRORE: il modulo NVIDIA e' sparito rimuovendo i compilatori" >&2; exit 1; }
+        || { echo "ERROR: the NVIDIA module disappeared when removing the compilers" >&2; exit 1; }
 fi
-# The NVIDIA module (amd64) is signed at build time with a key DKMS generated inside this build: /var/lib/dkms/mok.key (private) and
-# mok.pub. The private half is the SAME in every device flashed from the image, and once a device has enrolled mok.pub (mokutil --import,
-# needed under Secure Boot) anyone holding the image could sign modules that device accepts. Nothing at runtime needs it: updates are whole
-# images, DKMS never rebuilds anything on a device. Keep only the public certificate, which is what an enrolment needs.
+# The NVIDIA module (amd64) is signed with a DKMS key generated in this build
+# (/var/lib/dkms/mok.key). That private key would be the same on every device, and a device
+# that enrolled mok.pub (Secure Boot) would accept modules signed by anyone holding the image.
+# Nothing at runtime needs it: keep only the public certificate.
 if [ "$ARCH" = "amd64" ] && [ -e "${ROOTFS}/var/lib/dkms/mok.key" ]; then
     rm -f "${ROOTFS}/var/lib/dkms/mok.key"
     echo ">>> removed the DKMS module-signing private key from the image (mok.pub kept)"
 fi
-# No X server on the image: the NVIDIA driver (amd64) and a few packages pull xserver-xorg-core in as a dependency, but nothing starts it.
-# dpkg --force-depends like the compilers (an unmet-dependency note in `dpkg --audit` on an image that never runs apt; the NVIDIA kernel module
-# and its libraries do not need the X server). xwayland (installed above, no Xorg needed) stays.
+# No X server on the image: the NVIDIA driver and a few packages pull xserver-xorg-core in,
+# but nothing starts it. Removed with dpkg --force-depends like the compilers; xwayland stays.
 XPURGE=$(purge_list xserver-xorg-core xserver-xorg-legacy xserver-xorg xserver-xorg-input-all xserver-xorg-video-all xinit x11-xserver-utils)
 echo ">>> removing the X server (dpkg --force-depends): $(echo $XPURGE)"
 # shellcheck disable=SC2086
 [ -z "$XPURGE" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $XPURGE
 # What the Wayland session needs must have survived the removals above, on every architecture.
 for t in labwc wlr-randr wlopm wayvnc; do
-    chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERRORE: $t e' sparito con la rimozione dei compilatori/Chromium" >&2; exit 1; }
+    chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERROR: $t disappeared with the removal of compilers/Chromium" >&2; exit 1; }
 done
 echo ">>> installed size of / after removal: $(du -sxm "${ROOTFS}" | cut -f1) MiB"
 

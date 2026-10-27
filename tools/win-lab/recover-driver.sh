@@ -1,6 +1,6 @@
 #!/bin/bash
 # Lab driver: runs the REAL run_ota_sequence()/populate_bootfs_step() of deploy/remote-deploy.sh against a target that is
-# already in the OTA environment (what the unimplemented `recover` subcommand would do), for an amd64/UEFI A-B parts set,
+# already in the OTA environment (the same steps as the `recover` subcommand), for an amd64/UEFI A-B parts set,
 # with --secure-boot shim. Usage: recover-driver.sh HOST DISK_BYID PARTS_DIR
 set -euo pipefail
 DIR=~/Sviluppo/unitotem-system

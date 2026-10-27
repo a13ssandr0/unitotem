@@ -1,8 +1,8 @@
 #!/bin/bash
 set -Eeuo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PARTS_DIR="${1:?uso: run-arm64.sh <path ai .parts>}"
-[ -d "$PARTS_DIR" ] || { echo "non trovato: $PARTS_DIR" >&2; exit 1; }
+PARTS_DIR="${1:?usage: run-arm64.sh <path to the .parts dir>}"
+[ -d "$PARTS_DIR" ] || { echo "not found: $PARTS_DIR" >&2; exit 1; }
 PARTS_DIR="$(cd "$PARTS_DIR" && pwd)"
 
 mkdir -p "${DIR}/work/loopback-test/scratch-arm64"

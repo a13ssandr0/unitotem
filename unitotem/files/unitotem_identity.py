@@ -2,7 +2,7 @@
 
 The web UI logs in through PAM, so its accounts are system accounts, and root's password is the one the web terminal's `login` checks.
 /etc/{passwd,shadow,group,gshadow} are NOT in ota-preserve.list on purpose (whitelisting whole files would pin the image's system
-accounts forever: the classic ostree /etc/passwd problem). Instead the new slot gets
+accounts forever). Instead the new slot gets
     image files (base)  +  the LOCAL part of the running system's files (current)
 computed here, as pure functions, and installed into the new slot's /etc overlay upper.
 
@@ -12,7 +12,7 @@ What is carried over (everything else comes from the image):
   - the memberships of those accounts and of root in the image's groups, and local groups with gid >= 1000 (name/gid clash: image wins).
 System accounts and groups (< 1000) always come from the image.
 
-Safety rules (the user's: never end up locked out of a device):
+Safety rules (a device must never end up locked out):
   - the old slot's files are never touched;
   - output is built in memory, validated, written next to its destination and renamed into place; the previous upper file is kept as
     *.pre-update;

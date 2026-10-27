@@ -70,5 +70,5 @@ ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDe
 ap.add_argument("--root", required=True, help="directory containing vX.Y.Z/ release dirs")
 ap.add_argument("--bind", default="192.168.122.1"); ap.add_argument("--port", type=int, default=8080)
 a = ap.parse_args(); H.root = a.root
-print(f"fake-github su http://{a.bind}:{a.port}/ (root={a.root})", file=sys.stderr)
+print(f"fake-github on http://{a.bind}:{a.port}/ (root={a.root})", file=sys.stderr)
 ThreadingHTTPServer((a.bind, a.port), H).serve_forever()

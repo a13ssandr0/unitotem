@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pkglock - make the image's package set repeatable (like a Python requirements.txt with exact versions) and tell when something newer exists.
+"""pkglock - make the image's package set repeatable (exact versions) and tell when something newer exists.
 
   pkglock.py freeze  ROOTFS|stageN.tar.gz --arch ARCH [--out FILE] [--snapshot ISO8601Z]
         write the lock from a built root filesystem: every installed package at its exact version, plus the moment of the apt index it was
@@ -24,7 +24,7 @@ no changelog (Raspberry Pi's) show urgency "n/a": only their pocket is known.
 """
 import argparse, collections, concurrent.futures, datetime, json, os, re, shutil, subprocess, sys, tarfile, tempfile, urllib.request
 
-os.environ["LC_ALL"] = "C"          # apt prints "Candidato:" in Italian: every parser below reads the English words
+os.environ["LC_ALL"] = "C"          # apt output is localised: every parser below reads the English words
 LOCAL_RE = re.compile(r"~dev\d+|unitotem|\+rpt\d*-local")
 SECURITY_RE = re.compile(r"-security")
 URGENCY_ORDER = ["low", "medium", "high", "critical", "emergency"]

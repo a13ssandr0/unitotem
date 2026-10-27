@@ -441,10 +441,8 @@ chroot "$TARGET" apt-get install -y \
 _ok "Base system installed"
 
 # ---- 7/10: Display stack + multimedia -------------------------------
-# No window manager: unitotem-manager's own Qt6+CEF viewer already sets its
-# window to exact fullscreen geometry with no decorations, and CEF only
-# supports X11 embedding - a bare Xorg session is both sufficient and simpler
-# (mirrors unitotem/stage1-packages.sh's "X11 + PipeWire" block).
+# No window manager: the viewer sets its own fullscreen geometry and CEF needs X11
+# embedding, so a bare Xorg session is enough.
 _step "[7/10] Installing Xorg, PipeWire, Chromium…"
 
 chroot "$TARGET" apt-get install -y \
@@ -537,14 +535,8 @@ EOF
 chmod 600 "$TARGET/etc/netplan/00-default.yaml"
 
 # Plymouth
-# No theme is installed/pinned here: the unitotem-manager package installs
-# and selects the real "unitotem" theme (via update-alternatives AND
-# plymouth-set-default-theme, since plymouthd.conf's Theme= key takes
-# priority over the default.plymouth alternative - see
-# src/main.c:load_settings()/show_default_splash() upstream) when it's
-# installed on top of this image. Pinning a placeholder theme here would
-# leave plymouthd.conf's Theme= key pointing at it, which the manager's
-# update-alternatives call alone cannot override.
+# No theme is pinned here: the unitotem-manager package installs and selects the "unitotem"
+# theme (plymouthd.conf's Theme= takes priority over update-alternatives).
 mkdir -p "$TARGET/etc/plymouth"
 install -m 644 "$UNITOTEM_FILES/plymouthd.conf" "$TARGET/etc/plymouth/plymouthd.conf"
 
@@ -562,10 +554,7 @@ SCRIPT
 chmod +x "$TARGET/usr/local/bin/chromium-unitotem"
 install -m 755 "$UNITOTEM_FILES/unitotem-maintenance"               "$TARGET/usr/local/bin/unitotem-maintenance"
 
-# X session: started as a proper systemd service (not autologin +
-# .bash_profile, which is tied to a getty/PAM login session's lifecycle and
-# proved fragile). Same unit used by the image build, see
-# unitotem/stage2-configure.sh.
+# X session: a systemd service (as in unitotem/stage2-configure.sh), not autologin + .bash_profile.
 install -m 644 "$UNITOTEM_FILES/start-xorg.service" \
     "$TARGET/etc/systemd/system/start-xorg.service"
 

@@ -21,6 +21,11 @@ def check(name, cond, extra=""):
     else: fail += 1; print("FAIL:", name, extra)
 
 
+def has(text, pattern):
+    """Case-insensitive regex search; the patterns accept the wording of the deploy script's messages."""
+    return re.search(pattern, text, re.I) is not None
+
+
 # ---- cut the code under test out of the script -------------------------------------------------------------------------
 m = re.search(r"^secure_boot_gate\(\) \{\n.*?^\}\n", SCRIPT, re.S | re.M)
 assert m, "secure_boot_gate not found in deploy/remote-deploy.sh"
@@ -65,15 +70,15 @@ check("probe: absent variable (legacy BIOS) is 'unknown', exit 0", probe(None) =
 rc, out, err = gate("0")
 check("SB=0: nothing to decide", rc == 0 and "SB_MODE=[]" in out and err == "", (rc, out, err))
 rc, out, err = gate("0", flag="shim")
-check("SB=0 with --secure-boot shim: flag ignored with a warning", rc == 0 and "SB_MODE=[]" in out and "ignorato" in err, (rc, out, err))
+check("SB=0 with --secure-boot shim: flag ignored with a warning", rc == 0 and "SB_MODE=[]" in out and has(err, r"ignor"), (rc, out, err))
 rc, out, err = gate("unknown", yes=1)
-check("unknown state: warns and proceeds as if off", rc == 0 and "SB_MODE=[]" in out and "non rilevabile" in err, (rc, out, err))
+check("unknown state: warns and proceeds as if off", rc == 0 and "SB_MODE=[]" in out and has(err, r"not detect|undetect|cannot be (detected|determined)|unknown"), (rc, out, err))
 rc, out, err = gate("1", flag="shim")
 check("SB=1 --secure-boot shim (A/B): SB_MODE=shim", rc == 0 and "SB_MODE=[shim]" in out, (rc, out, err))
 rc, out, err = gate("1", flag="noshim")
-check("SB=1 --secure-boot noshim: SB_MODE=noshim + physical-intervention warning", rc == 0 and "SB_MODE=[noshim]" in out and "intervento fisico" in err, (rc, out, err))
+check("SB=1 --secure-boot noshim: SB_MODE=noshim + physical-intervention warning", rc == 0 and "SB_MODE=[noshim]" in out and has(err, r"intervento fisico|physical"), (rc, out, err))
 rc, out, err = gate("1", flag="abort")
-check("SB=1 --secure-boot abort: dies", rc != 0 and "annullato" in err and "SB_MODE" not in out, (rc, out, err))
+check("SB=1 --secure-boot abort: dies", rc != 0 and has(err, r"annullato|abort|cancel") and "SB_MODE" not in out, (rc, out, err))
 rc, out, err = gate("1", yes=1)
 check("SB=1 non-interactive (--yes) without the flag: dies, asking for an explicit choice", rc != 0 and "--secure-boot" in err and "SB_MODE" not in out, (rc, out, err))
 rc, out, err = gate("1", layout=1, flag="shim")
@@ -81,7 +86,7 @@ check("SB=1 shim with a non-A/B parts set: dies", rc != 0 and "A/B" in err and "
 rc, out, err = gate("1", layout=1, flag="noshim")
 check("SB=1 noshim works with any layout", rc == 0 and "SB_MODE=[noshim]" in out, (rc, out, err))
 rc, out, err = gate("1", have=1)
-check("SB=1 on a target that already is UniTotem (A/B): keeps shim, no question", rc == 0 and "SB_MODE=[shim]" in out and "Scelta" not in out, (rc, out, err))
+check("SB=1 on a target that already is UniTotem (A/B): keeps shim, no question", rc == 0 and "SB_MODE=[shim]" in out and not has(out, r"Scelta|Choice"), (rc, out, err))
 rc, out, err = gate("1", have=1, yes=1)
 check("SB=1 already UniTotem, non-interactive: keeps shim without the flag", rc == 0 and "SB_MODE=[shim]" in out, (rc, out, err))
 rc, out, err = gate("1", have=1, layout=1, yes=1)
@@ -90,10 +95,10 @@ rc, out, err = gate("1", have=1, flag="noshim")
 check("SB=1 already UniTotem + explicit noshim: the explicit choice wins", rc == 0 and "SB_MODE=[noshim]" in out, (rc, out, err))
 for choice, exp in (("1", "shim"), ("2", "noshim")):
     rc, out, err = gate("1", stdin=choice + "\n")
-    check(f"SB=1 interactive, answer {choice}: SB_MODE={exp}", rc == 0 and f"SB_MODE=[{exp}]" in out and "INTERVENTO FISICO" in out, (rc, out, err))
+    check(f"SB=1 interactive, answer {choice}: SB_MODE={exp}", rc == 0 and f"SB_MODE=[{exp}]" in out and has(out, r"INTERVENTO FISICO|PHYSICAL"), (rc, out, err))
 for choice in ("3", "", "x"):
     rc, out, err = gate("1", stdin=choice + "\n")
-    check(f"SB=1 interactive, answer {choice!r}: aborts (anything but 1/2 is a no)", rc != 0 and "annullato" in err, (rc, out, err))
+    check(f"SB=1 interactive, answer {choice!r}: aborts (anything but 1/2 is a no)", rc != 0 and has(err, r"annullato|abort|cancel"), (rc, out, err))
 rc, out, err = gate("1", stdin="")
 check("SB=1 interactive, stdin closed (EOF): does not proceed", rc != 0 and "SB_MODE=[shim]" not in out and "SB_MODE=[noshim]" not in out, (rc, out, err))
 rc, out, err = gate("1", arch="arm64", fw="rpi", yes=1)
@@ -104,7 +109,7 @@ check("amd64/legacy BIOS: the gate is a no-op", rc == 0 and "SB_MODE=[]" in out,
 # ---- D3: wiring ----------------------------------------------------------------------------------------------------------
 check("populate_bootfs_step passes --secure-boot shim only when SB_MODE=shim", '[ "$SB_MODE" = shim ] && lay="$lay --secure-boot shim"' in SCRIPT)
 check("the gate runs before the changes gate", SCRIPT.index("\n    secure_boot_gate\n") < SCRIPT.index("\n    changes_gate\n"))
-i = SCRIPT.index('if [ "$SB_MODE" = noshim ]; then\n        echo ""'); j = SCRIPT.index("Attendo che ${post}")
+i = SCRIPT.index('if [ "$SB_MODE" = noshim ]; then\n        echo ""'); j = re.search(r"(Attendo che|Waiting for) \$\{post\}", SCRIPT).start()
 check("noshim: the big warning + return come BEFORE the 10-minute wait for the target", i < j and "return 0" in SCRIPT[i:j])
 
 print(f"== {ok + fail} checks, {fail} failed")

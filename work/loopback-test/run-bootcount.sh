@@ -1,16 +1,14 @@
 #!/bin/bash
-# Driver per inside-bootcount.sh (PLAN.md §11.5 livello 4).
-# Nessun parts set richiesto: questo harness costruisce il proprio disco
-# minimo, perche' cmd_init_premount guarda solo le label FIRMWARE e ROOT e non
-# legge nulla dal contenuto di un'immagine.
+# Driver for inside-bootcount.sh.
+# No parts set is needed: the harness builds its own minimal disk, because cmd_init_premount
+# only looks at the FIRMWARE and ROOT labels and reads nothing from an image's contents.
 set -Eeuo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 mkdir -p "${DIR}/work/loopback-test/scratch-bootcount"
 
-# --platform esplicito: la cache locale puo' contenere il debian:bookworm
-# arm64 tirato giu' da run-arm64.sh, e questo harness non ha motivo di girare
-# sotto emulazione (cmd_init_premount non ha rami arch-specifici).
+# Explicit --platform: the local cache may hold the arm64 debian:bookworm pulled by
+# run-arm64.sh, and cmd_init_premount has no arch-specific branches, so no emulation is needed.
 docker run --rm --privileged --platform linux/amd64 \
     -v "${DIR}:/repo:ro" \
     -v "${DIR}/work/loopback-test:/work/driver:ro" \

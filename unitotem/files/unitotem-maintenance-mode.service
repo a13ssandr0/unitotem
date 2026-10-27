@@ -1,5 +1,5 @@
 [Unit]
-Description=UniTotem — Modalità Aggiornamento
+Description=UniTotem - maintenance mode
 ConditionKernelCommandLine=unitotem.maintenance=1
 Before=getty@tty1.service
 After=network-online.target ssh.service
@@ -10,7 +10,7 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/mount -o remount,rw /
 ExecStart=/bin/mount -o remount,size=1G /var/cache
-ExecStart=/usr/bin/logger -t unitotem-maintenance "Sistema in modalità aggiornamento — connettersi via SSH"
+ExecStart=/usr/bin/logger -t unitotem-maintenance "System in maintenance mode - connect via SSH"
 
 [Install]
 WantedBy=multi-user.target

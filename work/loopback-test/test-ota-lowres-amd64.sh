@@ -1,7 +1,7 @@
 #!/bin/bash
 # Does the amd64 OTA environment really come up at a LOW resolution? Boots the built amd64 image in QEMU (UEFI/OVMF, virtio-vga,
 # whose native size is far above 640x480) into the OTA entry 'slot-a-recover', twice: with the grub.cfg of the image as built
-# (baseline) and with the OTA entries patched the way unitotem/files/grub-ab-entries now generates them, then asks QEMU for a
+# (baseline) and with the OTA entries as unitotem/files/grub-ab-entries generates them, then asks QEMU for a
 # screendump (PPM header = real framebuffer size) and compares. Needs no root: the ESP is edited with mtools.
 #   test-ota-lowres-amd64.sh IMAGE.img.xz
 set -euo pipefail

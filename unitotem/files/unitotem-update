@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """unitotem-update - check/fetch/apply whole-image updates (see AB-DESIGN.md).
 
-Implemented: status, check, fetch, apply, confirm, boot-ok, rollback, cancel - for the amd64/GRUB A/B
-layout (two ROOT slots, kernel inside each slot, GRUB on the ESP). The Raspberry Pi backend is not written:
-there the slot-switch commands exit 2 "backend-unsupported".
+Commands: status, check, fetch, apply, confirm, boot-ok, rollback, cancel, repair, policy, auto, reboot.
+Two ROOT slots (A/B); the boot backend is GRUB on the ESP (amd64) or the firmware's tryboot (Raspberry Pi).
+Without a recognised backend the slot-switch commands exit 2 "backend-unsupported".
 
 Exit codes: 0 ok / update available   10 nothing to do   11 (reserved: changes need acceptance)
             12 operation already running   13 no rollback available   2 failed   127 (shell) command absent.
@@ -132,10 +132,10 @@ def read_state(conf, name, default=None):
     try:
         return json.load(open(state_path(conf, name)))
     except FileNotFoundError:
-        if name in ("slots.json", "pending.json"): event(conf, f"read {name}: assente")
+        if name in ("slots.json", "pending.json"): event(conf, f"read {name}: missing")
         return default
     except (OSError, ValueError) as e:
-        event(conf, f"read {name}: ILLEGGIBILE ({type(e).__name__})")
+        event(conf, f"read {name}: UNREADABLE ({type(e).__name__})")
         return default
 
 
@@ -155,25 +155,25 @@ def write_state(conf, name, obj):
 def fetch_trusted(conf):
     """Return (manifest, base) after verifying keys.json against the root key and the manifest against it."""
     if conf["UPDATE_CHANNEL"] != "stable":
-        raise Fail("channel-unsupported", "only the stable channel is implemented (beta needs tag listing)")
+        raise Fail("channel-unsupported", "only the stable channel is supported")
     base = conf["UPDATE_BASE_URL"].rstrip("/") + "/releases/latest/download/"
     try:
         root_pub = open(os.path.join(conf["UPDATE_KEYS_DIR"], "root.pub")).read()
     except OSError as e:
-        raise Fail("no-root-key", f"chiave radice assente: {e}")
+        raise Fail("no-root-key", f"root key missing: {e}")
     keys_raw, keys_sig = get(base + "keys.json"), get(base + "keys.json.sig")
     if not verify(root_pub, keys_raw, keys_sig):
-        raise Fail("bad-keys-signature", "keys.json non firmato dalla chiave radice")
+        raise Fail("bad-keys-signature", "keys.json is not signed by the root key")
     keys = json.loads(keys_raw)
     seen = read_state(conf, "keys-seq.json", {}).get("seq", 0)
     if keys["seq"] < seen:
-        raise Fail("keys-rollback", f"keys.json seq {keys['seq']} < già visto {seen}")
+        raise Fail("keys-rollback", f"keys.json seq {keys['seq']} < already seen {seen}")
     man_raw, man_sig = get(base + "manifest.json"), get(base + "manifest.json.sig")
     if not any(verify(k["pub"], man_raw, man_sig) for k in keys["keys"]):
-        raise Fail("bad-manifest-signature", "manifest non firmato da nessuna chiave autorizzata")
+        raise Fail("bad-manifest-signature", "manifest is not signed by any authorised key")
     manifest = json.loads(man_raw)
     if manifest.get("min_updater", 1) > 1:
-        raise Fail("updater-too-old", f"serve unitotem-update >= {manifest['min_updater']}")
+        raise Fail("updater-too-old", f"unitotem-update >= {manifest['min_updater']} required")
     # Only after everything verified: remember the key-list generation, so an old signed list can't come back.
     if keys["seq"] > seen:
         try: write_state(conf, "keys-seq.json", {"seq": keys["seq"]})
@@ -182,7 +182,7 @@ def fetch_trusted(conf):
 
 
 # ---------------------------------------------------------------------------
-# A/B plumbing (amd64 / GRUB backend)
+# A/B plumbing (GRUB and Raspberry backends)
 # ---------------------------------------------------------------------------
 def cur_slot(conf):
     try:
@@ -221,14 +221,14 @@ def backend(conf):
 
 def need_backend(conf):
     if cur_slot(conf) is None:
-        raise Fail("not-ab", "questo sistema non e' avviato da uno slot A/B (layout 1)")
+        raise Fail("not-ab", "this system was not booted from an A/B slot")
     be = backend(conf)
     if be is None:
-        raise Fail("backend-unsupported", "nessun backend di avvio riconosciuto (ne' GRUB A/B ne' firmware Raspberry)")
+        raise Fail("backend-unsupported", "no known boot backend (neither GRUB A/B nor Raspberry firmware)")
     if be == "rpi" and not os.path.isdir(conf["UPDATE_DT_BOOTLOADER"]):
         # Without the EEPROM bootloader there is no tryboot: no firmware-level one-shot, so a power cut
         # during a trial could leave the board on the new slot with nothing to bring it back.
-        raise Fail("backend-unsupported", "questa scheda Raspberry non ha tryboot (EEPROM bootloader): aggiornamento A/B non supportato")
+        raise Fail("backend-unsupported", "this Raspberry board has no tryboot (EEPROM bootloader): A/B update not supported")
     return be
 
 
@@ -312,7 +312,7 @@ class bootfs_rw:
         if os.path.ismount(self.path):
             r = subprocess.run(["mount", "-o", "remount,rw", self.path], capture_output=True, text=True)
             if r.returncode:
-                raise Fail("bootfs-rw", f"impossibile rimontare {self.path} in scrittura: {r.stderr.strip()}")
+                raise Fail("bootfs-rw", f"cannot remount {self.path} read-write: {r.stderr.strip()}")
             self.on = True
         return self
 
@@ -371,7 +371,7 @@ class Lock:
         try:
             fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise Fail("busy", "un'altra operazione di aggiornamento e' in corso", rc=12)
+            raise Fail("busy", "another update operation is running", rc=12)
         self.f.seek(0); self.f.truncate(); self.f.write(str(os.getpid())); self.f.flush()
         return self
 
@@ -531,7 +531,7 @@ def rpi_install_bootfiles(conf, cur, new, manifest, base):
     is shared and NOT replaced here."""
     part = next((p for p in manifest["parts"] if p.get("role") == "bootfiles"), None)
     if not part:
-        raise Fail("no-bootfiles-part", "il manifest non contiene la parte con role=bootfiles")
+        raise Fail("no-bootfiles-part", "the manifest has no part with role=bootfiles")
     bf = conf["UPDATE_BOOTFS"]
     tmp = os.path.join(bf, f"slot{new}.new")
     shutil.rmtree(tmp, ignore_errors=True)
@@ -539,7 +539,7 @@ def rpi_install_bootfiles(conf, cur, new, manifest, base):
     h = hashlib.sha256(); done = 0
     xz = subprocess.Popen(["xz", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     # --no-same-owner/-permissions: the destination is a FAT, which has no owners; tar as root otherwise fails every
-    # file with "Cannot change ownership" and exits 2 (found on the first real in-place update on a Pi).
+    # file with "Cannot change ownership" and exits 2.
     tar = subprocess.Popen(["tar", "--no-same-owner", "--no-same-permissions", "-C", tmp, "-xf", "-"], stdin=xz.stdout)
     xz.stdout.close()
     try:
@@ -551,18 +551,18 @@ def rpi_install_bootfiles(conf, cur, new, manifest, base):
         xz.stdin.close()
     except (urllib.error.URLError, OSError) as e:
         xz.kill(); tar.kill(); shutil.rmtree(tmp, ignore_errors=True)
-        raise Fail("network", f"download dei file di avvio interrotto: {e}")
+        raise Fail("network", f"boot files download interrupted: {e}")
     xz.wait(); tar.wait()
     if xz.returncode or tar.returncode:
         shutil.rmtree(tmp, ignore_errors=True)
         raise Fail("bootfiles-failed", f"xz rc={xz.returncode} tar rc={tar.returncode}")
     if done != part["size"] or h.hexdigest() != part["sha256"]:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise Fail("bad-checksum", "sha256/dimensione dei file di avvio non corrisponde al manifest")
+        raise Fail("bad-checksum", "boot files sha256/size does not match the manifest")
     for need in ("kernel8.img", "initramfs8"):
         if not os.path.isfile(os.path.join(tmp, need)) or os.path.getsize(os.path.join(tmp, need)) == 0:
             shutil.rmtree(tmp, ignore_errors=True)
-            raise Fail("bad-bootfiles", f"{need} assente o vuoto nei file di avvio")
+            raise Fail("bad-bootfiles", f"{need} missing or empty in the boot files")
     # cmdline.txt: this slot's own root=, derived from the slot we are running so console/quiet options stay.
     import re
     src = os.path.join(bf, f"slot{cur}", "cmdline.txt")
@@ -570,7 +570,7 @@ def rpi_install_bootfiles(conf, cur, new, manifest, base):
         cmd = open(src).read().strip()
     except OSError:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise Fail("no-cmdline", f"{src} non leggibile")
+        raise Fail("no-cmdline", f"{src} not readable")
     cmd = re.sub(r"root=LABEL=\S+", f"root=LABEL={label(new)}", cmd)
     cmd = re.sub(r"unitotem\.slot=\S+", f"unitotem.slot={new}", cmd)
     if f"unitotem.slot={new}" not in cmd:
@@ -599,20 +599,20 @@ def do_fetch(a, conf):
             progress(conf, op="fetch", phase="check", state="running", percent=0)
             m = fetch_trusted(conf)
             if m["layout"] != 2:
-                raise Fail("layout-mismatch", f"la release e' per layout {m['layout']}, questo sistema e' layout 2")
+                raise Fail("layout-mismatch", f"the release is for layout {m['layout']}, this system is layout 2")
             if vkey(m["version"]) <= vkey(current_version(conf)) and not a.force:
-                raise Fail("not-newer", f"{m['version']} non e' piu' recente di {current_version(conf)}", rc=10)
+                raise Fail("not-newer", f"{m['version']} is not newer than {current_version(conf)}", rc=10)
             part = next((p for p in m["parts"] if p.get("role") == "root"), None)
             if not part:
-                raise Fail("no-root-part", "il manifest non contiene la parte con role=root")
+                raise Fail("no-root-part", "the manifest has no part with role=root")
             # By GPT partition name, not filesystem label: a slot that lost power mid-write has a neutral or
             # stale label, and must still be findable to be rewritten.
             dev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
             dev = dev[0] if dev else run_out("blkid", "-L", label(new), check=False)
             if not dev:
-                raise Fail("no-slot-device", f"partizione {label(new)} non trovata")
+                raise Fail("no-slot-device", f"partition {label(new)} not found")
             if subprocess.run(["findmnt", "-S", dev], capture_output=True).returncode == 0:
-                raise Fail("slot-mounted", f"{dev} e' montato: rifiuto di scriverci")
+                raise Fail("slot-mounted", f"{dev} is mounted: refusing to write to it")
             # Point of no return for the old contents of the inactive slot: from here it is not a
             # valid rollback target until the write has been verified.
             # The slot we are running from is by definition a system that boots: record it, so it is a
@@ -647,14 +647,14 @@ def do_fetch(a, conf):
                 xz.stdin.close()
             except (urllib.error.URLError, OSError) as e:
                 xz.kill(); pc.kill()
-                raise Fail("network", f"download interrotto: {e}")
+                raise Fail("network", f"download interrupted: {e}")
             xz.wait(); err = pc.communicate()[1].decode(errors="replace")
             if xz.returncode or pc.returncode:
                 raise Fail("write-failed", f"xz rc={xz.returncode} partclone rc={pc.returncode}: {err[-300:]}")
             crashpoint(conf, "fetch_after_write")
             progress(conf, op="fetch", phase="verify", state="running", percent=100, bytes=done, total=total)
             if done != total or h.hexdigest() != part["sha256"]:
-                raise Fail("bad-checksum", "sha256/dimensione dell'asset scaricato non corrisponde al manifest")
+                raise Fail("bad-checksum", "downloaded asset sha256/size does not match the manifest")
             run_out("e2fsck", "-fn", dev)
             # partclone copies the label and UUID with the data: give this slot its own identity.
             run_out("tune2fs", "-L", label(new), "-U", "random", dev)
@@ -664,9 +664,9 @@ def do_fetch(a, conf):
             try:
                 ver = open(os.path.join(mnt, "usr/share/unitotem/release-version")).read().strip()
                 if ver != m["version"]:
-                    raise Fail("version-mismatch", f"l'immagine scritta dichiara {ver}, il manifest {m['version']}")
+                    raise Fail("version-mismatch", f"the written image reports {ver}, the manifest says {m['version']}")
                 if not os.path.exists(os.path.join(mnt, "usr/lib/systemd/systemd")):
-                    raise Fail("bad-image", "systemd assente nello slot scritto")
+                    raise Fail("bad-image", "systemd missing in the written slot")
                 progress(conf, op="fetch", phase="arm", state="running", percent=100)
                 if backend(conf) == "rpi":
                     with bootfs_rw(conf["UPDATE_BOOTFS"]):
@@ -687,7 +687,7 @@ def do_fetch(a, conf):
             st[new] = {"version": None, "valid": False}; write_state(conf, "slots.json", st)
             set_last_result(conf, op="fetch", result="cancelled")
             progress(conf, op="fetch", state="cancelled")
-            return 2, {"error": "operazione annullata", "error_code": "cancelled"}
+            return 2, {"error": "operation cancelled", "error_code": "cancelled"}
         except Fail as e:
             set_last_result(conf, op="fetch", result="failed", error_code=e.code, error=str(e))
             progress(conf, op="fetch", state="failed", error=str(e), error_code=e.code)
@@ -699,7 +699,7 @@ def cmd_fetch(a, conf):
     if a.foreground:
         return do_fetch(a, conf)
     if op_running(conf):
-        raise Fail("busy", "un'altra operazione di aggiornamento e' in corso", rc=12)
+        raise Fail("busy", "another update operation is running", rc=12)
     cmd = [sys.executable, os.path.abspath(__file__), "--json", "fetch", "--foreground"] + (["--force"] if a.force else [])
     # lowest CPU and idle I/O priority: the kiosk keeps playing while ~3 GB are written
     run_out("systemd-run", "--unit", "unitotem-update-fetch", "--collect", "--quiet", "-p", "Nice=19", "-p", "IOSchedulingClass=idle", *cmd)
@@ -716,17 +716,17 @@ def slot_check(conf, new, st):
             or subprocess.run(["e2fsck", "-fn", dev], capture_output=True).returncode != 0):
         st[new] = {"version": None, "valid": False}
         write_state(conf, "slots.json", st)
-        raise Fail("slot-not-verified", f"lo slot {new} non supera il controllo prima dell'attivazione: rifare fetch")
+        raise Fail("slot-not-verified", f"slot {new} fails the check before activation: run fetch again")
 
 
 def cmd_apply(a, conf):
     need_backend(conf)
     cur = cur_slot(conf); new = other_slot(cur)
     if op_running(conf):
-        raise Fail("busy", "un'operazione e' in corso", rc=12)
+        raise Fail("busy", "an operation is running", rc=12)
     st = slots_state(conf)
     if not (st[new].get("valid") and st[new].get("prepared")):
-        raise Fail("nothing-fetched", f"lo slot {new} non contiene una release verificata (eseguire fetch)")
+        raise Fail("nothing-fetched", f"slot {new} holds no verified release (run fetch)")
     slot_check(conf, new, st)
     crashpoint(conf, "apply_start")
     write_state(conf, "pending.json", {"slot": new, "from": cur, "from_version": current_version(conf), "version": st[new]["version"],
@@ -734,7 +734,7 @@ def cmd_apply(a, conf):
     # A Raspberry trial only exists for a boot requested with the tryboot flag, so arming without the
     # reboot would leave a tryboot.txt that nothing consumes: refuse instead of pretending it is armed.
     if backend(conf) == "rpi" and not a.reboot and not getattr(a, "stage", False):
-        raise Fail("needs-reboot", "su Raspberry l'avvio di prova richiede il riavvio contestuale: usare apply --reboot")
+        raise Fail("needs-reboot", "on Raspberry the trial boot needs an immediate reboot: use apply --reboot")
     # One-shot: GRUB clears next_entry before booting it (Raspberry: the firmware reads tryboot.txt only on the
     # tryboot boot), so a crash/power cut during the trial lands back on the current slot with no software involved.
     imported = import_whitelist(conf, new, cur, state_path(conf, "preserve.list"))
@@ -753,7 +753,7 @@ def confirm_now(conf):
     cur = cur_slot(conf)
     pend = read_state(conf, "pending.json")
     if not pend or pend.get("slot") != cur:
-        raise Fail("nothing-to-confirm", "nessuna prova di avvio in corso su questo slot")
+        raise Fail("nothing-to-confirm", "no trial boot in progress on this slot")
     crashpoint(conf, "confirm_start")
     be_set_default(conf, cur)
     crashpoint(conf, "confirm_after_default")
@@ -834,9 +834,8 @@ def cmd_boot_ok(a, conf):
                         version=pend.get("version"))
         return 0, {"trial": False, "rolled_back": True}
     crashpoint(conf, "bootok_health_wait")
-    # monotonic, not wall clock: a Raspberry has no RTC, so its clock starts in the past and jumps forward by years
-    # the moment NTP answers - which, with time.time(), made a 180 s health deadline expire ~40 s after boot and
-    # rolled a healthy trial back (found on the first real Pi: "health-timeout" at 48 s of uptime).
+    # monotonic, not wall clock: a Raspberry has no RTC, so its clock jumps forward by years when NTP answers,
+    # which would expire the health deadline early.
     deadline = time.monotonic() + int(conf["UPDATE_HEALTH_TIMEOUT"])
     while time.monotonic() < deadline:
         if health_ok(conf):
@@ -851,7 +850,7 @@ def cmd_boot_ok(a, conf):
     # Plain reboot on purpose, also on Raspberry: without the tryboot flag the firmware ignores tryboot.txt and
     # boots config.txt, i.e. the previous slot.
     be_reboot(conf, delay=0)
-    return 2, {"error": "il sistema non ha risposto al controllo di salute: ritorno allo slot precedente",
+    return 2, {"error": "the system did not answer the health check: going back to the previous slot",
                "error_code": "health-timeout"}
 
 
@@ -859,10 +858,10 @@ def cmd_rollback(a, conf):
     need_backend(conf)
     cur = cur_slot(conf); old = other_slot(cur)
     if op_running(conf):
-        raise Fail("busy", "un'operazione e' in corso", rc=12)
+        raise Fail("busy", "an operation is running", rc=12)
     st = slots_state(conf)
     if not st[old].get("valid"):
-        raise Fail("no-rollback", "lo slot precedente non contiene un sistema valido", rc=13)
+        raise Fail("no-rollback", "the previous slot holds no valid system", rc=13)
     crashpoint(conf, "rollback_start")
     be_set_default(conf, old)
     crashpoint(conf, "rollback_after_default")
@@ -955,10 +954,10 @@ def do_repair(a, conf):
             cdev = run_out("blkid", "-t", f"PARTLABEL={label(cur)}", "-o", "device", check=False).splitlines()
             ndev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
             if not cdev or not ndev:
-                raise Fail("no-slot-device", "partizioni degli slot non trovate")
+                raise Fail("no-slot-device", "slot partitions not found")
             cdev, ndev = cdev[0], ndev[0]
             if subprocess.run(["findmnt", "-S", ndev], capture_output=True).returncode == 0:
-                raise Fail("slot-mounted", f"{ndev} e' montato: rifiuto di scriverci")
+                raise Fail("slot-mounted", f"{ndev} is mounted: refusing to write to it")
             event(conf, f"repair: slot {new} ({whyc}) <- copy of slot {cur} ({ver})")
             st[new] = {"version": None, "valid": False}
             write_state(conf, "slots.json", st)
@@ -975,21 +974,21 @@ def do_repair(a, conf):
             if src.returncode or dst.returncode:
                 raise Fail("write-failed", f"partclone read rc={src.returncode} write rc={dst.returncode}: {tail}")
             progress(conf, op="repair", phase="verify", state="running", percent=80)
-            # The copy carries the source's label AND UUID, and e2fsck/blkid then confuse it with the mounted original (e2fsck returned 8 on
-            # test-pc), so the new identity comes FIRST. -f: tune2fs otherwise refuses to change the UUID of a copy of a used filesystem
+            # The copy carries the source's label AND UUID, and e2fsck/blkid then confuse it with the mounted original (e2fsck can fail with rc 8 on the
+            # duplicate), so the new identity comes FIRST. -f: tune2fs otherwise refuses to change the UUID of a copy of a used filesystem
             # ("requires a freshly checked filesystem"); the real fsck follows right after. It is OUR new copy, so a fsck that fixes it
             # is exactly right (rc 0/1 = clean/fixed, anything else = failed copy).
             run_out("tune2fs", "-f", "-U", "random", "-L", label(new), ndev)
             rc = subprocess.run(["e2fsck", "-fy", ndev], capture_output=True).returncode
             if rc > 1:
-                raise Fail("bad-copy", f"e2fsck sulla copia ha restituito {rc}")
+                raise Fail("bad-copy", f"e2fsck on the copy returned {rc}")
             run_out("e2fsck", "-fn", ndev)
             mnt = tempfile.mkdtemp(prefix="unitotem-slot-")
             run_out("mount", "-o", "ro", ndev, mnt)
             try:
                 got = open(os.path.join(mnt, "usr/share/unitotem/release-version")).read().strip()
                 if got != ver:
-                    raise Fail("version-mismatch", f"la copia dichiara {got}, il sistema in esecuzione {ver}")
+                    raise Fail("version-mismatch", f"the copy reports {got}, the running system {ver}")
                 if backend(conf) == "rpi":
                     with bootfs_rw(conf["UPDATE_BOOTFS"]):
                         rpi_clone_bootfiles(conf, cur, new)
@@ -1111,9 +1110,9 @@ def cmd_policy(a, conf):
         mode = a.set_mode if a.set_mode is not None else pol["mode"]
         t = a.time if a.time is not None else pol["time"]
         if mode not in AUTO_MODES:
-            raise Fail("bad-mode", f"modalita' ammesse: {', '.join(AUTO_MODES)}", rc=2)
+            raise Fail("bad-mode", f"allowed modes: {', '.join(AUTO_MODES)}", rc=2)
         if _valid_time(t) is None:
-            raise Fail("bad-time", "l'orario va scritto HH:MM (00:00-23:59)", rc=2)
+            raise Fail("bad-time", "time must be written as HH:MM (00:00-23:59)", rc=2)
         pol = {"mode": mode, "time": t}
         write_state(conf, "auto.json", pol)
     return 0, {"policy": pol, "auto": read_state(conf, "auto-state.json", {}) or {}}
@@ -1137,7 +1136,7 @@ def auto_arm(conf):
     cur = cur_slot(conf); new = other_slot(cur)
     st = slots_state(conf)
     if not (st[new].get("valid") and st[new].get("prepared")):
-        raise Fail("nothing-fetched", f"lo slot {new} non contiene una release verificata")
+        raise Fail("nothing-fetched", f"slot {new} holds no verified release")
     slot_check(conf, new, st)
     write_state(conf, "pending.json", {"slot": new, "from": cur, "from_version": current_version(conf), "version": st[new]["version"],
                                        "armed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "staged": True})
@@ -1262,7 +1261,7 @@ def cmd_auto(a, conf):
 def cmd_cancel(a, conf):
     pid = op_running(conf)
     if not pid:
-        return 10, {"cancelled": False, "reason": "nessuna operazione in corso"}
+        return 10, {"cancelled": False, "reason": "no operation running"}
     os.kill(pid, signal.SIGTERM)
     return 0, {"cancelled": True, "pid": pid}
 
@@ -1274,7 +1273,7 @@ def main():
     for n in ("status", "check", "confirm", "boot-ok", "cancel"):
         sp.add_parser(n)
     f = sp.add_parser("fetch"); f.add_argument("--foreground", action="store_true"); f.add_argument("--force", action="store_true")
-    f.add_argument("--accept-changes", help="accettato e ignorato: in A/B lo slot corrente resta intatto")
+    f.add_argument("--accept-changes", help="accepted and ignored: the current slot is never modified")
     po = sp.add_parser("policy"); po.add_argument("--set-mode", dest="set_mode", choices=AUTO_MODES); po.add_argument("--time")
     au = sp.add_parser("auto"); au.add_argument("--now", action="store_true", help="skip the settle delay and the check rate limit")
     sp.add_parser("reboot")
@@ -1291,7 +1290,7 @@ def main():
     except Fail as e:
         rc, out = e.rc, {"error": str(e), "error_code": e.code}
     except Cancelled:
-        rc, out = 2, {"error": "operazione annullata", "error_code": "cancelled"}
+        rc, out = 2, {"error": "operation cancelled", "error_code": "cancelled"}
     if a.json:
         print(json.dumps(out))
     else:

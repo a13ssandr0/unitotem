@@ -3,54 +3,45 @@ set -e
 
 # The units that actually own the screen on this image: the manager (and its viewer) and the Wayland compositor.
 #
-# systemctl stop, not pkill: unitotem-compositor.service is Restart=always, so killing the process just brings it straight back.
-# Stopping the unit is the only thing that holds.
+# systemctl stop, not pkill: unitotem-compositor.service is Restart=always, so a killed process comes straight back.
 UNITOTEM_UNITS="unitotem-manager.service unitotem-compositor.service"
 
 _enter() {
-    echo "[unitotem-maintenance] Fermo il kiosk..."
+    echo "[unitotem-maintenance] Stopping the kiosk..."
     local u failed=""
     for u in $UNITOTEM_UNITS; do
         systemctl stop "$u" 2>/dev/null || true
     done
-    # Verified rather than assumed: an update that runs while the kiosk still
-    # holds the display is exactly the situation this step exists to prevent,
-    # and it failed silently for as long as the pkill was there.
+    # Verify the units really stopped: an update must not run while the kiosk holds the display.
     for u in $UNITOTEM_UNITS; do
         if systemctl is-active --quiet "$u"; then
             failed="${failed} ${u}"
         fi
     done
     if [ -n "$failed" ]; then
-        echo "[unitotem-maintenance] ERRORE: non sono riuscito a fermare:${failed}" >&2
-        echo "[unitotem-maintenance] Interrompo: aggiornare con il kiosk attivo non e' sicuro." >&2
+        echo "[unitotem-maintenance] ERROR: could not stop:${failed}" >&2
+        echo "[unitotem-maintenance] Aborting: updating with the kiosk running is not safe." >&2
         exit 1
     fi
 
-    echo "[unitotem-maintenance] Rimonto rootfs in rw..."
+    echo "[unitotem-maintenance] Remounting rootfs read-write..."
     mount -o remount,rw /
-    # /var/lib/dpkg is a bind mount back onto ROOT (see
-    # unitotem/files/overlayfs-hook.sh) and a bind carries its OWN flags: it stays
-    # read-only when / is remounted rw. Without this, apt reports "Not using
-    # locking for read only lock file /var/lib/dpkg/lock" and dpkg cannot
-    # update the database at all - confirmed on hardware, where / showed rw
-    # and /var/lib/dpkg showed ro at the same moment.
+    # /var/lib/dpkg is a bind mount onto ROOT (see unitotem/files/overlayfs-hook.sh) with its own
+    # flags: it stays read-only when / is remounted rw, and dpkg could not update its database.
     mountpoint -q /var/lib/dpkg && mount -o remount,rw /var/lib/dpkg
     mount -o remount,size=1G /var/cache
 
-    # The package lists live on the DATA overlay and an OTA resets them, so a
-    # freshly deployed device has none and every install fails with "Unable to
-    # locate package". Refreshing here costs one download and removes a
-    # confusing first-use failure.
-    echo "[unitotem-maintenance] Aggiorno gli elenchi dei pacchetti..."
-    apt-get update -qq || echo "[unitotem-maintenance] ATTENZIONE: apt-get update fallito, gli elenchi potrebbero essere incompleti" >&2
+    # The package lists live on the DATA overlay and an OTA resets them: without a refresh
+    # installs fail with "Unable to locate package".
+    echo "[unitotem-maintenance] Refreshing package lists..."
+    apt-get update -qq || echo "[unitotem-maintenance] WARNING: apt-get update failed, the package lists may be incomplete" >&2
 
-    echo "[unitotem-maintenance] Pronti."
-    echo "  /etc  /root       → overlay su DATA (sempre persistente)"
-    echo "  /usr  /lib  /bin  → rootfs (ora scrivibile)"
+    echo "[unitotem-maintenance] Ready."
+    echo "  /etc  /root       -> overlay on DATA (always persistent)"
+    echo "  /usr  /lib  /bin  -> rootfs (now writable)"
     echo ""
-    echo "Eseguire: apt-get update && apt-get upgrade"
-    echo "Al termine: unitotem-maintenance exit [--initramfs]"
+    echo "Run: apt-get update && apt-get upgrade"
+    echo "When done: unitotem-maintenance exit [--initramfs]"
 }
 
 _exit() {
@@ -58,7 +49,7 @@ _exit() {
     [ "$1" = "--initramfs" ] && regen_initramfs=1
 
     if [ $regen_initramfs -eq 1 ]; then
-        echo "[unitotem-maintenance] Rigenero initramfs..."
+        echo "[unitotem-maintenance] Regenerating initramfs..."
         update-initramfs -u -k all
     fi
 
@@ -66,14 +57,13 @@ _exit() {
         update-grub 2>/dev/null || true
     fi
 
-    echo "[unitotem-maintenance] Rimonto rootfs in ro..."
+    echo "[unitotem-maintenance] Remounting rootfs read-only..."
     sync
-    # Same asymmetry as on the way in: the bind has to be told separately, or
-    # the package database would stay writable on an otherwise read-only root.
+    # The bind mount carries its own flags and must be remounted separately.
     mountpoint -q /var/lib/dpkg && mount -o remount,ro /var/lib/dpkg 2>/dev/null || true
     mount -o remount,ro / 2>/dev/null || true
 
-    echo "[unitotem-maintenance] Riavvio in 5 secondi..."
+    echo "[unitotem-maintenance] Rebooting in 5 seconds..."
     sleep 5
     systemctl reboot
 }
@@ -82,7 +72,7 @@ case "$1" in
     enter) _enter ;;
     exit)  _exit "${2:-}" ;;
     *)
-        echo "Uso: $0 enter | exit [--initramfs]"
+        echo "Usage: $0 enter | exit [--initramfs]"
         exit 1
         ;;
 esac

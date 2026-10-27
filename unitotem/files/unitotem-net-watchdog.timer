@@ -1,10 +1,9 @@
 [Unit]
-Description=UniTotem - controllo periodico raggiungibilita' di rete
+Description=UniTotem - periodic network reachability check
 
 [Timer]
-# Il primo controllo non e' immediato: all'avvio NetworkManager ha bisogno di
-# tempo per completare DHCP, e partire subito conterebbe come fallimento una
-# situazione del tutto normale.
+# The first check is delayed: right after boot NetworkManager needs time to complete DHCP, and
+# checking at once would count a normal situation as a failure.
 OnBootSec=5min
 OnUnitActiveSec=1min
 AccuracySec=10s

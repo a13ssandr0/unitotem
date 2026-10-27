@@ -2,14 +2,10 @@ FROM debian:bookworm
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Deliberately no qemu-user-static here (unlike Dockerfile.unitotem): partclone
-# reads/writes filesystem content, not code for a particular CPU, so the
-# same bookworm-native container generates parts sets for both amd64 and
-# arm64 images - see the OTA redesign plan's parts-set section. bookworm
-# specifically (not this host's own partclone) because the version that
-# matters is "matches what deploy/ota-engine.sh restores with on the
-# target", not any host-installed one - see unitotem/stage1-packages.sh, which
-# installs the same bookworm partclone package into the image itself.
+# No qemu-user-static: partclone reads/writes filesystem content, not target code, so one
+# container generates parts sets for both amd64 and arm64. bookworm, because the partclone
+# version must match the one deploy/ota-engine.sh restores with (installed by
+# unitotem/stage1-packages.sh).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         partclone \
         xz-utils \

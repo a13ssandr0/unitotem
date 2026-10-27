@@ -1,20 +1,13 @@
 #!/bin/bash
-# Builds the resident OTA fallback: a standalone kernel+initrd pair, produced
-# straight from work/$ARCH/stage1.tar.gz - before any kiosk-specific
-# configuration (X11, plymouth, unitotem-manager, ...) is layered on in
-# stage2. This is deliberate (see the OTA redesign plan, "Il fallback e' lo
-# stage 1 della build"): stage1 already carries everything ota-engine.sh
-# needs (unitotem/stage1-packages.sh's "OTA payload" block) and nothing it
-# doesn't, so there is no separate flasher build to maintain and no risk of
-# the fallback drifting out of sync with what the real system's own
-# initramfs can do - unitotem/files/ota-hook (already installed into this same
-# stage1 rootfs by unitotem/stage1-packages.sh) is the exact hook the real
-# system's own `update-initramfs` uses too.
+# Builds the resident OTA fallback: a standalone kernel+initrd pair produced
+# from work/$ARCH/stage1.tar.gz, before the kiosk configuration (X11, plymouth,
+# unitotem-manager, ...) is added in stage2. Stage1 carries everything
+# ota-engine.sh needs and nothing else, and unitotem/files/ota-hook is the same
+# hook the real system's `update-initramfs` uses, so the two cannot drift apart.
 #
 # Output: /deploy/$ARCH/recovery-vmlinuz-$ARCH, recovery-initrd-$ARCH.img,
 # recovery.manifest - consumed by unitotem/stage3-image.sh (baked into every
-# built image, boot FAT partition) and by deploy/remote-deploy.sh (pushed to
-# an unprepared legacy target).
+# image, boot FAT partition) and by deploy/remote-deploy.sh.
 set -euo pipefail
 source /unitotem/common.sh
 
@@ -37,36 +30,19 @@ mount_chroot
 install_policy_rc
 
 # ---------- OTA hook + unconditional entry point ----------
-# The hook itself is already installed in stage1.tar.gz (unitotem/stage1-packages.sh,
-# shared with the real system's initramfs); the init-premount script here is
-# NOT - the real system needs the conditional dispatcher
-# (unitotem/files/ota-init-premount, installed by stage2-configure.sh instead),
-# while this recovery-only initrd should unconditionally serve OTA every
-# single time it boots. Installed straight into this throwaway chroot so it
-# never ends up in stage1.tar.gz.
+# The hook itself is already installed in stage1.tar.gz (shared with the real
+# system's initramfs). The init-premount script is not: the real system uses the
+# conditional dispatcher (unitotem/files/ota-init-premount, installed by stage2),
+# while this recovery initrd always serves OTA. It is installed into this
+# throwaway chroot so it never reaches stage1.tar.gz.
 mkdir -p "${ROOTFS}/etc/initramfs-tools/scripts/init-premount"
 install -m 755 /unitotem/files/ota-recovery-init-premount \
     "${ROOTFS}/etc/initramfs-tools/scripts/init-premount/zz-unitotem-ota"
 
 # ---------- Module policy ----------
-# MODULES=most (initramfs-tools' most conservative setting, and
-# initramfs-tools' own default) is required here, not just tolerated:
-# MODULES=dep was tried and fails outright in this exact context
-# ("mkinitramfs: failed to determine device for /") because it works by
-# probing the BUILD chroot's own mounted root device to decide which
-# modules are relevant - inside a Docker chroot there is no real block
-# device backing "/", so that probe has nothing to find. MODULES=most
-# doesn't need to know the target device at all, which is also exactly why
-# it's the right choice for this initrd's actual job: booting on hardware
-# that isn't known ahead of time.
-#
-# The real cause of the ~12 minute qemu-aarch64 build observed earlier
-# (stuck copying irrelevant AMD GPU firmware, navi14_pfp_wks.bin, via
-# mkinitramfs's firmware-file enumeration) was running mkinitramfs UNDER
-# QEMU EMULATION, not the MODULES=most module set itself - see the OTA
-# redesign plan's build-speed section. The fix is building natively (a real
-# Pi over SSH, or any real arm64 host) instead of via Docker+binfmt for
-# arm64, not trimming module coverage.
+# MODULES=most is required: MODULES=dep probes the build chroot's root device
+# ("mkinitramfs: failed to determine device for /"), which does not exist in a
+# Docker chroot. It is also the right choice for hardware not known in advance.
 grep -q '^MODULES=most' "${ROOTFS}/etc/initramfs-tools/initramfs.conf" \
     || sed -i 's/^MODULES=.*/MODULES=most/' "${ROOTFS}/etc/initramfs-tools/initramfs.conf"
 

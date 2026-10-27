@@ -1,10 +1,8 @@
 #!/bin/sh
-# initramfs-tools init-premount script for the RESIDENT FALLBACK initrd only
-# (installed straight into the throwaway chroot by
-# unitotem/stage1-recovery-initrd.sh - deliberately NOT part of stage1.tar.gz,
-# since the real system's own initramfs needs the conditional dispatcher in
-# unitotem/files/ota-init-premount instead, not this one). This initrd never
-# boots a real root at all - unconditionally serve OTA, always.
+# initramfs-tools init-premount script for the resident fallback initrd only (installed into the
+# throwaway chroot by unitotem/stage1-recovery-initrd.sh; the system's own initramfs uses the
+# conditional dispatcher unitotem/files/ota-init-premount). This initrd never boots a real root:
+# it always serves OTA.
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case "$1" in prereqs) prereqs; exit 0 ;; esac

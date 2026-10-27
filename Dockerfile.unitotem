@@ -2,10 +2,8 @@ FROM debian:bookworm
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# zstd: needed on the BUILD host, not inside the target chroot - trixie's
-# initramfs-tools defaults to COMPRESS=zstd (bookworm was gzip), and
-# unitotem/stage3-image.sh's own boot-ability check now has to be able to
-# decompress whatever the target image actually produced to verify it.
+# zstd is needed on the build host: trixie's initramfs-tools defaults to COMPRESS=zstd, and
+# stage3's boot-ability check must decompress the target initramfs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         debootstrap \
         qemu-user-static \

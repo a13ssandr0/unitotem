@@ -2,39 +2,17 @@
 # Common functions and defaults for kiosk build stages
 
 ARCH="${ARCH:-amd64}"
-# Both architectures on trixie now. amd64 moved first because bookworm could
-# not drive recent GPUs at all: kernel 6.1 hides Intel ARC behind
-# i915.force_probe and Mesa 22.3 barely handles it, so that image had been
-# assembled out of bookworm-backports before this. arm64 was believed blocked
-# on trixie - the Raspberry Pi archive's raspberrypi.gpg.key is a fixed,
-# unmaintained artifact still self-signed with SHA1, which trixie's OpenPGP
-# policy (SHA1 refused since 2026-02-01) rejects outright. That was true of
-# the URL, not of Raspberry Pi's own current release: pi-gen itself trusts the
-# packaged raspberrypi-archive-keyring rather than that URL (see this repo's
-# vendored copy, stage0/00-configure-apt), and the copy published for trixie
-# re-signs the same key with SHA512 - confirmed by downloading and inspecting
-# it, not assumed. unitotem/stage1-packages.sh now fetches that packaged keyring
-# instead of the stale URL.
-#
-# unitotem-manager's Python environment (3.11 today, 3.13 on trixie) is the
-# one thing this does not verify - the package installs, but nothing has
-# booted this image and run the manager under it yet.
+# Both architectures build on trixie. The Raspberry Pi archive key is fetched
+# from the packaged raspberrypi-archive-keyring (see stage1-packages.sh), because
+# the legacy raspberrypi.gpg.key URL is SHA1-signed and refused by trixie's policy.
 RELEASE="${RELEASE:-trixie}"
 MIRROR="${MIRROR:-https://deb.debian.org/debian}"
 WORK_DIR="/work/${ARCH}"
-# Overridable because /tmp is only a sane place to build under Docker. On the
-# real Pi (build nativa, see build-unitotem.sh) /tmp is a hardened tmpfs and
-# stage0 died there immediately: debootstrap refuses a target mounted nodev
-# ("Cannot install into target '/tmp/rootfs' mounted with noexec or nodev"),
-# and at 256 MB it could not have held a multi-GB rootfs anyway. The native
-# path points this at the build tree on DATA instead.
+# Overridable: on the native Pi build /tmp is a small nodev tmpfs, which
+# debootstrap refuses; the native path points this at the build tree on DATA.
 ROOTFS="${ROOTFS:-/tmp/rootfs}"
-# Where stage3 mounts the image it is assembling. Overridable for the same
-# reason as ROOTFS, and it bit in the same way: /mnt is free inside the build
-# container, but on a real UniTotem it is where DATA lives - so mounting the
-# image there hid /mnt/data, and with it the build tree, mid-stage3. rsync
-# then failed with "No such file or directory" on a rootfs that was still
-# perfectly present, just no longer reachable.
+# Where stage3 mounts the image it assembles. Overridable because on a real
+# UniTotem /mnt holds DATA and mounting the image there would hide the build tree.
 IMG_MNT="${IMG_MNT:-/mnt}"
 
 UNITOTEM_HOSTNAME="${UNITOTEM_HOSTNAME:-unitotem}"
@@ -42,11 +20,9 @@ ROOT_PASSWORD="${ROOT_PASSWORD:-unitotem}"
 UNITOTEM_LOCALE="${UNITOTEM_LOCALE:-it_IT.UTF-8}"
 UNITOTEM_TIMEZONE="${UNITOTEM_TIMEZONE:-Europe/Rome}"
 
-# A/B layout (AB-DESIGN.md): two ROOT slots instead of one. Off by default until the
-# whole boot/update chain is proven on hardware; the single-ROOT layout stays the
-# supported one meanwhile. With A/B the image holds slot A only populated - slot B
-# is written by the first update - but both partitions exist so DATA never moves again.
-AB_LAYOUT="${AB_LAYOUT:-0}"
+# A/B layout (AB-DESIGN.md): two ROOT slots. The image holds slot A populated;
+# slot B is written by the first update, but both partitions exist so DATA never moves.
+AB_LAYOUT="${AB_LAYOUT:-1}"
 if [ "$AB_LAYOUT" = 1 ]; then
     ROOT_LABEL=ROOT_A
     IMAGE_SIZE="${IMAGE_SIZE:-16G}"
@@ -120,7 +96,7 @@ apt_install() {
         mkdir -p "${ROOTFS}/var/cache/apt/archives"
         aria2c -q -i "$list" -d "${ROOTFS}/var/cache/apt/archives" -j 16 -x 4 -s 4 --file-allocation=none \
                --allow-overwrite=true --auto-file-renaming=false --retry-wait=3 --max-tries=5 \
-            || echo "aria2c fallito: apt scarichera' da solo" >&2
+            || echo "aria2c failed: apt will download by itself" >&2
         rm -f "$list"
     fi
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
