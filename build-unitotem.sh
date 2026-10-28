@@ -185,7 +185,7 @@ for ARCH in ${ARCHES}; do
         echo "[arm64] Native build failed, falling back to Docker+qemu-aarch64..." >&2
     fi
 
-    mkdir -p "${DIR}/work/${ARCH}" "${DIR}/deploy/${ARCH}" "${DIR}/work/apt-cache"
+    mkdir -p "${DIR}/work/${ARCH}" "${DIR}/deploy/${ARCH}" "${DIR}/work/apt-cache" "${DIR}/unitotem/locks"
 
     RUN_OPTS=(
         --rm
