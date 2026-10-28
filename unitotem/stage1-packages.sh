@@ -82,8 +82,9 @@ fi
 
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get update
 PKGLOCK_FROZEN_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-if [ "$PKGLOCKED" = 1 ]; then
-    # the stage-0 base (debootstrap, from an older day) must be at the locked versions too: with the pins this moves each package up OR down to them
+if [ "${PKGLOCK:-on}" != off ]; then
+    # The stage-0 base (debootstrap, from an older day) must match what the archives (or the lock's pins) say: with a lock this moves each
+    # package up or down to its locked version; without one it brings the base to the current versions, security fixes included.
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -y --allow-downgrades dist-upgrade
 fi
 
@@ -315,22 +316,6 @@ if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
     done
 fi
 
-# ---------- Package lock: verify or freeze ----------
-if [ "$PKGLOCKED" = 1 ]; then
-    python3 /unitotem/pkglock.py verify "$PKGLOCK_FILE" "${ROOTFS}" || { echo "ERROR: the image does not match the package lock (see above): run tools/pkglock.py upgrade ${ARCH} if the packages changed on purpose" >&2; exit 1; }
-    # the shipped image does not carry the snapshot sources or the pins (a device never runs apt): back to the ordinary ones
-    rm -f "${ROOTFS}/etc/apt/preferences.d/99-unitotem-lock" "${ROOTFS}/etc/apt/apt.conf.d/99-pkglock"
-    cat > "${ROOTFS}/etc/apt/sources.list" << EOF
-deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
-deb http://security.debian.org/debian-security ${RELEASE}-security main contrib non-free non-free-firmware
-EOF
-elif [ "${PKGLOCK:-on}" != off ]; then
-    mkdir -p "${WORK_DIR}"
-    python3 /unitotem/pkglock.py freeze "${ROOTFS}" --arch "${ARCH}" --release "${RELEASE}" --snapshot "${PKGLOCK_FROZEN_AT}" --out "${WORK_DIR}/${ARCH}.lock.new"
-    echo ">>> NEW package lock in work/${ARCH}/${ARCH}.lock.new: copy it to unitotem/locks/${ARCH}.lock and commit it"
-fi
-
 # ---------- Clean up ----------
 rm -f "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
 # Unmount the cache BEFORE apt-get clean: clean empties the archive directory, which would wipe the cache.
@@ -406,6 +391,22 @@ remove_policy_rc
 umount_chroot
 
 echo "Saving stage 1 tarball..."
+# ---------- Package lock: verify or freeze ----------
+if [ "$PKGLOCKED" = 1 ]; then
+    python3 /unitotem/pkglock.py verify "$PKGLOCK_FILE" "${ROOTFS}" || { echo "ERROR: the image does not match the package lock (see above): run tools/pkglock.py upgrade ${ARCH} if the packages changed on purpose" >&2; exit 1; }
+    # the shipped image does not carry the snapshot sources or the pins (a device never runs apt): back to the ordinary ones
+    rm -f "${ROOTFS}/etc/apt/preferences.d/99-unitotem-lock" "${ROOTFS}/etc/apt/apt.conf.d/99-pkglock"
+    cat > "${ROOTFS}/etc/apt/sources.list" << EOF
+deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security ${RELEASE}-security main contrib non-free non-free-firmware
+EOF
+elif [ "${PKGLOCK:-on}" != off ]; then
+    mkdir -p "${WORK_DIR}"
+    python3 /unitotem/pkglock.py freeze "${ROOTFS}" --arch "${ARCH}" --release "${RELEASE}" --snapshot "${PKGLOCK_FROZEN_AT}" --out "${WORK_DIR}/${ARCH}.lock.new"
+    echo ">>> NEW package lock in work/${ARCH}/${ARCH}.lock.new: copy it to unitotem/locks/${ARCH}.lock and commit it"
+fi
+
 tar -I pigz -C "${ROOTFS}" -cf "${WORK_DIR}/stage1.tar.gz" .
 
 echo "=== Stage 1 complete ==="

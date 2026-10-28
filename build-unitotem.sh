@@ -194,6 +194,7 @@ for ARCH in ${ARCHES}; do
         -v "${DIR}/work:/work"
         -v "${DIR}/deploy:/deploy"
         -v "${DIR}/work/apt-cache:/aptcache"
+        -v "${DIR}/unitotem/locks:/unitotem/locks:ro"
         -e "ARCH=${ARCH}"
     )
 
