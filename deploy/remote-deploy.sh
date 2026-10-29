@@ -7,7 +7,7 @@
 #   ./deploy/remote-deploy.sh probe   root@host
 #   ./deploy/remote-deploy.sh changes root@host [--json]
 #   ./deploy/remote-deploy.sh deploy  root@host [--parts DIR] [--disk BYID]
-#                                     [--port N] [--wipe-data]
+#                                     [--port N] [--wipe-data] [--backup-dir DIR] [--no-backup]
 #                                     [--console STR] [--debug] [--yes]
 #                                     [--accept-changes DIGEST]
 #                                     [--secure-boot shim|noshim|abort]
@@ -45,6 +45,8 @@ case "$SUBCMD" in
 esac
 
 OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
+# Backup of the UniTotem data of a target that already runs UniTotem, taken before anything is overwritten (default: backups/ in the repository).
+OPT_BACKUP_DIR="${UNITOTEM_BACKUP_DIR:-${DIR}/backups}" OPT_NO_BACKUP=0
 # Empty by default: build_legacy_cmdline() picks the console per architecture (tty0 for amd64, tty1 +
 # serial for arm64) unless --console is given.
 OPT_CONSOLE="" OPT_DEBUG=0 OPT_YES=0 OPT_FALLBACK_ONLY=0
@@ -61,6 +63,8 @@ while [ $# -gt 0 ]; do
         --disk)       OPT_DISK="$2"; shift 2 ;;
         --port)       OPT_PORT="$2"; shift 2 ;;
         --wipe-data)  OPT_WIPE_DATA=1; shift ;;
+        --backup-dir) OPT_BACKUP_DIR="$2"; shift 2 ;;
+        --no-backup)  OPT_NO_BACKUP=1; shift ;;
         --console)    OPT_CONSOLE="$2"; shift 2 ;;
         --debug)      OPT_DEBUG=1; shift ;;
         --yes)        OPT_YES=1; shift ;;
@@ -694,6 +698,25 @@ load_parts() {
     P_BOOTFS_VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
 }
 
+# A target that already runs UniTotem gets its data (everything on DATA: media, settings, accounts, update state) saved on this machine before
+# anything is written. The archive is checked by reading it back; if the backup fails the deploy stops. --no-backup skips it.
+# The scratch tree of native image builds on the target (unitotem-native-build) is not UniTotem data and is left out.
+backup_running_system() {
+    [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ "$OPT_NO_BACKUP" != 1 ] && [ "$OPT_FALLBACK_ONLY" != 1 ] || return 0
+    local label="${TARGET_USERHOST##*@}" ver ts used avail out
+    ts=$(date +%Y%m%d-%H%M%S)
+    ssh_t "[ -d /mnt/data ]" >/dev/null 2>&1 || { warn "no /mnt/data on the target: nothing to back up"; return 0; }
+    ver=$(ssh_t "cat /usr/share/unitotem/release-version 2>/dev/null" | tr -d '\r\n'); ver="${ver:-unknown}"
+    used=$(ssh_t "du -sk --exclude=unitotem-native-build /mnt/data 2>/dev/null | cut -f1" | tr -dc '0-9')
+    mkdir -p "$OPT_BACKUP_DIR" || die "cannot create the backup directory ${OPT_BACKUP_DIR}"
+    avail=$(df -Pk "$OPT_BACKUP_DIR" | awk 'NR==2{print $4}')
+    [ -z "$used" ] || [ "${avail:-0}" -gt "$used" ] || die "not enough space in ${OPT_BACKUP_DIR} for the backup ($((used / 1024)) MiB of data, $((avail / 1024)) MiB free); free space or use --backup-dir"
+    log "Backing up the UniTotem data of ${label} (${ver}, about $(( ${used:-0} / 1024 )) MiB) to ${OPT_BACKUP_DIR}..."
+    out=$(backup_stream "$OPT_BACKUP_DIR" "unitotem-data-${label}-${ver}-${ts}" ssh_t "tar -C /mnt/data --numeric-owner --exclude=./unitotem-native-build -cf - .") \
+        || die "the backup of ${label} failed: nothing was changed on the target (--no-backup skips the backup)"
+    log "Backup written and verified: ${out}"
+}
+
 cmd_deploy() {
     do_probe
     select_disk
@@ -717,6 +740,8 @@ cmd_deploy() {
     fi
 
     local target_ip="${TARGET_USERHOST##*@}"
+
+    backup_running_system
 
     if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ]; then
         log "Arming OTA from the running system..."
@@ -782,6 +807,18 @@ cmd_deploy() {
 }
 
 # ---------------------------------------------------------------------------
+# recover: when the disk is about to be laid out again (DATA not kept) but DATA still mounts, its content is saved first. A DATA that does not
+# mount cannot be saved: that is reported and the recovery goes on (the operator already confirmed it).
+backup_fallback_data() {
+    local host="$1" ts; ts=$(date +%Y%m%d-%H%M%S)
+    log "DATA will be rewritten: saving its content first to ${OPT_BACKUP_DIR}..."
+    local out
+    out=$(backup_stream "$OPT_BACKUP_DIR" "unitotem-data-${host}-recovery-${ts}" ota_ssh "$host" \
+        'd=$(blkid -L DATA) && mkdir -p /tmp/dbk && mount -t ext4 -o ro "$d" /tmp/dbk && { tar -C /tmp/dbk --numeric-owner --exclude=./unitotem-native-build -cf - .; r=$?; umount /tmp/dbk; exit $r; }') \
+        && log "Backup written and verified: ${out}" \
+        || warn "DATA could not be saved (it does not mount or the transfer failed): continuing without a backup"
+}
+
 cmd_recover() {
     # The target is already in the OTA fallback (both slots unusable, or an unrepairable boot failure): nothing to
     # arm, everything is learned from the engine's probe. DATA is kept when the partition table still has the
@@ -857,6 +894,9 @@ cmd_recover() {
         [ "$ans" = "YES" ] || die "cancelled by the user"
     fi
 
+    if [ "$keep" != 1 ] && [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ] && [ "$OPT_NO_BACKUP" != 1 ]; then
+        backup_fallback_data "$host"
+    fi
     run_ota_sequence "$host" "$disk"
     log "Recovery sequence sent: the target reboots into the restored system."
 }

@@ -15,3 +15,5 @@ apt-cacher-ng/
 
 __pycache__/
 *.pyc
+
+backups/

@@ -167,3 +167,11 @@ on the image: `packages`, `unowned.sha256`, `verify-expected`, `meta`.
 If it is missing, `check` exits with `2`. An image built before this feature has no baseline
 and the device answers `127` to the command: in both cases the interface should say that detection
 is not available on that device, not that there are no changes.
+
+## Backup before a deploy
+
+When `remote-deploy.sh deploy` finds that the target already runs UniTotem, it saves the target's DATA content (media, settings, accounts, update state; not the build scratch tree `unitotem-native-build`)
+on the machine that runs the script before anything is armed or written. The archive is `unitotem-data-<host>-<version>-<timestamp>.tar.zst` (`.tar.xz` without zstd) with a `.sha256` beside it, in
+`backups/` of the repository or the directory given by `--backup-dir DIR` / the environment variable `UNITOTEM_BACKUP_DIR`. The archive is read back before the deploy goes on; a failed backup (or too little
+free space) stops the deploy with nothing changed on the target. `--no-backup` skips it; `--fallback-only` never takes one because nothing is written.
+`remote-deploy.sh recover` saves DATA the same way, from the fallback environment, when DATA is about to be rewritten (`--wipe-data`, or a partition table that does not match) and it still mounts.
