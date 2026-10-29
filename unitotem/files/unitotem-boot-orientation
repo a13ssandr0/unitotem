@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""unitotem-boot-orientation - the screen orientation Plymouth uses at boot.
+
+  unitotem-boot-orientation get [CONNECTOR]
+  unitotem-boot-orientation set CONNECTOR normal|left|right|inverted
+
+Plymouth turns the splash from the DRM connector property that the kernel sets from `video=<connector>:panel_orientation=...` on its command
+line, so the orientation has to be on the command line of the next boot, whichever slot it is. `set` rewrites only the
+`panel_orientation` option of that connector's `video=` token (an existing `video=HDMI-A-1:1920x1080@60D` keeps its mode); `normal` removes it.
+
+  Raspberry Pi: the cmdline.txt of both slots (<bootfs>/slota, <bootfs>/slotb), so a staged or a rolled-back slot has it too; unitotem-update
+                derives a new slot's command line from the running one, which carries the option into every later slot.
+  PC (GRUB):    the grubenv variable `unitotem_video`, appended to the kernel line of both slot entries.
+
+Names: right = right_side_up (content turned 90 clockwise), left = left_side_up, inverted = upside_down.
+Output is JSON. Exit codes: 0 ok, 2 bad arguments, 1 failure.
+"""
+import contextlib, json, os, re, subprocess, sys, tempfile
+
+NAMES = {"normal": None, "right": "right_side_up", "left": "left_side_up", "inverted": "upside_down"}
+BY_VALUE = {v: k for k, v in NAMES.items() if v}
+BOOTFS = os.environ.get("UNITOTEM_BOOTFS", "/boot/firmware")
+ESP = os.environ.get("UNITOTEM_ESP", "/boot/efi")
+GRUBENV = os.environ.get("UNITOTEM_GRUBENV", os.path.join(ESP, "unitotem-grub/grub/grubenv"))
+VAR = "unitotem_video"
+CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+._-]*$")
+
+
+def merge(cmdline, connector, orientation):
+    """Command-line text with CONNECTOR's panel_orientation set to ORIENTATION (a NAMES key); other tokens are untouched."""
+    value = NAMES[orientation]
+    out, found = [], False
+    for tok in cmdline.split():
+        m = re.match(r"^video=" + re.escape(connector) + r":(.*)$", tok)
+        if not m:
+            out.append(tok); continue
+        found = True
+        opts = [o for o in m.group(1).split(",") if o and not o.startswith("panel_orientation=")]
+        if value: opts.append("panel_orientation=" + value)
+        if opts: out.append("video=%s:%s" % (connector, ",".join(opts)))
+    if not found and value:
+        out.append("video=%s:panel_orientation=%s" % (connector, value))
+    return " ".join(out)
+
+
+def read_orientation(cmdline, connector=None):
+    """{connector: name} for the connectors whose video= token carries a panel_orientation."""
+    res = {}
+    for tok in cmdline.split():
+        m = re.match(r"^video=([^:]+):(.*)$", tok)
+        if not m or (connector and m.group(1) != connector):
+            continue
+        for o in m.group(2).split(","):
+            if o.startswith("panel_orientation=") and o.split("=", 1)[1] in BY_VALUE:
+                res[m.group(1)] = BY_VALUE[o.split("=", 1)[1]]
+    return res
+
+
+def mount_of(path):
+    """(mount point, is_read_only) of the mount that holds PATH."""
+    best = None
+    path = os.path.realpath(path)
+    for line in open("/proc/mounts"):
+        f = line.split()
+        if len(f) > 3 and (path == f[1] or path.startswith(f[1].rstrip("/") + "/")):
+            if best is None or len(f[1]) > len(best[0]):
+                best = (f[1], "ro" in f[3].split(","))
+    return best
+
+
+@contextlib.contextmanager
+def writable(path):
+    """Remount the mount holding PATH read-write for the block and back to read-only after (nothing to do when it is already writable)."""
+    m = mount_of(path)
+    remounted = bool(m and m[1] and subprocess.run(["mount", "-o", "remount,rw", m[0]], capture_output=True).returncode == 0)
+    try:
+        yield
+    finally:
+        if remounted:
+            subprocess.run(["sync"])
+            subprocess.run(["mount", "-o", "remount,ro", m[0]], capture_output=True)
+
+
+def write_atomic(path, text):
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".cmdline.")
+    with os.fdopen(fd, "w") as f:
+        f.write(text.rstrip("\n") + "\n"); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def pi_files():
+    return [p for p in (os.path.join(BOOTFS, "slot%s/cmdline.txt" % s) for s in "ab") if os.path.isfile(p)]
+
+
+def grub_get():
+    try:
+        out = subprocess.run(["grub-editenv", GRUBENV, "list"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    for line in out.splitlines():
+        if line.startswith(VAR + "="):
+            return line.split("=", 1)[1]
+    return ""
+
+
+def backend():
+    return "rpi" if pi_files() else ("grub" if os.path.exists(GRUBENV) else None)
+
+
+def cmd_get(connector):
+    be = backend()
+    if be == "rpi":
+        text = open(pi_files()[0]).read()
+    elif be == "grub":
+        text = grub_get()
+    else:
+        raise SystemExit(json.dumps({"error": "no boot configuration found", "error_code": "no-backend"}))
+    cur = read_orientation(text, connector)
+    if connector:
+        return {"connector": connector, "orientation": cur.get(connector, "normal")}
+    return {"orientations": cur}
+
+
+def cmd_set(connector, orientation):
+    be = backend()
+    if be == "rpi":
+        files = pi_files()
+        with writable(BOOTFS):
+            for p in files:
+                write_atomic(p, merge(open(p).read(), connector, orientation))
+        return {"connector": connector, "orientation": orientation, "files": files}
+    if be == "grub":
+        new = merge(grub_get(), connector, orientation)
+        with writable(os.path.dirname(GRUBENV)):
+            if new:
+                subprocess.run(["grub-editenv", GRUBENV, "set", "%s=%s" % (VAR, new)], check=True)
+            else:
+                subprocess.run(["grub-editenv", GRUBENV, "unset", VAR], check=True)
+        return {"connector": connector, "orientation": orientation, "variable": VAR}
+    raise SystemExit(json.dumps({"error": "no boot configuration found", "error_code": "no-backend"}))
+
+
+def main(argv):
+    try:
+        if len(argv) >= 1 and argv[0] == "get" and len(argv) <= 2:
+            if len(argv) == 2 and not CONNECTOR_RE.match(argv[1]): raise ValueError
+            print(json.dumps(cmd_get(argv[1] if len(argv) == 2 else None))); return 0
+        if len(argv) == 3 and argv[0] == "set" and CONNECTOR_RE.match(argv[1]) and argv[2] in NAMES:
+            print(json.dumps(cmd_set(argv[1], argv[2]))); return 0
+    except (OSError, subprocess.CalledProcessError) as e:
+        print(json.dumps({"error": str(e), "error_code": "write-failed"})); return 1
+    except ValueError:
+        pass
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
