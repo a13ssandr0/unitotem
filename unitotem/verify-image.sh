@@ -158,6 +158,8 @@ chk "no SSH host key in the image's /etc/ssh is relied on (unitotem-ssh-hostkey 
 
 echo "== Update machinery"
 chk "the automatic update policy: timer enabled, service runs at the lowest priority" bash -c "test -L '$R/etc/systemd/system/timers.target.wants/unitotem-update-auto.timer' && grep -q '^Nice=19' '$R/etc/systemd/system/unitotem-update-auto.service' && grep -q '^IOSchedulingClass=idle' '$R/etc/systemd/system/unitotem-update-auto.service'"
+chk "unitotem-boot-orientation is installed (boot screen orientation: Pi cmdline.txt of both slots / grubenv)" test -x "$R/usr/sbin/unitotem-boot-orientation"
+chk "the GRUB slot entries carry \${unitotem_video} (orientation option of the next boot)" bash -c "[ \$(grep -c 'unitotem.slot=[ab] \${unitotem_video}' '$FAT/unitotem-grub/grub/grub.cfg') = 2 ]"
 chk "unitotem-update has the policy/auto/reboot commands" bash -c "grep -q 'def cmd_auto' '$R/usr/sbin/unitotem-update' && grep -q 'def cmd_policy' '$R/usr/sbin/unitotem-update'"
 chk "unitotem-update installed" test -x "$R/usr/sbin/unitotem-update"
 chk "unitotem-update can rebuild a damaged slot from the running one (repair + failover bookkeeping)" bash -c "grep -q 'def do_repair' $R/usr/sbin/unitotem-update && grep -q 'def note_failover' $R/usr/sbin/unitotem-update"

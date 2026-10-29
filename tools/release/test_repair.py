@@ -38,6 +38,9 @@ with tempfile.TemporaryDirectory() as td:
     check("clone: unitotem.slot= is the new slot's", "unitotem.slot=b" in cm and "unitotem.slot=a" not in cm, cm)
     check("clone: kernel/initramfs/overlays copied", all(os.path.getsize(f"{bf}/slotb/{f}") == 100 for f in ("kernel8.img", "initramfs8", "overlays/vc4.dtbo")))
     check("clone: no .new/.old leftovers", not os.path.exists(bf + "/slotb.new") and not os.path.exists(bf + "/slotb.old"))
+    open(bf + "/slota/cmdline.txt", "w").write("console=tty1 root=LABEL=ROOT_A rootwait ro quiet unitotem.slot=a video=HDMI-A-1:1920x1080@60D,panel_orientation=right_side_up\n")
+    uu.rpi_clone_bootfiles(conf, "a", "b")
+    check("clone: a video= orientation option travels to the new slot", "video=HDMI-A-1:1920x1080@60D,panel_orientation=right_side_up" in open(bf + "/slotb/cmdline.txt").read())
     check("clone: source slot untouched", "ROOT_A" in open(bf + "/slota/cmdline.txt").read())
 
     # --- failover guard: reported once, then removed
