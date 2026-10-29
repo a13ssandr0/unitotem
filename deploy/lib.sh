@@ -222,3 +222,19 @@ read_kv_block() {
     done
     [ ${#_out[@]} -gt 0 ]
 }
+
+# backup_stream DIR NAME CMD...: runs CMD (it must write a tar stream on stdout), compresses the stream on this machine, checks that the
+# archive reads back, and stores DIR/NAME.tar.zst (xz when zstd is missing) with a .sha256 next to it. Prints the archive path; fails
+# (leaving nothing behind) when CMD, the compression or the read-back fails.
+backup_stream() {
+    local dir="$1" name="$2"; shift 2
+    local comp="zstd -T0 -3" ext="tar.zst"
+    command -v zstd >/dev/null 2>&1 || { comp="xz -T0 -3"; ext="tar.xz"; }
+    mkdir -p "$dir" || return 1
+    local out="${dir}/${name}.${ext}" part="${dir}/${name}.${ext}.part"
+    ( set -o pipefail; "$@" | $comp > "$part" ) || { rm -f -- "$part"; return 1; }
+    ( set -o pipefail; ${comp%% *} -dc "$part" | tar -tf - >/dev/null ) || { rm -f -- "$part"; return 1; }
+    mv -f -- "$part" "$out" || return 1
+    ( cd "$dir" && sha256sum "$(basename "$out")" > "${name}.sha256" ) || return 1
+    echo "$out"
+}
