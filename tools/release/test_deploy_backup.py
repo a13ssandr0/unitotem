@@ -66,4 +66,30 @@ ssh_t() {{ bash -c "${{1//\\/mnt\\/data/{data}}}"; }}
     r = sh(pre.replace(f'ssh_t() {{ bash -c "${{1//\\/mnt\\/data/{data}}}"; }}', 'ssh_t() { case "$1" in "[ -d /mnt/data ]"|"cat "*|"du "*) return 0;; *) return 7;; esac; }').replace("b2", "b6") + body + "\nbackup_running_system; echo done")
     check("deploy backup: a failed transfer stops the deploy (exit 1, 'DIE')", "DIE:" in r.stdout and "done" not in r.stdout, r.stdout)
 
+    # ---- UniTotem 1.x/2.x on a single-root system: the data is spread over the ordinary root filesystem
+    root = os.path.join(td, "oldroot")
+    for d in ("etc/unitotem", "usr/share/unitotem-manager/static/uploaded", "var/spool/cron/crontabs", "etc/netplan", "usr/bin"):
+        os.makedirs(os.path.join(root, d))
+    open(root + "/etc/unitotem/playlist.json", "w").write("[]")
+    open(root + "/usr/share/unitotem-manager/static/uploaded/clip.mp4", "w").write("x" * 1000)
+    open(root + "/var/spool/cron/crontabs/root", "w").write("0 3 * * * /usr/sbin/reboot # unitotem:-)abc\n")
+    open(root + "/etc/hostname", "w").write("old-kiosk\n")
+    open(root + "/usr/bin/other", "w").write("not unitotem data")
+    leg = lib + "\n" + func(RD, "backup_legacy_system")
+    lpre = f'''set -u
+declare -A P; P[HAVE_UNITOTEM]=0; P[LEGACY_UNITOTEM]=2.3.0; OPT_NO_BACKUP=0; OPT_FALLBACK_ONLY=0; OPT_BACKUP_DIR="{td}/l1"; TARGET_USERHOST=root@10.0.0.7
+LEGACY_DATA_PATHS="etc/unitotem usr/share/unitotem-manager/static/uploaded var/spool/cron/crontabs/root etc/netplan etc/hostname etc/hosts etc/ssl/unitotem.pem etc/asound.conf etc/X11/xinit/xinitrc"
+log() {{ echo "LOG: $*"; }}; warn() {{ echo "WARN: $*"; }}; die() {{ echo "DIE: $*"; exit 1; }}
+ssh_t() {{ bash -c "${{1//cd \\/;/cd {root};}}"; }}
+'''
+    r = sh(lpre + leg + "\nbackup_legacy_system; echo done")
+    arc = [f for f in os.listdir(td + "/l1")] if os.path.isdir(td + "/l1") else []
+    listing = sh(f'zstd -dc "{td}/l1/{[f for f in arc if f.endswith(".tar.zst")][0]}" | tar -tf -').stdout if any(f.endswith(".tar.zst") for f in arc) else ""
+    check("legacy backup: archive named unitotem-legacy-<host>-<version>", r.returncode == 0 and any(f.startswith("unitotem-legacy-10.0.0.7-2.3.0-") for f in arc), (r.stdout, r.stderr))
+    check("legacy backup: settings, uploaded media, crontab, hostname are in it", all(x in listing for x in ("etc/unitotem/playlist.json", "uploaded/clip.mp4", "var/spool/cron/crontabs/root", "etc/hostname")), listing)
+    check("legacy backup: files that do not exist are skipped, other files are not included", "usr/bin/other" not in listing and "etc/asound.conf" not in listing)
+    check("legacy backup: not done for an A/B UniTotem or a non-UniTotem target", not os.path.isdir(td + "/l2") and not os.path.isdir(td + "/l3")
+          and "done" in sh(lpre.replace("P[HAVE_UNITOTEM]=0", "P[HAVE_UNITOTEM]=1").replace("l1", "l2") + leg + "\nbackup_legacy_system; echo done").stdout
+          and "done" in sh(lpre.replace("P[LEGACY_UNITOTEM]=2.3.0", "P[LEGACY_UNITOTEM]=none").replace("l1", "l3") + leg + "\nbackup_legacy_system; echo done").stdout)
+
 print("\n%d passed, %d failed" % (ok, fail)); sys.exit(1 if fail else 0)

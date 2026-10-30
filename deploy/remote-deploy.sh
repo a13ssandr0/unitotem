@@ -134,6 +134,9 @@ command -v update-grub >/dev/null 2>&1 && echo "UPDATE_GRUB: 1" || echo "UPDATE_
 command -v systemctl >/dev/null 2>&1 && echo "SYSTEMD: 1" || echo "SYSTEMD: 0"
 
 [ -f /etc/unitotem/ota-preserve.list ] && echo "HAVE_UNITOTEM: 1" || echo "HAVE_UNITOTEM: 0"
+# UniTotem 1.x/2.x ran on an ordinary single-root Debian/Raspberry Pi OS as the unitotem-manager package (no A/B, no ota-preserve.list).
+LEGACY_VER=$(dpkg-query -W -f='${Version}' unitotem-manager 2>/dev/null || true)
+case "$LEGACY_VER" in 1.*|2.*) echo "LEGACY_UNITOTEM: $LEGACY_VER" ;; *) echo "LEGACY_UNITOTEM: none" ;; esac
 
 ROOTSRC=$(findmnt -no SOURCE / 2>/dev/null || true)
 echo "ROOTSRC: ${ROOTSRC:-none}"
@@ -265,6 +268,7 @@ print_probe() {
         esac
     fi
     echo "Already UniTotem             : ${P[HAVE_UNITOTEM]}"
+    echo "Earlier UniTotem (single root): ${P[LEGACY_UNITOTEM]:-none}"
     echo "DATA present                 : ${P[HAVE_DATA]}  (UUID: ${P[DATA_UUID]:-n/a})"
     echo "Available RAM                : $(bytes_human "${P[MEMAVAIL]}")"
     echo "Free space on /              : $(bytes_human "${P[ROOTFREE]}")"
@@ -717,6 +721,26 @@ backup_running_system() {
     log "Backup written and verified: ${out}"
 }
 
+# UniTotem 1.x/2.x on a single-root system keeps its data in a few places of the ordinary root filesystem: settings in /etc/unitotem, the uploaded
+# media next to the package, root's crontab (the scheduled reboots/shutdowns), the network profiles, hostname, the TLS certificate and the kiosk
+# launch file. They are saved before the disk is replaced, with the same checks as the A/B backup.
+LEGACY_DATA_PATHS="etc/unitotem usr/share/unitotem-manager/static/uploaded var/spool/cron/crontabs/root etc/netplan etc/hostname etc/hosts etc/ssl/unitotem.pem etc/asound.conf etc/X11/xinit/xinitrc"
+backup_legacy_system() {
+    [ -n "${P[LEGACY_UNITOTEM]:-}" ] && [ "${P[LEGACY_UNITOTEM]}" != none ] && [ "${P[HAVE_UNITOTEM]:-0}" != 1 ] \
+        && [ "$OPT_NO_BACKUP" != 1 ] && [ "$OPT_FALLBACK_ONLY" != 1 ] || return 0
+    local label="${TARGET_USERHOST##*@}" ver="${P[LEGACY_UNITOTEM]}" ts used avail out
+    ts=$(date +%Y%m%d-%H%M%S)
+    used=$(ssh_t "cd /; du -sck $LEGACY_DATA_PATHS 2>/dev/null | tail -1 | cut -f1" | tr -dc '0-9')
+    mkdir -p "$OPT_BACKUP_DIR" || die "cannot create the backup directory ${OPT_BACKUP_DIR}"
+    avail=$(df -Pk "$OPT_BACKUP_DIR" | awk 'NR==2{print $4}')
+    [ -z "$used" ] || [ "${avail:-0}" -gt "$used" ] || die "not enough space in ${OPT_BACKUP_DIR} for the backup ($((used / 1024)) MiB of data, $((avail / 1024)) MiB free); free space or use --backup-dir"
+    log "Backing up the data of UniTotem ${ver} (single root) of ${label}, about $(( ${used:-0} / 1024 )) MiB, to ${OPT_BACKUP_DIR}..."
+    out=$(backup_stream "$OPT_BACKUP_DIR" "unitotem-legacy-${label}-${ver}-${ts}" ssh_t \
+        "cd /; tar --numeric-owner --ignore-failed-read -cf - \$(for p in $LEGACY_DATA_PATHS; do [ -e \$p ] && echo \$p; done)") \
+        || die "the backup of ${label} failed: nothing was changed on the target (--no-backup skips the backup)"
+    log "Backup written and verified: ${out}"
+}
+
 cmd_deploy() {
     do_probe
     select_disk
@@ -729,7 +753,7 @@ cmd_deploy() {
     echo ""
     echo "Parts set   : $(basename "$OPT_PARTS")"
     echo "Target disk : ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE"))"
-    echo "Target      : $([ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && echo 'already UniTotem (prepared path)' || echo 'other system (fallback push)')"
+    echo "Target      : $([ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && echo 'already UniTotem (prepared path)' || { [ -n "${P[LEGACY_UNITOTEM]:-}" ] && [ "${P[LEGACY_UNITOTEM]}" != none ] && echo "UniTotem ${P[LEGACY_UNITOTEM]} on a single-root system (fallback push, data backed up first)" || echo 'other system (fallback push)'; })"
 
     secure_boot_gate
     changes_gate
@@ -742,6 +766,7 @@ cmd_deploy() {
     local target_ip="${TARGET_USERHOST##*@}"
 
     backup_running_system
+    backup_legacy_system
 
     if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ]; then
         log "Arming OTA from the running system..."
