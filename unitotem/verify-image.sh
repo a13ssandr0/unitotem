@@ -142,6 +142,7 @@ chk "boot FAT is ro,nofail in fstab" file_has "$R/etc/fstab" '^LABEL=(EFI|FIRMWA
 chk "emergency mode reboots instead of waiting forever" file_has "$R/etc/systemd/system/emergency.service.d/unitotem.conf" 'reboot'
 chk "rescue mode reboots instead of waiting forever" file_has "$R/etc/systemd/system/rescue.service.d/unitotem.conf" 'reboot'
 chk "persistent-paths service installed" test -x "$R/usr/sbin/unitotem-persist-paths"
+chk "the browser profile (cookies, logins) is persisted on DATA, shared by both slots" grep -q "^persist browser  /var/lib/unitotem/browser  700 root" "$R/usr/sbin/unitotem-persist-paths"
 chk "boot-ok service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-boot-ok.service"
 chk "DATA overlay hook is in the image" test -e "$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays"
 

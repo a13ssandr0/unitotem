@@ -24,3 +24,4 @@ persist() {
 
 persist uploaded /var/lib/unitotem/uploaded 755 root
 persist crontabs /var/spool/cron/crontabs  1730 crontab
+persist browser  /var/lib/unitotem/browser  700 root
