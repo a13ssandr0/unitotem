@@ -11,6 +11,7 @@ bad() { n=$((n+1)); fail=$((fail+1)); echo "  FAIL: $1" >&2; }
 chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 installed() { awk -v p="$1" 'BEGIN{RS="";FS="\n"} $1=="Package: " p {for(i=1;i<=NF;i++) if($i=="Status: install ok installed") f=1} END{exit !f}' "$R/var/lib/dpkg/status"; }
 file_has() { grep -qE -- "$2" "$1" 2>/dev/null; }
+chk "Wi-Fi profiles are retried without limit (NetworkManager autoconnect-retries=0)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^connection\.autoconnect-retries=0$'
 FAT=$R/boot/efi; [ "$ARCH" = arm64 ] && FAT=$R/boot/firmware
 FAT="${FAT_DIR:-$FAT}"   # by hand on a mounted image the FAT is a separate mount: FAT_DIR=/path
 ENG=$R/usr/lib/unitotem/ota-engine.sh

@@ -232,6 +232,9 @@ mkdir -p "${ROOTFS}/etc/NetworkManager/system-connections"
 install -m 600 /unitotem/files/nm-fallback.nmconnection \
     "${ROOTFS}/etc/NetworkManager/system-connections/unitotem-fallback.nmconnection"
 
+mkdir -p "${ROOTFS}/etc/NetworkManager/conf.d"
+install -m 644 /unitotem/files/nm-wifi-reconnect.conf "${ROOTFS}/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf"
+
 mkdir -p "${ROOTFS}/etc/unitotem"
 install -m 644 /unitotem/files/ota-preserve.list "${ROOTFS}/etc/unitotem/ota-preserve.list"
 install -m 644 /unitotem/files/net-watchdog.conf "${ROOTFS}/etc/unitotem/net-watchdog.conf"

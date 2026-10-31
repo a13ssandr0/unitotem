@@ -23,6 +23,18 @@ for c in /sys/class/net/*/carrier; do
     if [ "$(cat "$c" 2>/dev/null || echo 0)" = 1 ]; then CARRIER_IFACES+=("$iface"); fi
 done
 
+# A Wi-Fi interface that is not connected although it has profiles to try: ask NetworkManager to connect again
+# (this also clears an autoconnect block left by earlier failures).
+if command -v nmcli >/dev/null 2>&1; then
+    while IFS=: read -r dev type state; do
+        [ "$type" = wifi ] && [ "$state" = disconnected ] || continue
+        if nmcli -t -f TYPE connection show 2>/dev/null | grep -q wireless; then
+            logger -t unitotem-net-watchdog "Wi-Fi ${dev} is disconnected: asking NetworkManager to reconnect"
+            timeout 60 nmcli device connect "$dev" >/dev/null 2>&1 || true
+        fi
+    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null)
+fi
+
 if [ "${#CARRIER_IFACES[@]}" -eq 0 ]; then
     rm -f "$STATE"
     exit 0
