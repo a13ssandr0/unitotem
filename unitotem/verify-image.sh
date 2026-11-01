@@ -12,6 +12,9 @@ chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d
 installed() { awk -v p="$1" 'BEGIN{RS="";FS="\n"} $1=="Package: " p {for(i=1;i<=NF;i++) if($i=="Status: install ok installed") f=1} END{exit !f}' "$R/var/lib/dpkg/status"; }
 file_has() { grep -qE -- "$2" "$1" 2>/dev/null; }
 chk "Wi-Fi profiles are retried without limit (NetworkManager autoconnect-retries=0)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^connection\.autoconnect-retries=0$'
+chk "Wi-Fi radio power save is off (NetworkManager wifi.powersave=2)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^wifi\.powersave=2$'
+chk "unitotem-wifi-roam and its timer are installed and enabled" bash -c "test -x $R/usr/sbin/unitotem-wifi-roam && test -L $R/etc/systemd/system/timers.target.wants/unitotem-wifi-roam.timer"
+chk "the CPU governor service is enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-cpu-performance.service"
 FAT=$R/boot/efi; [ "$ARCH" = arm64 ] && FAT=$R/boot/firmware
 FAT="${FAT_DIR:-$FAT}"   # by hand on a mounted image the FAT is a separate mount: FAT_DIR=/path
 ENG=$R/usr/lib/unitotem/ota-engine.sh

@@ -164,7 +164,7 @@ apt_install \
     dbus dbus-user-session libpam-systemd \
     systemd-timesyncd \
     network-manager netplan.io \
-    python3 python3-dbus python3-gi python3-pyudev \
+    python3 python3-dbus python3-gi python3-pyudev python3-libgpiod \
     gir1.2-glib-2.0 \
     iptables
 

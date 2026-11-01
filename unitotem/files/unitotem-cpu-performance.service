@@ -1,0 +1,11 @@
+[Unit]
+Description=UniTotem - CPU frequency governor "performance"
+ConditionPathExists=/sys/devices/system/cpu/cpufreq
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for p in /sys/devices/system/cpu/cpufreq/policy*; do grep -qw performance "$p/scaling_available_governors" 2>/dev/null && echo performance > "$p/scaling_governor"; done; exit 0'
+
+[Install]
+WantedBy=multi-user.target
