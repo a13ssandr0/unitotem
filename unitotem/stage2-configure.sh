@@ -219,6 +219,10 @@ install -m 755 /unitotem/files/unitotem-persist-paths "${ROOTFS}/usr/sbin/unitot
 install -m 644 /unitotem/files/unitotem-persist-paths.service \
     "${ROOTFS}/etc/systemd/system/unitotem-persist-paths.service"
 
+install -m 755 /unitotem/files/unitotem-wifi-roam "${ROOTFS}/usr/sbin/unitotem-wifi-roam"
+install -m 644 /unitotem/files/unitotem-wifi-roam.service "${ROOTFS}/etc/systemd/system/unitotem-wifi-roam.service"
+install -m 644 /unitotem/files/unitotem-wifi-roam.timer "${ROOTFS}/etc/systemd/system/unitotem-wifi-roam.timer"
+install -m 644 /unitotem/files/unitotem-cpu-performance.service "${ROOTFS}/etc/systemd/system/unitotem-cpu-performance.service"
 install -m 755 /unitotem/files/unitotem-net-watchdog "${ROOTFS}/usr/sbin/unitotem-net-watchdog"
 install -m 644 /unitotem/files/unitotem-net-watchdog.service \
     "${ROOTFS}/etc/systemd/system/unitotem-net-watchdog.service"
@@ -315,6 +319,8 @@ chroot "${ROOTFS}" systemctl enable \
     unitotem-persist-paths \
     unitotem-first-boot-cert \
     unitotem-net-watchdog.timer \
+    unitotem-wifi-roam.timer \
+    unitotem-cpu-performance \
     unitotem-update-auto.timer
 
 # Disable unattended apt: /var/lib/dpkg is pinned to the read-only ROOT (overlayfs-hook.sh) so these timers

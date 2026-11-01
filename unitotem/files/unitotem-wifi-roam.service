@@ -1,0 +1,8 @@
+[Unit]
+Description=UniTotem - move Wi-Fi to a stronger access point of the same network
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-wifi-roam
+Nice=10
