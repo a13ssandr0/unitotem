@@ -4,7 +4,7 @@ Kiosk / digital-signage product for PCs (amd64) and Raspberry Pi 4/5 (arm64):
 - **unitotem-system** (this repository): Debian image builder, immutable A/B root with signed whole-image updates, network deploy/recovery (OTA fallback).
 - **unitotem-manager** (submodule `unitotem-manager/`): web UI + API (FastAPI, websocket), scheduler, node plugin (system settings), kiosk viewer (CEF on labwc/Wayland), Debian packages.
 
-Docs: `docs/README.md` indexes one doc per component. Before working on a component read only its doc, not the whole code; update the doc in the same commit as the code.
+Docs: `docs/README.md` indexes one doc per component. Before working on a component read only its doc, not the whole code; always update the documentation in the same commit as the code, with every new finding (behaviour, measurement, gotcha).
 Developer machines, devices, credentials and procedures: `CLAUDE.local.md` (not in git). Never put them in tracked files.
 `TODO.md`: open items only. `CHANGELOG.md`: what is done since the last release (one terse line per change, by area). Update both whenever a task is given or finished.
 
@@ -29,7 +29,7 @@ Developer machines, devices, credentials and procedures: `CLAUDE.local.md` (not 
 - Remove test accounts, fake values and temporary mounts after tests; say which were used.
 
 ## Git
-- Commit (and push) after each finished piece of work, one concern per commit; `git add` specific paths only.
+- Always commit and push after each finished piece of work (code, docs, TODO, CHANGELOG together), one concern per commit; `git add` specific paths only. Submodule first, then the superproject.
 - The release signing key never enters a repository or a build host.
 - Upstream PRs/issues are opened only by the user.
 
