@@ -1,0 +1,98 @@
+# TODO (open items only; done items are in CHANGELOG.md)
+
+## Waiting for the user (decisions)
+- [manager] utils/async_timer.py is adapted from a CC BY-SA 3.0 answer (not one-way compatible with GPL-3): keep with attribution, or rewrite it.
+- [system] Wi-Fi roaming: keep `unitotem-wifi-roam` if stable (flapping/dropped links); a strong AP sometimes times out in auth (router side).
+- [manager/viewer] Long press on a real panel must show no context menu (needs a finger).
+- [manager/touch] Guided touch setup on a real panel (Display -> "Touch doesn't match? Fix it"); needs a person.
+- [system] H.264/AAC licensing: belongs to whoever distributes the image, a business decision.
+- [system] Release signing: back up the real root key (backup-keys.sh, 3 copies); confirm key model (release key + offline root) and custody.
+- [system] Real GitHub release test (redirects, API limits, 2 GiB asset limit, publish workflow) and whether images may be public once checked for secrets.
+- [system] Legacy pi-gen tree at the repo root (build.sh, stage0-2/, export-image/, Dockerfile...) and the broken single-root installer ISO (iso/): remove or keep.
+- [system] Windows-source installer: build (8-12 days MVP, docs/system/windows-install-research.md) or delete the research.
+- [system] Secure Boot: always ship the shim chain? QEMU proof pending; real firmware "Security Violation" text unverified.
+- [manager] Console: should accounts with a nologin shell get a root shell?
+- [system] Pi 4K60 (hdmi_enable_4kp60) undecided; pin ~60 Raspberry packages and backports (kernel, Mesa, firmware) undecided.
+- [manager] Upstream CEF/cefpython issues and PRs are not opened (patches and docs/manager/cef/pr-*.md ready); user decides.
+- [manager] Lean CEF build (docs/manager/cef/lean-build.md section 6): decision open.
+
+## To build
+- [system] unitotem-update-auto.service has Documentation=file:///usr/share/doc/unitotem/ab-updates.md, which the image does not install.
+- [system] Regenerate the preboot SD image after the latest build.
+- [system] Remove `/etc/chromium.d/50-unitotem-accel` (stage2-configure.sh:291; browser not installed) and the unshipped wifi-roam.conf mention or ship a default file.
+- [system] Remove single-root code branches (AB_LAYOUT=0) in stage2/3, remote-deploy, verify-image, unitotem-boot-ok.
+- [system] Developer-infrastructure defaults (IPs, hostnames, credentials, personal paths, UPDATE_BASE_URL, certificate O=) in tracked tools/scripts: make them required arguments/env (tools/win-lab/recover-driver.sh, tools/ws-probe.py:32, tools/ui-notifications.py:223, tools/ticker/deploy-board.sh, tools/cef-server/sync.sh, tools/build-cef-wheels.sh, tools/cef-wayland-tests/ssh.sh and deploy.sh, docs/manager/viewer.md) before publishing; deploy.sh:9 default CACHE is under /tmp.
+- [manager] docs/ apt repository stops at 2.3.0, README.md describes the old single-package install (no unitotem-node/-viewer, unitotem, python3-cefpython3, plymouth-theme-unitotem); docs/update-pkgs.sh uses `dpkg-buildpackage -A` and copies the core deb only.
+- [manager] Pin versions in manager/requirements.txt (fastapi, jinja2, psutil... unpinned); frozen_requirements.txt is referenced by nothing.
+- [manager] plymouth/generate-assets.py:11,32 font path `manager/webview/static/NotoSans.ttf` is stale (now plugins/unitotem_viewer/static/).
+- [manager] Delete unreferenced tools/ticker/control/ticker-raf.js (older bar implementation); tools/unitotem-ab.xml is referenced by no procedure; tools/cef-server/probe-gn-args.sh:9 reads /tmp/args.base.gn, created by no script; 0007 CEF patch has a placeholder `From` line.
+- [manager] CEF vendor: .gitmodules `branch = cefpython147-qt` is 19 commits behind the pinned commit (on `wayland-views`); wheels in vendor/cefpython-wheels are cp313 only while build-cef-wheels.sh builds 3.10-3.14 and debian/rules/python3-cefpython3 pin 3.13.
+
+## To verify on hardware
+- [manager/webui] Settings -> Updates with the previous version in the other slot: checked only through `unitotem-update --json status` (UI needs a login); error reply shape of `Settings/Update/*` (updates.vue:324-330) assumed.
+- [system] Auto-update policy modes (download/stage/reboot/scheduled) never exercised live on devices.
+- [system] Deploy backup of an earlier single-root UniTotem (1.x/2.x) tested on a fake root only; a full deploy with backup on a real disk never run.
+- [system] Wi-Fi: `unitotem-wifi-roam` never seen completing a roam on a real two-AP site; AP off/on test of autoconnect-retries=0 not run.
+- [system] Identity merge at OTA (`migrate-etc-overlay`): accounts, root password and browser profile across a real A/B cycle.
+- [system] Mixed versions (old viewer + new manager and reverse) and rollback with a turned screen: reasoned, never run; GRUB fallback/recover on real amd64 end to end.
+- [system] Session bus for root, `unitotem-boot-orientation` on boards, new `rc.xml` (Alt+F4) on boards.
+- [manager/screens] GPIO display power on a real line and against python3-libgpiod 2.x on a board.
+- [manager/screens] CEC (no adapter), serial power (no port), Wake-on-LAN of a monitor, DDC writes on monitors other than LG and Realtek board.
+- [manager/remote] Two real nodes: client viewer pixels, approval click path, 4443 behind a firewall, multi-GB transfers, adoption/unpair with window settings and layouts, file push to a client.
+- [manager] Camera and microphone capture never seen (boards have neither).
+- [manager/webui] Network page (Wi-Fi grouped by SSID, AP lock, strongest AP), Scheduler/Audio/Viewers controls never clicked in a browser; routes `DELETE /backup` and `POST /pdf-view/failed` unchecked.
+- [manager/viewer] PDF "canvas blank -> redraw smaller + notification" path never forced on a board; playlist drag handle (scheduler.vue:30-36) shows only on row hover, touch needs a first tap.
+- [manager/touch] Automatic touch mapping on two monitors; touch panel vanishing 4 s after boot on a board unexplained.
+- [manager] Real playback checks left in the test-procedure doc section 7; per-asset volume/audio output not checked on a remote viewer.
+- [manager/updates] Forced copy, cancel, armed trial, staged reboot on the Updates page against a real updater.
+- [manager/cef] Unverified: `wayland-views-pr` branch against pr-cefpython.md; vendor wheels vs pinned commit; whether the `.ready` cache check in cef-wheels-inner.sh survives a patch change that keeps libcef.so timestamps.
+- [manager] Test-procedure doc: section 4 uses `cpumeas.py`/`cdp.py` not in the repository; section 9 rsync path (/var/opt/rsync/) differs from the `VM_RSYNC_PATH` default; procedure not re-run in review.
+- [manager/viewer] ticker.py:160 `set_settings` calls `push.tell_window` with no `_supports_layout` check (controller.py:428): effect on a viewer without layout support unverified.
+
+## Defects found in review
+- [manager] utils/models/assets.py:80,88 `__enable`/`__disable` call `self.enable()`/`self.disable()`, defined nowhere: scheduled enable/disable dates never take effect.
+- [manager] routers/login.py:127 `GET /login/users` needs no session: account names leak to any client on 443.
+- [manager] routers/login.py:122,138 `src` used unvalidated as redirect target (open redirect).
+- [manager] routers/login.py:167 `set_passwd` takes the password as a query parameter (URL and access logs); find the caller or remove.
+- [manager] api/security.py:21 `users()` is a WSBroadcast: account names and permissions reach non-admin sessions.
+- [manager] routers/websocket/web_ui.py:63 sends the full traceback to clients in error replies.
+- [manager] routers/setup.py:65 first-access setup ignores the strict password policy.
+- [manager] debian/control:89 depends on python3-pampy but osusers.py imports `pam` (python-pam); also in unitotem/locks/*.lock.
+- [manager] main.py:353-361 bind failure leaves exit status 0, systemd does not restart; main.py:208 argparse never parsed (`--version` dead).
+- [manager] api/scheduler.py:53,59 media probe with `verify=False`; :246 `edit_asset` probes on the event loop (up to ~10 s).
+- [manager] utils/storage/uploadmanager.py:123 FileNotFoundError retry re-reads a half-consumed stream.
+- [manager] utils/ticker/service.py:144,148-151 source deleted/replaced during an in-flight fetch: `record_success`/`record_failure` raise KeyError, `_failed` raises again and escapes run(); ticker scheduler dies until restart. Skip ids no longer in the store.
+- [manager] utils/remote/link.py:113 and discovery.py:119 listener/announcer failure not retried until apply_role; service.py:503 ImportError escapes after cache sent.
+- [manager] plugins/unitotem_node/api/network.py:136,170 ip method/address/gateway/dns not validated; networkmanager.py:300 invalid DNS silently dropped.
+- [manager] plugins/unitotem_node/api/timers.py:67 delete_job does not check uuid; :91 edit_job cannot clear output/wake.
+- [manager] plugins/unitotem_node/__init__.py:122 logs "started fallback hotspot" when start_hotspot() returned nothing.
+- [manager] plugins/unitotem_viewer/__init__.py:37 + app.py:154 missing cefpython3 raises ImportError out of run_gui instead of the fallback.
+- [manager] plugins/unitotem_viewer/cdp.py:287 and :365 `_window_of` defined twice; the second wins, the first is dead.
+- [manager] webui/src/pages/login.vue:62 wrong password not handled (fetch resolves on 401, page always redirects).
+- [manager] webui network.vue:733 editor never closes / pendingAddr never runs, :632 wifiConnecting spinner stuck on error; updates.vue:314 spinner stuck; base.vue:291 swallows errors so `data.error` branches (network.vue:576,601, remote.vue:311) are dead.
+- [manager] webui scheduler.vue:557 upload errors only logged, :535 Reload button only animates; users.vue:36 deletes account without confirmation, :164 hard-coded permission list (keep in step with `UserPerms`); display.vue:9 label promises a missing click action, orientation/flip always send `window_id: 0`.
+- [manager] webui polish: native `confirm()` (scheduler.vue:528,603, timers.vue:277); viewers.vue:340-349 `pending` set and cleared in one tick, `assignments`/`connected` never read; base.vue:103,115 Vuetify 2 colour names (`red darken-1`); info.vue:59-60 temperatures above 300 greyed, purpose unclear.
+- [manager] Crowded UI: viewers.vue matrix (move keyboard, screensaver, refresh, language to a per-window dialog), Add URL dialog (~12 fields, needs Advanced), settings/display.vue (7 blocks).
+- [manager] Backup gaps: screen_control.json and touch orientation/calibration not in any backup part; netplan part still exported though never written.
+- [system] build-unitotem.sh: no nice/CPUWeight save-restore with EXIT trap (docs/system/build.md); own ssh helpers instead of deploy/lib.sh (no BatchMode, host key check off).
+- [system] build-unitotem.sh:88,202 ROOT_PASSWORD in ssh command text and docker -e (visible in process lists); MAKE_PARTS/EFI_SIZE/ROOT_SIZE not forwarded.
+- [system] build-unitotem.sh:166 lock gate handles exit 20 and 2 only, any other failure continues with locked versions; rsync failure silenced with `|| true`.
+- [system] iso/installer.sh:548,558 installs absent files (chromium-flags-amd64, start-xorg.service): aborts at step 9; :508 root password quoting breaks on `'`; Wi-Fi not carried; X11 system. iso/build-live.sh:195 `linuxefi` may not exist.
+- [system] deploy/ota-engine.sh promote-default rpi branch (~724) writes config.txt/cmdline.txt without os_prefix/slot: breaks A/B if run; :846 DATA/history never pruned.
+- [system] /root handling differs: unitotem-update:418 copies root.<old>, ota-engine migrate-etc-overlay leaves it.
+- [system] deploy/remote-deploy.sh: `--debug` unread, `--host` not passed (OTA_HOST dead), cmd_serve has no tunnel, changes check failure (2/127) exits 1 like "changes found", recover strips :PORT.
+- [system] unitotem-update:378 Lock unlinks before close; :782 health_ok disables TLS verification; unitotem-maintenance ignores update-grub failure and reboots anyway.
+- [system] overlayfs-hook.sh: DATA not found warns and continues with no overlays and no failure status.
+- [system] tools/pkglock.py: LOCAL_RE treats any `~devN` archive version as local; `.lock.prev` left untracked; tests missing for check/snapcheck/upgrade.
+- [system] tools/release/unitotem-release: `build` has no caller/test, build-ab has no split for roots over 2 GiB, no publish script or workflow.
+- [system] Stale files: deploy/unitotem-installer ISO, flash-*/flash.manifest, `.gitignore:3` deploy/flasher/, tools/assets/ unreferenced, docker-compose.yml unreferenced.
+- [system] Product text names developer items: stage1-packages.sh:143 "the Pi 4 test unit", manager rtc.py:151 "the test VM", gpu.py:213 and screens/identity.py/mechanism.py name test machines.
+- [manager] tools/ui-touch-setup.py raw sshpass/ssh (violates helper-only SSH rule); tools/vm-deploy has no lock; tools/gen-api-types.py monkeypatches `pathlib.Path.mkdir` and `shutil.disk_usage` globally (fragile); tools/ui-vnc.py docstring cites a runner script not in the repository, its token checks not re-run since the X11 era.
+- [manager] tools/cef-server build-all.sh/cef-rebuild.sh skip apply-patches.sh.
+- [manager] Test warnings: `Asset.__del__` (assets.py:181) reads `self.uuid` on a partly built object (7 PytestUnraisableExceptionWarning in test_asset_zoom.py); user.py:89 pydantic serializer warning (permissions as list); never-awaited `Timer._job` coroutine (test_playlists.py copy/move test, touch_calibration.py:103).
+- [manager] No unit tests for terminal.py, ws_token.py, devtools.py, /vnc path, node backup parts, audio.py, Wi-Fi scan, hotspot start, scheduled enable/disable firing.
+- [manager] Legacy users.json (werkzeug hashes) cannot migrate: first access asked again after upgrade, rollback cannot log in.
+
+## Later (only when the user says)
+- [system/viewer] Boot gap of ~7 s between Plymouth and the first boot-splash frame with kernel text on screen. Try by hand on a Pi: tty1 KD_GRAPHICS at labwc start, `plymouth quit --retain-splash` instead of `pkill plymouthd` + `cat /dev/zero > /dev/fb0`, paint splash background at once. Kernel logs stay.
+- [manager] Backlog: custom scripts, custom image background, offline service worker, tidy up the web UI, separate modal for screen splitting.

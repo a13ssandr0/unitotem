@@ -1,76 +1,73 @@
 # UniTotem
-Managed Raspberry Pi kiosk mode image.
 
-## IMPORTANT
-Versions before 2022-11-01 had a previous version of the unitotem-manager repository key, you need to reimport the gpg key with:
-```sh
-sudo curl -s --compressed -o /etc/apt/trusted.gpg.d/unitotem-manager.asc "https://a13ssandr0.github.io/unitotem-manager/KEY.gpg"
-```
+UniTotem is a managed kiosk system for digital signage. It runs on an immutable Debian image and plays playlists of web pages, images, videos, PDFs and RSS tickers on one or more screens, controlled from a web UI.
 
-## Installation
-1. Download the latest image from the Releases page and install it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on a micro SD card (class 10 is strongly suggested for speed).
-2. Insert the micro SD in a Raspberry, connect it to a screen and boot it, during first boot the filesystem will be expanded and hostname will be set to `unitotem-xxxxx` where x is a random alphanumeric character (useful if you have more than one in the network).
-3. After boot completes, you should firstly see the loading screen and then the welcome screen with the hostname and IP address in the bottom left corner.
-![Unitotem welcome screen](images/first_boot_screen.png)
-If the Raspberry is not connected to a network, it will create a fallback hostspot and its SSID and password will be displayed together with a QR code for fast connection.
+## Features
 
-## Usage
-1. Open a browser and go to the IP address shown in the corner, username: `admin`, password: `admin` (CHANGE it in the [settings](#change-password)), you will see a page like this one:
-![Unitotem scheduler](images/unitotem_scheduler.png)
-The buttons on the left of the "Add asset" button are:
-    - Previous asset
-    - Reload asset
-    - Next asset
-2. Use the Add asset button to add the URL of a page to the list or the Files button to upload a new file (after you upload a file the page will reload so you need to reopen the File manager window), then click on the rightmost button near the name of the file you just uploaded to add it to the assets list.
-![File add window](images/add_file_screen.png)
-3. Enable the asset using the toggle switch.
+- Playlists with per-asset duration, fit mode, background colour, enable and disable dates
+- Per-screen viewer windows, with split layouts (panes) and per-window playlist assignment
+- Local files (uploads) and content URLs
+- Per-asset and per-window volume, per-device audio output
+- Pairing of nodes (server and client roles) with certificate-pinned mutual TLS
+- Built-in timers: reboot, shutdown, suspend and screen on/off, with cron schedules
+- Network management (Wi-Fi, hotspot, hostname), display orientation and flip, touch calibration
+- Users and capabilities (scheduler, audio, power, admin)
+- Live system info (CPU, memory, temperatures, fans, storage)
+- Backup, restore and reset of selectable parts
+- Whole-image A/B updates with automatic rollback
 
-## Configuration
-![Unitotem settings](images/unitotem_settings.png)
-### Playback
-Default asset duration: Default time length each asset is shown (except for videos).
-### Updates
-Simple and quick frontend for apt.
-### Change password
-Change admin password for UniTotem.
-### Audio output
-Select the audio output device. After selecting the new device you have to reboot the system, otherwise Chromium won't change output device.
-### Network
-Hostname: change device name advertised in the network.
+## Supported hardware
 
-Network configuration relies on the more advanced netplan instead of the classic dhcpcd5, you can use the commented template to setup a static IP or to connect to a wireless network.
-### Power scheduling
-Schedule shutdowns and reboots with cron.
-![Power schedule add window](images/add_power_schedule.png)
+| Target | Image |
+|---|---|
+| PC, 64-bit Intel or AMD (UEFI or BIOS) | amd64 disk image |
+| Raspberry Pi 4 and Raspberry Pi 5 | arm64 disk image |
 
-## System and management
-### SSH
-In order to provide quick ssh access the default user `pi` has a default password: `unitotem`, it's strongly advised to change it as soon as possible (log in via ssh and use `passwd` to set a new one), or to use the user renaming function in Raspberry Pi Imager.
+A display connected to the HDMI or DisplayPort output is required.
 
-The default prompt for changing password on first boot is disabled so that the system can be connected in place without ever using a keyboard, but this workaround requires what said above.
+## Install
 
-### Configuration file
-UniTotem configuration file is located at `/etc/unitotem/unitotem.conf`.
+Disk images are built from this repository (see Build from source): `unitotem-<date>-arm64.img.xz` and `unitotem-<date>-amd64.img.xz`. GitHub Releases carry the signed update streams that installed nodes fetch, not disk images.
 
-## Building
-UniTotem system image creation is based on [pi-gen](https://github.com/RPi-Distro/pi-gen), to start the building process you need to:
-- Install the required packages:
-  ```sh
-  apt-get install coreutils quilt parted qemu-user-static debootstrap zerofree zip \
-  dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-  qemu-utils kpartx gpg pigz
-  ```
-- Clone this repository to a base path WITHOUT spaces.
-- Run `sudo ./build.sh` in the base path of the repository.
+**Raspberry Pi**
 
-For further information about the building process refer to the pi-gen repository page.
+1. Write the arm64 image to a microSD card (class 10 or faster) with Raspberry Pi Imager ("Use custom") or any image writer.
+2. Insert the card and power on.
 
-## Known bugs
-These sections have been moved to [UniTotem-manger #Known-bugs](https://github.com/a13ssandr0/unitotem-manager#known-bugs)
+**PC**
 
-#
-#
+1. Write the amd64 image to the target disk with any image writer.
+2. Boot from that disk.
 
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/a13ssandr0)
+**Network deploy**
 
-[<img src="https://raw.githubusercontent.com/aha999/DonateButtons/master/Paypal.png" width="200">](https://www.paypal.com/donate/?hosted_button_id=9RHPMJAS26TJN)
+`deploy/remote-deploy.sh` installs or recovers a node over the network from a host, through the resident OTA fallback. See [docs/system/deploy-and-recovery.md](docs/system/deploy-and-recovery.md).
+
+## First login
+
+- The welcome screen shows the hostname and IP address.
+- Without a network connection, the node starts a hotspot. Its name is the hostname; its password is shown on screen with a QR code.
+- Open `https://<hostname or IP>/` from a browser. Port 80 redirects to HTTPS.
+- The certificate is self-signed: the browser shows a warning to accept once.
+- On a new node, `/setup` creates the first administrator. Later, log in with a system account of the `unitotem` group.
+
+## Updates
+
+- The system is replaced as a whole image on two root slots (A/B). Packages are never upgraded at runtime.
+- Images come from GitHub Releases and are checked against signed keys and manifests.
+- The new slot boots on trial. It becomes the default only after the manager answers `GET /health`. Otherwise the node rolls back to the previous slot.
+- User data (configuration, certificates, uploads) is kept across updates.
+- Automatic policy (Settings, Updates): `off` (default), `download`, `stage`, `reboot`, or `scheduled` (daily reboot in a one-hour window, default 04:00).
+- Check, apply, confirm and rollback are also available manually.
+
+## Build from source
+
+The scripts in the repository build the amd64 and arm64 disk images from the package sets pinned in `unitotem/locks/`. See [docs/system/build.md](docs/system/build.md). `build-iso.sh` builds an installer ISO, described in [docs/system/installer-iso.md](docs/system/installer-iso.md).
+
+## Documentation
+
+Full documentation is in [docs/README.md](docs/README.md).
+
+## License
+
+GNU General Public License v3.0 (GPL-3.0). See [LICENSE](LICENSE). Third-party code, data and libraries are listed in [THIRD-PARTY.md](THIRD-PARTY.md).
