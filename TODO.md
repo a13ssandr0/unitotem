@@ -6,7 +6,7 @@
 - [manager/viewer] Long press on a real panel must show no context menu (needs a finger).
 - [manager/touch] Guided touch setup on a real panel (Display -> "Touch doesn't match? Fix it"); needs a person.
 - [system] H.264/AAC licensing: belongs to whoever distributes the image, a business decision.
-- [system] Release signing: back up the real root key (backup-keys.sh, 3 copies); confirm key model (release key + offline root) and custody.
+- [system] Release signing: the 2.3.0 signing key was lost with a damaged disk. Before the first publication the user creates the new key and stores it safely (backup-keys.sh, 3 copies); confirm key model (release key + offline root) and custody. Intermediate development debs and images are never published.
 - [system] Real GitHub release test (redirects, API limits, 2 GiB asset limit, publish workflow) and whether images may be public once checked for secrets.
 - [system] Legacy pi-gen tree at the repo root (build.sh, stage0-2/, export-image/, Dockerfile...) and the broken single-root installer ISO (iso/): remove or keep.
 - [system] Windows-source installer: build (8-12 days MVP, docs/system/windows-install-research.md) or delete the research.
