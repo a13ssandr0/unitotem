@@ -29,7 +29,7 @@ Pages (`webui/src/pages/`):
 | `settings/audio.vue` | `/settings/audio` | default output, per-device volume and mute |
 | `settings/display.vue` | `/settings/display` | screen preview, orientation, flip, insecure certificates, GPU status, `ScreenControl`, `TouchMapping` |
 | `settings/remote.vue` | `/settings/remote` | server or client role, clients, pairing, adoption, leave or forget |
-| `settings/users.vue` | `/settings/users` | accounts, permissions, password policy |
+| `settings/users.vue` | `/settings/users` | accounts, permissions, password policy, login page user list switch |
 | `settings/timers.vue` | `/settings/timers` | scheduled jobs (shutdown, reboot, suspend, screen on/off) |
 | `settings/network.vue` | `/settings/network` | hostname, devices, saved connections, Wi-Fi scan and connect |
 | `settings/updates.vue` | `/settings/updates` | A/B slots, check, download, install, rollback, automatic policy |
@@ -88,7 +88,7 @@ API groups (`api.*`, names as in the schema):
 - Settings: push `info`. `Audio`: `devices`, `set_default_device`, `set_volume`, `set_mute`. `Display`: `displays`, `bounds`, `orientation`, `flip`, `allow_insecure_certs`, `gpu_feature_stats`, `set_orientation`, `set_flip`, `set_allow_insecure_certs`. `Screens`: `screens`, `gpio_lines`, `probe`, `configure`, `set_power`, `set_input`, `set_volume`, `set_mute`. `Touch`: `devices`, `setup`, `start_setup`, `confirm_setup`, `cancel_setup`, `reset`, `forget`, `set_output`, `set_orientation`.
 - Settings `Network`: `hostname`, `set_hostname`, `devices`, `connections`, `connection_details`, `active_connections`, `has_wireless`, `wireless_enabled`, `set_wireless_enabled`, `wireless_networks`, `connect_wifi`, `default_wlan_device`, `activate_connection`, `deactivate_connection`, `edit_connection`, `delete_connection`.
 - Settings `Remote`: `mode`, `probe`, `become_client`, `become_server`, `adopt`, `request_pairing`, `cancel_pairing`, `approve_request`, `reject_request`, `set_client_enabled`, `unpair_client`, `leave_server`, `forget_server`.
-- Settings `Security`: `current_user`, `users`, `password_policy`, `add_user`, `delete_user`, `set_user_password`, `set_user_permissions`, `set_password_policy`. `Timers`: `jobs`, `add_job`, `edit_job`, `delete_job`, `set_job_enabled`. `Update`: `status`, `availability`, `check`, `fetch`, `apply`, `confirm`, `cancel`, `rollback`, `copy_to_other`, `set_policy`.
+- Settings `Security`: `current_user`, `users`, `password_policy`, `login_user_list`, `add_user`, `delete_user`, `set_user_password`, `set_user_permissions`, `set_password_policy`, `set_login_user_list`. `Timers`: `jobs`, `add_job`, `edit_job`, `delete_job`, `set_job_enabled`. `Update`: `status`, `availability`, `check`, `fetch`, `apply`, `confirm`, `cancel`, `rollback`, `copy_to_other`, `set_policy`.
 - Power: `suspend_support`, `reboot`, `poweroff`, `suspend`. Notifications: push `list`; `mark_read`, `dismiss`, `dismiss_all`, `invoke`. Ticker: push `sources`, `settings`, `preview`; `add_source`, `edit_source`, `delete_source`, `enable_source`, `fetch_now`, `set_settings`. Vnc: push `outputs` (`{outputs, available}`).
 
 Payload fields used by pages:
@@ -99,7 +99,7 @@ Payload fields used by pages:
 - Network device state: NetworkManager `NM_DEVICE_STATE` (100 connected, 120 failed, 40-90 connecting); device type 32 has no connect or disconnect actions.
 
 Globals and storage:
-- `window.__INITIAL_STATE__`: `hostname`, `ip_addr`, `os_vers`, `ut_vers`, `plugins`, `src` (post-login target), `rules`, `min_length`, `max_length` (setup). Also `window.__BOOT_ID__`, `window.utKeyboard`, `window.utTicker`.
+- `window.__INITIAL_STATE__`: `hostname`, `ip_addr`, `os_vers`, `ut_vers`, `plugins`, `src` (post-login target), `show_users` (login), `rules`, `min_length`, `max_length` (setup). Also `window.__BOOT_ID__`, `window.utKeyboard`, `window.utTicker`.
 - `localStorage`: `themeMode` (`light`, `dark`, `auto`), `last_user`. `sessionStorage`: `unitotem-chunk-reload`, `unitotem-boot-reload`.
 - Keyboard config `{enabled, button_position, layout}`; positions are the 8 edge names.
 

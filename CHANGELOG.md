@@ -91,6 +91,7 @@
 - Uploads need authentication; backup restricted to administrators; debug API removed.
 - Error pages show no version, OS, IP or hostname.
 - First access shows welcome screen with hotspot credentials until an administrator exists.
+- Login hardening: rate-limited login and user list (list can be hidden), redirect target restricted to local paths, password in request body, no traceback to clients, user list pushed to administrators only, first-access setup applies the password policy, login shows wrong-password errors.
 
 #### Playlists and scheduler
 - Multiple playlists: rename, default, copy and move assets, drag-and-drop reorder and upload.

@@ -50,12 +50,6 @@
 
 ## Defects found in review
 - [manager] utils/models/assets.py:80,88 `__enable`/`__disable` call `self.enable()`/`self.disable()`, defined nowhere: scheduled enable/disable dates never take effect.
-- [manager] routers/login.py:127 `GET /login/users` needs no session: account names leak to any client on 443.
-- [manager] routers/login.py:122,138 `src` used unvalidated as redirect target (open redirect).
-- [manager] routers/login.py:167 `set_passwd` takes the password as a query parameter (URL and access logs); find the caller or remove.
-- [manager] api/security.py:21 `users()` is a WSBroadcast: account names and permissions reach non-admin sessions.
-- [manager] routers/websocket/web_ui.py:63 sends the full traceback to clients in error replies.
-- [manager] routers/setup.py:65 first-access setup ignores the strict password policy.
 - [manager] debian/control:89 depends on python3-pampy but osusers.py imports `pam` (python-pam); also in unitotem/locks/*.lock.
 - [manager] main.py:353-361 bind failure leaves exit status 0, systemd does not restart; main.py:208 argparse never parsed (`--version` dead).
 - [manager] api/scheduler.py:53,59 media probe with `verify=False`; :246 `edit_asset` probes on the event loop (up to ~10 s).
@@ -67,7 +61,6 @@
 - [manager] plugins/unitotem_node/__init__.py:122 logs "started fallback hotspot" when start_hotspot() returned nothing.
 - [manager] plugins/unitotem_viewer/__init__.py:37 + app.py:154 missing cefpython3 raises ImportError out of run_gui instead of the fallback.
 - [manager] plugins/unitotem_viewer/cdp.py:287 and :365 `_window_of` defined twice; the second wins, the first is dead.
-- [manager] webui/src/pages/login.vue:62 wrong password not handled (fetch resolves on 401, page always redirects).
 - [manager] webui network.vue:733 editor never closes / pendingAddr never runs, :632 wifiConnecting spinner stuck on error; updates.vue:314 spinner stuck; base.vue:291 swallows errors so `data.error` branches (network.vue:576,601, remote.vue:311) are dead.
 - [manager] webui scheduler.vue:557 upload errors only logged, :535 Reload button only animates; users.vue:36 deletes account without confirmation, :164 hard-coded permission list (keep in step with `UserPerms`); display.vue:9 label promises a missing click action, orientation/flip always send `window_id: 0`.
 - [manager] webui polish: native `confirm()` (scheduler.vue:528,603, timers.vue:277); viewers.vue:340-349 `pending` set and cleared in one tick, `assignments`/`connected` never read; base.vue:103,115 Vuetify 2 colour names (`red darken-1`); info.vue:59-60 temperatures above 300 greyed, purpose unclear.
@@ -91,6 +84,16 @@
 - [manager] Test warnings: `Asset.__del__` (assets.py:181) reads `self.uuid` on a partly built object (7 PytestUnraisableExceptionWarning in test_asset_zoom.py); user.py:89 pydantic serializer warning (permissions as list); never-awaited `Timer._job` coroutine (test_playlists.py copy/move test, touch_calibration.py:103).
 - [manager] No unit tests for terminal.py, ws_token.py, devtools.py, /vnc path, node backup parts, audio.py, Wi-Fi scan, hotspot start, scheduled enable/disable firing.
 - [manager] Legacy users.json (werkzeug hashes) cannot migrate: first access asked again after upgrade, rollback cannot log in.
+
+## To build (Viewers and Display pages)
+- [manager/webui] Viewers: compact playlist x window matrix (checkboxes only) plus a per-window detail panel with sections (Audio, Interaction: keyboard, interactive screen, page language; Maintenance: refresh, developer tools; Layout and panes); RSS sources in their own section. Drop dead state (viewers.vue:340-349).
+- [manager/webui] Display redesigned after KDE's display settings: screen selector (real `window_id`), per screen: identify, resolution, refresh rate, orientation/flip, power and inputs (ScreenControl), touch (TouchMapping). Certificates move to Security, GPU status to Info. No scale control.
+- [manager/screens] Backend: `Settings/Display/outputs` (modes as width, height, refresh_mhz), `set_mode` with 15 s revert and `confirm_mode`, `reset_output`, viewer `identify`; mode persisted in `viewer_settings.json` and replayed by `output_transform.py`. Works on labwc 0.20 (arm64) and 0.8.3 (amd64).
+- [manager/viewer] Screen id under the IP on the no-assets and welcome pages, only when more than one screen is connected (welcome page look otherwise unchanged).
+- [manager/webui] Settings > Users: new "show user list on login page" switch and the login error display never run in a browser.
+
+## Best effort, at the very end (only after everything else is finished)
+- [manager/screens] Colour: ICC profile and colour precision/HDR per screen. Findings: labwc 0.20 (arm64) has the colour-management protocol, no ICC config key found, Pi 4 renderer support untested, vc4 `max bpc` 8 and not settable through the compositor; labwc 0.8.3 (amd64) has no colour protocol. Start with a read-only line (max bpc, colour space) and a Pi test on labwc 0.20.
 
 ## Later (only when the user says)
 - [system/viewer] Boot gap of ~7 s between Plymouth and the first boot-splash frame with kernel text on screen. Try by hand on a Pi: tty1 KD_GRAPHICS at labwc start, `plymouth quit --retain-splash` instead of `pkill plymouthd` + `cat /dev/zero > /dev/fb0`, paint splash background at once. Kernel logs stay.

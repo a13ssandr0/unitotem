@@ -29,7 +29,10 @@ Paths: relative to unitotem-manager/
 
 - Login accepts a name and password that PAM accepts for a system account.
 - Allowed accounts: root, or any account in group `unitotem` (primary or supplementary). `osusers.may_login()` runs before PAM: non-members never reach PAM.
-- `POST /auth/token` (form `username`, `password`, `src`, `remember_me`): PAM runs in a thread. Failure raises `InvalidCredentialsException`. Success returns 303 to `src` and sets the cookie.
+- `POST /auth/token` (form `username`, `password`, `src`, `remember_me`): rate limited per client address (10 per 60 s, 429 beyond; `RateLimiter` of `utils/remote/pairing.py`). PAM runs in a thread. Failure raises `InvalidCredentialsException` (401). Success returns 303 to `src` and sets the cookie.
+- `src` (`POST /auth/token` field, `GET /login` query) accepts only a same-site relative path: one leading `/`, no `//`, no backslash, no control characters, at most 2048 characters. Anything else becomes `/` (`routers/login.py` `safe_src`).
+- Login page: shows an error on 401 (wrong name or password) and on 429 (too many attempts); it does not redirect on failure.
+- `GET /login/users`: account names only, never permissions; rate limited per client address (30 per 60 s, 429 beyond). Returns `[]` when `show_login_users` is off (default on); the login page then shows a plain username field. Settings > Users switch "Show the list of users on the login page" sets it (WS `set_login_user_list`).
 - Cookie: JWT signed with `environ.auth_token`. Claims `sub`, `sid` (random per login), `at` (issue time), `cre`. HttpOnly, Secure, SameSite=Strict. `remember_me` gives Max-Age 7 days; otherwise a browser-session cookie.
 - Each request: `user_manager.get_user()` loads the user (the account must exist and may log in), then `session_valid()` checks revocation. Removing an account from the group ends its access on the next request.
 - Revocation (`revoke_sessions`): sets `invalid_before` to now and `keep_sid`; earlier cookies stop working except `keep_sid`. Open websockets of the user are closed by the server (1008, `Not Authenticated`).
@@ -47,7 +50,7 @@ Paths: relative to unitotem-manager/
 - Accounts created by UniTotem: GECOS `UniTotem user`, no home, shell `/usr/sbin/nologin`, group `unitotem`. Deleting a user removes the system account only if UniTotem created it; otherwise it only leaves the group.
 - Password rules:
   - Basic (always): not empty, at most 128 characters, no control characters.
-  - Strict (only when `enforce_password_policy`; add user, admin password change, own change): at least 10 characters, not the username (case-insensitive), not one repeated character, not a common word.
+  - Strict (only when `enforce_password_policy`; add user, admin password change, own change, first administrator at `/setup`): at least 10 characters, not the username (case-insensitive), not one repeated character, not a common word.
   - Username (always): `^[a-z_][a-z0-9_-]{0,31}$`.
 - Backup: stores capabilities and each `/etc/shadow` hash, never a password. Restore recreates accounts with `useradd` + `chpasswd --encrypted`. Reset deletes UniTotem accounts and removes the others from the group.
 - Assets (`.js` chunks) and uploads need a session, except from loopback (127.0.0.1, ::1).
@@ -63,7 +66,7 @@ Files (directory `/etc/unitotem/`, overridable by CLI flags):
 | File | Content |
 |---|---|
 | `users.json` (`--users_file`, 0600) | `{"<name>": {"permissions": [...], "invalid_before": float, "keep_sid": str or null}}`. No passwords; legacy `password` keys are dropped on next save |
-| `security.json` (beside users.json) | `{"enforce_password_policy": bool}`, default false. Missing or broken file = defaults |
+| `security.json` (beside users.json) | `{"enforce_password_policy": bool, "show_login_users": bool}`. Defaults: `enforce_password_policy` false, `show_login_users` true. Missing or broken file = defaults |
 | `unitotem.env` (`--envfile`) | `AUTH_TOKEN` (cookie signing key), `INSTANCE_ID`, `HOTSPOT_UUID`. Generated when missing. Changing `AUTH_TOKEN` invalidates every cookie |
 | `/etc/ssl/unitotem.pem` (`--certfile`, `--keyfile`) | Certificate and key in one PEM |
 
@@ -73,23 +76,25 @@ HTTP:
 
 | Method and path | Auth | Result |
 |---|---|---|
-| GET `/login?src=` | none | Login page; redirects to `/setup` if no admin, to `src` if logged in |
-| POST `/auth/token` | none | 303 + cookie, or invalid credentials |
+| GET `/login?src=` | none | Login page; `src` checked as in [How it works](#how-it-works); redirects to `/setup` if no admin, to `src` if logged in |
+| POST `/auth/token` | none, rate limited per address (10 per 60 s) | 303 + cookie; 401 invalid credentials; 429 too many attempts |
 | GET `/logout` | none | Clears the browser cookie only; the token stays valid until expiry or revocation |
-| GET `/login/users` | none | JSON list of account names |
+| GET `/login/users` | none, rate limited per address (30 per 60 s) | JSON list of account names, never permissions; `[]` when `show_login_users` is off; 429 beyond the limit |
 | GET `/setup` | none | Setup page; 404 once an admin exists |
-| POST `/setup` | none | JSON `{username (max 64), password (max 512)}`: 200 `{"ok": true}`, 422 `{"detail": [...]}`, 409 account exists, 404 when set up |
-| POST `/api/settings/set_passwd?password=` | session | Own password; 422 `{"detail": [...]}` |
+| POST `/setup` | none | JSON `{username (max 64), password (max 512)}`: 200 `{"ok": true}`, 422 `{"detail": [...]}` (same policy as `set_passwd`), 409 account exists, 404 when set up |
+| POST `/api/settings/set_passwd` | session | JSON body `{"password": str (max 2048)}`; own password; 422 `{"detail": [...]}`. No web UI caller |
 | GET `/api/schema` | session | Every WS function with permissions and arguments |
 
 WS class `Security`:
 
 | Function | Permission | Arguments | Result |
 |---|---|---|---|
-| `users` | admin | none | broadcast `users: {name: {perms}}` |
+| `users` | admin | none | multicast to administrator sessions only: `users: {name: {perms}}` |
 | `current_user` | none | none | `name`, `perms` |
 | `password_policy` | none | none | broadcast `enforced`, `rules` |
 | `set_password_policy` | admin | `enforce` | policy |
+| `login_user_list` | admin | none | multicast to administrators: `show` |
+| `set_login_user_list` | admin | `show` | `show`, as `login_user_list` |
 | `add_user` | admin | `username`, `password` | users, or error |
 | `set_user_password` | admin | `username`, `password` | none, or error; that user's sessions end |
 | `set_user_permissions` | admin | `username`, `perms` | multicast `reload` to that user, then users |
@@ -108,9 +113,12 @@ Errors: `User already exists`, `Password refused` (`extra` list), `User <name> d
 - Logout does not revoke the token server-side.
 - The web certificate is created once by postinst (36500 days), kept across upgrades, removed on purge.
 - Loopback skips the session check for assets and uploads: local processes read uploads without login.
+- `WSMulticast(users, /, target, **payload)`: the recipients are positional only, so a payload may carry a `users` key.
+- `/ws` handler: an unexpected exception is logged server-side with its traceback; the client receives only `{"error": "Internal error"}`.
 
 ## Tests
 
 - `pytest` from the repository root. `test_osusers.py` needs the module `pam`: pip `python-pam`, Debian `python3-pampy` (the package the deb depends on); `utils/osusers.py` imports `pam` lazily.
 - `manager/tests/test_osusers.py`: group check, PAM not called for non-members, useradd/chpasswd argument lists, newline injection, deletion of UniTotem accounts only, backup hash read, revoked sessions (fake passwd/group, mocked PAM).
 - `manager/tests/test_password_policy.py`: default off, settings round trip, rules.
+- `manager/tests/test_login_hardening.py`: rate limits on `/auth/token` and `/login/users`, `src` validation, `show_login_users` (default, `[]` when off, WS toggle), `set_passwd` JSON body, `users` and `login_user_list` multicast to administrators only, `/setup` policy, `/ws` internal error.
