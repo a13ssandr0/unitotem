@@ -40,6 +40,7 @@ Developer machines, devices, credentials and procedures: `CLAUDE.local.md` (not 
 - Third-party code, data and assets: listed in `THIRD-PARTY.md` and in `unitotem-manager/debian/copyright` (for what the debs ship); Apache/BSD/MIT notices kept. No proprietary data (it must come from an open-source source).
 - Values are data, never code: `fullmatch` validation, argument lists (no shell), `--` before positionals, serializers for XML/JSON, template autoescape.
 - Assume the worst user: validate, clamp, rate-limit.
+- Strings, codes and enums of an external system are ported from its source or docs, never guessed.
 - Prefer native interfaces and existing libraries (systemd via D-Bus/sd_notify, never `systemctl` subprocesses in product code); events over polling.
 - Tests stay honest: never weaken a check to make a build pass.
 - Image-owned files never under `/etc/unitotem` (A/B updates import that tree as user state): use `/usr/share/unitotem*`.

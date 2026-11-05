@@ -93,6 +93,7 @@ External tools: `wlr-randr`, `wlopm`, `ddcutil`, `cec-ctl`, `unitotem-boot-orien
 Backup: only `touch` (the mapping, not orientation or calibration) is a backup part. `screen_control.json` is not in backups.
 
 ## Rules and gotchas
+- Touch methods, in this order: automatic (libinput calibration matrix follows the output transform), four-quadrant mapping, exact-point calibration. The UI is a guided step view in plain words. Test against a real panel, never only a virtual device.
 
 - No `shell=True`: names, ports, MACs, chips are validated before use; paths are never built from input.
 - ddcutil 2.2 prints connector-resolution diagnostics on stdout before the real result when it cannot resolve a DRM connector: parsers match each line by prefix (`Display N`, `Invalid display`, `VCP`, `DRM connector`), never by position.
