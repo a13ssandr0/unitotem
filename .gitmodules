@@ -1,4 +1,4 @@
 [submodule "unitotem-manager"]
 	path = unitotem-manager
-	url = git@github.com:a13ssandr0/unitotem-manager.git
+	url = https://github.com/a13ssandr0/unitotem-manager.git
 	branch = viewer-wayland
