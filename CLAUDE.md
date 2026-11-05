@@ -9,7 +9,7 @@ Developer machines, devices, credentials and procedures: `CLAUDE.local.md` (not 
 `TODO.md`: open items only. `CHANGELOG.md`: what is done since the last release (one terse line per change, by area). Update both whenever a task is given or finished.
 
 ## Working method
-- Split work into micro-tasks for many Haiku agents, strictly supervised by few Sonnet agents (one, or one per macro-topic). Agents report; only the main session edits TODO/CHANGELOG/CLAUDE.md.
+- Split work into micro-tasks for many Haiku agents, strictly supervised by few Sonnet agents (one, or one per macro-topic). Every Sonnet agent splits its own task into micro-tasks and hands them to Haiku agents (spawn them, supervise, verify their output); it does not do the work itself. Agents report; only the main session edits TODO/CHANGELOG/CLAUDE.md.
 - Finish what is started: an interface is complete and usable on the real device before it is "done". If something cannot be completed, do the rest, then ask how to complete it.
 - Verify, never assume. Say what was verified and what was not; label inferences. Check every generated image or chart.
 - After a failure diagnose and fix; never repeat the same command blindly.
