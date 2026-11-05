@@ -85,7 +85,7 @@ Environment of `build-unitotem.sh`:
 | `ARCHES` | `amd64 arm64` | Architectures |
 | `FORCE_STAGE` | empty | 0-3: rebuild from that stage |
 | `PI_NATIVE_BUILD` | `1` | `0` disables the native arm64 path |
-| `PI_HOST` | `user@host` | Native arm64 build device |
+| `PI_HOST` | `user@host`, unset by default | Raspberry Pi for the native arm64 build; unset: Docker + qemu-aarch64 |
 | `PI_PASSWORD` | set in script | SSH password of `PI_HOST` |
 | `PI_BUILD_BASE` | path on the device | Build tree on the device |
 | `PKGLOCK` | `on` | `off`: skip all lock logic |
