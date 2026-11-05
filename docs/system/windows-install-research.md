@@ -52,6 +52,6 @@ bcdedit /set {fwbootmgr} bootsequence {GUID}               :: one-shot
 ## Limits
 
 - Wi-Fi-only PCs, legacy BIOS/MBR and Windows on ARM are not covered by the UniTotem OTA environment.
-- The OTA environment listens on SSH port 2222 with the fixed password `unitotem` (`OTA_PASSWORD` in `deploy/lib.sh`) while armed and can erase the disk: use it only on trusted networks.
+- The OTA environment listens on SSH port 2222 with the fixed password `unitotem` (`OTA_FALLBACK_PASSWORD` in `deploy/lib.sh`) while armed and can erase the disk: use it only on trusted networks.
 - Once disk writes begin, Windows is destroyed and there is no way back.
 - Firmware that ignores `BootNext` simply starts Windows again, with nothing destroyed.

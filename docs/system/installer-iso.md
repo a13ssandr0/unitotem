@@ -59,7 +59,7 @@ Disk layout (single-root, not A/B):
 - Kernel command line: `boot=live components quiet splash`.
 - Target services: `systemd-timesyncd NetworkManager dbus ssh iptables-firewall unitotem-maintenance-mode start-xorg`.
 - Target files: `/etc/hostname`, `/etc/hosts`, `/etc/locale.conf`, `/etc/vconsole.conf`, `/etc/X11/xorg.conf.d/00-keyboard.conf`, `/etc/localtime`, `/etc/fstab`, `/etc/netplan/00-default.yaml`, `/etc/default/grub`, `/etc/unitotem/chromium-flags`, `/usr/local/bin/chromium-unitotem`, `/usr/local/bin/unitotem-maintenance`, `/etc/systemd/system/start-xorg.service`, `/etc/systemd/journald.conf.d/unitotem.conf`, `/etc/udev/rules.d/60-scheduler.rules`, `/etc/sysctl.conf`, `/etc/default/rcS`.
-- Windows boot entry (research): `bcdedit /copy {bootmgr}`, `device partition=<ESP>`, `path \EFI\unitotem\shimx64.efi`; `{fwbootmgr} displayorder {GUID} /addfirst` (persistent) or `bootsequence {GUID}` (one-shot `BootNext`). OTA environment: `unitotem.ota=1`, SSH 2222, DHCP, `OTA_PASSWORD`.
+- Windows boot entry (research): `bcdedit /copy {bootmgr}`, `device partition=<ESP>`, `path \EFI\unitotem\shimx64.efi`; `{fwbootmgr} displayorder {GUID} /addfirst` (persistent) or `bootsequence {GUID}` (one-shot `BootNext`). OTA environment: `unitotem.ota=1`, SSH 2222, DHCP, `OTA_FALLBACK_PASSWORD`.
 
 ## Rules and gotchas
 

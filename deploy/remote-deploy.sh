@@ -22,7 +22,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${DIR}/deploy/lib.sh"
 
-require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip base64
+require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip base64 curl
 
 # The sudo askpass helper holds the target password, so it must not outlive the run (including failure or
 # Ctrl-C). No-op when logged in as root or when sudo is passwordless.
@@ -741,6 +741,26 @@ backup_legacy_system() {
     log "Backup written and verified: ${out}"
 }
 
+# Credential-free check of the freshly deployed system: a new system has no known account (root is open to the
+# first-administrator script only), so the probe uses the web interface. Prints the answer that matched and
+# returns 0: HTTPS /login is 200, or 302/303 to .../setup; else plain HTTP / redirects to https.
+post_deploy_probe() {
+    local ip="$1" answer code redir
+    answer=$(curl -k -s -m 5 -o /dev/null -w '%{http_code} %{redirect_url}' "https://${ip}/login" 2>/dev/null) || answer=""
+    answer="${answer% }"
+    code="${answer%% *}"; redir="${answer#* }"
+    if [ "$code" = 200 ] || { { [ "$code" = 302 ] || [ "$code" = 303 ]; } && [[ "$redir" == */setup ]]; }; then
+        echo "$answer"; return 0
+    fi
+    answer=$(curl -s -m 5 -o /dev/null -w '%{http_code} %{redirect_url}' "http://${ip}/" 2>/dev/null) || answer=""
+    answer="${answer% }"
+    code="${answer%% *}"; redir="${answer#* }"
+    case "$code" in
+        301|302|307|308) [[ "$redir" == https://* ]] && { echo "$answer"; return 0; } ;;
+    esac
+    return 1
+}
+
 cmd_deploy() {
     do_probe
     select_disk
@@ -808,27 +828,15 @@ cmd_deploy() {
         return 0
     fi
 
-    # The account to check afterwards is root@, not the login user: the machine that comes back is the freshly
-    # deployed UniTotem, whose only known account is root. The askpass helper written for the old user is gone
-    # with the replaced OS, so the escalation state is dropped too.
-    local post="root@${target_ip}"
-    clear_target_privilege
-    TARGET_USERHOST="$post"; TARGET_SUDO=""; TARGET_PRIV_READY=1
-
-    log "OTA sequence sent. Waiting for ${post} to become reachable on the real system (up to 10 minutes)..."
-    local waited=0
+    log "OTA sequence sent. Waiting for ${target_ip} to answer on the new system (up to 10 minutes)..."
+    local waited=0 answer
     sleep 30
-    while ! OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" true 2>/dev/null; do
+    while ! answer=$(post_deploy_probe "$target_ip"); do
         sleep 10; waited=$((waited + 10))
-        [ "$waited" -lt 600 ] || { warn "the target did not become reachable within 10 minutes - check manually (it may still be in stage 2, or waiting in the fallback)"; return 0; }
+        [ "$waited" -lt 600 ] || { warn "${target_ip} did not answer on the new system within 10 minutes - check manually (it may still be in stage 2, or waiting in the fallback)"; return 0; }
     done
-
-    if OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${post}" "[ -f /etc/unitotem/ota-preserve.list ]" 2>/dev/null; then
-        log "Deploy complete: ${post} is reachable on the new system."
-    else
-        warn "${post} is reachable but does not look like the new system - it may still be the fallback waiting for commands."
-        return 1
-    fi
+    log "Deploy complete: ${target_ip} answers on the new system (HTTPS /login: ${answer})."
+    return 0
 }
 
 # ---------------------------------------------------------------------------

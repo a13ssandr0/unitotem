@@ -161,6 +161,40 @@ chk "first-boot certificate service enabled" test -L "$R/etc/systemd/system/mult
 chk "the generator runs before the manager" file_has "$R/etc/systemd/system/unitotem-first-boot-cert.service" 'Before=.*unitotem-manager.service'
 chk "no SSH host key in the image's /etc/ssh is relied on (unitotem-ssh-hostkey regenerates)" test -x "$R/usr/sbin/unitotem-ssh-hostkey"
 
+echo "== First-access root (root is open until the first admin exists; the manager closes it afterwards)"
+# Field 2 of the root line in /etc/shadow is empty: no password
+root_shadow_open() { awk -F: '$1=="root"{f=1; if($2=="") ok=1} END{exit !(f && ok)}' "$R/etc/shadow"; }
+# root's login shell is the first-admin script
+root_shell_marker() { awk -F: '$1=="root"{f=1; if($7=="/usr/sbin/unitotem-first-admin") ok=1} END{exit !(f && ok)}' "$R/etc/passwd"; }
+# group $1 has gid < 1000 (system group)
+group_system() { awk -F: -v g="$1" '$1==g{f=1; if($3<1000) ok=1} END{exit !(f && ok)}' "$R/etc/group"; }
+# user $2 is in the members list (field 4) of group $1
+group_member() { awk -F: -v g="$1" -v u="$2" '$1==g{n=split($4,m,","); for(i=1;i<=n;i++) if(m[i]==u) ok=1} END{exit !ok}' "$R/etc/group"; }
+# the 7-line Match block is the last 7 lines of sshd_config, byte for byte
+SSHD="$R/etc/ssh/sshd_config"
+SSHD_MATCH='Match User root Group unitotem-first-admin
+    PermitRootLogin yes
+    PermitEmptyPasswords yes
+    ForceCommand /usr/sbin/unitotem-first-admin
+    DisableForwarding yes
+    PermitTunnel no
+    PermitUserRC no'
+sshd_match_at_end() { [ "$(tail -n 7 "$SSHD" 2>/dev/null)" = "$SSHD_MATCH" ]; }
+chk "root has an empty password field in /etc/shadow (first-access open state)" root_shadow_open
+chk "root's login shell is /usr/sbin/unitotem-first-admin" root_shell_marker
+chk "group unitotem-first-admin exists as a system group (gid < 1000, the sshd marker)" group_system unitotem-first-admin
+chk "root is a member of group unitotem-first-admin (group file members list)" group_member unitotem-first-admin root
+chk "group sudo exists (admins)" grep -q '^sudo:' "$R/etc/group"
+chk "group users exists (web UI users)" grep -q '^users:' "$R/etc/group"
+chk "sshd_config: PermitRootLogin prohibit-password" grep -qxF 'PermitRootLogin prohibit-password' "$SSHD"
+chk "sshd_config: PermitEmptyPasswords no" grep -qxF 'PermitEmptyPasswords no' "$SSHD"
+chk "sshd_config: PasswordAuthentication yes" grep -qxF 'PasswordAuthentication yes' "$SSHD"
+chk "sshd_config ends with the first-access Match block (root + group unitotem-first-admin, 7 lines, exact)" sshd_match_at_end
+chk "sudo is installed (usr/bin/sudo)" test -x "$R/usr/bin/sudo"
+chk "adduser is installed (usr/sbin/adduser)" test -x "$R/usr/sbin/adduser"
+chk "/home exists as a directory (home directories of the web users)" test -d "$R/home"
+chk "unitotem-first-admin is installed and executable (shipped by the manager deb, installed in stage 1)" test -x "$R/usr/sbin/unitotem-first-admin"
+
 echo "== Update machinery"
 chk "the automatic update policy: timer enabled, service runs at the lowest priority" bash -c "test -L '$R/etc/systemd/system/timers.target.wants/unitotem-update-auto.timer' && grep -q '^Nice=19' '$R/etc/systemd/system/unitotem-update-auto.service' && grep -q '^IOSchedulingClass=idle' '$R/etc/systemd/system/unitotem-update-auto.service'"
 chk "unitotem-boot-orientation is installed (boot screen orientation: Pi cmdline.txt of both slots / grubenv)" test -x "$R/usr/sbin/unitotem-boot-orientation"

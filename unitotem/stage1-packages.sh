@@ -155,7 +155,7 @@ mkdir -p "${ROOTFS}/etc/unitotem"
 
 apt_install \
     locales \
-    sudo curl wget ca-certificates gnupg2 \
+    sudo adduser curl wget ca-certificates gnupg2 \
     openssh-server \
     iproute2 iputils-ping net-tools \
     htop nano less \

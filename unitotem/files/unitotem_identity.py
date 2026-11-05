@@ -8,6 +8,8 @@ computed here, as pure functions, and installed into the new slot's /etc overlay
 
 What is carried over (everything else comes from the image):
   - root's shadow entry (hash and aging fields);
+  - root's login shell and its membership of the group unitotem-first-admin (the sshd first-access marker): from the current slot
+    when it has a root passwd line and that group; the old layout keeps the image's values;
   - every account with 1000 <= uid < 65534 and its shadow entry, unless its name or uid clashes with the image (the image wins);
   - the memberships of those accounts and of root in the image's groups, and local groups with gid >= 1000 (name/gid clash: image wins).
 System accounts and groups (< 1000) always come from the image.
@@ -28,6 +30,8 @@ MAX_BYTES = 4 * 1024 * 1024            # a bigger file is not a passwd file: ref
 UID_MIN, UID_MAX = 1000, 65534
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*\$?$")
 FILES = ("passwd", "shadow", "group", "gshadow")
+FIRST_ADMIN_GROUP = "unitotem-first-admin"  # sshd marker group of the first-access root account (created by the image)
+SHELL_RE = re.compile(r"/[^:\x00-\x20\x7f]+")  # absolute path, no ':', no whitespace or control characters
 
 
 class MergeError(Exception):
@@ -68,6 +72,14 @@ def _split(s):
 
 def _join(names):
     return ",".join(names)
+
+
+def _set_member(csv, name, want):
+    """Add (want=True) or remove (want=False) one name in a comma list; keeps the order of the others."""
+    names = [n for n in _split(csv) if n != name]
+    if want:
+        names.append(name)
+    return _join(names)
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -138,6 +150,20 @@ def merge_identity(base, cur, log=None):
     elif "root" not in sh_out:
         raise MergeError("neither the image nor the current shadow has a root entry")
 
+    # root's login shell: from current when current has root and the marker group (closed: /bin/bash, open: the first-admin shell)
+    cur_root = next((r for r in cp if r[0] == "root"), None)
+    marker_cur = next((r for r in cg if r[0] == FIRST_ADMIN_GROUP), None)
+    use_cur_root = cur_root is not None and marker_cur is not None
+    if use_cur_root and SHELL_RE.fullmatch(cur_root[6]):
+        for r in out_p:
+            if r[0] == "root":
+                r[6] = cur_root[6]
+        L(f"root login shell from the current slot: {cur_root[6]}")
+    elif use_cur_root:
+        L(f"root login shell in the current slot is invalid ({cur_root[6]!r}): the image's shell is kept")
+    else:
+        L(f"root login shell and {FIRST_ADMIN_GROUP} membership from the image (current has no root or no {FIRST_ADMIN_GROUP} group)")
+
     # ---- group / gshadow
     names_ok = {r[0] for r in out_p}
     keep_members = carried | {"root"}
@@ -164,6 +190,22 @@ def merge_identity(base, cur, log=None):
             gs[2] = _join(list(dict.fromkeys(_split(gs[2]) + [m for m in _split(cgs_e[2]) if m in keep_members and m in names_ok])))
         else:
             gs[3] = g[3]
+    # root's membership of the marker group is exactly the current one: added or removed (the image's open state lists root)
+    if use_cur_root and FIRST_ADMIN_GROUP in base_gnames:
+        for g in out_g:
+            if g[0] != FIRST_ADMIN_GROUP:
+                continue
+            gs = gs_out[g[0]]
+            cgs_e = cur_gs.get(g[0])
+            in_members = "root" in _split(marker_cur[3])
+            in_admins = False
+            if cgs_e:
+                in_members = "root" in _split(cgs_e[3])
+                in_admins = "root" in _split(cgs_e[2])
+            g[3] = _set_member(g[3], "root", in_members)
+            gs[3] = _set_member(gs[3], "root", in_members)
+            gs[2] = _set_member(gs[2], "root", in_admins)
+            L(f"root {'in' if in_members else 'not in'} {FIRST_ADMIN_GROUP} (from the current slot)")
     # local groups
     for c in cg:
         gid = _int(c[2])

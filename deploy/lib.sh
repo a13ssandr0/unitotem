@@ -1,6 +1,10 @@
 #!/bin/bash
 # Shared host-side helpers for deploy/remote-deploy.sh and deploy/make-parts.sh.
 # Not meant to be executed directly.
+# Auth modes of the REAL system's ssh/scp, fixed when this file is sourced (set OTA_AUTH before sourcing):
+#   OTA_AUTH=password (default): sshpass with OTA_PASSWORD, password options only.
+#   OTA_AUTH=key: no sshpass, BatchMode with public keys only: a password is never asked.
+# The OTA fallback (port 2222) always uses the fixed password (_sshpass_pw), whatever OTA_AUTH is.
 
 log()  { echo ">>> $*"; }
 warn() { echo "!!! $*" >&2; }
@@ -54,23 +58,46 @@ bytes_human() {
 }
 
 # ssh/scp wrappers for the ORIGINAL system and for the OTA session (dropbear inside the fallback/recovery
-# initramfs, port 2222, host key generated fresh every boot: accept-new is the trust model there). Both
-# authenticate with a fixed, known password rather than SSH keys, which would need a chain of key
+# initramfs, port 2222, host key generated fresh every boot: accept-new is the trust model there). The OTA
+# session authenticates with a fixed, known password rather than SSH keys, which would need a chain of key
 # provisioning steps without adding security margin (physical access exposes as much).
 OTA_PASSWORD="${OTA_PASSWORD:-unitotem}"
 # The root password of the FALLBACK (initramfs dropbear) and of the freshly installed UniTotem system: fixed by
 # the image, NOT the login password of the machine being adopted (OTA_PASSWORD may be that machine's own user password).
 OTA_FALLBACK_PASSWORD="${OTA_FALLBACK_PASSWORD:-unitotem}"
 
+OTA_AUTH="${OTA_AUTH:-password}"
+case "$OTA_AUTH" in
+    password|key) ;;
+    *) die "OTA_AUTH must be 'password' or 'key' (got '${OTA_AUTH}')" ;;
+esac
+
 # SSH_ASKPASS_REQUIRE=never + `env -u DISPLAY -u SSH_ASKPASS` are required: without them ssh can fall
 # back to a graphical askpass popup even with sshpass -p.
-_sshpass() {
+# Always the password path: the OTA fallback calls this directly.
+_sshpass_pw() {
     SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS \
         sshpass -p "$OTA_PASSWORD" "$@"
 }
 
-SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
-          -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+# The real system's channel: password mode through sshpass, key mode runs the command as is.
+_sshpass() {
+    if [ "$OTA_AUTH" = key ]; then
+        SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS "$@"
+    else
+        _sshpass_pw "$@"
+    fi
+}
+
+if [ "$OTA_AUTH" = key ]; then
+    SSH_OPTS=(-o BatchMode=yes -o PreferredAuthentications=publickey \
+              -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+    SCP_OPTS=(-o BatchMode=yes -o PreferredAuthentications=publickey -o ConnectTimeout=10)
+else
+    SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+    SCP_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=10)
+fi
 
 # Privilege on the REAL system's channel: a device being adopted usually has root SSH disabled, yet nearly
 # everything done to a target is privileged, so escalate with sudo when the login user is not root.
@@ -94,6 +121,8 @@ setup_target_privilege() {
         TARGET_SUDO="sudo -n"
         log "Target: user '${user}', sudo without password."
     else
+        # Key mode never escalates with a password: sudo -n only.
+        [ "$OTA_AUTH" = password ] || die "cannot run 'sudo -n' on the target as '${user}': key mode needs passwordless sudo"
         # Written via a heredoc so the password does not go through shell quoting. No -n: this call uses stdin.
         _sshpass ssh "${SSH_OPTS[@]}" "${TARGET_USERHOST}" \
             "umask 077; cat > ${OTA_ASKPASS_REMOTE} && chmod 700 ${OTA_ASKPASS_REMOTE}" <<EOF || die "cannot set up the sudo helper on the target"
@@ -140,8 +169,7 @@ ssh_t() {
 # -O forces the legacy SCP protocol: recent OpenSSH defaults scp to SFTP, and the image's sshd_config has
 # no "Subsystem sftp" line ("subsystem request failed on channel 0"). Legacy mode needs only a shell.
 scp_t() {
-    _sshpass scp -O -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-        -o ConnectTimeout=10 "$@"
+    _sshpass scp -O "${SCP_OPTS[@]}" "$@"
 }
 
 # Copy a local file to a target path that may require root. scp itself cannot
@@ -175,7 +203,7 @@ OTA_SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
 # swallow the rest of the manifest. ota_ssh_send below keeps stdin to pipe payloads, hence two functions.
 ota_ssh() {
     local host="$1"; shift
-    OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh -n "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
+    OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass_pw ssh -n "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
 }
 
 ota_ssh_send() {
@@ -183,7 +211,7 @@ ota_ssh_send() {
     # boot-fs filecopy tarball (small files; bulk partition data goes over the plain-netcat DATA channel,
     # see restore-part).
     local host="$1"; shift
-    OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass ssh "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
+    OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass_pw ssh "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
 }
 
 # Wait until something is listening on $2/tcp on this host, up to $3

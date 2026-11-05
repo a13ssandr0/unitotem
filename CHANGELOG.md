@@ -46,6 +46,7 @@
 - Recovery keeps DATA when a read-only fsck passes.
 - OTA screen: logo, phase and progress gauge, English text, adapts to any resolution.
 - Fallback: DHCP on every wired interface, low-resolution GRUB entries, brcmfmac Wi-Fi modules.
+- Deploy post-check probes the web interface instead of logging in as root; `OTA_AUTH=key` mode in `deploy/lib.sh` for hosts with an installed key (the fallback keeps its password).
 
 #### Boot and display
 - Plymouth UniTotem theme starts before the OTA check; held until the compositor starts.
@@ -64,6 +65,8 @@
 - VNC on demand via tigervnc; Debian wayvnc services masked.
 - TLS certificate generated on first boot; no shared key, user or claim code in the image.
 - journald stores INFO messages.
+- Root starts without a password and with `unitotem-first-admin` as login shell (SSH, console, su): the first login creates the first administrator; afterwards root accepts SSH keys only (sshd `Match` on the marker group `unitotem-first-admin`).
+- No fixed root password in the image (`ROOT_PASSWORD` removed); `/home` persists on DATA; identity merge keeps root's shell and marker membership across A/B updates; verify-image checks the first-access state.
 
 ### unitotem-manager (since 2.3.0)
 
@@ -92,6 +95,9 @@
 - Error pages show no version, OS, IP or hostname.
 - First access shows welcome screen with hotspot credentials until an administrator exists.
 - Login hardening: rate-limited login and user list (list can be hidden), redirect target restricted to local paths, password in request body, no traceback to clients, user list pushed to administrators only, first-access setup applies the password policy, login shows wrong-password errors.
+- Admin = member of the group `sudo`, web access = group `users`; group `unitotem` removed; admins are normal accounts (adduser, home, bash), other users stay web-only (nologin).
+- Root never logs in to the web; empty passwords refused.
+- First administrator created by `/setup` or by the `unitotem-first-admin` script through one function under one lock; both close root's first-access state; the manager reconciles it at start-up and on `/etc/group` changes.
 
 #### Playlists and scheduler
 - Multiple playlists: rename, default, copy and move assets, drag-and-drop reorder and upload.

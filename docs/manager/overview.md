@@ -35,7 +35,7 @@ Settings tabs are shown only when the user holds the matching capability. A user
 
 ## Roles
 
-Accounts are system accounts (PAM). Login is allowed for root and for members of the `unitotem` group. Each account has capabilities:
+Accounts are system accounts (PAM). Web login is allowed for members of group `users`; root never logs in to the web. Administrators are members of group `sudo`. Each account has capabilities:
 
 | Capability | Allows |
 |---|---|
@@ -46,7 +46,7 @@ Accounts are system accounts (PAM). Login is allowed for root and for members of
 
 Rules:
 
-- `root` is always admin.
+- Admin status is membership of `sudo`; the administrator also has a shell and a home directory. Demotion keeps the home directory.
 - The last user cannot be deleted; a user cannot delete itself.
 - An admin cannot remove its own admin role.
 - Changing a password or removing an account ends that user's sessions.

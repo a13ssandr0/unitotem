@@ -24,7 +24,7 @@ Pages (`webui/src/pages/`):
 | `scheduler.vue` | `/` | playlist tabs, items (drag to reorder), uploaded files, Add URL and playlist settings dialogs |
 | `viewers.vue` | `/viewers` | per-window matrix (playlist, sound, language, keyboard, interactive screen, refresh, developer tools), layout editors, RSS sources |
 | `info.vue` | `/info` | CPU chart (stacked per core), memory, temperatures, fans, storage tree |
-| `login.vue`, `setup.vue` | `/login`, `/setup` | login; first administrator (only without accounts) |
+| `login.vue`, `setup.vue` | `/login`, `/setup` | login; first administrator (only while no administrator exists) |
 | `NotFound.vue`, `empty_page.vue` | catch-all | 404, placeholder |
 | `settings/audio.vue` | `/settings/audio` | default output, per-device volume and mute |
 | `settings/display.vue` | `/settings/display` | screen preview, orientation, flip, insecure certificates, GPU status, `ScreenControl`, `TouchMapping` |
@@ -75,7 +75,7 @@ HTTP endpoints:
 |---|---|
 | `POST /auth/token` (form: username, password, remember_me) | login |
 | `GET /login/users`, `GET /logout` | user list on login, logout |
-| `POST /setup` (JSON username, password) | first administrator; 404 once accounts exist |
+| `POST /setup` (JSON username, password) | first administrator; 404 once an administrator exists |
 | `POST /api/scheduler/upload` (multipart `files`) | 201 per stored file |
 | `GET /uploaded/<name>` | download, preview |
 | `GET /backup/parts`, `GET /backup?parts=`, `POST /backup`, `DELETE /backup?parts=` | backup, restore, reset |

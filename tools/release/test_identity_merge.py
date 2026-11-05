@@ -144,6 +144,98 @@ m, _ = merge(BASE, cur)
 pp = {r[0] for r in rows(m["passwd"], 7)}
 check("uids >= 65534 are not carried (nobody stays the image's)", "huge" not in pp and "big" not in pp and "nobody" in pp)
 
+# 2b. root's shell and first-admin marker membership ----------------------------------------------------------------------------
+MARK = "unitotem-first-admin"
+FA_SHELL = "/usr/sbin/unitotem-first-admin"
+# image in the open state: root has the first-admin shell, empty shadow hash, and is a member of the marker group
+OPEN_BASE = dict(BASE)
+OPEN_BASE["passwd"] = BASE["passwd"].replace("root:x:0:0:root:/root:/bin/bash", "root:x:0:0:root:/root:" + FA_SHELL)
+OPEN_BASE["shadow"] = BASE["shadow"].replace("root:$6$image$IMAGEHASH:", "root::")
+OPEN_BASE["group"] = BASE["group"] + f"{MARK}:x:990:root\n"
+OPEN_BASE["gshadow"] = BASE["gshadow"] + f"{MARK}:!::root\n"
+# closed device: shell /bin/bash, shadow '*', root not in the marker group (the marker group exists, as the image creates it)
+CLOSED_CUR = dict(CUR)
+CLOSED_CUR["shadow"] = CUR["shadow"].replace("root:$6$local$LOCALROOT:", "root:*:")
+CLOSED_CUR["group"] = CUR["group"] + f"{MARK}:x:990:\n"
+CLOSED_CUR["gshadow"] = CUR["gshadow"] + f"{MARK}:!::\n"
+# open device: first-admin shell, empty shadow, root in the marker group
+OPEN_CUR = dict(CUR)
+OPEN_CUR["passwd"] = CUR["passwd"].replace("root:x:0:0:root:/root:/bin/bash", "root:x:0:0:root:/root:" + FA_SHELL)
+OPEN_CUR["shadow"] = CUR["shadow"].replace("root:$6$local$LOCALROOT:", "root::")
+OPEN_CUR["group"] = CUR["group"] + f"{MARK}:x:990:root\n"
+OPEN_CUR["gshadow"] = CUR["gshadow"] + f"{MARK}:!::root\n"
+
+
+def marker_members(m):
+    g = {r[0]: r for r in rows(m["group"], 4)}
+    gs = {r[0]: r for r in rows(m["gshadow"], 4)}
+    return g[MARK][3].split(","), gs[MARK][2].split(","), gs[MARK][3].split(",")
+
+
+m = ident.merge_identity(OPEN_BASE, CLOSED_CUR, [])
+p = {r[0]: r for r in rows(m["passwd"], 7)}
+sh = {r[0]: r for r in rows(m["shadow"], 9)}
+g_mem, gs_adm, gs_mem = marker_members(m)
+check("closed device, image open: root shell comes from current (/bin/bash)", p["root"][6] == "/bin/bash")
+check("closed device, image open: root removed from the marker group members", "root" not in g_mem and g_mem == [""], str(g_mem))
+check("closed device, image open: root removed from the marker gshadow members and admins", "root" not in gs_mem and "root" not in gs_adm)
+check("closed device, image open: root shadow stays locked ('*')", sh["root"][1] == "*")
+ident.validate(m); check("closed device, image open: result validates", True)
+
+m = ident.merge_identity(OPEN_BASE, OPEN_CUR, [])
+p = {r[0]: r for r in rows(m["passwd"], 7)}
+sh = {r[0]: r for r in rows(m["shadow"], 9)}
+g_mem, gs_adm, gs_mem = marker_members(m)
+check("open device keeps open: root shell is the first-admin shell", p["root"][6] == FA_SHELL)
+check("open device keeps open: root stays in the marker group", "root" in g_mem and "root" in gs_mem)
+check("open device keeps open: root shadow stays empty", sh["root"][1] == "")
+ident.validate(m); check("open device: result validates", True)
+
+log = []
+m = ident.merge_identity(OPEN_BASE, CUR, log)
+p = {r[0]: r for r in rows(m["passwd"], 7)}
+g_mem, _, _ = marker_members(m)
+check("old layout (no marker group in current): image shell kept", p["root"][6] == FA_SHELL, str(p["root"]))
+check("old layout: image marker membership kept (root in the group)", "root" in g_mem, str(g_mem))
+check("old layout: logged as a fallback to the image", any("from the image" in l for l in log), str(log))
+
+cur = dict(CLOSED_CUR); cur["passwd"] = CLOSED_CUR["passwd"].replace("root:x:0:0:root:/root:/bin/bash", "root:x:0:0:root:/root:")
+log = []
+m = ident.merge_identity(OPEN_BASE, cur, log)
+p = {r[0]: r for r in rows(m["passwd"], 7)}
+check("empty carried shell: image shell kept, logged", p["root"][6] == FA_SHELL and any("invalid" in l for l in log), str(log))
+check("empty carried shell: membership still taken from current", marker_members(m)[0] == [""])
+
+cur = dict(CLOSED_CUR); cur["passwd"] = CLOSED_CUR["passwd"].replace("root:x:0:0:root:/root:/bin/bash", "root:x:0:0:root:/root:bin/bash")
+log = []
+m = ident.merge_identity(OPEN_BASE, cur, log)
+p = {r[0]: r for r in rows(m["passwd"], 7)}
+g_mem, _, _ = marker_members(m)
+check("invalid carried shell (relative path): image shell kept, logged", p["root"][6] == FA_SHELL and any("invalid" in l for l in log), str(log))
+check("invalid carried shell: membership is still taken from current", "root" not in g_mem)
+
+cur = dict(CLOSED_CUR); cur["passwd"] = CLOSED_CUR["passwd"].replace("root:x:0:0:root:/root:/bin/bash", "root:x:0:0:root:/root:/bin/ba sh")
+m = ident.merge_identity(OPEN_BASE, cur, [])
+p = {r[0]: r for r in rows(m["passwd"], 7)}
+check("shell with a space: rejected, image shell kept", p["root"][6] == FA_SHELL)
+
+# an admin account in sudo and users keeps those memberships (users group added to the fixtures for this case)
+BASE_U = dict(BASE); BASE_U["group"] = BASE["group"] + "users:x:100:\n"; BASE_U["gshadow"] = BASE["gshadow"] + "users:!::\n"
+CUR_U = dict(CUR)
+CUR_U["passwd"] = CUR["passwd"] + "admin:x:1003:1003:Admin:/home/admin:/bin/bash\n"
+CUR_U["shadow"] = CUR["shadow"] + "admin:$6$adm$ADMINHASH:19600:0:99999:7:::\n"
+CUR_U["group"] = CUR["group"].replace("sudo:x:27:alice", "sudo:x:27:alice,admin") + "admin:x:1003:\nusers:x:100:admin\n"
+CUR_U["gshadow"] = CUR["gshadow"].replace("sudo:*:alice:alice", "sudo:*:alice:alice,admin") + "admin:!::\n"
+m = ident.merge_identity(BASE_U, CUR_U, [])
+g = {r[0]: r for r in rows(m["group"], 4)}
+gs = {r[0]: r for r in rows(m["gshadow"], 4)}
+sh = {r[0]: r for r in rows(m["shadow"], 9)}
+check("admin account in sudo and users is carried with both memberships",
+      "admin" in g["sudo"][3].split(",") and "admin" in g["users"][3].split(",") and "admin" in gs["sudo"][3].split(",") and "admin" in gs["users"][3].split(","),
+      str(g.get("users")))
+check("admin account: shadow entry carried", sh.get("admin", [0, ""])[1] == "$6$adm$ADMINHASH")
+ident.validate(m); check("admin account case validates", True)
+
 # pwck/grpck (when installed) accept the merged files and flag a genuinely broken set
 import shutil as _sh
 if _sh.which("pwck") or os.path.exists("/usr/sbin/pwck"):
@@ -232,4 +324,12 @@ with tempfile.TemporaryDirectory() as t:
     sys.path[:] = sys.path_backup; sys.modules["unitotem_identity"] = ident_mod
 
 print(f"\n{ok} passed, {fail} failed")
-sys.exit(1 if fail else 0)
+
+
+def test_identity_merge_checks():
+    """pytest entry: the checks above run at import; this reports their outcome."""
+    assert fail == 0, f"{fail} identity merge check(s) failed"
+
+
+if __name__ == "__main__":
+    sys.exit(1 if fail else 0)

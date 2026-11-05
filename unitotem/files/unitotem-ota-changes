@@ -3,7 +3,8 @@
 # `baseline` runs at build time (stage3-image.sh) and `check` on the device, sharing the definition of which files
 # count and how a path is normalised.
 # Scope: only what an OTA replaces AND the operator can see. /etc, /var and /root are DATA-backed overlays
-# (overlayfs-hook.sh) with their own rules (ota-preserve.list; /var reset wholesale). Exception: /var/lib/dpkg is read
+# (overlayfs-hook.sh) with their own rules (ota-preserve.list; /var reset wholesale). /home is a DATA bind
+# (unitotem-persist-paths): operator files, not replaced by an OTA, so not scanned. Exception: /var/lib/dpkg is read
 # as a database, not scanned, because it is pinned onto ROOT and travels with the packages.
 set -uo pipefail
 
@@ -12,8 +13,8 @@ PROGRESS_FILE=/run/unitotem-ota-changes.progress
 
 # Directories on ROOT that are not overlay-backed. /bin, /sbin and /lib are
 # absent because usr-merge makes them symlinks into /usr, which is scanned.
-# /mnt is included but -xdev keeps DATA out of it, same for /boot/firmware.
-SCAN_DIRS="usr boot opt srv home media mnt"
+# /home is absent because it is a DATA bind. /mnt is included but -xdev keeps DATA out of it, same for /boot/firmware.
+SCAN_DIRS="usr boot opt srv media mnt"
 
 progress() {
     [ -n "${OTA_CHANGES_PROGRESS:-}" ] || return 0

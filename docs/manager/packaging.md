@@ -9,7 +9,7 @@ Built from `debian/control`. Version scheme `3.0.0~devNN` for pre-releases (all 
 
 | Package | Arch | Content | Depends on |
 |---|---|---|---|
-| `unitotem-manager` | all | Core orchestrator: `api`, `routers`, `templates`, `utils`, `resources`, `static`, `webview`, `init.py`, `main.py` in `/usr/share/unitotem-manager`; launcher `/usr/sbin/unitotem-manager`; unit; PAM service; man page | Python libraries (see control); Recommends `unitotem-node` |
+| `unitotem-manager` | all | Core orchestrator: `api`, `routers`, `templates`, `utils`, `resources`, `static`, `webview`, `init.py`, `main.py` in `/usr/share/unitotem-manager`; launcher `/usr/sbin/unitotem-manager`; first-access script `/usr/sbin/unitotem-first-admin`; unit; PAM service; man page | Python libraries (see control); Recommends `unitotem-node` |
 | `unitotem-node` | all | `plugins/unitotem_node`: network, audio, displays, power, timers, updates, terminal, VNC, hotspot | core, `network-manager`, `netplan.io`, `wlr-randr`, `wlopm`; Recommends `alsa-utils`, `ddcutil`, `wayvnc`, `v4l-utils`, `python3-libgpiod` |
 | `unitotem-viewer` | all | `plugins/unitotem_viewer`, compositor and splash units, labwc base config, Plymouth PNGs | core, node, `python3-cefpython3`, PySide6 (QtCore, QtGui, QtWidgets), `labwc`, `qt6-wayland`, `python3-sdbus` |
 | `unitotem` | all | Metapackage: manager, node, viewer. Recommends `plymouth-theme-unitotem` | the three |
@@ -20,7 +20,8 @@ Third-party packages built in `packaging/` (not in Debian): `python3-fastapi-log
 
 ## Files
 - `debian/control`, `debian/rules`, `debian/changelog`, `debian/copyright`, `debian/source/format`.
-- `debian/unitotem-manager.{install,dirs,postinst,postrm,service,sh,pam,8}`: `.install` installs the man page; `.dirs` creates `/etc/unitotem` and `/usr/share/unitotem-manager/plugins`.
+- `debian/unitotem-manager.{install,dirs,postinst,postrm,service,sh,pam,8}`: `.install` installs the man page; `debian/rules` installs `debian/unitotem-first-admin` to `usr/sbin` (mode 0755); `.dirs` creates `/etc/unitotem` and `/usr/share/unitotem-manager/plugins`.
+- `debian/unitotem-first-admin`: first-access script, see [security.md](security.md#root-and-first-access).
 - `debian/unitotem-node.install`: `01-unitotem-nm.yaml` to `/etc/netplan`, `10-wayland.conf` to the manager unit's drop-in directory, `org.unitotem.Notifications.conf` to `/usr/share/dbus-1/system.d`, `90-unitotem-arp.conf` to `/usr/lib/sysctl.d`.
 - `debian/unitotem-viewer.unitotem-{compositor,splash}.service`, `debian/labwc-rc.xml`: see [viewer.md](viewer.md).
 - `debian/plymouth-theme-unitotem.{postinst,prerm}`.
@@ -41,7 +42,7 @@ Build (`debian/rules`):
 - Plymouth spinner (`plymouth/unitotem/unitotem.script`): `Image.Rotate` pivots on integer division, so the script forces the ring size odd (`size += 1` when even) or the ring wobbles. The ring PNG is rendered at `SPINNER_OVERSAMPLE=2` times its displayed size and the script divides by the same factor, so `Scale()` averages pixels before every `Rotate()`; bilinear-only rotation facets the circle. A new rotating sprite needs the same 2x source.
 
 Maintainer scripts:
-- `unitotem-manager.postinst` (configure): creates system group `unitotem` (members and root may log in); creates `/etc/ssl/unitotem.pem` (self-signed RSA 2048, 36500 days, kept across upgrades; paired nodes trust it) once.
+- `unitotem-manager.postinst` (configure): creates `/etc/ssl/unitotem.pem` (self-signed RSA 2048, 36500 days, kept across upgrades; paired nodes trust it) once. Creates no group: web access uses Debian's `users` group, administration `sudo`.
 - `unitotem-manager.postrm` (purge): removes `/etc/ssl/unitotem.pem`, `/etc/unitotem`, `/var/lib/unitotem`.
 - `plymouth-theme-unitotem.postinst` (configure): `update-alternatives` for `default.plymouth`, `plymouth-set-default-theme unitotem`, `update-initramfs -u` (failures ignored).
 
@@ -49,6 +50,7 @@ Runtime units and config:
 - `unitotem-manager.service`: `Type=notify`, `NotifyAccess=main`, `TimeoutStartSec=300`, `StateDirectory=unitotem`, `Restart=on-failure`, `RestartSec=10`, `KillMode=process`, default `SIGTERM` (CEF disables the `SIGINT` handler; never set `KillSignal=SIGINT`).
 - `10-wayland.conf` (node): `Wants=`/`After=user@0.service`; `XDG_RUNTIME_DIR=/run/user/0`; `WAYLAND_DISPLAY=/run/unitotem/xdg/wayland-0`.
 - PAM service `/etc/pam.d/unitotem-manager`: `common-auth`, `common-account`; the group check is in `manager/utils/osusers.py`.
+- `/usr/sbin/unitotem-first-admin` (source `debian/unitotem-first-admin`): login shell of root while first access is open and sshd forced command; creates the first administrator through `manager/utils/first_access.py`. See [security.md](security.md#root-and-first-access).
 - sysctl `90-unitotem-arp.conf`: `arp_ignore=1`, `arp_announce=2` (several interfaces on one subnet).
 - D-Bus policy: only root owns `org.freedesktop.Notifications`; anyone may send to it.
 
