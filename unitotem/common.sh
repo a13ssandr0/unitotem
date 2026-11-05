@@ -20,7 +20,7 @@ ROOT_PASSWORD="${ROOT_PASSWORD:-unitotem}"
 UNITOTEM_LOCALE="${UNITOTEM_LOCALE:-it_IT.UTF-8}"
 UNITOTEM_TIMEZONE="${UNITOTEM_TIMEZONE:-Europe/Rome}"
 
-# A/B layout (AB-DESIGN.md): two ROOT slots. The image holds slot A populated;
+# A/B layout (docs/system/ab-updates.md): two ROOT slots. The image holds slot A populated;
 # slot B is written by the first update, but both partitions exist so DATA never moves.
 AB_LAYOUT="${AB_LAYOUT:-1}"
 if [ "$AB_LAYOUT" = 1 ]; then

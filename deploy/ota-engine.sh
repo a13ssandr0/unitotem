@@ -1,6 +1,6 @@
 #!/bin/bash
 # Shared OTA engine: every operation deploy/remote-deploy.sh needs on a target, as subcommands driven over SSH
-# (control channel); bulk partition data is pulled over plain netcat (data channel). CLI: deploy/ota-commands.md.
+# (control channel); bulk partition data is pulled over plain netcat (data channel). CLI: docs/system/deploy-and-recovery.md.
 # Runs in the resident fallback initrd and the system's own initramfs; each subcommand takes --disk, so it also
 # works standalone on a loop device. Only init-premount/serve-fallback/local-bottom-verify assume an initramfs.
 # Bash, not dash: needs pipefail, /dev/tcp and process substitution (the initrd carries bash, see unitotem/files/ota-hook).

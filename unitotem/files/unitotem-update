@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""unitotem-update - check/fetch/apply whole-image updates (see AB-DESIGN.md).
+"""unitotem-update - check/fetch/apply whole-image updates (see docs/system/ab-updates.md).
 
 Commands: status, check, fetch, apply, confirm, boot-ok, rollback, cancel, repair, policy, auto, reboot.
 Two ROOT slots (A/B); the boot backend is GRUB on the ESP (amd64) or the firmware's tryboot (Raspberry Pi).
@@ -181,6 +181,7 @@ def fetch_trusted(conf):
     return manifest
 
 
+# Inspired by Android A/B: two root slots, one-shot trial boot, confirm or roll back
 # ---------------------------------------------------------------------------
 # A/B plumbing (GRUB and Raspberry backends)
 # ---------------------------------------------------------------------------

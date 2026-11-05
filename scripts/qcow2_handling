@@ -149,7 +149,7 @@ unload_qimage() {
 }
 export -f unload_qimage
 
-# based on: https://github.com/SirLagz/RaspberryPi-ImgAutoSizer
+# Adapted from RaspberryPi-ImgAutoSizer (GPL-3.0): https://github.com/SirLagz/RaspberryPi-ImgAutoSizer
 # helper function for make_bootable_image, do not call directly
 function resize_qcow2() {
 	if [ -z "$CALL_FROM_MBI" ]; then

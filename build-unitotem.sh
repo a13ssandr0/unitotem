@@ -10,7 +10,7 @@ FORCE_STAGE="${FORCE_STAGE:-}"   # set to 0,1,2 to force rebuild from that stage
 # Native arm64 build on the real Pi, when reachable. mkinitramfs (ldd in
 # copy_exec) and package postinst/trigger scripts (ldconfig, depmod, systemctl)
 # execute arm64 code, which qemu-aarch64 emulates slowly. The same stage
-# scripts run natively on the Pi without that cost. See CLAUDE.md.
+# scripts run natively on the Pi without that cost. See docs/system/build.md.
 PI_HOST="${PI_HOST:-root@<pi-host>}"
 PI_BUILD_BASE="${PI_BUILD_BASE:-/mnt/data/unitotem-native-build}"
 
