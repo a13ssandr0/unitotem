@@ -134,8 +134,8 @@
 
 #### On-screen keyboard
 - On by default; opens next to the touched field, content slides up; can dock partly off screen.
-- Android-style layouts for 739 languages with language and variant picker.
-- Number row, shift, caps, symbol pages, key variants by sliding, key preview.
+- Layouts, long-press keys and symbols pages from AOSP LatinIME (Apache-2.0): 76 languages, 84 layouts, language and variant picker.
+- Number row, shift, caps lock, arrow keys, digit pad, symbol pages, key variants by sliding, key preview.
 - Smooth compositor-driven drag; focus watcher sees shadow roots and cross-origin frames.
 
 #### Updates
