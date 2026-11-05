@@ -126,6 +126,8 @@
 #### Screens and touch
 - Screen power: DPMS first; DDC/CI, CEC, serial, Wake-on-LAN or GPIO line as fallback.
 - Operator-off outputs stay off when the monitor reconnects.
+- CEC: adapter matched to its HDMI connector (Pi 4 has two), real physical address, OSD name UniTotem, adapter choice in the UI; a TV left in standby wakes at start.
+- Settings under an old X11 output name are merged into the compositor name.
 - Screen turn and mirror applied by the compositor, also before the boot splash.
 - Hot-plugged monitors update the viewers list live; manager runs with zero screens.
 - Guided touch calibration (four quarters or five points, trial, keep).
