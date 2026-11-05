@@ -3,7 +3,7 @@
 # already in the OTA environment (the same steps as the `recover` subcommand), for an amd64/UEFI A-B parts set,
 # with --secure-boot shim. Usage: recover-driver.sh HOST DISK_BYID PARTS_DIR
 set -euo pipefail
-DIR=~/Sviluppo/unitotem-system
+DIR=$(cd "$(dirname "$0")/../.." && pwd)
 source "$DIR/deploy/lib.sh"
 HOST="$1"; DISK_BYID="$2"; OPT_PARTS="$3"
 ARCH=amd64 FIRMWARE=uefi TRYBOOT_CAPABLE=0 SB_MODE=shim OPT_PORT=9700 OPT_WIPE_DATA=1 OPT_DEBUG=0 OPT_YES=1

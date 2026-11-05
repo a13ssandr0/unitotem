@@ -16,7 +16,7 @@
 #   ./deploy/remote-deploy.sh recover HOST[:PORT] [--parts DIR] ...
 #   ./deploy/remote-deploy.sh serve   [--parts DIR] ...
 #
-# Machine-readable contract for `changes` and `--accept-changes` (used by the web interface): API-OTA.md.
+# Machine-readable contract for `changes` and `--accept-changes` (used by the web interface): docs/system/deploy-and-recovery.md.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

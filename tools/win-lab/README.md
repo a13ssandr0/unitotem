@@ -1,7 +1,7 @@
 # Windows 11 + OVMF Secure Boot lab (libvirt)
 
 Tools to try, without hardware, how to start from a running Windows 11 and boot the UniTotem OTA environment with Secure Boot
-ON. Results and method: `WINDOWS-INSTALL-NOTES.md`. This folder contains only the helpers:
+ON. Results and method: `docs/system/windows-install-research.md`. This folder contains only the helpers:
 **no keys or passwords** (the SSH key `id_lab`, `lab-password.txt` and the `labtools.*` files stay in `work/win-lab/`, outside git).
 
 ## The lab

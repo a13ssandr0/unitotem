@@ -2,7 +2,7 @@
 """Host-side release tooling: key generation, key-list signing, release assembly.
 
 Signatures are raw Ed25519 produced/checked with `openssl pkeyutl -rawin`, so the
-device needs nothing beyond the openssl it already ships. See AB-DESIGN.md
+device needs nothing beyond the openssl it already ships. See docs/system/ab-updates.md
 (release and signing keys).
 
   keygen      --dir D --name N            private key N.key (0600) + public N.pub
