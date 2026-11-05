@@ -36,7 +36,7 @@
 - [system] Mixed versions (old viewer + new manager and reverse) and rollback with a turned screen: reasoned, never run; GRUB fallback/recover on real amd64 end to end.
 - [system] Session bus for root, `unitotem-boot-orientation` on boards, new `rc.xml` (Alt+F4) on boards.
 - [manager/screens] GPIO display power on a real line and against python3-libgpiod 2.x on a board.
-- [manager/screens] CEC (no adapter), serial power (no port), Wake-on-LAN of a monitor, DDC writes on monitors other than LG and Realtek board.
+- [manager/screens] CEC: TV on another input switched back by active source; what the TV remote's keys do in the viewer (they arrive as keyboard keys); adapter choice in the web UI never clicked. Serial power (no port), Wake-on-LAN of a monitor, DDC writes on monitors other than LG and Realtek board.
 - [manager/remote] Two real nodes: client viewer pixels, approval click path, 4443 behind a firewall, multi-GB transfers, adoption/unpair with window settings and layouts, file push to a client.
 - [manager] Camera and microphone capture never seen (boards have neither).
 - [manager/webui] Network page (Wi-Fi grouped by SSID, AP lock, strongest AP), Scheduler/Audio/Viewers controls never clicked in a browser; routes `DELETE /backup` and `POST /pdf-view/failed` unchecked.
