@@ -97,7 +97,7 @@ HTTP:
 | GET `/pdf-view`, POST `/pdf-view/failed` | loopback | PDF page; failure raises `pdf.render.<file>` |
 | GET `/api/schema` | session | API schema |
 | GET `/login`, `/login/users`, POST `/auth/token`, GET `/logout` | none | login (form: `username`, `password`, `src`, `remember_me`) |
-| POST `/api/settings/set_passwd?password=` | session | own password; other sessions revoked |
+| POST `/api/settings/set_passwd` | session | JSON `{"password"}`; own password; other sessions revoked |
 | GET, POST `/setup` | none, only with no admin | first administrator (404 afterwards) |
 | GET, POST, DELETE `/backup`, GET `/backup/parts` | admin | archive (POST and DELETE answer 204) |
 | POST `/api/scheduler/upload` | scheduler | multipart `files`, 201 |
