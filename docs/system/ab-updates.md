@@ -1,0 +1,141 @@
+# A/B whole-image updates
+
+Paths: relative to the repository root.
+
+Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated confirm, rollback, self-repair, automatic policy. One CLI: `unitotem/files/unitotem-update` (Python 3, `--json`), installed as `/usr/sbin/unitotem-update`. Layout 2 (A/B) only.
+
+## Files
+
+| Path | Role |
+|---|---|
+| `unitotem/files/unitotem-update` | CLI and all A/B logic |
+| `unitotem/files/unitotem-update-auto.service` | oneshot `unitotem-update --json auto`; `Nice=19`, idle IO, `TimeoutStartSec=2h` |
+| `unitotem/files/unitotem-update-auto.timer` | 10 min after boot, then every 10 min |
+| `unitotem/files/unitotem-boot-ok` (+ `.service`) | Runs `unitotem-update --json boot-ok` on A/B boots; also a single-root bootcount branch (`unitotem.ota.bootcount=1`) never used on A/B |
+| `unitotem/files/grub-ab-entries` | `/etc/grub.d/10_unitotem_ab`: `slot-a`, `slot-b`, `slot-a-recover`, `slot-b-recover`, `ota-recovery`; `fallback` list |
+| `unitotem/files/grub-default` | `/etc/default/grub`; A/B sets `GRUB_DEFAULT=saved`, `GRUB_SAVEDEFAULT=false` |
+| `unitotem/files/grub-ota-entry` | Single-root recovery entry (`45_unitotem_ota`); not on A/B |
+| `unitotem/files/unitotem_identity.py` | Account merge, `/usr/lib/unitotem/` |
+| `unitotem/files/ota-preserve.list` | `/etc` whitelist |
+| `unitotem/files/unitotem-boot-orientation` | Panel orientation on both slots |
+| `unitotem/stage3-image.sh` | Ships `/usr/share/unitotem/esp-grub.cfg` |
+| `deploy/ota-engine.sh` `ab_failover()` | initramfs half of self-healing |
+| `tools/release/unitotem-release` | Builds slot images and manifest (`release.md`) |
+
+## How it works
+
+`cur` = `unitotem.slot=` on the cmdline; `other` = the inactive slot. State: `slots.json`.
+
+- **check**: fetch `keys.json`(+`.sig`), verify with `root.pub`; reject `seq` below stored `keys-seq.json`. Fetch `manifest.json`(+`.sig`), verify against any key in `keys.json`; reject `min_updater` > 1. Store the new seq last.
+- **fetch** (detached unit `unitotem-update-fetch`; `--foreground` inline):
+  1. Checks: layout 2, version newer (or `--force`), `root` part exists, slot found by PARTLABEL, not mounted.
+  2. `cur` := valid+confirmed; `other` := invalid.
+  3. Stream HTTPS -> `xz -dc` -> `partclone.restore -C -s - -o <dev>`; sha256 of the compressed stream must match.
+  4. `e2fsck -fn`; `tune2fs -L ROOT_<X> -U random`; mount ro; `release-version` must equal the manifest version; `usr/lib/systemd/systemd` must exist.
+  5. Raspberry: extract `bootfiles` into `<bootfs>/slot<other>/`; rewrite `cmdline.txt` (`root=LABEL=ROOT_<X>`, `unitotem.slot=<x>`).
+  6. `prepare_overlays`: new uppers `etc/root/var.<other>`; whitelist import; copy `root.<cur>`; identity merge.
+  7. `os.sync()`, then `other` := valid+prepared.
+- **apply [--reboot|--stage]**: needs `other` valid+prepared; re-check label and read-only fsck; write `pending.json`; re-import whitelist and identity; arm one-shot trial (GRUB `next_entry=slot-<other>`; Pi `tryboot.txt` with `os_prefix=slot<other>/`). `--reboot`: `systemctl reboot` (Pi: `--reboot-argument=0 tryboot`). Pi without `--reboot`/`--stage`: `needs-reboot`.
+- **boot-ok** (every A/B boot):
+  - No pending: mark `cur` confirmed; a manual rollback armed for `cur` becomes `ok`; clear the failover guard; sync ESP `grub.cfg`; if `UPDATE_AUTOREPAIR=1` start `repair` detached.
+  - Pending for `cur` (trial): poll `UPDATE_HEALTH_URL` every 3 s until HTTP 200 or `UPDATE_HEALTH_TIMEOUT` s (monotonic). OK: `confirm_now` (saved default = `cur`, confirmed, pending removed, result ok), sync ESP. Timeout: `rolled-back/health-timeout`, plain reboot, exit 2.
+  - Pending for the other slot (trial never returned): `rolled-back/trial-did-not-confirm`.
+  - Staged pending on the other slot, no trial requested: no-op.
+- **confirm**: `confirm_now` without the health wait.
+- **rollback [--reboot]**: needs `other` valid; default := other; pending removed; result `armed`; the next boot of the old slot turns it into `ok`.
+- **repair**: if `other` fails `slot_sound` (label, `e2fsck -fn`, mount, `release-version`, `systemd`, Pi boot files), copy `cur` over it (`partclone.extfs -c -F | partclone.restore`), new UUID and label, `e2fsck -fy`, version check, Pi boot files cloned, overlays prepared. Under the lock, `RuntimeMaxSec=3600`.
+- **failover** (initramfs): chosen root missing or failing the read-only check and the other slot sound: write guard `/boot-ota/unitotem-ota.failover` (`cur->other`), switch default (`saved_entry` / `os_prefix`), `reboot -f`. Refused while the guard exists. Cleared by the next plain boot.
+- **Lock**: `/run/unitotem-update.lock` (flock); busy exits 12. Progress: `/run/unitotem-update.progress` (one JSON line, atomic rename).
+
+### Automatic policy (`auto`)
+
+- Modes: `off` (default), `download`, `stage`, `reboot`, `scheduled` (reboots once a day inside `AUTO_WINDOW_S` = 3600 s after `time`, default 04:00).
+- Never during an operation or a running trial; 10 min settle after boot; asks the server at most every 6 h; backoff 1 h to 24 h on errors; layout migration never automatic. An armed update re-merges `/etc` and accounts on every tick.
+
+## Interfaces
+
+`unitotem-update [--json] COMMAND`:
+
+| Command | Options | Effect |
+|---|---|---|
+| `status` | | State, slots, trial, rollback, op, last result, auto |
+| `check` | | `available`, `version`, `size`, `needs_layout_migration` |
+| `fetch` | `--foreground`, `--force`, `--accept-changes` (ignored) | Write the inactive slot |
+| `apply` | `--reboot`, `--stage` | Arm trial |
+| `confirm` | | Promote running trial |
+| `boot-ok` | | Called by the boot-ok service |
+| `rollback` | `--reboot` | Default := other slot |
+| `repair` | `--foreground`, `--auto`, `--force` | Rebuild other slot from running one |
+| `cancel` | | SIGTERM to the lock holder; other slot invalidated |
+| `policy` | `--set-mode off\|download\|stage\|reboot\|scheduled`, `--time HH:MM` | Read/set `auto.json` |
+| `auto` | `--now` | One policy tick |
+| `reboot` | | Reboot; into the staged update if any |
+
+Exit codes: 0 ok / update available; 10 nothing to do; 12 operation running; 13 no rollback; 2 failed (incl. cancelled, health-timeout); 127 command missing. 11 is reserved, never returned.
+
+Config `/etc/unitotem/update.conf` (`key=value`; env `UNITOTEM_<KEY>` overrides; `UNITOTEM_UPDATE_CONF` = other file):
+
+| Key | Default |
+|---|---|
+| `UPDATE_BASE_URL` | project GitHub repository |
+| `UPDATE_CHANNEL` | `stable` (only value accepted) |
+| `UPDATE_KEYS_DIR` | `/usr/share/unitotem/update-keys` |
+| `UPDATE_STATE_DIR` | `/mnt/data/unitotem/update` |
+| `UPDATE_VERSION_FILE` | `/usr/share/unitotem/release-version` |
+| `UPDATE_GRUBENV` | `/boot/efi/unitotem-grub/grub/grubenv` |
+| `UPDATE_ESP_MOUNT` / `UPDATE_BOOTFS` | `/boot/efi` / `/boot/firmware` |
+| `UPDATE_BACKEND` | empty = detect (`grub`/`rpi`) |
+| `UPDATE_DT_BOOTLOADER` | `/proc/device-tree/chosen/bootloader` |
+| `UPDATE_HEALTH_URL` | `https://localhost/health` (empty = no gate) |
+| `UPDATE_HEALTH_TIMEOUT` | `180` |
+| `UPDATE_AUTOREPAIR` | `1` |
+| `UPDATE_ESP_GRUBCFG` | `/usr/share/unitotem/esp-grub.cfg` |
+| `UPDATE_DATA` | `/mnt/data` |
+| `UPDATE_CRASHPOINT`, `UPDATE_REBOOT_CMD` | test hooks |
+
+State files (`UPDATE_STATE_DIR`): `slots.json`, `pending.json` (`slot, from, from_version, version, armed_at, staged?, trial_requested?`), `last-result.json` (`op, result, error_code, at`), `auto.json`, `auto-state.json`, `keys-seq.json`, `preserve.list`, `identity-base/`, `identity-merge.json`, `events.log`.
+
+Status JSON: `layout, ab, current_version, slot, other_slot, other_version, trial, pending_confirm, rollback_available, op{pid,progress}, last_result, armed, staged, auto{policy,state}, identity_merge, default_slot, base_url`.
+
+Progress JSON: `op` (fetch|repair), `phase` (check|write|verify|arm), `state` (running|done|failed|cancelled), `percent`, `bytes`, `total`, `eta_s`, `error`, `error_code`.
+
+Error codes: `not-ab`, `backend-unsupported`, `busy`, `network`, `command-failed`, `channel-unsupported`, `no-root-key`, `bad-keys-signature`, `keys-rollback`, `bad-manifest-signature`, `updater-too-old`, `layout-mismatch`, `not-newer`, `no-root-part`, `no-slot-device`, `slot-mounted`, `write-failed`, `bad-checksum`, `version-mismatch`, `bad-image`, `slot-not-verified`, `nothing-fetched`, `needs-reboot`, `nothing-to-confirm`, `no-rollback`, `health-timeout`, `cancelled`, `bootfs-rw`, `bootfiles-failed`, `bad-bootfiles`, `no-bootfiles-part`, `no-cmdline`, `bad-copy`, `bad-mode`, `bad-time`. Auto states: `check-failed`, `fetch-failed`, `needs-manual`.
+
+Release artifacts (`<base>/releases/latest/download/`): `keys.json`(+`.sig`) signed by the root key; `manifest.json`(+`.sig`) signed by a key in `keys.json` (Ed25519, `openssl pkeyutl -verify -rawin`). Manifest: `{schema:1, version, channel, arch, layout:2, min_updater, built, parts:[{file, role: root|bootfiles, size, sha256}]}`; root part `root.ext4.pc.xz`; Pi `bootfiles.tar.xz`; `sha256` covers the compressed file. Details: `release.md`.
+
+Boot interfaces:
+
+- Cmdline: `root=LABEL=ROOT_A|ROOT_B unitotem.slot=a|b`; recovery `unitotem.ota=recover|1`.
+- GRUB ids: `slot-a` (0), `slot-b` (1), `slot-a-recover` (2), `slot-b-recover` (3), `ota-recovery` (4). grubenv: `saved_entry`, `next_entry` (one-shot), `unitotem_video`.
+- Pi: `config.txt` `os_prefix=slota/|slotb/`; `tryboot.txt`; `<bootfs>/slot{a,b}/` (`kernel8.img`, `initramfs8`, `cmdline.txt`).
+- Transient units: `unitotem-update-fetch`, `unitotem-update-repair` (Nice=19, idle IO).
+
+## Rules and gotchas
+
+- Slots are found by GPT PARTLABEL, never by filesystem label: a half-written slot has a stale label.
+- Never write a mounted slot.
+- Flags are written only after `os.sync()`; `apply` re-runs fsck and label check. Interrupted operations are repeated, not resumed.
+- The running slot is always the rollback target; `repair` copies it over the other slot.
+- Overlay uppers are per slot; never delete the other slot's upper.
+- `DATA/unitotem/persist/` is shared by both slots: keep it backward compatible by one version.
+- GRUB `next_entry` is one-shot: a crash during trial lands on `saved_entry`. Confirm writes `saved_entry`.
+- GRUB clears `next_entry` on any boot: a staged update starts at the next reboot of any kind. On Pi it starts only through `unitotem-update reboot` (tryboot flag).
+- The health gate in `boot-ok` is what makes rollback work: without it a release with a broken manager would be confirmed.
+- State writes fsync the file, then the state directory, before any flag is written. Progress lives in `/run` and is gone after a reboot: read the outcome from `status` / `last-result.json`.
+- The device uses only `<base>/releases/latest/download/`, never `api.github.com`. Key and manifest signatures are verified before anything is written to a slot (a bare hash only detects corruption).
+- GRUB `fallback` lists entry numbers only. Reordering entries requires updating `set fallback` in `grub-ab-entries`.
+- ESP `grub.cfg` is replaced only from a confirmed boot, only when the image's `# unitotem-grub-level` is higher, and only if it contains `--id slot-a`, `--id slot-b`, `--id ota-recovery`. Raise the level to push a bootloader change.
+- Pi: tryboot is honoured only on a reboot with the tryboot flag; a plain reboot or power cut boots the old slot and a staged update stays armed. Boards without the EEPROM bootloader: `backend-unsupported`.
+- Pi has no RTC: deadlines use the monotonic clock.
+- `UPDATE_HEALTH_URL` is checked without certificate verification. Images without a 3.x manager set it empty.
+- Failover runs at most once per failure.
+- An update changes only the slot directory and the ESP `grub.cfg` (the latter after a confirmed boot, when the shipped level is higher); Pi EEPROM/firmware and PC shim/GRUB binaries are never touched.
+- `fetch --accept-changes` is accepted and ignored.
+- Manager restarts do not interrupt fetch or repair (transient units).
+- Power-cut model: `kill -9` drops un-submitted guest writes only.
+
+## Tests
+
+Host (repo root, no device): `python3 tools/release/test_auto.py`, `test_repair.py`, `test_identity_merge.py`, `test_boot_orientation.py`, `test_rpi_backend.py` (needs mtools, e2fsprogs; served by `tools/release/fake-github.py`).
+
+Image: `unitotem/verify-image.sh` (boot-ok, auto timer, failover, grub.cfg). QEMU power-cut and loopback harnesses: `testing.md`.
