@@ -35,9 +35,13 @@ echo "LANG=${UNITOTEM_LOCALE}" > "${ROOTFS}/etc/locale.conf"
 ln -sf "/usr/share/zoneinfo/${UNITOTEM_TIMEZONE}" "${ROOTFS}/etc/localtime"
 chroot "${ROOTFS}" dpkg-reconfigure -f noninteractive tzdata
 
-# ---------- Root password ----------
+# ---------- Root first-access state ----------
+# Root starts with an empty password, a login shell that only creates the first
+# administrator, and the sshd marker group (see docs/system/image-runtime.md).
 
-chroot "${ROOTFS}" bash -c "echo 'root:${ROOT_PASSWORD}' | chpasswd"
+chroot "${ROOTFS}" groupadd --system unitotem-first-admin
+chroot "${ROOTFS}" passwd -d root
+chroot "${ROOTFS}" usermod -s /usr/sbin/unitotem-first-admin -aG unitotem-first-admin root
 
 # ---------- SSH ----------
 

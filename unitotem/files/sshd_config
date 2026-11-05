@@ -1,7 +1,7 @@
 Port 22
 Protocol 2
 
-PermitRootLogin yes
+PermitRootLogin prohibit-password
 PasswordAuthentication yes
 ChallengeResponseAuthentication no
 PubkeyAuthentication yes
@@ -16,3 +16,12 @@ ClientAliveCountMax 2
 X11Forwarding no
 AllowTcpForwarding no
 PrintMotd no
+
+# First-access state: root in the marker group gets only the first-administrator script.
+Match User root Group unitotem-first-admin
+    PermitRootLogin yes
+    PermitEmptyPasswords yes
+    ForceCommand /usr/sbin/unitotem-first-admin
+    DisableForwarding yes
+    PermitTunnel no
+    PermitUserRC no

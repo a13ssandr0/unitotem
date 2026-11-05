@@ -11,24 +11,24 @@ FORCE_STAGE="${FORCE_STAGE:-}"   # set to 0,1,2 to force rebuild from that stage
 # copy_exec) and package postinst/trigger scripts (ldconfig, depmod, systemctl)
 # execute arm64 code, which qemu-aarch64 emulates slowly. The same stage
 # scripts run natively on the Pi without that cost. See docs/system/build.md.
+# PI_HOST needs the dev PC's SSH key installed for root on the Pi (key login only: no password is ever asked).
 PI_HOST="${PI_HOST:-}"
 PI_BUILD_BASE="${PI_BUILD_BASE:-/mnt/data/unitotem-native-build}"
 
-_pi_sshpass() {
-    SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS sshpass -p "${PI_PASSWORD:-unitotem}" "$@"
-}
+# Key-only ssh: BatchMode and no askpass, so a missing key fails instead of prompting.
 _pi_ssh() {
-    _pi_sshpass ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+    SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS \
+        ssh -o BatchMode=yes -o PreferredAuthentications=publickey \
         -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null \
         "${PI_HOST}" "$@"
 }
 _pi_rsync() {
-    _pi_sshpass rsync -az -e "sshpass -p ${PI_PASSWORD:-unitotem} ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null" "$@"
+    SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS \
+        rsync -az -e "ssh -o BatchMode=yes -o PreferredAuthentications=publickey -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null" "$@"
 }
 
 probe_pi() {
     [ -n "${PI_HOST}" ] || return 1
-    command -v sshpass >/dev/null 2>&1 || return 1
     _pi_ssh -o ConnectTimeout=5 true 2>/dev/null
 }
 
@@ -88,7 +88,7 @@ build_natively_on_pi() {
     # is mounted, so mounting the image there would hide the build tree.
     local envvars="ARCH=arm64 ROOTFS='${PI_BUILD_BASE}/rootfs' IMG_MNT='${PI_BUILD_BASE}/imgmnt'"
     local var
-    for var in RELEASE MIRROR UNITOTEM_HOSTNAME ROOT_PASSWORD UNITOTEM_LOCALE UNITOTEM_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE RELEASE_VERSION; do
+    for var in RELEASE MIRROR UNITOTEM_HOSTNAME UNITOTEM_LOCALE UNITOTEM_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE RELEASE_VERSION; do
         [ -n "${!var:-}" ] && envvars="${envvars} ${var}='${!var}'"
     done
 
@@ -200,7 +200,7 @@ for ARCH in ${ARCHES}; do
     )
 
     # Pass through optional config overrides
-    for VAR in RELEASE MIRROR UNITOTEM_HOSTNAME ROOT_PASSWORD \
+    for VAR in RELEASE MIRROR UNITOTEM_HOSTNAME \
                UNITOTEM_LOCALE UNITOTEM_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE RELEASE_VERSION; do
         [ -n "${!VAR:-}" ] && RUN_OPTS+=(-e "${VAR}=${!VAR}")
     done

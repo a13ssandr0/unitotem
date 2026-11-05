@@ -38,6 +38,7 @@ _enter() {
 
     echo "[unitotem-maintenance] Ready."
     echo "  /etc  /root       -> overlay on DATA (always persistent)"
+    echo "  /home             -> bind from DATA (always persistent)"
     echo "  /usr  /lib  /bin  -> rootfs (now writable)"
     echo ""
     echo "Run: apt-get update && apt-get upgrade"

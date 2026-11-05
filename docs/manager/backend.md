@@ -49,7 +49,7 @@ Utilities (`manager/utils/`)
 - Shutdown: SIGTERM or SIGINT runs `_shutdown`: set `SHUTDOWN_EVENT`, stop remote service (5 s limit), plugin `on_shutdown`, stop loop. Without a viewer-initiated shutdown it also calls plugin `request_quit`. Then the file observer stops and the process exits.
 - HTTP auth: `Depends(LOGMAN)` reads the session cookie. Unauthenticated requests redirect to `/login`, or to `/setup` when no administrator exists. `require_perm(name)` answers 403.
 - Session cookie: JWT with `sub`, `cre`, `sid`, `at`. HttpOnly, SameSite strict, Secure. 7 days with "remember me", else browser session. Revoked when `invalid_before` is newer than `at` (except `keep_sid`).
-- Login: PAM check in a thread; the account must be root or in group `unitotem`.
+- Login: PAM check in a thread; the account must be in group `users` and not be root (see [security.md](security.md)).
 - Websocket `/ws`: cookie checked once at accept. Each message is one call: `{target, ...args}` goes through `handle_call`, permission check, pydantic validation, then the function.
 - Plugins: `utils/plugins.load()` runs when `api/ws/endpoints.py` is imported, before routers are included. A plugin adds API classes, routers (factory), backup parts, hooks. A failing plugin is logged, raises admin notification `plugin.<name>` and is skipped.
 - Notifications: in memory under one lock, persisted to `/var/lib/unitotem/notifications.json`. Each change pushes `Notifications/list` to every open page, once per user.
@@ -76,7 +76,7 @@ CLI (`utils/models/command_line.py`, pydantic-settings, parsed at import; names 
 
 Files:
 - `/etc/unitotem/unitotem.env`: `AUTH_TOKEN` (JWT secret), `INSTANCE_ID`, `HOTSPOT_UUID`. Generated when missing.
-- `/etc/unitotem/users.json` (0600): `{name: {permissions, invalid_before, keep_sid}}`. Permissions: `scheduler`, `power`, `audio`, `admin` (`admin` implies all). No password stored.
+- `/etc/unitotem/users.json` (0600): `{name: {permissions, invalid_before, keep_sid}}`. Permissions: `scheduler`, `power`, `audio` (`admin` is not stored: it is membership of `sudo`). No password stored.
 - `/etc/unitotem/unitotem.conf`: legacy, migrated to `assets.json` and `users.json`, renamed `.conf.old`.
 - `/var/lib/unitotem/notifications.json`: `version` 1 and items. Not in backup.
 - `/etc/pam.d/unitotem-manager`: PAM service (falls back to `login`).

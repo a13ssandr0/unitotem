@@ -31,7 +31,7 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
   3. Arm. Installed UniTotem: `unitotem-ota-arm --port 2222 [--wipe-data]`, which reboots into the fallback. Other system: copy recovery kernel and initrd to the boot partition, one-shot boot (Pi: `config.txt`/`cmdline.txt` swap, originals kept as `*.unitotem-bak`; x86: GRUB entry `UniTotem OTA` + `grub-reboot`), reboot.
   4. `wait_ota_reachable`: polls `root@host:2222` up to 600 s; after 60 s without answer scans the local /24 for dropbear on 2222.
   5. `run_ota_sequence`.
-  6. Polls `root@host` on the new system up to 600 s, then checks `/etc/unitotem/ota-preserve.list`.
+  6. Polls `https://<ip>/login` on the new system up to 600 s, credential-free (see Rules).
 - `recover HOST[:PORT]`: target already in the fallback. Engine `probe` picks the disk (holding DATA/ROOT/EFI labels, or the only disk). DATA is kept only if: no `--wipe-data`, DATA mounts, read-only `e2fsck -fn` passes, DATA partition number and start sector match the parts set, partition count matches. Otherwise the table is rewritten and DATA is lost (saved first if it mounts). The boot partition is reformatted if missing or failing `fsck.fat -n`. Secure Boot active forces `shim`. The `:PORT` part is ignored; the port is `OTA_PORT`.
 - `disarm`: restores `config.txt`/`cmdline.txt` from `*.unitotem-bak` (Pi) or removes `/etc/grub.d/99_unitotem_flash` (x86); removes recovery files.
 - `changes [--json]`: runs `unitotem-ota-changes check` on the target.
@@ -74,9 +74,9 @@ Preboot SD image: one FAT32 partition from 1 MiB (MBR type 0c) with Pi firmware,
 | `disarm user@host` | none |
 | `serve` | idle loop (`sleep 3600`) |
 
-Environment: `OTA_PASSWORD` (login password of the adopted system, default `unitotem`), `OTA_FALLBACK_PASSWORD` (root password of the fallback and installed image, default `unitotem`; `ota_ssh` and `ota_ssh_send` log in as `root@host` with it), `ROOT_PASSWORD` (image build, default `unitotem`; the fallback initrd bakes its hash, so the three defaults stay in sync), `OTA_PORT` (fallback SSH port, 2222), `OTA_HOSTIP` (address the target uses to reach the host), `UNITOTEM_BACKUP_DIR` (default `backups/`), `UNITOTEM_OTA_DEBUG=1` (engine: emergency shell on failure).
+Environment: `OTA_PASSWORD` (login password of an adopted foreign system, default `unitotem`), `OTA_FALLBACK_PASSWORD` (fixed root password of the OTA fallback and recovery dropbear, default `unitotem`, independent of the image; `ota_ssh` and `ota_ssh_send` log in as `root@host` with it in password mode), `OTA_AUTH` (`password` by default; `key`: `BatchMode=yes`, `PreferredAuthentications=publickey`, no sshpass, for hosts with the dev PC's key installed: test devices and the native arm64 build host `PI_HOST`), `OTA_PORT` (fallback SSH port, 2222), `OTA_HOSTIP` (address the target uses to reach the host), `UNITOTEM_BACKUP_DIR` (default `backups/`), `UNITOTEM_OTA_DEBUG=1` (engine: emergency shell on failure).
 
-Exit codes: `remote-deploy.sh` 0 success, 1 any error. `deploy` returns 0 with a warning if the new system is not reachable within 600 s; 1 if reachable but `ota-preserve.list` is missing. Engine: 0 / 1 via `fail()`; stdout carries only `UNITOTEM_*=value` lines, logs go to stderr and kmsg.
+Exit codes: `remote-deploy.sh` 0 success, 1 any error. `deploy` returns 0 with a warning if the new system is not reachable within 600 s. Engine: 0 / 1 via `fail()`; stdout carries only `UNITOTEM_*=value` lines, logs go to stderr and kmsg.
 
 Engine subcommands (`--name value`; `--disk` on disk operations):
 
@@ -118,7 +118,8 @@ Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.bootc
 - All SSH/SCP to targets goes through `deploy/lib.sh`: `ssh_t`, `scp_t`, `scp_root`, `ota_ssh`, `ota_ssh_send`, `_sshpass`. They set `SSH_ASKPASS_REQUIRE=never` and unset `DISPLAY`/`SSH_ASKPASS`; a raw `ssh`/`scp` makes OpenSSH try a graphical askpass when no password is ready, then fail with repeated `Permission denied` and no clear error. Check: `grep -n '\bssh \|\bscp \b' deploy/*.sh | grep -v '_sshpass\|ssh_t\|ota_ssh\|scp_t\|command -v\|ssh-keyscan'`.
 - `ota_ssh` keeps `-n` (loops read `parts.manifest` on fd 9); `ota_ssh_send` keeps stdin.
 - Fallback host key changes every boot: `StrictHostKeyChecking=accept-new`, `UserKnownHostsFile=/dev/null`.
-- Non-root login escalates with `sudo -n` or a temporary askpass helper `/tmp/.unitotem-ota-askpass` (mode 700), removed by the EXIT trap. After the deploy, checks use `root@`.
+- Non-root login escalates with `sudo -n` or an askpass helper `/tmp/.unitotem-ota-askpass` (mode 700), removed by the EXIT trap.
+- Post-deploy check is credential-free: the new system's `https://<ip>/login` must answer 200, or 302/303 to `/setup` (first access open). Plain HTTP redirects to HTTPS. Budget 600 s. No SSH login is used; see [image-runtime](image-runtime.md#root-and-first-access).
 - `unitotem-ota-arm` reboots the target: its ssh exit status is a race; the verdict is `wait_ota_reachable`.
 - ServerAlive options are mandatory: the trial reboot kills the session.
 - Point of no return is set by `restore-table`; a later failure enters serve-fallback instead of rebooting into a half-written disk.
@@ -137,7 +138,7 @@ Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.bootc
 - Post-restore addressing uses `blkid -L` labels (`ROOT_A`, `ROOT_B`, `DATA`, `FIRMWARE`/`EFI`): two UniTotem disks in one machine make the lookup ambiguous; no duplicate-label check exists.
 - `make-parts.sh`: arch from the `-amd64.img.xz`/`-arm64.img.xz` suffix or `--arch`; scratch `work/parts-scratch.<pid>` removed unless `--keep-scratch`.
 - `make-preboot-image.sh`: default parts set is the newest `deploy/arm64/*.parts`; needs `recovery-*` and `p1-FIRMWARE.bootfs.tar.*`; output `deploy/arm64/unitotem-preboot-arm64.img` (+ `.xz`).
-- The OTA environment accepts SSH with the default password while armed: trusted networks only.
+- The OTA environment accepts SSH as root with the fixed password `unitotem` (`OTA_FALLBACK_PASSWORD`) while armed: trusted networks only.
 
 ## Tests
 

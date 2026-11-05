@@ -4,10 +4,11 @@
 # *-testload.service) and logs "SDGUARD" in work/pi-test/STATE.md; it logs a heartbeat line every 10 minutes. Run it detached next to ANY job that writes on the Pi:
 #   (setsid nohup tools/pi-sd-guard.sh 21600 > /dev/null 2>&1 &)      # duration in seconds
 cd "$(dirname "$0")/.." || exit 1
+OTA_AUTH=key   # key login to the real system (SSH_OPTS in key mode), see deploy/lib.sh
 source deploy/lib.sh
 : "${PI_IP:?usage: PI_IP=<test Pi address> tools/pi-sd-guard.sh SECONDS}"
 SSHO=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-Q() { _sshpass ssh -n "${SSH_OPTS[@]}" "${SSHO[@]}" "root@$PI_IP" "$@"; }
+Q() { _sshpass ssh -n "${SSH_OPTS[@]}" "${SSHO[@]}" "root@$PI_IP" "$@"; }   # key login, no password
 LIMIT=${LIMIT_MIB_PER_MIN:-300}; END=$(( $(date +%s) + ${1:-3600} )); prev=""; pt=0; n=0
 while [ "$(date +%s)" -lt "$END" ]; do
   w=$(Q "awk '{print \$7}' /sys/block/mmcblk0/stat" 2>/dev/null); t=$(date +%s)

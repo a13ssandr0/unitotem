@@ -1,6 +1,7 @@
 #!/bin/bash
-# Runs once per boot, before cron and the manager: bind-mounts user-data directories from DATA over their place under
-# /var (an OTA resets /var's overlay upper layer, so the data must live on DATA).
+# Runs once per boot, before cron, the manager and ssh: bind-mounts user-data directories from DATA over their place under
+# /var (an OTA resets /var's overlay upper layer, so the data must live on DATA), and over /home (user home
+# directories of administrators: ROOT is read-only, so home cannot live there).
 # Whole directories, never single files: crontab(1) replaces its file with a rename, which fails on a bind-mounted file.
 # First boot on a DATA with no copy yet: seed it from whatever is at the target.
 set -euo pipefail
@@ -25,3 +26,4 @@ persist() {
 persist uploaded /var/lib/unitotem/uploaded 755 root
 persist crontabs /var/spool/cron/crontabs  1730 crontab
 persist browser  /var/lib/unitotem/browser  700 root
+persist home     /home                      755 root

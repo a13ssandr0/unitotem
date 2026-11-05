@@ -11,12 +11,16 @@
 - [system] Legacy pi-gen tree at the repo root (build.sh, stage0-2/, export-image/, Dockerfile...) and the broken single-root installer ISO (iso/): remove or keep.
 - [system] Windows-source installer: build (8-12 days MVP, docs/system/windows-install-research.md) or delete the research.
 - [system] Secure Boot: always ship the shim chain? QEMU proof pending; real firmware "Security Violation" text unverified.
-- [manager] Console: should accounts with a nologin shell get a root shell?
 - [system] Pi 4K60 (hdmi_enable_4kp60) undecided; pin ~60 Raspberry packages and backports (kernel, Mesa, firmware) undecided.
 - [manager] Upstream CEF/cefpython issues and PRs are not opened (patches and docs/manager/cef/pr-*.md ready); user decides.
 - [manager] Lean CEF build (docs/manager/cef/lean-build.md section 6): decision open.
 
 ## To build
+- [system] Reword the comments citing common.sh's ROOT_PASSWORD (unitotem/files/ota-hook:17, deploy/ota-engine.sh:1340): the variable no longer exists; the fallback's fixed password lives only in the hook.
+- [system] iso/installer.sh still asks for a root password and sets it (installer-iso.md): align with the first-access model or remove with the ISO (see the decision above).
+- [system+manager] First access over SSH/console and web: root starts with an empty password and the login shell `unitotem-first-admin` (forces creating the first administrator with adduser), then root is key-only; admin = group `sudo`, web access = group `users` (plan: ~/.claude/plans/la-creazione-dell-account-al-reflective-stonebraker.md). Includes `/home` on DATA, remote-deploy post-check without root password, key-based dev tooling, docs.
+- [system] OTA fallback/recovery dropbear accepts root with the fixed password `unitotem` (unitotem/files/ota-hook, ota-engine serve-fallback): design an operator credential for network deploy.
+- [system] No UniTotem 3.0.0 device is deployed yet: account/identity changes need no migration of older devices.
 - [system] unitotem-update-auto.service has Documentation=file:///usr/share/doc/unitotem/ab-updates.md, which the image does not install.
 - [system] Regenerate the preboot SD image after the latest build.
 - [system] Remove `/etc/chromium.d/50-unitotem-accel` (stage2-configure.sh:291; browser not installed) and the unshipped wifi-roam.conf mention or ship a default file.
@@ -28,6 +32,7 @@
 - [manager] CEF vendor: .gitmodules `branch = cefpython147-qt` is 19 commits behind the pinned commit (on `wayland-views`); wheels in vendor/cefpython-wheels are cp313 only while build-cef-wheels.sh builds 3.10-3.14 and debian/rules/python3-cefpython3 pin 3.13.
 
 ## To verify on hardware
+- [system] First access on an open image: `systemd-sulogin-shell` with root's empty or `*` password (emergency-dropin.conf comment says no shell for `*`, unverified); sshd `Match` marker group over a real login (`sshd -t` only covered syntax); `unitotem-persist-paths` ordering of /home before ssh.
 - [manager/webui] Settings -> Updates with the previous version in the other slot: checked only through `unitotem-update --json status` (UI needs a login); error reply shape of `Settings/Update/*` (updates.vue:324-330) assumed.
 - [system] Auto-update policy modes (download/stage/reboot/scheduled) never exercised live on devices.
 - [system] Deploy backup of an earlier single-root UniTotem (1.x/2.x) tested on a fake root only; a full deploy with backup on a real disk never run.
@@ -67,7 +72,7 @@
 - [manager] Crowded UI: viewers.vue matrix (move keyboard, screensaver, refresh, language to a per-window dialog), Add URL dialog (~12 fields, needs Advanced), settings/display.vue (7 blocks).
 - [manager] Backup gaps: screen_control.json and touch orientation/calibration not in any backup part; netplan part still exported though never written.
 - [system] build-unitotem.sh: no nice/CPUWeight save-restore with EXIT trap (docs/system/build.md); own ssh helpers instead of deploy/lib.sh (no BatchMode, host key check off).
-- [system] build-unitotem.sh:88,202 ROOT_PASSWORD in ssh command text and docker -e (visible in process lists); MAKE_PARTS/EFI_SIZE/ROOT_SIZE not forwarded.
+- [system] build-unitotem.sh: MAKE_PARTS/EFI_SIZE/ROOT_SIZE not forwarded.
 - [system] build-unitotem.sh:166 lock gate handles exit 20 and 2 only, any other failure continues with locked versions; rsync failure silenced with `|| true`.
 - [system] iso/installer.sh:548,558 installs absent files (chromium-flags-amd64, start-xorg.service): aborts at step 9; :508 root password quoting breaks on `'`; Wi-Fi not carried; X11 system. iso/build-live.sh:195 `linuxefi` may not exist.
 - [system] deploy/ota-engine.sh promote-default rpi branch (~724) writes config.txt/cmdline.txt without os_prefix/slot: breaks A/B if run; :846 DATA/history never pruned.

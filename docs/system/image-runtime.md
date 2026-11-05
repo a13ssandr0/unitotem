@@ -9,7 +9,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 | Path | Role |
 |---|---|
 | `unitotem/stage2-configure.sh` | Installs the files below, enables/masks units, sysctl, initramfs |
-| `unitotem/files/sshd_config` | sshd policy |
+| `unitotem/files/sshd_config` | sshd policy, root first-access `Match` block |
 | `unitotem/files/iptables-firewall.sh`, `.service` | IPv4/IPv6 firewall |
 | `unitotem/files/nm-fallback.nmconnection` | Last-resort wired profile (mode 600, root) |
 | `unitotem/files/nm-wifi-reconnect.conf` | NM conf.d: retry Wi-Fi forever, power save off |
@@ -47,7 +47,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 - Manager start: drop-in `20-unitotem-wayland.conf` orders it after the compositor and `user@0.service` and waits up to 60 s for `/run/unitotem/xdg/wayland-0`.
 - Audio: PipeWire, pipewire-pulse, wireplumber run as root user units (`ConditionUser=` cleared by `/etc/systemd/user/*.d/10-root.conf`; without it no audio stream appears). Root has linger so `/run/user/0` exists from boot; the manager runs with `XDG_RUNTIME_DIR=/run/user/0` so pulsectl/libpulse find the socket.
 - Maintenance: `enter` stops manager and compositor (aborts if still active), remounts `/` and `/var/lib/dpkg` rw, `/var/cache` size=1G, `apt-get update`. `exit [--initramfs]` optionally rebuilds initramfs and GRUB, remounts ro, reboots after 5 s.
-- Persistence: `unitotem-persist-paths` binds `/mnt/data/unitotem/persist/{uploaded,crontabs,browser}` onto `/var/lib/unitotem/uploaded`, `/var/spool/cron/crontabs`, `/var/lib/unitotem/browser`; seeded from the target on first boot.
+- Persistence: `unitotem-persist-paths` binds `/mnt/data/unitotem/persist/{uploaded,crontabs,browser,home}` onto `/var/lib/unitotem/uploaded`, `/var/spool/cron/crontabs`, `/var/lib/unitotem/browser`, `/home`; seeded from the target on first boot. `/home` is ordered before `ssh.service` and `systemd-user-sessions.service`.
 - SSH host keys: `/mnt/data/unitotem/ssh-host-keys` is restored into `/etc/ssh` if present; otherwise keys are generated and copied there.
 - TLS: `/etc/ssl/unitotem.pem` generated once (RSA 2048, self-signed, 365000 days); absent from the image; listed in `ota-preserve.list`.
 - Sysctl (appended to `/etc/sysctl.conf`): `vm.dirty_writeback_centisecs=3000`, `vm.dirty_expire_centisecs=3000`, `vm.dirty_ratio=5`, `vm.dirty_background_ratio=2`.
@@ -56,7 +56,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 - Block scheduler: `mq-deadline` on whole non-rotational disks matching `sd[a-z]`, `nvme[0-9]n[0-9]`, `mmcblk[0-9]`.
 - Pi: `vc4` and `v3d` are both listed in `modules-load.d/rpi-gpu.conf` and the initramfs modules; the device tree selects the one it needs.
 - Pi hardware decode is V4L2 mem2mem, not VAAPI: `/dev/video10` H.264 (all models), `/dev/video19` HEVC (Pi 4 and later). arm64 has no VAAPI driver.
-- sshd reads `.ssh/authorized_keys`: root keys go in `/root/.ssh/authorized_keys` (`/root` is an overlay). `PermitEmptyPasswords no`.
+- sshd reads `.ssh/authorized_keys`: root keys go in `/root/.ssh/authorized_keys` (`/root` is an overlay). Before the first administrator exists, root keys reach the first-administrator script (see [Root and first access](#root-and-first-access)); afterwards root accepts keys only.
 - Device apt sources: `deb.debian.org` and `security.debian.org` (suite, `-updates`, `-security`; `main contrib non-free non-free-firmware`); arm64 also `archive.raspberrypi.org`. `maintenance enter` runs `apt-get update`.
 - `/etc/netplan/00-default.yaml` is mode 600.
 - `i2c-dev` is loaded at boot (`modules-load.d/unitotem-i2c.conf`); without it DDC/CI and CEC report unavailable.
@@ -80,7 +80,7 @@ Config:
 - `/etc/unitotem/wifi-roam.conf` (optional, `KEY=VALUE` integers): `ENABLED=1`, `GOOD_DBM=-55`, `MARGIN_DB=10`, `MIN_INTERVAL_S=300`, `IGNORE_S=900`. Env: `UNITOTEM_WIFI_ROAM_CONF`, `UNITOTEM_WIFI_ROAM_STATE`. Not shipped; defaults apply.
 - `/etc/unitotem/update.conf`: `UPDATE_HEALTH_URL=` (empty) when the image has no manager with `/health`.
 - `/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf`: `connection.autoconnect-retries=0`, `wifi.powersave=2`.
-- `/etc/ssh/sshd_config`: `Port 22`, `PermitRootLogin yes`, `PasswordAuthentication yes`, `PubkeyAuthentication yes`, `MaxAuthTries 5`, `LoginGraceTime 30`, `ClientAliveInterval 300`, `ClientAliveCountMax 2`, `X11Forwarding no`, `AllowTcpForwarding no`.
+- `/etc/ssh/sshd_config`: `Port 22`, `PermitRootLogin prohibit-password`, `PermitEmptyPasswords no`, `PasswordAuthentication yes`, `PubkeyAuthentication yes`, `MaxAuthTries 5`, `LoginGraceTime 30`, `ClientAliveInterval 300`, `ClientAliveCountMax 2`, `X11Forwarding no`, `AllowTcpForwarding no`, and the final block `Match User root Group unitotem-first-admin` (see [Root and first access](#root-and-first-access)).
 
 Runtime state: `/run/unitotem-net-watchdog.count`, `/run/unitotem-wifi-roam.json`, `/run/unitotem/xdg/wayland-0`, `/run/user/0`.
 
@@ -101,15 +101,44 @@ Logs: syslog tags `unitotem-net-watchdog`, `unitotem-wifi-roam`; journald keeps 
 - An interface without an active connection gets `disable_ipv6=1`; the watchdog re-enables it. ICMPv6 stays open for ND/RA/DAD.
 - Roaming exists because brcmfmac refuses RSSI notifications and its firmware roaming is off.
 - Wi-Fi power save is off: the kiosk is mains-powered.
-- No login prompt on VT1; emergency/rescue shells reboot after 120 s.
+- No login prompt on VT1; emergency/rescue shells reboot after 120 s. Root with `*` or an empty password gets no shell from sulogin (`SYSTEMD_SULOGIN_FORCE` is not set).
 - The first-boot certificate must not exist in the image; `verify-image.sh` fails the build otherwise.
 - SSH host keys live on DATA: they survive OTA and reset only with `--wipe-data`.
 - `nvidia-persistenced` and `systemd-modules-load` are patched so non-NVIDIA PCs are not "degraded".
 - VAAPI decode flags are amd64 only. Chromium is purged on arm64 images, where `chromium-accel` is inert.
 - The compositor unit, labwc config and Wayland environment come from the `unitotem-viewer`/`unitotem-node` packages ([viewer](../manager/viewer.md), [packaging](../manager/packaging.md)).
 
+## Root and first access
+
+Stage 2 ships root in the first-access state:
+
+- System group `unitotem-first-admin` (sshd marker).
+- Root's shadow field is empty (`passwd -d`); root's login shell is `/usr/sbin/unitotem-first-admin` (manager deb); root is a member of the marker group.
+- Every login path runs that shell: sshd (interactive, command, sftp subsystem), console getty and `su` (PAM `pam_unix nullok`, from Debian trixie's `unix` profile in `common-auth`). The script ignores argv and environment and never runs a shell, pager or editor.
+- sshd runs with `UsePAM` unset, so sshd checks the empty password and the `*` field itself. The `Match User root Group unitotem-first-admin` block sets `PermitRootLogin yes`, `PermitEmptyPasswords yes`, `ForceCommand /usr/sbin/unitotem-first-admin`, `DisableForwarding yes`, `PermitTunnel no`, `PermitUserRC no`.
+- sshd matches user or group only, so the marker group is needed: without it a later `passwd root` or `passwd -d root` would reopen root over SSH.
+- Membership is read at each connection: no sshd reload.
+
+Closing: after the first administrator exists, the manager runs `close_first_access()`:
+
+1. `gpasswd -d root unitotem-first-admin` (marker removed first).
+2. `usermod -p '*' root`: `*`, not `!`. OpenSSH treats `!` as locked and would refuse keys too with `UsePAM` unset.
+3. `usermod -s /bin/bash root`.
+
+Root then accepts SSH keys only, from `/root/.ssh/authorized_keys`. The function is idempotent; the manager runs it again at start when an administrator exists and root is still open.
+
+Admins are members of `sudo` (Debian's `%sudo` rule, password required). Web users are members of `users`. Root never logs in to the web.
+
+Emergency and rescue: root `*` or empty gives sulogin no shell; the 120 s timeout then reboot applies.
+
+Identity merge at an A/B update (`unitotem_identity.py`): root's login shell and root's membership of `unitotem-first-admin` come from the current slot, so a closed device never gets the image's open root back. Root's shadow hash is carried as for every account. If the current system has no such group or entry, the image's values apply. Carried accounts keep their `sudo` and `users` memberships. On failure root returns to the image's first-access state (empty password, first-administrator shell).
+
+`/home` is bind-mounted from DATA (`persist/home`, 755 root). It is not in the `unitotem-ota-changes` scan.
+
+The OTA fallback and recovery dropbear keeps its own fixed root password `unitotem` (`OTA_FALLBACK_PASSWORD` in `deploy/lib.sh`), independent of the image.
+
 ## Tests
 
-- `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: Wi-Fi NM conf, roam, CPU governor, labwc, PipeWire root units, manager drop-in, firewall 4443, no certificate, no blanking in labwc config.
+- `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: Wi-Fi NM conf, roam, CPU governor, labwc, PipeWire root units, manager drop-in, firewall 4443, no certificate, no blanking in labwc config, root first-access state (empty shadow field, login shell, marker group), sshd root policy and `Match` block, persist `home` entry.
 - `python3 tools/release/test_wifi_roam.py`.
 - Network and firewall on hardware: `nmcli`, `iptables -S`, `ip6tables -S`.

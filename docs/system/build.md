@@ -15,7 +15,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | `unitotem/stage0-bootstrap.sh` | debootstrap base to `work/<arch>/stage0.tar.gz` |
 | `unitotem/stage1-packages.sh` | Apt sources, package lock, kernel, firmware, bootloader, GPU, Wayland, manager .debs, purge, lock verify/freeze -> `stage1.tar.gz` |
 | `unitotem/stage1-recovery-initrd.sh` | Resident OTA fallback kernel+initrd and `recovery.manifest` |
-| `unitotem/stage2-configure.sh` | Hostname, locale, timezone, root password, boot config, fstab, NetworkManager, services, initramfs, arm64 FIRMWARE files -> `stage2.tar.gz` |
+| `unitotem/stage2-configure.sh` | Hostname, locale, timezone, root first-access state, boot config, fstab, NetworkManager, services, initramfs, arm64 FIRMWARE files -> `stage2.tar.gz` |
 | `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, optional parts set, xz |
 | `unitotem/verify-image.sh` | Static rule checks on the mounted image (PASS/FAIL) |
 | `unitotem/check-recovery-commands.sh` | Every external command of `ota-engine.sh` exists in the recovery initrd |
@@ -54,7 +54,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Lock: verify (exact match) or freeze to `work/<arch>/<arch>.lock.new`.
 - Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values.
 - Stage 2:
-  - Hostname, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, root password, sshd_config.
+  - Hostname, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, root first-access state (`passwd -d`, login shell, marker group), sshd_config, packages `sudo` and `adduser`.
   - amd64: `/etc/default/grub`, `10_unitotem_ab` (A/B) or `45_unitotem_ota`.
   - arm64: `config.txt`, `cmdline.txt` (`root=LABEL=ROOT_A unitotem.slot=a`).
   - fstab (A/B drops the `/` and BOOT lines), NetworkManager, firewall, Chromium accel flags, apt timers masked.
@@ -86,17 +86,16 @@ Environment of `build-unitotem.sh`:
 | `FORCE_STAGE` | empty | 0-3: rebuild from that stage |
 | `PI_NATIVE_BUILD` | `1` | `0` disables the native arm64 path |
 | `PI_HOST` | `user@host`, unset by default | Raspberry Pi for the native arm64 build; unset: Docker + qemu-aarch64 |
-| `PI_PASSWORD` | set in script | SSH password of `PI_HOST` |
 | `PI_BUILD_BASE` | path on the device | Build tree on the device |
 | `PKGLOCK` | `on` | `off`: skip all lock logic |
 | `PKGLOCK_KEEP` | `0` | `1`: keep the lock on security updates |
 
-Forwarded to the stages: `RELEASE`, `MIRROR`, `UNITOTEM_HOSTNAME`, `ROOT_PASSWORD`, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, `IMAGE_SIZE`, `AB_LAYOUT`, `ROOT_SLOT_SIZE`, `RELEASE_VERSION`. `MAKE_PARTS`, `EFI_SIZE`, `BOOT_SIZE`, `ROOT_SIZE`, `FIRMWARE_SIZE` are read by the stages but not forwarded.
+Forwarded to the stages: `RELEASE`, `MIRROR`, `UNITOTEM_HOSTNAME`, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, `IMAGE_SIZE`, `AB_LAYOUT`, `ROOT_SLOT_SIZE`, `RELEASE_VERSION`. `MAKE_PARTS`, `EFI_SIZE`, `BOOT_SIZE`, `ROOT_SIZE`, `FIRMWARE_SIZE` are read by the stages but not forwarded.
 
 Defaults (`unitotem/common.sh`, env-overridable):
 
 - `RELEASE` trixie; `MIRROR` https://deb.debian.org/debian.
-- `ROOT_PASSWORD` unitotem (set for root with `chpasswd` in stage 2; root is the only login account).
+- Root first-access state (stage 2, no variable): empty password field, login shell `/usr/sbin/unitotem-first-admin`, member of group `unitotem-first-admin`. See [image-runtime](image-runtime.md#root-and-first-access).
 - `UNITOTEM_HOSTNAME` unitotem; `UNITOTEM_LOCALE` it_IT.UTF-8; `UNITOTEM_TIMEZONE` Europe/Rome.
 - `AB_LAYOUT` 1 (0 = single ROOT). `IMAGE_SIZE` 16G (A/B) or 11G. `ROOT_SLOT_SIZE` 6G; `ROOT_SIZE` 8G; `EFI_SIZE`, `BOOT_SIZE`, `FIRMWARE_SIZE` 1G.
 - `RELEASE_VERSION` default `date +%Y.%m.%d`; written to `/usr/share/unitotem/release-version`; must match `^[0-9]+(\.[0-9]+)+$`.

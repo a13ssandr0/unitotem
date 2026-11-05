@@ -119,7 +119,7 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 - `unitotem-boot-orientation set` rewrites only `panel_orientation`, keeps the mode.
 - `unitotem_video` is a contract with `${unitotem_video}` in `grub-ab-entries`.
 - Secure Boot: keep `BOOTX64.EFI` plain GRUB unless shim is active; copy the chain first, rename shim last.
-- `ota-hook` bakes a fixed OTA root password hash into the initrd (SHA-512 crypt, salt `unitotemota`); keep the default in sync with `unitotem/common.sh` and `deploy/lib.sh`.
+- `ota-hook` bakes a fixed OTA root password hash into the initrd (SHA-512 crypt, salt `unitotemota`). The fallback keeps its own fixed password `unitotem` (`OTA_FALLBACK_PASSWORD` in `deploy/lib.sh`), independent of the image's root first-access state.
 - OTA frame: drawn for 16 bpp RGB565 (Pi fallback framebuffer) and 32 bpp (KMS); geometry from `fb0` `virtual_size` and `bits_per_pixel`. `NEWT_COLORS` cannot hide the whiptail border: `ota_frame` paints the ring cells black.
 - The image sets no `hdmi_enable_4kp60`: 4Kp60 on a Pi 4 needs it in `[pi4]` of `config.txt` (HDMI0 only, more heat and power).
 - `promote-default` (rpi) writes `config.txt` without `os_prefix`: single-root path only.

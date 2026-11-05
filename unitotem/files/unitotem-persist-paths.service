@@ -1,7 +1,7 @@
 [Unit]
-Description=UniTotem - uploaded media, crontab and browser profile persisted on DATA
+Description=UniTotem - uploaded media, crontab, browser profile and home directories persisted on DATA
 After=local-fs.target
-Before=cron.service unitotem-manager.service
+Before=cron.service unitotem-manager.service ssh.service systemd-user-sessions.service
 RequiresMountsFor=/mnt/data
 
 [Service]

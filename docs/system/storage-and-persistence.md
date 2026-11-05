@@ -19,7 +19,7 @@ Immutable Debian root on two A/B slots (ROOT_A, ROOT_B). Mutable state lives on 
 | `unitotem/files/unitotem-persist-paths` (+ `.service`) | Binds DATA persist dirs over `/var` targets |
 | `unitotem/files/unitotem-ssh-hostkey` (+ `.service`) | SSH host keys on DATA |
 | `unitotem/files/unitotem-maintenance` (+ `-mode.service`) | Writable root for apt and manual changes |
-| `unitotem/files/unitotem-ota-changes` | Baseline and diff of ROOT (scope `usr boot opt srv home media mnt`) |
+| `unitotem/files/unitotem-ota-changes` | Baseline and diff of ROOT (scope `usr boot opt srv media mnt`) |
 | `deploy/ota-engine.sh` | Fallback path: `data-op`, `migrate-etc-overlay`, `init-premount`, `local-bottom-verify` |
 | `deploy/remote-deploy.sh` | DATA backup before disk replacement; preserve/format choice |
 
@@ -66,7 +66,7 @@ Boot:
   7. Write `.unitotem-overlay-status`.
 - systemd: `unitotem-ssh-hostkey`, `unitotem-persist-paths`, `unitotem-boot-ok`.
 
-Persist paths (`name -> target (mode group)`): `uploaded -> /var/lib/unitotem/uploaded` (755 root); `crontabs -> /var/spool/cron/crontabs` (1730 crontab); `browser -> /var/lib/unitotem/browser` (700 root). Absent DATA dir: created and seeded from the target. Owner and mode always set. Bound if not already a mountpoint.
+Persist paths (`name -> target (mode group)`): `uploaded -> /var/lib/unitotem/uploaded` (755 root); `crontabs -> /var/spool/cron/crontabs` (1730 crontab); `browser -> /var/lib/unitotem/browser` (700 root); `home -> /home` (755 root, administrators' home directories; ROOT is read-only, so `/home` cannot live there). Absent DATA dir: created and seeded from the target. Owner and mode always set. Bound if not already a mountpoint.
 
 Update into slot X from running slot C:
 
@@ -101,7 +101,7 @@ State in `DATA/unitotem/update/`: `slots.json` (`{slot: {version, valid, prepare
 - An upper file shadows the image file at the same path: a whitelisted file overrides the new image's version.
 - `**` is not recursive (Python `glob` without `recursive`, bash without globstar).
 - Never whitelist structural files (fstab, units, initramfs-tools config, PAM).
-- `passwd`, `shadow`, `group`, `gshadow` are not whitelisted; they go through the identity merge: root's shadow entry and accounts with 1000 <= uid < 65534 (plus their groups) are carried; image wins on name or uid clash; output validated then renamed, old file kept as `*.pre-update`. On failure the new slot uses the image's files and root gets the image default password.
+- `passwd`, `shadow`, `group`, `gshadow` are not whitelisted; they go through the identity merge: root's shadow entry and accounts with 1000 <= uid < 65534 (plus their groups, `sudo` and `users` included) are carried; image wins on name or uid clash; output validated then renamed, old file kept as `*.pre-update`. Root's login shell and its membership of `unitotem-first-admin` come from the current slot (a closed device never gets the image's open root back); the image's values apply only when the current system has no such group or entry. On failure the new slot uses the image's files and root returns to the image's first-access state (empty password, first-administrator shell). See [image-runtime](image-runtime.md#root-and-first-access).
 - `/var/lib/dpkg` is pinned to ROOT: DATA drift is discarded.
 - `/var/cache` and `/var/tmp` are tmpfs.
 - Mount table: `/tmp` tmpfs 256M, `/run` tmpfs 0755, `/var/cache` tmpfs 512M, `/var/tmp` tmpfs 64M, all `nosuid,nodev,noatime`. Boot FAT: `vfat ro,nofail,x-systemd.device-timeout=15s,iocharset=iso8859-1`.
@@ -114,7 +114,7 @@ State in `DATA/unitotem/update/`: `slots.json` (`{slot: {version, valid, prepare
 - Identity merge validates with `pwck -r` and `grpck -r` (`LC_ALL=C`, messages matched in English); it fails only on problems the image's own files do not already have.
 - Deploy recognises a UniTotem root by `etc/unitotem/ota-preserve.list`; every image ships it.
 - ROOT is writable only in maintenance mode; changes are lost at the next OTA; `unitotem-ota-changes` reports them.
-- `unitotem-ota-changes` scans `SCAN_DIRS` = `usr boot opt srv home media mnt` with `find -xdev` (DATA under `/mnt` and `/boot/firmware` are not walked). `/etc`, `/var`, `/root` are left out on purpose: they are DATA overlays with their own rules, and `/var` is a plain directory at build but an overlay at runtime, so including it would flag every file.
+- `unitotem-ota-changes` scans `SCAN_DIRS` = `usr boot opt srv media mnt` with `find -xdev` (DATA under `/mnt` and `/boot/firmware` are not walked). `/home` is not scanned: it is the DATA bind mount (`persist home`). `/etc`, `/var`, `/root` are left out on purpose: they are DATA overlays with their own rules, and `/var` is a plain directory at build but an overlay at runtime, so including it would flag every file.
 - `unexplained` = changed paths minus files listed in `/var/lib/dpkg/info/<pkg>.list` of added/removed/changed packages and the side effects `/boot/initrd.img*`, `/boot/vmlinuz*`, `/usr/lib/modules/*`. `digest` = sha256 of the concatenated `pkg.added`, `pkg.removed`, `pkg.changed` and `unexplained` lists, so it covers exactly what the operator sees.
 - `check` exits 2 when the baseline directory is missing (image built without it). A non-empty `OTA_CHANGES_PROGRESS` makes the tool write the phase text to `/run/unitotem-ota-changes.progress` (status bar only, not for parsing).
 - DATA is empty in the image; only `data-op mkfs` or a full disk deploy formats it.
