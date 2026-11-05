@@ -21,7 +21,6 @@
 - [system] Regenerate the preboot SD image after the latest build.
 - [system] Remove `/etc/chromium.d/50-unitotem-accel` (stage2-configure.sh:291; browser not installed) and the unshipped wifi-roam.conf mention or ship a default file.
 - [system] Remove single-root code branches (AB_LAYOUT=0) in stage2/3, remote-deploy, verify-image, unitotem-boot-ok.
-- [system] Developer-infrastructure defaults (IPs, hostnames, credentials, personal paths, UPDATE_BASE_URL, certificate O=) in tracked tools/scripts: make them required arguments/env (tools/win-lab/recover-driver.sh, tools/ws-probe.py:32, tools/ui-notifications.py:223, tools/ticker/deploy-board.sh, tools/cef-server/sync.sh, tools/build-cef-wheels.sh, tools/cef-wayland-tests/ssh.sh and deploy.sh, docs/manager/viewer.md) before publishing; deploy.sh:9 default CACHE is under /tmp.
 - [manager] docs/ apt repository stops at 2.3.0, README.md describes the old single-package install (no unitotem-node/-viewer, unitotem, python3-cefpython3, plymouth-theme-unitotem); docs/update-pkgs.sh uses `dpkg-buildpackage -A` and copies the core deb only.
 - [manager] Pin versions in manager/requirements.txt (fastapi, jinja2, psutil... unpinned); frozen_requirements.txt is referenced by nothing.
 - [manager] plymouth/generate-assets.py:11,32 font path `manager/webview/static/NotoSans.ttf` is stale (now plugins/unitotem_viewer/static/).
