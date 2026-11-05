@@ -108,6 +108,7 @@ Backup: only `touch` (the mapping, not orientation or calibration) is a backup p
 - Tool calls run in a thread (`asyncio.to_thread`); per-output and per-bus locks serialise power and DDC calls.
 - A DDC read-back of `D6` may say "on" for a dark panel: trust `commanded_off`.
 - Many monitors do not answer DDC/CEC while off; a wake can take about a minute to show the source.
+- CEC measured on a Pi 4 with a Samsung TV (CEC 1.4, HDMI 1): standby and wake take 3-5 s; in standby the link stays `connected`, so only `give-device-power-status` tells; `active-source` is needed after `image-view-on` or the TV stays on its own source. Not verified: whether the TV remote's keys reach the page, and whether `image-view-on` takes the TV back from another input.
 - A DDC probe is slow (`capabilities` about 31 s cold, `detect` several seconds) and runs in the background at each start.
 - Never address a monitor with `ddcutil -d N`: it re-runs detection on every call and reproduces "Maximum retries exceeded". Use `--bus N`, one VCP code per call.
 - The `screens` package imports no PySide6 or cefpython (stdlib, loguru, `utils.outputs` only), so `api/display.py` stays importable headless; it duplicates the CDP port as a literal for this reason. `Screens = Screens` in `api/display.py` keeps the path `Settings/Display/Screens/*` while the class lives in `api/display_screens.py`.
