@@ -34,6 +34,17 @@ chk "Pi fallback is forced to 640x480 (DMT mode 4)" file_has "$ENG" 'hdmi_mode=4
 echo "== AppArmor / auditd rule"
 if installed apparmor; then chk "apparmor installed, so auditd must be too" installed auditd; else ok "apparmor package absent (no profile can load)"; fi
 
+echo "== Password policy (PAM pam_pwquality on every path that changes a password; no dictionary)"
+chk "libpam-pwquality installed" installed libpam-pwquality
+for p in cracklib-runtime wamerican; do
+    installed "$p" && bad "package $p must not be installed (the policy has no dictionary)" || ok "package $p absent"
+done
+chk "PAM profile /usr/share/pam-configs/unitotem-pwquality present" test -s "$R/usr/share/pam-configs/unitotem-pwquality"
+chk "exactly one pam_pwquality line in common-password" bash -c '[ "$(grep -cE "^[[:space:]]*password[[:space:]].*pam_pwquality\.so" "$1")" = 1 ]' _ "$R/etc/pam.d/common-password"
+chk "pam_pwquality options: retry=1 enforce_for_root minlen=8 minclass=2 maxrepeat=3 usercheck=1 dictcheck=0" file_has "$R/etc/pam.d/common-password" '^password[[:space:]]+requisite[[:space:]]+pam_pwquality\.so retry=1 enforce_for_root minlen=8 minclass=2 maxrepeat=3 usercheck=1 dictcheck=0[[:space:]]*$'
+chk "chpasswd uses common-password" file_has "$R/etc/pam.d/chpasswd" '^@include[[:space:]]+common-password'
+chk "passwd uses common-password" file_has "$R/etc/pam.d/passwd" '^@include[[:space:]]+common-password'
+
 echo "== Content removed on purpose"
 for p in chromium chromium-browser chromium-common chromium-l10n build-essential gcc g++ cpp gcc-14 g++-14 cpp-14; do
     installed "$p" && bad "package $p must not be installed" || ok "package $p absent"

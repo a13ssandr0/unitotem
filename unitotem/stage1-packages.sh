@@ -168,6 +168,9 @@ apt_install \
     gir1.2-glib-2.0 \
     iptables
 
+# Password quality (PAM profile in stage2). No Recommends: they would add cracklib-runtime and wamerican, which the policy does not use (dictcheck=0).
+apt_install --no-install-recommends libpam-pwquality
+
 # ---------- Plymouth ----------
 
 # plymouth-label (pango/cairo/X11/harfbuzz/..., ~4 MB of initramfs) and plymouth-themes are NOT installed: the UniTotem theme is built
