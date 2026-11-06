@@ -4,7 +4,7 @@
 # Auth modes of the REAL system's ssh/scp, fixed when this file is sourced (set OTA_AUTH before sourcing):
 #   OTA_AUTH=password (default): sshpass with OTA_PASSWORD, password options only.
 #   OTA_AUTH=key: no sshpass, BatchMode with public keys only: a password is never asked.
-# The OTA fallback (port 2222) always uses the fixed password (_sshpass_pw), whatever OTA_AUTH is.
+# The OTA fallback (port 2222) has its own credentials (ota_auth_for), whatever OTA_AUTH is.
 
 log()  { echo ">>> $*"; }
 warn() { echo "!!! $*" >&2; }
@@ -58,13 +58,16 @@ bytes_human() {
 }
 
 # ssh/scp wrappers for the ORIGINAL system and for the OTA session (dropbear inside the fallback/recovery
-# initramfs, port 2222, host key generated fresh every boot: accept-new is the trust model there). The OTA
-# session authenticates with a fixed, known password rather than SSH keys, which would need a chain of key
-# provisioning steps without adding security margin (physical access exposes as much).
+# initramfs, port 2222, host key generated fresh every boot: accept-new is the trust model there).
+# OTA_PASSWORD: the login password of the ADOPTED system (not the fallback's).
 OTA_PASSWORD="${OTA_PASSWORD:-unitotem}"
-# The root password of the FALLBACK (initramfs dropbear) and of the freshly installed UniTotem system: fixed by
-# the image, NOT the login password of the machine being adopted (OTA_PASSWORD may be that machine's own user password).
-OTA_FALLBACK_PASSWORD="${OTA_FALLBACK_PASSWORD:-unitotem}"
+# OTA fallback credentials (port 2222). Read from the environment only, never defaulted, never on a command line:
+#   OTA_FALLBACK_KEY=PATH       private key; default: the per-target key (ota_key_path) when it exists
+#   OTA_FALLBACK_USER=NAME      login user of the fallback (default root)
+#   OTA_FALLBACK_PASSWORD=...   password, used when no key is available
+#   OTA_FALLBACK_OPEN=1         empty password: first access to a device with no admin and no key
+# Selection and errors: ota_auth_for.
+OTA_FALLBACK_USER="${OTA_FALLBACK_USER:-root}"
 
 OTA_AUTH="${OTA_AUTH:-password}"
 case "$OTA_AUTH" in
@@ -190,20 +193,117 @@ scp_root() {
         || { ssh_t "rm -f '${tmp}'" >/dev/null 2>&1; return 1; }
 }
 
-# $1 = host, rest = command.
+# Common options of every OTA fallback connection (port 2222). Credentials are added by ota_auth_for.
 # ServerAlive* is required: the last thing run_ota_sequence does over this channel is reboot the target into
 # the trial system, which disappears mid-session; without keepalive ssh would wait on the dead connection.
 # With it the dead peer is noticed in ~15s.
-OTA_SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
-              -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+OTA_SSH_OPTS=(-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
               -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p "${OTA_PORT:-2222}")
+
+# Per-target key of the OTA fallback, kept in the operator's state directory (never in the repository). The
+# fallback accepts it once its public line is armed (unitotem-ota-arm --authkey-file, or the kernel cmdline).
+ota_key_path() {
+    local host="$1"
+    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || die "invalid host name for the OTA key: '${host}'"
+    echo "${XDG_STATE_HOME:-$HOME/.local/state}/unitotem-deploy/${host//:/_}/id_ed25519"
+}
+
+# Creates the per-target key when missing (ed25519, no passphrase) and returns its private key path.
+ota_key_ensure() {
+    local host="$1" key dir
+    key=$(ota_key_path "$host") || die "invalid OTA host '${host}'"
+    dir=$(dirname "$key")
+    ( umask 077 && mkdir -p -m 0700 "$dir" ) || die "cannot create ${dir}"
+    chmod 0700 "$dir" || die "cannot chmod 0700 ${dir}"
+    if [ ! -f "$key" ]; then
+        ( umask 077 && ssh-keygen -q -t ed25519 -N '' -C unitotem-deploy -f "$key" </dev/null ) \
+            || die "ssh-keygen failed for ${key}"
+    elif [ ! -f "$key.pub" ]; then
+        ( umask 077 && ssh-keygen -y -f "$key" > "$key.pub" ) || die "cannot derive ${key}.pub"
+    fi
+    chmod 0600 "$key" || die "cannot chmod 0600 ${key}"
+    echo "$key"
+}
+
+# Prints the public line of PATH.pub as "ssh-ed25519 BASE64" (comment stripped), or dies.
+ota_key_publine() {
+    local pub="$1.pub" line type b64 re='^ssh-ed25519 [A-Za-z0-9+/=]+$'
+    [ -f "$pub" ] || die "public key not found: ${pub}"
+    line=$(head -n 1 "$pub")
+    read -r type b64 _ <<< "$line"
+    line="${type} ${b64}"
+    [[ "$line" =~ $re ]] || die "not an ssh-ed25519 public key: ${pub}"
+    echo "$line"
+}
+
+# Chooses the key the fallback is armed with for HOST and sets OTA_ARM_KEY (private key path) and
+# OTA_FALLBACK_KEY, so ota_ssh uses the same key at any address the fallback is found at (discover_fallback).
+# Call WITHOUT command substitution: the globals must reach the caller. OTA_FALLBACK_KEY set by the user wins.
+ota_arm_key() {
+    local host="$1"
+    if [ -n "${OTA_FALLBACK_KEY:-}" ]; then
+        [ -f "$OTA_FALLBACK_KEY" ] || die "OTA_FALLBACK_KEY not found: ${OTA_FALLBACK_KEY}"
+        if [ ! -f "$OTA_FALLBACK_KEY.pub" ]; then
+            ( umask 077 && ssh-keygen -y -f "$OTA_FALLBACK_KEY" > "$OTA_FALLBACK_KEY.pub" ) \
+                || die "cannot derive ${OTA_FALLBACK_KEY}.pub"
+        fi
+    else
+        local key
+        key=$(ota_key_ensure "$host") || die "cannot prepare the OTA key for ${host}"
+        OTA_FALLBACK_KEY="$key"
+    fi
+    OTA_ARM_KEY="$OTA_FALLBACK_KEY"
+}
+
+# Selects the credentials for HOST and sets OTA_AUTH_MODE (key|open|password), OTA_AUTH_OPTS (ssh options)
+# and OTA_AUTH_TARGET (user@host). Order: OTA_FALLBACK_KEY, the per-target key of HOST, OTA_FALLBACK_OPEN=1,
+# OTA_FALLBACK_PASSWORD. Dies when none is set.
+ota_auth_for() {
+    local host="$1" key="" user="${OTA_FALLBACK_USER:-root}"
+    [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid OTA fallback user: '${user}'"
+    OTA_AUTH_TARGET="${user}@${host}"
+    if [ -n "${OTA_FALLBACK_KEY:-}" ]; then
+        [ -f "$OTA_FALLBACK_KEY" ] || die "OTA_FALLBACK_KEY not found: ${OTA_FALLBACK_KEY}"
+        key="$OTA_FALLBACK_KEY"
+    else
+        key=$(ota_key_path "$host") || die "invalid OTA host '${host}'"
+    fi
+    if [ -n "$key" ] && [ -f "$key" ]; then
+        OTA_AUTH_MODE=key
+        OTA_AUTH_OPTS=(-o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no \
+                       -o IdentitiesOnly=yes -i "$key")
+    elif [ "${OTA_FALLBACK_OPEN:-0}" = 1 ]; then
+        OTA_AUTH_MODE=open
+        OTA_AUTH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no)
+    elif [ -n "${OTA_FALLBACK_PASSWORD:-}" ]; then
+        OTA_AUTH_MODE=password
+        OTA_AUTH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no)
+    else
+        die "no OTA fallback credentials for ${host}: set OTA_FALLBACK_KEY, or OTA_FALLBACK_USER with OTA_FALLBACK_PASSWORD, or OTA_FALLBACK_OPEN=1"
+    fi
+}
+
+# Runs ssh with the options chosen by ota_auth_for. Password and open modes go through sshpass -e: the password
+# reaches sshpass in its environment (SSHPASS), not on the command line. Key mode runs ssh without sshpass.
+_ota_ssh_exec() {
+    if [ "$OTA_AUTH_MODE" = key ]; then
+        SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS \
+            ssh "${OTA_SSH_OPTS[@]}" "${OTA_AUTH_OPTS[@]}" "$@"
+    else
+        local pw="${OTA_FALLBACK_PASSWORD:-}"
+        [ "$OTA_AUTH_MODE" = open ] && pw=""
+        SSHPASS="$pw" SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS \
+            sshpass -e ssh "${OTA_SSH_OPTS[@]}" "${OTA_AUTH_OPTS[@]}" "$@"
+    fi
+}
 
 # -n (stdin from /dev/null) is required: ssh would otherwise forward its stdin to the remote command, and
 # run_ota_sequence calls this inside a loop that reads parts.manifest, so the first restore-part would
 # swallow the rest of the manifest. ota_ssh_send below keeps stdin to pipe payloads, hence two functions.
 ota_ssh() {
     local host="$1"; shift
-    OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass_pw ssh -n "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
+    ota_auth_for "$host"
+    _ota_ssh_exec -n "$OTA_AUTH_TARGET" "$@"
 }
 
 ota_ssh_send() {
@@ -211,7 +311,8 @@ ota_ssh_send() {
     # boot-fs filecopy tarball (small files; bulk partition data goes over the plain-netcat DATA channel,
     # see restore-part).
     local host="$1"; shift
-    OTA_PASSWORD="$OTA_FALLBACK_PASSWORD" _sshpass_pw ssh "${OTA_SSH_OPTS[@]}" "root@${host}" "$@"
+    ota_auth_for "$host"
+    _ota_ssh_exec "$OTA_AUTH_TARGET" "$@"
 }
 
 # Wait until something is listening on $2/tcp on this host, up to $3

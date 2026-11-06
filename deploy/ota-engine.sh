@@ -470,6 +470,7 @@ cmd_populate_bootfs() {
         --exclude="${pre}recovery.sha256" --exclude="${pre}unitotem/*" \
         --exclude="${pre}unitotem-ota.conf" --exclude="${pre}unitotem-ota.state" --exclude="${pre}unitotem-ota.request" \
         --exclude="${pre}unitotem-ota.bootcount" --exclude="${pre}unitotem-ota.last" \
+        --exclude="${pre}unitotem-ota.authorized_keys" \
         --exclude="${pre}tryboot.txt" --exclude="${pre}cmdline-trial.txt" \
         --exclude="${pre}config.txt" --exclude="${pre}cmdline.txt" \
         --exclude="${pre}*.unitotem-bak" \
@@ -930,6 +931,265 @@ cmd_apply_network() {
 }
 
 # ---------------------------------------------------------------------------
+# Fallback SSH access (dropbear, port 2222). fallback_auth_setup writes /etc/passwd, /etc/shadow and
+# /root/.ssh/authorized_keys into the initramfs tmpfs on every start, from read-only sources only:
+#   1. unitotem.ota.authkey=<base64 of one ed25519 key line> on the kernel command line
+#   2. unitotem-ota.authorized_keys on the boot FAT
+#   3. DATA: root's keys, and the keys and password hash of every member of group sudo (the admins)
+# Root logs in by key only. Open mode (empty root password, dropbear -B) only when the device has no key and
+# no admin account at all: a device that was never configured.
+# Test overrides (default: the real paths): OTA_AUTH_ROOT (output prefix), OTA_AUTH_DATADIR (DATA tree used
+# instead of mounting DATA), OTA_AUTH_BOOTDIR (directory used instead of the boot FAT), OTA_AUTH_CMDLINE (file
+# used instead of /proc/cmdline). Call it in a `||` context: errexit and the ERR trap are then off inside it.
+FALLBACK_OPEN=0
+AUTH_MAX_KEYS=64
+AUTH_MAX_LINE=2048
+AUTH_KEY_RE='^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521) [A-Za-z0-9+/=]+( [^[:cntrl:]]*)?$'
+AUTH_ED25519_RE='^ssh-ed25519 [A-Za-z0-9+/=]+( [^[:cntrl:]]*)?$'
+AUTH_NAME_RE='^[a-z_][a-z0-9_-]{0,31}$'
+AUTH_HASH_RE='^\$[0-9a-z]+\$[A-Za-z0-9./$,=+-]*$'
+AUTH_KEYS=()     # "type base64" of every accepted key, deduplicated
+AUTH_ADMINS=()   # "name:hash" per admin; hash is "*" when there is no usable password
+AUTH_USABLE=0    # admins with a usable password hash
+
+# valid_authkey_line LINE [ed25519]: 0 when LINE is one plain public key line (no options) within the length cap.
+valid_authkey_line() {
+    [ "${#1}" -le "$AUTH_MAX_LINE" ] || return 1
+    if [ "${2:-}" = ed25519 ]; then
+        [[ $1 =~ $AUTH_ED25519_RE ]]
+    else
+        [[ $1 =~ $AUTH_KEY_RE ]]
+    fi
+}
+
+# auth_add_key LINE ED25519_FLAG SOURCE: keeps "type base64" of a valid new key (the comment is dropped).
+auth_add_key() {
+    local kt kb _rest k x
+    if ! valid_authkey_line "$1" "$2"; then
+        log "fallback auth: invalid key line from $3 ignored"
+        return 0
+    fi
+    read -r kt kb _rest <<< "$1"
+    k="$kt $kb"
+    for x in "${AUTH_KEYS[@]}"; do
+        if [ "$x" = "$k" ]; then return 0; fi
+    done
+    if [ "${#AUTH_KEYS[@]}" -ge "$AUTH_MAX_KEYS" ]; then
+        log "fallback auth: more than $AUTH_MAX_KEYS keys, the rest from $3 ignored"
+        return 0
+    fi
+    AUTH_KEYS+=("$k")
+    return 0
+}
+
+# auth_read_keys_file FILE ED25519_FLAG SOURCE: every key line of FILE (a missing file is no keys).
+auth_read_keys_file() {
+    local line before=${#AUTH_KEYS[@]}
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        auth_add_key "$line" "$2" "$3"
+    done < "$1"
+    if [ "${#AUTH_KEYS[@]}" -ne "$before" ]; then
+        log "fallback auth: $(( ${#AUTH_KEYS[@]} - before )) key(s) from $3"
+    fi
+    return 0
+}
+
+# auth_cmdline_get KEY: value of the KEY=value token on the kernel command line.
+auth_cmdline_get() {
+    local c tok
+    local -a toks=()
+    c=$(cat "${OTA_AUTH_CMDLINE:-/proc/cmdline}" 2>/dev/null) || return 1
+    read -ra toks <<< "$c" || true
+    for tok in "${toks[@]}"; do
+        case "$tok" in "$1="*) printf '%s\n' "${tok#*=}"; return 0 ;; esac
+    done
+    return 1
+}
+
+# auth_cmdline_key: unitotem.ota.authkey=<base64>, decoded to one ed25519 key line. Anything else is ignored.
+auth_cmdline_key() {
+    local tok key=""
+    tok=$(auth_cmdline_get unitotem.ota.authkey) || return 0
+    if [ "${#tok}" -gt 1024 ]; then
+        log "fallback auth: unitotem.ota.authkey too long, ignored"
+        return 0
+    fi
+    if ! [[ $tok =~ ^[A-Za-z0-9+/=]+$ ]]; then
+        log "fallback auth: unitotem.ota.authkey is not base64, ignored"
+        return 0
+    fi
+    key=$(printf '%s' "$tok" | base64 -d 2>/dev/null | head -n 1) || key=""
+    key=${key%$'\r'}
+    if valid_authkey_line "$key" ed25519; then
+        auth_add_key "$key" ed25519 "kernel command line"
+    else
+        log "fallback auth: unitotem.ota.authkey is not an ed25519 key line, ignored"
+    fi
+    return 0
+}
+
+# auth_boot_keys: unitotem-ota.authorized_keys on the boot FAT. Uses /boot-ota when mounted, else FIRMWARE or EFI
+# mounted read-only on a private directory and unmounted again.
+auth_boot_keys() {
+    local dir="${OTA_AUTH_BOOTDIR:-}" mnt=/run/ota-auth-boot dev=""
+    if [ -n "$dir" ]; then
+        auth_read_keys_file "$dir/unitotem-ota.authorized_keys" "" "boot partition"
+        return 0
+    fi
+    if mountpoint -q /boot-ota 2>/dev/null; then
+        auth_read_keys_file /boot-ota/unitotem-ota.authorized_keys "" "boot partition"
+        return 0
+    fi
+    dev=$(blkid -L FIRMWARE 2>/dev/null) || dev=""
+    if [ -z "$dev" ]; then
+        dev=$(blkid -L EFI 2>/dev/null) || dev=""
+    fi
+    if [ -z "$dev" ]; then
+        log "fallback auth: no FIRMWARE or EFI partition, boot keys skipped"
+        return 0
+    fi
+    mkdir -p "$mnt" 2>/dev/null || return 0
+    if mount -t vfat -o ro "$dev" "$mnt" 2>/dev/null; then
+        auth_read_keys_file "$mnt/unitotem-ota.authorized_keys" "" "boot partition"
+        umount "$mnt" 2>/dev/null || log "fallback auth: cannot unmount $mnt"
+    else
+        log "fallback auth: cannot mount the boot partition read-only, boot keys skipped"
+    fi
+    return 0
+}
+
+# auth_sudo_members GROUP_FILE: prints the members of group sudo, one per line (nothing when there are none).
+auth_sudo_members() {
+    local g x gid mem _rest
+    local -a members=()
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    while IFS=: read -r g x gid mem _rest || [ -n "$g" ]; do
+        if [ "$g" = sudo ]; then
+            IFS=, read -ra members <<< "$mem" || true
+            printf '%s\n' "${members[@]}"
+            return 0
+        fi
+    done < "$1"
+    return 0
+}
+
+# auth_shadow_hash SHADOW_FILE USER: the password field of USER (nothing when absent).
+auth_shadow_hash() {
+    local n h _rest
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    while IFS=: read -r n h _rest || [ -n "$n" ]; do
+        if [ "$n" = "$2" ]; then printf '%s\n' "$h"; return 0; fi
+    done < "$1"
+    return 0
+}
+
+# auth_data_scan DIR: keys and admins from a DATA tree. The system slot is the one whose /etc is present, the
+# current slot (unitotem.slot=) first; without one, the first slot that has a root key file.
+auth_data_scan() {
+    local d="$1" cur s slot="" u h dup x group_members
+    local -a order=(a b)
+    cur=$(auth_cmdline_get unitotem.slot) || cur=""
+    if [ "$cur" = b ]; then order=(b a); fi
+    for s in "${order[@]}"; do
+        if [ -f "$d/upper/etc.$s/group" ]; then slot=$s; break; fi
+    done
+    if [ -z "$slot" ]; then
+        for s in "${order[@]}"; do
+            if [ -f "$d/upper/root.$s/.ssh/authorized_keys" ]; then slot=$s; break; fi
+        done
+    fi
+    if [ -z "$slot" ]; then
+        log "fallback auth: DATA has no system files, only the boot keys can apply"
+        return 0
+    fi
+    log "fallback auth: DATA slot $slot"
+    auth_read_keys_file "$d/upper/root.$slot/.ssh/authorized_keys" "" "DATA root"
+    group_members=$(auth_sudo_members "$d/upper/etc.$slot/group") || group_members=""
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        if ! [[ $u =~ $AUTH_NAME_RE ]] || [ "$u" = root ]; then
+            log "fallback auth: sudo member with an invalid account name ignored"
+            continue
+        fi
+        dup=0
+        for x in "${AUTH_ADMINS[@]}"; do
+            if [ "${x%%:*}" = "$u" ]; then dup=1; fi
+        done
+        if [ "$dup" = 1 ]; then continue; fi
+        h=$(auth_shadow_hash "$d/upper/etc.$slot/shadow" "$u") || h=""
+        if [[ $h =~ $AUTH_HASH_RE ]]; then
+            AUTH_USABLE=$((AUTH_USABLE + 1))
+        else
+            h='*'
+        fi
+        AUTH_ADMINS+=("$u:$h")
+        auth_read_keys_file "$d/unitotem/persist/home/$u/.ssh/authorized_keys" "" "DATA home of $u"
+    done <<< "$group_members"
+    return 0
+}
+
+# auth_data_read: DATA read-only on /run/ota-auth-data (or OTA_AUTH_DATADIR), always unmounted again.
+auth_data_read() {
+    local mnt=/run/ota-auth-data dev=""
+    if [ -n "${OTA_AUTH_DATADIR:-}" ]; then
+        auth_data_scan "$OTA_AUTH_DATADIR"
+        return 0
+    fi
+    dev=$(blkid -L DATA 2>/dev/null) || dev=""
+    if [ -z "$dev" ]; then
+        log "fallback auth: DATA partition not found"
+        return 0
+    fi
+    mkdir -p "$mnt" 2>/dev/null || return 0
+    if mount -t ext4 -o ro "$dev" "$mnt" 2>/dev/null; then
+        auth_data_scan "$mnt"
+        umount "$mnt" 2>/dev/null || log "fallback auth: cannot unmount $mnt"
+    else
+        log "fallback auth: cannot mount DATA read-only, DATA skipped"
+    fi
+    return 0
+}
+
+# fallback_auth_setup: writes the fallback credentials and sets FALLBACK_OPEN (1 = open mode, dropbear -B).
+# Returns non-zero, with root locked, when the files cannot be written.
+fallback_auth_setup() {
+    local root="${OTA_AUTH_ROOT:-}" open=0 e k
+    local pw="${root}/etc/passwd" shadow="${root}/etc/shadow" ak="${root}/root/.ssh/authorized_keys"
+    AUTH_KEYS=(); AUTH_ADMINS=(); AUTH_USABLE=0; FALLBACK_OPEN=0
+
+    auth_cmdline_key
+    auth_boot_keys
+    auth_data_read
+    if [ "${#AUTH_KEYS[@]}" -eq 0 ] && [ "${#AUTH_ADMINS[@]}" -eq 0 ]; then open=1; fi
+
+    mkdir -p "${root}/etc" "${root}/root/.ssh" || return 1
+    chmod 700 "${root}/root/.ssh" || return 1
+    (
+        umask 077
+        {
+            printf '%s\n' 'root:x:0:0:root:/root:/bin/sh'
+            for e in "${AUTH_ADMINS[@]}"; do printf '%s:x:0:0::/root:/bin/sh\n' "${e%%:*}"; done
+        } > "$pw.new" && chmod 644 "$pw.new" && mv -f "$pw.new" "$pw" || exit 1
+        {
+            if [ "$open" = 1 ]; then printf '%s\n' 'root::19000:0:99999:7:::'; else printf '%s\n' 'root:*:19000:0:99999:7:::'; fi
+            for e in "${AUTH_ADMINS[@]}"; do printf '%s:%s:19000:0:99999:7:::\n' "${e%%:*}" "${e#*:}"; done
+        } > "$shadow.new" && chmod 600 "$shadow.new" && mv -f "$shadow.new" "$shadow" || exit 1
+        {
+            for k in "${AUTH_KEYS[@]}"; do printf '%s\n' "$k"; done
+        } > "$ak.new" && chmod 600 "$ak.new" && mv -f "$ak.new" "$ak" || exit 1
+    ) || return 1
+    FALLBACK_OPEN=$open
+    if [ "$open" = 1 ]; then
+        log "fallback auth: OPEN mode (first access): no key and no admin account found, root has an empty password"
+    else
+        log "fallback auth: root locked (key login only); keys: ${#AUTH_KEYS[@]}, admins: ${#AUTH_ADMINS[@]}, admin passwords: $AUTH_USABLE"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # serve-fallback: the automatic-recovery / manual-arm entry point. Brings up networking, starts dropbear
 # (ephemeral host key generated at every start, since a baked-in key would be shared by every image) and blocks,
 # showing a whiptail screen with reachability info. Every path into OTA mode ends up here.
@@ -1337,8 +1597,7 @@ cmd_serve_fallback() {
     # creates it.
     mkdir -p /run/systemd
 
-    # root's password (fixed, same as unitotem/common.sh's ROOT_PASSWORD) is baked into /etc/shadow at build time
-    # (see unitotem/files/ota-hook); dropbear below accepts password auth by default.
+    # Fallback root credentials are written at run time by fallback_auth_setup, called right before dropbear.
 
     # The gauge stays up for the whole session (a one-shot --infobox would be overwritten; /dev/console is the serial
     # port, see ota_ui_start). `|| true` is required: a `||` context suppresses errexit and the ERR trap for the whole
@@ -1359,11 +1618,18 @@ Address: ${myip:-none}   Port: 2222" || true
         fi
     fi
 
+    # Fallback credentials and mode. The `||` context keeps a failed DATA or boot mount from aborting here: the
+    # credentials then stay locked (FALLBACK_OPEN=0).
+    fallback_auth_setup || warn "fallback credentials not written: root login stays locked"
     # dropbear -E logs "[pid] date time message"; every line is relabelled with the program name, dropping the pid. A
     # bash read loop is used because sed/awk are not guaranteed in the minimal fallback. The pipeline is what blocks:
     # dropbear runs with -F and never returns, and if it does, park here instead of falling through into a normal boot.
     # The console belongs to the progress screen: dropbear's log goes to a file and to the kernel log at debug level.
-    dropbear -F -E -p 2222 -r /run/dropbear_ed25519_host_key 2>&1 \
+    # -T 3: three auth tries. -j -k: no port forwarding (the reverse tunnel above is requested by the client, which
+    # dropbear does not need to grant). -B (blank passwords) only in open mode.
+    local -a dbopts=(-F -E -p 2222 -r /run/dropbear_ed25519_host_key -T 3 -j -k)
+    if [ "$FALLBACK_OPEN" = 1 ]; then dbopts+=(-B); fi
+    dropbear "${dbopts[@]}" 2>&1 \
         | while IFS= read -r line; do
               printf 'dropbear: %s\n' "${line#\[*\] }" >> /run/ota-dropbear.log
               kmsg "dropbear: ${line#\[*\] }"
@@ -1594,4 +1860,6 @@ main() {
     esac
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]:-}" = "$0" ]; then
+    main "$@"
+fi
