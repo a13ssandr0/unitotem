@@ -49,6 +49,11 @@ install -m 644 /unitotem/files/sshd_config "${ROOTFS}/etc/ssh/sshd_config"
 mkdir -p "${ROOTFS}/root/.ssh"
 chmod 700 "${ROOTFS}/root/.ssh"
 
+# ---------- Password policy ----------
+# PAM profile (libpam-pwquality, stage1): pam-auth-update rebuilds common-password from the enabled profiles.
+install -m 644 /unitotem/files/unitotem-pwquality "${ROOTFS}/usr/share/pam-configs/unitotem-pwquality"
+chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive pam-auth-update --package --force
+
 # ---------- Plymouth ----------
 # No theme is pinned here: the unitotem-manager package installs and selects the
 # "unitotem" theme (update-alternatives and plymouth-set-default-theme, because

@@ -1,0 +1,7 @@
+Name: UniTotem password policy
+Default: yes
+Priority: 1024
+Conflicts: pwquality
+Password-Type: Primary
+Password:
+	requisite	pam_pwquality.so retry=1 enforce_for_root minlen=8 minclass=2 maxrepeat=3 usercheck=1 dictcheck=0
