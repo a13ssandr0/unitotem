@@ -111,7 +111,7 @@ The fallback dropbear (port 2222) has no fixed password. `fallback_auth_setup` (
 2. DATA, mounted read-only on demand and unmounted after reading:
    - `upper/root.<slot>/.ssh/authorized_keys` (slot from `unitotem.slot=`, else both slots);
    - for every member of group `sudo` in `upper/etc.<slot>/group`: the shadow hash (`upper/etc.<slot>/shadow`) and `unitotem/persist/home/<user>/.ssh/authorized_keys`.
-3. Open mode, only when no key and no administrator was found at all: root with an empty password and dropbear `-B`. Logged. A configured device never falls back to open. A device whose administrator password is forgotten stays closed unless a key is armed or present in DATA.
+3. Open mode, only when no key and no administrator was found at all: root with an empty password and dropbear `-B`. Logged. A configured device never falls back to open. A device whose administrator password is forgotten stays closed unless a key is armed or present in DATA. DATA that is absent or cannot be mounted counts as nothing found, so a device with a damaged DATA stays recoverable remotely; the price is that an intact device whose DATA fails to mount at that moment is open until the next boot.
 
 Each administrator becomes a uid 0 account `<user>` (shell `/bin/sh`, home `/root`) in the initramfs. `ssh <admin>@<host> -p 2222` gives a root shell with that administrator's password or key. Root itself accepts keys only; open mode is the only case with an empty root password. Names fullmatch `[a-z_][a-z0-9_-]{0,31}`; hashes `!`, `*` or empty give no password. Key lines accept only `ssh-ed25519`, `ssh-rsa` and `ecdsa` types without options (the cmdline token: ed25519 only); max 64 keys, 2048 characters per line.
 
