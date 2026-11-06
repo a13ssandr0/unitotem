@@ -47,7 +47,8 @@
 - Recovery keeps DATA when a read-only fsck passes.
 - OTA screen: logo, phase and progress gauge, English text, adapts to any resolution.
 - Fallback: DHCP on every wired interface, low-resolution GRUB entries, brcmfmac Wi-Fi modules.
-- Deploy post-check probes the web interface instead of logging in as root; `OTA_AUTH=key` mode in `deploy/lib.sh` for hosts with an installed key (the fallback keeps its password).
+- Deploy post-check probes the web interface instead of logging in as root; `OTA_AUTH=key` mode in `deploy/lib.sh` for hosts with an installed key (the fallback no longer has a fixed password, see below).
+- `deploy/lib.sh`: `OTA_FALLBACK_USER`, `OTA_FALLBACK_KEY`, `OTA_FALLBACK_PASSWORD` (environment only), `OTA_FALLBACK_OPEN`; per-target keys under `~/.local/state/unitotem-deploy/`; `recover --fallback-user`; `unitotem-ota-arm --authkey-file`.
 
 #### Boot and display
 - Plymouth UniTotem theme starts before the OTA check; held until the compositor starts.
@@ -68,6 +69,8 @@
 - journald stores INFO messages.
 - Root starts without a password and with `unitotem-first-admin` as login shell (SSH, console, su): the first login creates the first administrator; afterwards root accepts SSH keys only (sshd `Match` on the marker group `unitotem-first-admin`).
 - No fixed root password in the image (`ROOT_PASSWORD` removed); `/home` persists on DATA; identity merge keeps root's shell and marker membership across A/B updates; verify-image checks the first-access state.
+- Password quality enforced by PAM (`pam_pwquality`, profile `unitotem-pwquality`, no dictionary) for `passwd`, `sudo passwd`, `chpasswd`; verify-image checks the profile and the package set.
+- OTA fallback has no fixed password: a key armed by the deploy tool (per-target key, kernel command line or boot partition), or the administrators' accounts, passwords and root keys read from DATA; a never-configured device stays open like first access; dropbear runs with `-T 3 -j -k`.
 
 ### unitotem-manager (since 2.3.0)
 
@@ -91,7 +94,7 @@
 #### Accounts and security
 - Accounts are system accounts (PAM, group unitotem); users included in backup.
 - Multi-user with group permissions; default admin/admin credentials removed.
-- Password rules follow passwd/useradd; strict policy opt-in.
+- One password policy, always on, enforced by PAM and mirrored by the manager (8 bytes, 2 character classes, at most 3 repeated characters, not the user name); the opt-in switch is removed; the setup page and the user dialogs show a live checklist of the rules; refusals show the reason from the system.
 - Uploads need authentication; backup restricted to administrators; debug API removed.
 - Error pages show no version, OS, IP or hostname.
 - First access shows welcome screen with hotspot credentials until an administrator exists.

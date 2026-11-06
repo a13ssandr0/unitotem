@@ -28,11 +28,11 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
 - `deploy`, in order:
   1. `secure_boot_gate` (amd64 UEFI with Secure Boot active), `changes_gate` (installed UniTotem), confirmation `YES` unless `--yes` or `--accept-changes`.
   2. Backups before anything is armed (Backups).
-  3. Arm. Installed UniTotem: `unitotem-ota-arm --port 2222 [--wipe-data]`, which reboots into the fallback. Other system: copy recovery kernel and initrd to the boot partition, one-shot boot (Pi: `config.txt`/`cmdline.txt` swap, originals kept as `*.unitotem-bak`; x86: GRUB entry `UniTotem OTA` + `grub-reboot`), reboot.
-  4. `wait_ota_reachable`: polls `root@host:2222` up to 600 s; after 60 s without answer scans the local /24 for dropbear on 2222.
+  3. Arm. Installed UniTotem: `unitotem-ota-arm --port 2222 [--wipe-data] --authkey-file FILE` (`-` = stdin; the public key goes to `unitotem-ota.authorized_keys` on the boot partition), which reboots into the fallback. Other system: copy recovery kernel and initrd to the boot partition, one-shot boot with `unitotem.ota.authkey=<base64 of the key line>` on the kernel command line (Pi: `config.txt`/`cmdline.txt` swap, originals kept as `*.unitotem-bak`; x86: GRUB entry `UniTotem OTA` + `grub-reboot`), reboot. The per-target key is created here (see [Fallback authentication](#fallback-authentication)).
+  4. `wait_ota_reachable`: polls `OTA_FALLBACK_USER@host:2222` (default `root`) up to 600 s; after 60 s without answer scans the local /24 for dropbear on 2222.
   5. `run_ota_sequence`.
   6. Polls `https://<ip>/login` on the new system up to 600 s, credential-free (see Rules).
-- `recover HOST[:PORT]`: target already in the fallback. Engine `probe` picks the disk (holding DATA/ROOT/EFI labels, or the only disk). DATA is kept only if: no `--wipe-data`, DATA mounts, read-only `e2fsck -fn` passes, DATA partition number and start sector match the parts set, partition count matches. Otherwise the table is rewritten and DATA is lost (saved first if it mounts). The boot partition is reformatted if missing or failing `fsck.fat -n`. Secure Boot active forces `shim`. The `:PORT` part is ignored; the port is `OTA_PORT`.
+- `recover HOST[:PORT]`: target already in the fallback. Engine `probe` picks the disk (holding DATA/ROOT/EFI labels, or the only disk). DATA is kept only if: no `--wipe-data`, DATA mounts, read-only `e2fsck -fn` passes, DATA partition number and start sector match the parts set, partition count matches. Otherwise the table is rewritten and DATA is lost (saved first if it mounts). The boot partition is reformatted if missing or failing `fsck.fat -n`. Secure Boot active forces `shim`. The `:PORT` part is ignored; the port is `OTA_PORT`. Login: see [Fallback authentication](#fallback-authentication).
 - `disarm`: restores `config.txt`/`cmdline.txt` from `*.unitotem-bak` (Pi) or removes `/etc/grub.d/99_unitotem_flash` (x86); removes recovery files.
 - `changes [--json]`: runs `unitotem-ota-changes check` on the target.
   - UI sequence: `changes --json`; if `verdict` is `clean`, deploy; else show packages and unexplained files, keep `digest`, and after confirmation run `deploy --accept-changes DIGEST`. A digest mismatch means the system changed: restart from `changes`.
@@ -69,12 +69,12 @@ Preboot SD image: one FAT32 partition from 1 MiB (MBR type 0c) with Pi firmware,
 |---|---|
 | `probe user@host` | none |
 | `changes user@host` | `--json` |
-| `deploy user@host` | `--parts DIR`, `--disk NAME\|BYID`, `--port N` (data channel, default 9700), `--wipe-data`, `--backup-dir DIR`, `--no-backup`, `--fallback-only`, `--console STR`, `--yes`, `--accept-changes DIGEST`, `--secure-boot shim\|noshim\|abort` |
-| `recover HOST[:PORT]` | `--parts DIR`, `--disk`, `--wipe-data`, `--backup-dir`, `--no-backup`, `--yes` |
+| `deploy user@host` | `--parts DIR`, `--disk NAME\|BYID`, `--port N` (data channel, default 9700), `--wipe-data`, `--backup-dir DIR`, `--no-backup`, `--fallback-only`, `--console STR`, `--yes`, `--accept-changes DIGEST`, `--secure-boot shim\|noshim\|abort`, `--fallback-user NAME` |
+| `recover HOST[:PORT]` | `--parts DIR`, `--disk`, `--wipe-data`, `--backup-dir`, `--no-backup`, `--yes`, `--fallback-user NAME` |
 | `disarm user@host` | none |
 | `serve` | idle loop (`sleep 3600`) |
 
-Environment: `OTA_PASSWORD` (login password of an adopted foreign system, default `unitotem`), `OTA_FALLBACK_PASSWORD` (fixed root password of the OTA fallback and recovery dropbear, default `unitotem`, independent of the image; `ota_ssh` and `ota_ssh_send` log in as `root@host` with it in password mode), `OTA_AUTH` (`password` by default; `key`: `BatchMode=yes`, `PreferredAuthentications=publickey`, no sshpass, for hosts with the dev PC's key installed: test devices and the native arm64 build host `PI_HOST`), `OTA_PORT` (fallback SSH port, 2222), `OTA_HOSTIP` (address the target uses to reach the host), `UNITOTEM_BACKUP_DIR` (default `backups/`), `UNITOTEM_OTA_DEBUG=1` (engine: emergency shell on failure).
+Environment: `OTA_PASSWORD` (login password of an adopted foreign system, default `unitotem`), `OTA_FALLBACK_KEY` (private key of the fallback login; default: the per-target key of the host), `OTA_FALLBACK_USER` (fallback login user, default `root`; `--fallback-user NAME`), `OTA_FALLBACK_PASSWORD` (password of that user; environment only, never on a command line; no default), `OTA_FALLBACK_OPEN=1` (open mode: empty password, see [Fallback authentication](#fallback-authentication)), `OTA_AUTH` (`password` by default; `key`: `BatchMode=yes`, `PreferredAuthentications=publickey`, no sshpass, for hosts with the dev PC's key installed: test devices and the native arm64 build host `PI_HOST`), `OTA_PORT` (fallback SSH port, 2222), `OTA_HOSTIP` (address the target uses to reach the host), `UNITOTEM_BACKUP_DIR` (default `backups/`), `UNITOTEM_OTA_DEBUG=1` (engine: emergency shell on failure).
 
 Exit codes: `remote-deploy.sh` 0 success, 1 any error. `deploy` returns 0 with a warning if the new system is not reachable within 600 s. Engine: 0 / 1 via `fail()`; stdout carries only `UNITOTEM_*=value` lines, logs go to stderr and kmsg.
 
@@ -99,7 +99,30 @@ Engine subcommands (`--name value`; `--disk` on disk operations):
 | `apply-network` | `--data-mnt [--slot --link wired\|wifi --mode dhcp\|static --addr --gw --dns --ssid-b64 --psk-b64]` | `UNITOTEM_NET_APPLIED=1\|skip-existing\|not-needed` |
 | `serve-fallback` | `[--reason --kind update\|recovery --idle-timeout S]` | blocks |
 
-Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.bootcount=1`; boot-FAT files `unitotem-ota.request`, `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, `OTA_NET_LINK/MODE/IFACE/ADDR/GW`, `OTA_WIFI_SSID_B64`, `OTA_WIFI_PSK_B64`), `unitotem-ota.bootcount`, `unitotem-ota.failover`, `unitotem-grub/grub/grubenv`, `tryboot.txt`, `cmdline-trial.txt`. Semantics: `boot.md`.
+Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.bootcount=1`, `unitotem.ota.authkey=<base64 of one ssh-ed25519 line>` (fallback login key); boot-FAT files `unitotem-ota.request`, `unitotem-ota.authorized_keys` (fallback login key, kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, `OTA_NET_LINK/MODE/IFACE/ADDR/GW`, `OTA_WIFI_SSID_B64`, `OTA_WIFI_PSK_B64`), `unitotem-ota.bootcount`, `unitotem-ota.failover`, `unitotem-grub/grub/grubenv`, `tryboot.txt`, `cmdline-trial.txt`. Semantics: `boot.md`.
+
+## Fallback authentication
+
+The fallback dropbear (port 2222) has no fixed password. `fallback_auth_setup` (`deploy/ota-engine.sh`) writes `/etc/passwd`, `/etc/shadow` and `/root/.ssh/authorized_keys` into the initramfs tmpfs before dropbear starts. Sources, in order:
+
+1. Armed public key:
+   - kernel command line token `unitotem.ota.authkey=<base64 of one ssh-ed25519 line>` (foreign OS, `arm_rpi`/`arm_grub`);
+   - file `unitotem-ota.authorized_keys` on the boot FAT (FIRMWARE or EFI), written by `unitotem-ota-arm --authkey-file FILE` (installed UniTotem). The engine mounts the boot FAT read-only itself when `/boot-ota` is not mounted.
+2. DATA, mounted read-only on demand and unmounted after reading:
+   - `upper/root.<slot>/.ssh/authorized_keys` (slot from `unitotem.slot=`, else both slots);
+   - for every member of group `sudo` in `upper/etc.<slot>/group`: the shadow hash (`upper/etc.<slot>/shadow`) and `unitotem/persist/home/<user>/.ssh/authorized_keys`.
+3. Open mode, only when no key and no administrator was found at all: root with an empty password and dropbear `-B`. Logged. A configured device never falls back to open. A device whose administrator password is forgotten stays closed unless a key is armed or present in DATA.
+
+Each administrator becomes a uid 0 account `<user>` (shell `/bin/sh`, home `/root`) in the initramfs. `ssh <admin>@<host> -p 2222` gives a root shell with that administrator's password or key. Root itself accepts keys only; open mode is the only case with an empty root password. Names fullmatch `[a-z_][a-z0-9_-]{0,31}`; hashes `!`, `*` or empty give no password. Key lines accept only `ssh-ed25519`, `ssh-rsa` and `ecdsa` types without options (the cmdline token: ed25519 only); max 64 keys, 2048 characters per line.
+
+dropbear: `-F -E -p 2222 -r <host key> -T 3 -j -k` (3 auth tries, no local or remote forwarding); `-B` only in open mode.
+
+Tool side (`deploy/lib.sh`, `ota_auth_for`):
+- Selection order: `OTA_FALLBACK_KEY`, the per-target key, `OTA_FALLBACK_OPEN=1`, `OTA_FALLBACK_PASSWORD`. None set: error naming the variables.
+- Per-target key: `${XDG_STATE_HOME:-$HOME/.local/state}/unitotem-deploy/<host>/id_ed25519` (directory 0700, key 0600). Created at arming; `recover` reuses it for that host from the same PC.
+- Key auth: `BatchMode=yes`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`. Password: `sshpass -e` (environment only).
+- A recovery from another PC needs `OTA_FALLBACK_KEY`, an administrator account (`--fallback-user NAME` with `OTA_FALLBACK_PASSWORD`), or a key already in DATA.
+- Every operation works remotely. No physical access is assumed.
 
 ## Backups
 
@@ -138,7 +161,7 @@ Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.bootc
 - Post-restore addressing uses `blkid -L` labels (`ROOT_A`, `ROOT_B`, `DATA`, `FIRMWARE`/`EFI`): two UniTotem disks in one machine make the lookup ambiguous; no duplicate-label check exists.
 - `make-parts.sh`: arch from the `-amd64.img.xz`/`-arm64.img.xz` suffix or `--arch`; scratch `work/parts-scratch.<pid>` removed unless `--keep-scratch`.
 - `make-preboot-image.sh`: default parts set is the newest `deploy/arm64/*.parts`; needs `recovery-*` and `p1-FIRMWARE.bootfs.tar.*`; output `deploy/arm64/unitotem-preboot-arm64.img` (+ `.xz`).
-- The OTA environment accepts SSH as root with the fixed password `unitotem` (`OTA_FALLBACK_PASSWORD`) while armed: trusted networks only.
+- The OTA environment has no fixed password. Logins are the armed public key, the administrators of the installed system, or open mode on a never-configured device (see [Fallback authentication](#fallback-authentication)). Open mode accepts any network peer: use it only on trusted networks.
 
 ## Tests
 

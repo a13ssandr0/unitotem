@@ -10,7 +10,8 @@ Paths: relative to `unitotem-manager/`
 |---|---|
 | `manager/tests/conftest.py` | Strips `sys.argv`, creates the event loop, redirects notifications to `tmp_path` (autouse); helpers `read_text`, `read_bytes`, fixture `fixtures` |
 | `manager/tests/fixtures/` | Static inputs: `ddcutil_detect_brief_{220,225}.txt`, `ddcutil_capabilities_lg_{220,225}.txt`, `ddcutil_220_stdout_noise.txt` (2.2.0 stdout noise, verbatim), EDIDs `edid_dp1_xrandr.bin`, `edid_host_dp.bin`, `edid_host_hdmi.bin` |
-| `manager/tests/test_*.py` | 46 modules; areas under Tests |
+| `manager/tests/test_*.py` | 56 modules; areas under Tests |
+| `manager/tests/password_vectors.json` | Shared password spec: 128 PAM-observed vectors (`policy`, `vectors[{password, username, ok, failed, pam}]`), read by pytest and by `npm test`. Not edited by hand |
 | `pyproject.toml` | `[tool.pytest.ini_options]`: `pythonpath = ["manager", "manager/plugins"]`, `testpaths = ["manager/tests"]` |
 | `manager/requirements-dev.txt` | `pytest` (dev only) |
 | `tools/ui-smoke.py` | Every page in headless Chrome: console errors, exceptions, visible text; `--compare` diffs two runs; holds the `Cdp` helper the other UI tools import |
@@ -91,7 +92,15 @@ Unit (`manager/tests/`), `.venv/bin/python -m pytest`:
 - Remote: `test_remote_*`.
 - Screens, touch, identity: `test_screens_*`, `test_touch*`, `test_ddc_parsers`, `test_gpu_profiles`, `test_output_transform`, `test_mechanism_resolution`, `test_identity`.
 - System: `test_suspend`, `test_timers`, `test_hotspot_stop`, `test_network_details`, `test_hosts_file`, `test_machine`, `test_updater`, `test_update_progress`, `test_plugins`.
-- Users and security: `test_osusers`, `test_password_policy`, `test_templates_escape`, `test_webui_entries`.
+- Users and security: `test_osusers`, `test_password_policy`, `test_security_api`, `test_security_model`, `test_first_admin_script`, `test_setup_first_access`, `test_backup_users`, `test_login_hardening`, `test_templates_escape`, `test_webui_entries`.
+- Password policy (one policy, PAM and manager; see [security.md](security.md)):
+  - `test_password_policy.py`: every vector of `password_vectors.json` (first failed rule, messages empty iff accepted; vectors above 128 characters are expected `max_length`, the one known difference from PAM), control characters, non-text, lone surrogates, username and reverse, `rules_spec()`.
+  - `test_security_api.py` and `test_setup_first_access.py`: refusals before any change, 422 `detail` lists.
+  - `test_osusers.py`: `create_user` validates before `adduser`; `chpasswd` environment and `BAD PASSWORD:` reasons.
+  - `test_first_admin_script.py`: rules printed, 3 attempts.
+  - Web UI: `webui/tests/password-rules.test.mjs` (`npm test`) checks `password-rules.js` against the same vectors.
+  - Run: `.venv/bin/python -m pytest -q manager/tests/test_password_policy.py` (any file or `-k password`); `cd webui && npm test`.
+  - Rule: tests never touch real files. Every path (`users.json`, `security.json`, env file, lock file, passwd, group, shadow) goes to `tmp_path`, and the system tools (`adduser`, `chpasswd`, `gpasswd`, PAM) are mocked. Never run them for real in a test.
 - Notifications and VNC: `test_notifications`, `test_desktop_notifications`, `test_vnc`.
 - Front end: `cd webui && npm test`.
 

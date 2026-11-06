@@ -20,12 +20,12 @@ Technical documentation: [scheduler.md](scheduler.md), [webui.md](webui.md), [vi
 | `/settings/audio` | Audio | Default output, per-device volume and mute |
 | `/settings/display` | Display | Layout overview, orientation and flip, touch, screen control |
 | `/settings/remote` | Remote | Role, clients, pairing, leave or forget |
-| `/settings/users` | Users | Accounts, capabilities, password policy |
+| `/settings/users` | Users | Accounts, capabilities, password change with the rules checklist |
 | `/settings/timers` | Timers | Scheduled reboot, shutdown, suspend, screen on/off |
 | `/settings/network` | Network | Hostname, devices, connections, Wi-Fi |
 | `/settings/updates` | Updates | Installed version, check, fetch, apply, confirm, rollback, policy |
 | `/settings/backup` | Backup | Backup, restore and reset of selected parts |
-| `/login`, `/setup` | Login, first administrator | Login with system account; `/setup` only while no administrator exists |
+| `/login`, `/setup` | Login, first administrator | Login with system account; `/setup` (name, password with the rules checklist) only while no administrator exists |
 
 Header: hostname, theme (light, dark, auto), notification bell, reboot, suspend, power off, user menu. Admin only: terminal and screen view (view-only by default).
 
@@ -51,7 +51,7 @@ Rules:
 - An admin cannot remove its own admin role.
 - Changing a password or removing an account ends that user's sessions.
 - Passwords are stored only in the system (`/etc/shadow`), never by UniTotem.
-- Password policy is optional: when enabled, passwords need at least 10 characters, must not contain the username, must not be one repeated character, and must not be a common word.
+- Password policy is always on and enforced by PAM (`pam_pwquality`) for every password change: at least 8 characters (UTF-8 bytes), at least 2 of lowercase, uppercase, digits, symbols, no run of more than 3 identical characters, and no username (or its reverse) when it has 4 or more characters. Maximum 128 characters. The manager and the web UI show the same rules before submitting. Details: [security.md](security.md).
 
 ## Scheduler
 
@@ -152,7 +152,7 @@ Asset properties:
 | Audio | Default output device, volume and mute per device |
 | Display | Layout overview (position, rotation); per-window content orientation and flip; touch mapping and calibration; screen power, input, volume (DDC/CI, CEC, Wake-on-LAN, serial, GPIO); GPU status |
 | Remote | Role, pairing, clients, approval, leave, forget |
-| Users | Accounts, capabilities, password change, password policy |
+| Users | Accounts, capabilities, password change (rules checklist) |
 | Timers | Cron-style jobs for reboot, shutdown, suspend, screen on/off. Run by the manager; no system cron |
 | Network | Hostname (also updates `/etc/hosts`), devices, saved connections, Wi-Fi scan and connect, Wi-Fi roaming, hotspot |
 | Updates | Version, check, download, install, confirm, rollback, automatic policy |
