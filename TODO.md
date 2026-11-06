@@ -35,7 +35,9 @@
 - [manager] CEF vendor: .gitmodules `branch = cefpython147-qt` is 19 commits behind the pinned commit (on `wayland-views`); wheels in vendor/cefpython-wheels are cp313 only while build-cef-wheels.sh builds 3.10-3.14 and debian/rules/python3-cefpython3 pin 3.13.
 
 ## To verify on hardware
-- [system] First access on an open image: `systemd-sulogin-shell` with root's empty or `*` password (emergency-dropin.conf comment says no shell for `*`, unverified); sshd `Match` marker group over a real login (`sshd -t` only covered syntax); `unitotem-persist-paths` ordering of /home before ssh.
+- [manager/screens] VNC on venus (Intel Iris Xe, DP-2, image 2026.11.47): `wayvnc` delivers a uniform grey (96,96,96) frame while the viewer shows the black no-assets page (DevTools lists iframe `/unitotem-no-assets`); cause unknown (capture of the CEF surface?). Check on another PC and on a Pi with a display.
+- [manager/testing] `tools/ui-terminal.py` title and minimise checks fail on venus for an administrator with a real `.bashrc`; probable cause (not re-run): its PS1 rewrites the terminal title the probe sets.
+- [system] `systemd-sulogin-shell` (emergency/rescue) with root's empty or `*` password: emergency-dropin.conf says no shell for `*`, unverified (needs a rescue boot).
 - [manager/webui] Settings -> Updates with the previous version in the other slot: checked only through `unitotem-update --json status` (UI needs a login); error reply shape of `Settings/Update/*` (updates.vue:324-330) assumed.
 - [system] Auto-update policy modes (download/stage/reboot/scheduled) never exercised live on devices.
 - [system] Deploy backup of an earlier single-root UniTotem (1.x/2.x) tested on a fake root only; a full deploy with backup on a real disk never run.
