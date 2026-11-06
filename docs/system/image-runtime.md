@@ -116,6 +116,7 @@ Stage 2 ships root in the first-access state:
 - Root's shadow field is empty (`passwd -d`); root's login shell is `/usr/sbin/unitotem-first-admin` (manager deb); root is a member of the marker group.
 - Every login path runs that shell: sshd (interactive, command, sftp subsystem), console getty and `su` (PAM `pam_unix nullok`, from Debian trixie's `unix` profile in `common-auth`). The script ignores argv and environment and never runs a shell, pager or editor.
 - sshd runs with `UsePAM` unset, so sshd checks the empty password and the `*` field itself. The `Match User root Group unitotem-first-admin` block sets `PermitRootLogin yes`, `PermitEmptyPasswords yes`, `ForceCommand /usr/sbin/unitotem-first-admin`, `DisableForwarding yes`, `PermitTunnel no`, `PermitUserRC no`.
+- While the window is open, root's `none` authentication is accepted and the forced command is the only protection: no key or password is evaluated, and no shell, sftp, forwarding, tunnel or user rc file is reachable (container test with OpenSSH 10.0 of trixie: command, `/bin/sh`, `-tt bash`, sftp, scp, `-L`, `-D` all end in the script or a refusal). With an administrator present and root still open, a login only prints "Root accepts SSH keys only" until the start-up reconcile closes root. OpenSSH's penalty for repeated failed logins drops key logins too for about 3 minutes.
 - sshd matches user or group only, so the marker group is needed: without it a later `passwd root` or `passwd -d root` would reopen root over SSH.
 - Membership is read at each connection: no sshd reload.
 
