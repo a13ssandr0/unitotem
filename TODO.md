@@ -32,6 +32,7 @@
 - [manager] Delete unreferenced tools/ticker/control/ticker-raf.js (older bar implementation); tools/unitotem-ab.xml is referenced by no procedure; tools/cef-server/probe-gn-args.sh:9 reads /tmp/args.base.gn, created by no script; 0007 CEF patch has a placeholder `From` line.
 - [manager] CEF vendor: .gitmodules `branch = cefpython147-qt` is 19 commits behind the pinned commit (on `wayland-views`); wheels in vendor/cefpython-wheels are cp313 only while build-cef-wheels.sh builds 3.10-3.14 and debian/rules/python3-cefpython3 pin 3.13.
 - [system] Local tools `work/pi-test/{reflash-clean,resume-ab,redeploy-ab}.sh` call `ota_ssh`: they need `OTA_FALLBACK_KEY`/`OTA_FALLBACK_USER` in the environment, and `reflash-clean.sh` runs `unitotem-ota-arm --port 2222 --wipe-data` without `--authkey-file`.
+- [system] Next build after 2026.11.48 (edit scripts only when no build runs; one `pkglock.py upgrade` per architecture): (1) add `htop` and `btop` to stage1-packages.sh; (2) locale of SSH sessions: sshd runs without PAM, so `LANG` is empty and btop refuses to start. Ship `/etc/profile.d/unitotem-locale.sh` (sources `/etc/default/locale` when `LANG` is unset; tried by hand on venus and the test Pi, btop starts), write `/etc/default/locale` in stage 2, add `AcceptEnv LANG LC_*` to sshd_config before the `Match` block (commands run without a login shell); (3) verify-image checks for the packages, the profile.d file, `/etc/default/locale` and the `AcceptEnv` line; docs/system/image-runtime.md.
 
 
 ## To verify on hardware
