@@ -31,6 +31,8 @@
 - [manager] plymouth/generate-assets.py:11,32 font path `manager/webview/static/NotoSans.ttf` is stale (now plugins/unitotem_viewer/static/).
 - [manager] Delete unreferenced tools/ticker/control/ticker-raf.js (older bar implementation); tools/unitotem-ab.xml is referenced by no procedure; tools/cef-server/probe-gn-args.sh:9 reads /tmp/args.base.gn, created by no script; 0007 CEF patch has a placeholder `From` line.
 - [manager] CEF vendor: .gitmodules `branch = cefpython147-qt` is 19 commits behind the pinned commit (on `wayland-views`); wheels in vendor/cefpython-wheels are cp313 only while build-cef-wheels.sh builds 3.10-3.14 and debian/rules/python3-cefpython3 pin 3.13.
+- [system] Local tools `work/pi-test/{reflash-clean,resume-ab,redeploy-ab}.sh` call `ota_ssh`: they need `OTA_FALLBACK_KEY`/`OTA_FALLBACK_USER` in the environment, and `reflash-clean.sh` runs `unitotem-ota-arm --port 2222 --wipe-data` without `--authkey-file`.
+
 
 ## To verify on hardware
 - [manager/screens] VNC on venus (Intel Iris Xe, DP-2, image 2026.11.47): `wayvnc` delivers a uniform grey (96,96,96) frame while the viewer shows the black no-assets page (DevTools lists iframe `/unitotem-no-assets`); cause unknown (capture of the CEF surface?). Check on another PC and on a Pi with a display.
