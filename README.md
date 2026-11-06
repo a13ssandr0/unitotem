@@ -62,7 +62,7 @@ Disk images are built from this repository (see Build from source): `unitotem-<d
 
 ## Build from source
 
-The scripts in the repository build the amd64 and arm64 disk images from the package sets pinned in `unitotem/locks/`. See [docs/system/build.md](docs/system/build.md). `build-iso.sh` builds an installer ISO, described in [docs/system/installer-iso.md](docs/system/installer-iso.md).
+The scripts in the repository build the amd64 and arm64 disk images from the package sets pinned in `unitotem/locks/`. See [docs/system/build.md](docs/system/build.md).
 
 ## Documentation
 
