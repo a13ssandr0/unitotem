@@ -171,6 +171,7 @@
 - Static address and DNS saved and applied correctly; ARP answered only on owning interface.
 - Hotspot, Wi-Fi on/off and welcome page address follow the default route.
 - Stopping the manager no longer disconnects the real Wi-Fi.
+- Settings > Date and time: time zone selector and NTP switch/status through systemd-timedated (D-Bus); timers and schedules follow the zone without a restart.
 
 #### Packaging
 - Packages: unitotem-manager, unitotem-viewer, python3-cefpython3, plymouth-theme-unitotem.

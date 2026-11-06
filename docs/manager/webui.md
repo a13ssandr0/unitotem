@@ -35,6 +35,7 @@ Pages (`webui/src/pages/`):
 | `settings/network.vue` | `/settings/network` | hostname, devices, saved connections, Wi-Fi scan and connect |
 | `settings/updates.vue` | `/settings/updates` | A/B slots, check, download, install, rollback, automatic policy |
 | `settings/backup.vue` | `/settings/backup` | backup, restore, reset of parts |
+| `settings/datetime.vue` | `/settings/datetime` | server time zone (searchable selector), NTP switch and status |
 
 Components (`webui/src/components/`): `PasswordChecklist` (live rule rows, see Rules and gotchas), `FloatingWindow` (draggable, resizable, minimisable; base of terminal and screen), `TerminalWindow` (xterm.js), `VncWindow` (noVNC), `WindowTaskbar` (32 px strip), `NotificationMenu`, `NotificationToasts`, `SuspendDialog`, `CardColumn`, `WindowLayout`, `PaneTree`, `TickerSettings`, `TickerSources`, `AssetPreview`, `ScreenControl` (DDC/CI, CEC, Wake-on-LAN, serial, GPIO), `TouchMapping`.
 
@@ -42,7 +43,7 @@ Components (`webui/src/components/`): `PasswordChecklist` (live rule rows, see R
 - Top bar: terminal and screen buttons (admin, node plugin only), notification bell, theme cycle (light, dark, auto), reboot, suspend, power off (each with its permission), user menu.
 - Drawer: Scheduler, Viewers, Settings (one entry per tab the user may open), Info. Footer: display size, version.
 - A page mounts only when the user and permissions are known. A forbidden route redirects to the first allowed page.
-- Settings tab permission keys: audio `Settings/Audio/devices`, display `Settings/Display/displays`, remote `Settings/Remote/mode`, users and backup `Settings/Security/users`, timers `Settings/Timers/jobs`, network `Settings/Network/devices`, updates `Settings/Update/status`.
+- Settings tab permission keys: audio `Settings/Audio/devices`, display `Settings/Display/displays`, remote `Settings/Remote/mode`, users and backup `Settings/Security/users`, timers `Settings/Timers/jobs`, network `Settings/Network/devices`, updates `Settings/Update/status`, date and time `Settings/DateTime/status`.
 
 ## How it works
 - Load: the server renders the shell with `window.__INITIAL_STATE__` and `window.__BOOT_ID__` (`manager/templates/base.html`); `main.js` mounts `App.vue`.
@@ -58,6 +59,7 @@ Components (`webui/src/components/`): `PasswordChecklist` (live rule rows, see R
 - Screen: `POST /vnc/token`, then `/vnc` websocket (noVNC). View-only by default; control chosen per session, never stored. Sends `{"activity":1}` every 5 s.
 - Scheduler: selecting a playlist requests `assets`, `current`, `default_duration`. Upload `POST /api/scheduler/upload` per file; download `GET /uploaded/<name>`.
 - Viewers: rows are playlists, columns windows (`Viewers/list`); a cell toggles the playlist of a window. Area and panes are edited in `WindowLayout.vue`, pushed back by `Viewers/layout`.
+- Date and time: the clock is drawn in the browser (1 s tick) in the server zone. The zone selector is searchable. The NTP switch shows a status chip; it is disabled with a hint when `CanNTP` is false. Controls are disabled while a call is pending and always show the server value.
 - Updates: `Settings/Update/status` pushed; progress in `status.op.progress`; install and slot switch need confirmation dialogs.
 - Backup: `GET /backup?parts=...` download, `POST /backup` (multipart) restore, `DELETE /backup?parts=...` reset; parts from `GET /backup/parts`.
 
@@ -90,6 +92,7 @@ API groups (`api.*`, names as in the schema):
 - Settings `Network`: `hostname`, `set_hostname`, `devices`, `connections`, `connection_details`, `active_connections`, `has_wireless`, `wireless_enabled`, `set_wireless_enabled`, `wireless_networks`, `connect_wifi`, `default_wlan_device`, `activate_connection`, `deactivate_connection`, `edit_connection`, `delete_connection`.
 - Settings `Remote`: `mode`, `probe`, `become_client`, `become_server`, `adopt`, `request_pairing`, `cancel_pairing`, `approve_request`, `reject_request`, `set_client_enabled`, `unpair_client`, `leave_server`, `forget_server`.
 - Settings `Security`: `current_user`, `users`, `password_policy`, `login_user_list`, `add_user`, `delete_user`, `set_user_password`, `set_user_permissions`, `set_login_user_list`. `Timers`: `jobs`, `add_job`, `edit_job`, `delete_job`, `set_job_enabled`. `Update`: `status`, `availability`, `check`, `fetch`, `apply`, `confirm`, `cancel`, `rollback`, `copy_to_other`, `set_policy`.
+- Settings `DateTime`: `status`, `set_timezone`, `set_ntp`.
 - Power: `suspend_support`, `reboot`, `poweroff`, `suspend`. Notifications: push `list`; `mark_read`, `dismiss`, `dismiss_all`, `invoke`. Ticker: push `sources`, `settings`, `preview`; `add_source`, `edit_source`, `delete_source`, `enable_source`, `fetch_now`, `set_settings`. Vnc: push `outputs` (`{outputs, available}`).
 
 Payload fields used by pages:

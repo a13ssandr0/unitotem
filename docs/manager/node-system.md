@@ -1,6 +1,6 @@
 # Node plugin (unitotem-node)
 
-Machine management of a UniTotem node: NetworkManager (Wi-Fi, hotspot, IP, hostname), audio, OS updates through `unitotem-update`, power, suspend and timers, screen view (VNC), web terminal, viewer developer tools, backup parts. Package `unitotem-node`, needs the core, which loads it only through `PLUGIN` hooks. Screens and touch: [screens-and-touch.md](screens-and-touch.md).
+Machine management of a UniTotem node: NetworkManager (Wi-Fi, hotspot, IP, hostname), audio, OS updates through `unitotem-update`, power, suspend and timers, time zone and network time, screen view (VNC), web terminal, viewer developer tools, backup parts. Package `unitotem-node`, needs the core, which loads it only through `PLUGIN` hooks. Screens and touch: [screens-and-touch.md](screens-and-touch.md).
 
 Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 
@@ -12,6 +12,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 | `Papi/network.py` | `Settings/Network/*` |
 | `Papi/audio.py` | `Settings/Audio/*` |
 | `Papi/timers.py` | `Settings/Timers/*` |
+| `Papi/date_time.py` | `Settings/DateTime/*` |
 | `Papi/power.py` | `Power/*` |
 | `Papi/updater.py` | `Settings/Update/*`, status polling |
 | `Papi/vnc.py` | `Vnc/*` |
@@ -20,7 +21,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 | `Psystem/network/hotspot.py` | first-boot / fallback hotspot profile, Wi-Fi QR |
 | `Psystem/network/wifi.py` | radio switch, scan, access points |
 | `Psystem/network/netplan.py` | `/etc/netplan` files, backup part only |
-| `Psystem/dbus_system.py` | logind (power, suspend), hostnamed (hostname, `/etc/hosts`) |
+| `Psystem/dbus_system.py` | logind (power, suspend), hostnamed (hostname, `/etc/hosts`), timedated (time zone, NTP) |
 | `Psystem/audio.py` | PulseAudio sinks (pulsectl) |
 | `Psystem/updater.py` | client of `unitotem-update --json`, availability, notifications |
 | `Psystem/update_progress.py` | inotify on `/run`, pushes progress and the bell progress bar |
@@ -40,7 +41,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 
 ## How it works
 
-- Start-up: stale VNC sessions swept; tasks for screens (wake, probe), touch mapping, timers loop, sleep watch, hostname watch, update progress watch, daily update check (first after 180 s, then every 24 h), desktop notifications.
+- Start-up: stale VNC sessions swept; tasks for screens (wake, probe), touch mapping, timers loop, sleep watch, hostname watch, date and time watch (`datetime_watch`), update progress watch, daily update check (first after 180 s, then every 24 h), desktop notifications.
 - First boot: with no default IPv4 route the hotspot starts. `first_boot_context` returns SSID, password and QR while it is active.
 - Hotspot: NM profile id `UniTotem first boot hotspot`, mode `ap`, IPv4 `shared`. Its UUID is `hotspot_uuid` in `/etc/unitotem/unitotem.env` (generated once). Default SSID = hostname; default password = last 8 hex digits of the Wi-Fi MAC, uppercase. Recreated when the requested SSID/password differ from the stored ones.
 - Hotspot stop: after a successful `activate_connection` or `connect_wifi` when the hotspot is active and IPv4 is up, and at manager shutdown. The Wi-Fi device is disconnected only if the hotspot is its active connection; then the profile is deleted.
@@ -66,6 +67,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - `Settings/Network/` (admin unless noted): `hostname()` (any user); `set_hostname(hostname)`; `default_wlan_device()`; `has_wireless()`; `wireless_enabled()`; `set_wireless_enabled(enabled)`; `wireless_networks()` (scans, enables radio if off); `devices()`; `connections()`; `active_connections()`; `connection_details(path)`; `activate_connection(conn_path, dev_path)`; `deactivate_connection(active_path)`; `connect_wifi(ssid, device, password?, bssid?, ip_method='auto', ip_address?, prefix_len=24, gateway?, dns?)` returns `connected_uuid`; `edit_connection(conn_path, conn_id?, autoconnect?, ip_method, ip_address?, prefix_len, gateway?, dns?, ssid?, password?, unlock_bssid=false)`; `delete_connection(conn_path)`.
 - `ip_method`: `auto` (DHCP) or `manual` (needs `ip_address`). `dns`: list of dotted IPv4.
 - `Settings/Audio/` (audio or admin): `devices()` returns `devices[{name, description, muted, volume}]`, `default`, `available`; `set_default_device(device)`; `set_volume(volume, device?)`; `set_mute(mute, device?)`. No `device` = default sink.
+- `Settings/DateTime/` (admin): `status()` returns `timezone`, `timezones`, `ntp`, `can_ntp`, `synchronized`, `local_time` (ISO 8601 with offset), `utc_offset` (seconds); `set_timezone(timezone)`; `set_ntp(enabled)`. Both answer with the status. The status is also broadcast to all pages (`Settings/DateTime/status`) when timedated emits `PropertiesChanged`.
 - `Settings/Timers/` (admin): `jobs()` returns `jobs`, `actions`; `add_job(command, minute, hour, day_of_month, month, day_of_week, output?, mechanism='auto', wake?)`; `edit_job(uuid, ...)`; `set_job_enabled(uuid, state)`; `delete_job(uuid)`.
 - Job fields: `uuid, command, minute, hour, day_of_month, month, day_of_week, enabled, output, mechanism, wake`; for `sus` also `next_suspend, next_wake, wake_problem`. Commands: `pwr`, `reb`, `sus`, `scr_on`, `scr_off`.
 - `Power/`: `reboot()` (power or admin); `poweroff()`; `suspend_support()` returns `available, reason, rtc, rtc_local, min_sleep, max_sleep, last_refusal`; `suspend(wake_at)` with `YYYY-MM-DDTHH:MM` in node local time.
@@ -96,7 +98,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - `/etc/unitotem/unitotem.env`: `hotspot_uuid`.
 - `UNITOTEM_VNC_IDLE_TIMEOUT`: seconds, default 0 (never).
 - Read/written: `/sys/class/rtc/rtcN/wakealarm`, `/sys/class/rtc/rtcN/device/power/wakeup`, `/etc/adjtime` (line 3 `UTC`|`LOCAL`), `/etc/hosts`, `/run/unitotem-update.progress`, `/run/unitotem-vnc/`, `/usr/sbin/unitotem-update`, `/usr/bin/wayvnc`.
-- D-Bus (system bus): `org.freedesktop.NetworkManager`; `org.freedesktop.login1.Manager` (Reboot, PowerOff, Suspend, CanSuspend, PrepareForSleep); `org.freedesktop.hostname1`.
+- D-Bus (system bus): `org.freedesktop.NetworkManager`; `org.freedesktop.login1.Manager` (Reboot, PowerOff, Suspend, CanSuspend, PrepareForSleep); `org.freedesktop.hostname1`; `org.freedesktop.timedate1` (ListTimezones, SetTimezone, SetNTP; properties Timezone, NTP, CanNTP, NTPSynchronized).
 - Serves `org.freedesktop.Notifications` on the user bus and the system bus, each only if the name is free. Capabilities: `actions`, `body`, `persistence`.
 - Notification keys: `update.available` (info), `update.progress` (persistent bar), `update.failed` (error), `update.repaired` (info), `suspend.problem` (warning, link `/settings/timers`).
 
@@ -124,9 +126,15 @@ Default admin. `Power/*`: power or admin. `Settings/Audio/*`: audio or admin. No
 - Terminal: never `fork` (multi-threaded process): `setsid -c` through the subprocess machinery. `login -f`: the web account is already authenticated. Administrators (members of `sudo`) have `/bin/bash`; `sudo` asks their own password. Accounts with shell `nologin` or `false` (non-admin accounts) are refused. Environment limited to `TERM` and `PATH`. Max 4 terminals; closed after 15 min without input. Account names are validated (`osusers.valid_name`) before `login`.
 - Tokens: 30 s, single use, bound to account and session id (and page for devtools). The socket must be same-origin (Origin = Host).
 - Desktop notifications: markup stripped from the body; `body-markup` not advertised; 20 per application per 60 s; critical never expires; ids never 0.
+- Time zone: validated by `fullmatch` and by membership in timedated's list (fallback: `tzdata.zi`, else `zone1970.tab`) before any bus call. Other values never reach D-Bus.
+- Zone change: `time.tzset()` runs after each change and on `PropertiesChanged`, and the `TZ` variable is dropped. Timers (naive local `datetime.now()`) follow the new zone with no restart (proved by test).
+- No manual clock setting: timedated keeps the time; NTP is the only time source switched from the node.
+- `set_ntp` is refused when `can_ntp` is false.
+- The status carries the whole zone list; every push sends it.
+- Image defaults: time zone UTC, locale `en_US.UTF-8`.
 
 ## Tests
 
 - `.venv/bin/python -m pytest <files>` from the repository root.
-- `manager/tests/`: `test_network_details.py`, `test_hotspot_stop.py`, `test_timers.py`, `test_suspend.py`, `test_vnc.py`, `test_hosts_file.py`, `test_update_progress.py`, `test_updater.py`, `test_desktop_notifications.py`.
+- `manager/tests/`: `test_network_details.py`, `test_hotspot_stop.py`, `test_timers.py`, `test_suspend.py`, `test_vnc.py`, `test_hosts_file.py`, `test_update_progress.py`, `test_updater.py`, `test_desktop_notifications.py`, `test_datetime.py`.
 - Live checks: `tools/ui-terminal.py`, `tools/ui-vnc.py`.
