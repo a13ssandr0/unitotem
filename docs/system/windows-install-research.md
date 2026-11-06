@@ -55,3 +55,9 @@ bcdedit /set {fwbootmgr} bootsequence {GUID}               :: one-shot
 - The OTA environment listens on SSH port 2222 with the fixed password `unitotem` (`OTA_FALLBACK_PASSWORD` in `deploy/lib.sh`) while armed and can erase the disk: use it only on trusted networks.
 - Once disk writes begin, Windows is destroyed and there is no way back.
 - Firmware that ignores `BootNext` simply starts Windows again, with nothing destroyed.
+
+## Lab tools
+
+- `tools/win-lab/lab.sh start|wait|stop|revert [SNAP]|snap NAME|list|ssh CMD|put LOCAL [REMOTE]|shot FILE.png`; `winkeys.py text|ustext|key|shot`; `gcmd.sh 'cmd' [shot]`; `serialcap.sh LOG SECONDS`; `recover-driver.sh HOST DISK_BYID PARTS_DIR` (hardcodes an absolute repository path in `DIR`).
+- Windows probes (Administrator): `probe-windows.ps1 [-MountEsp]`, `nvram-var.ps1 -Boot`. Restore the NVRAM-inclusive baseline snapshot before each experiment.
+- libvirt does not revert raw NVRAM on snapshot revert (NVRAM must be qcow2); TPM state is outside disk snapshots.

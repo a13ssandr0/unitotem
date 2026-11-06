@@ -18,6 +18,7 @@
 - verify-image checks project rules on the finished image (AppArmor needs auditd, CEF helper exec bit).
 - Chromium, compilers, haproxy and DKMS signing private key removed from the image.
 - Loopback and power-cut test harnesses for the A/B update path.
+- Legacy installer ISO removed (it installed a broken single-root system and asked for a root password); a new A/B installer is planned.
 
 #### A/B updates
 - A/B root layout is the only layout: ROOT_A/ROOT_B slots, 6 GiB each, 16 GiB image.

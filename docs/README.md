@@ -12,7 +12,6 @@ Component documentation of the UniTotem repository. System docs describe the ima
 - [ab-updates.md](system/ab-updates.md): whole-image A/B updates, health-gated confirm, rollback, automatic policy.
 - [release.md](system/release.md): release tooling and signing keys.
 - [deploy-and-recovery.md](system/deploy-and-recovery.md): network install, OTA fallback and recovery of a target.
-- [installer-iso.md](system/installer-iso.md): installer ISO.
 - [windows-install-research.md](system/windows-install-research.md): research on installing from Windows.
 - [legacy-pi-gen.md](system/legacy-pi-gen.md): the pi-gen based tree kept for reference.
 - [testing.md](system/testing.md): system tests and harnesses.
