@@ -98,6 +98,7 @@
 - Admin = member of the group `sudo`, web access = group `users`; group `unitotem` removed; admins are normal accounts (adduser, home, bash), other users stay web-only (nologin).
 - Root never logs in to the web; empty passwords refused.
 - First administrator created by `/setup` or by the `unitotem-first-admin` script through one function under one lock; both close root's first-access state; the manager reconciles it at start-up and on `/etc/group` changes.
+- Users page: the user list and the replies of add, delete and change of users work again (websocket multicast no longer fails when the message has a `users` field).
 
 #### Playlists and scheduler
 - Multiple playlists: rename, default, copy and move assets, drag-and-drop reorder and upload.

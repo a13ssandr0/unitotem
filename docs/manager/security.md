@@ -166,7 +166,7 @@ Errors: `User already exists`, `Password refused` (`extra` list), `User <name> d
 - Logout does not revoke the token server-side.
 - The web certificate is created once by postinst (36500 days), kept across upgrades, removed on purge.
 - Loopback skips the session check for assets and uploads: local processes read uploads without login.
-- `WSMulticast(users, /, target, **payload)`: the recipients are positional only, so a payload may carry a `users` key.
+- `WSMulticast(users, /, target, **payload)` and `WSManager.send/multicast/broadcast`: the leading parameters are positional only, so a payload may carry a `users` key (`Security/users` does; with keyword-capable parameters the reply failed with `Internal error`).
 - `/ws` handler: an unexpected exception is logged server-side with its traceback; the client receives only `{"error": "Internal error"}`.
 
 ## Tests
