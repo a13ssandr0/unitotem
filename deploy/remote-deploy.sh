@@ -13,8 +13,14 @@
 #                                     [--secure-boot shim|noshim|abort]
 #   ./deploy/remote-deploy.sh disarm  root@host
 #
-#   ./deploy/remote-deploy.sh recover HOST[:PORT] [--parts DIR] ...
+#   ./deploy/remote-deploy.sh recover HOST[:PORT] [--fallback-user NAME] [--parts DIR] ...
 #   ./deploy/remote-deploy.sh serve   [--parts DIR] ...
+#
+# OTA fallback credentials (port 2222), read from the environment only (deploy/lib.sh, ota_auth_for):
+#   OTA_FALLBACK_KEY=PATH       private key (default: the per-target key of the host, created when arming)
+#   OTA_FALLBACK_USER=NAME      login user (default root); --fallback-user NAME sets it
+#   OTA_FALLBACK_PASSWORD=...   password, when no key is available
+#   OTA_FALLBACK_OPEN=1         empty password: first access to a device with no admin and no key
 #
 # Machine-readable contract for `changes` and `--accept-changes` (used by the web interface): docs/system/deploy-and-recovery.md.
 set -euo pipefail
@@ -69,6 +75,8 @@ while [ $# -gt 0 ]; do
         --debug)      OPT_DEBUG=1; shift ;;
         --yes)        OPT_YES=1; shift ;;
         --fallback-only) OPT_FALLBACK_ONLY=1; shift ;;
+        --fallback-user) [[ "${2:-}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "--fallback-user: invalid user name '${2:-}'"
+                         OTA_FALLBACK_USER="$2"; shift 2 ;;
         --accept-changes) OPT_ACCEPT_CHANGES="$2"; shift 2 ;;
         --json)       OPT_JSON=1; shift ;;
         --secure-boot) OPT_SECURE_BOOT="$2"; shift 2
@@ -349,14 +357,21 @@ push_recovery_kernel() {
         || die "copying the fallback initrd failed"
 }
 
+# $1 = public key line of the fallback ("ssh-ed25519 BASE64"), armed as unitotem.ota.authkey=<base64 of the line>.
+# Prints the kernel command line on one line. Dies when it reaches the 400-character limit (the Pi firmware
+# accepts 512 bytes; the margin is kept).
 build_legacy_cmdline() {
-    local console="$OPT_CONSOLE"
+    local console="$OPT_CONSOLE" authkey cmdline
     if [ -z "$console" ]; then
         [ "$ARCH" = arm64 ] && console="tty1 console=ttyS0,115200" || console="tty0"
     fi
+    [ -n "${1:-}" ] || die "build_legacy_cmdline: no fallback public key given"
+    authkey=$(printf '%s' "$1" | base64 -w0)
     # fbcon=font:TER16x32: the firmware framebuffer is often the monitor's native size, where the default 8x16 font is
     # tiny; the 16x32 font doubles every glyph (ignored by a kernel that lacks it).
-    echo "unitotem.ota=1 quiet loglevel=3 fbcon=font:TER16x32 console=${console}"
+    cmdline="unitotem.ota=1 quiet loglevel=3 fbcon=font:TER16x32 console=${console} unitotem.ota.authkey=${authkey}"
+    [ "${#cmdline}" -lt 400 ] || die "kernel command line too long for the fallback boot (${#cmdline} characters, limit 400)"
+    echo "$cmdline"
 }
 
 arm_grub() {
@@ -788,23 +803,29 @@ cmd_deploy() {
     backup_running_system
     backup_legacy_system
 
+    # The fallback accepts only this key (armed below); the private key stays on this machine.
+    ota_arm_key "$target_ip"
+    local arm_pub; arm_pub=$(ota_key_publine "$OTA_ARM_KEY") || die "cannot read the public key ${OTA_ARM_KEY}.pub"
+
     if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ]; then
         log "Arming OTA from the running system..."
         local wipe_arg=""; [ "$OPT_WIPE_DATA" = 1 ] && wipe_arg="--wipe-data"
-        # shellcheck disable=SC2086
         # Not `|| die`: this command reboots the target, so ssh's exit status is a race ("Connection closed by
         # remote host" even when arming succeeded). The verdict is wait_ota_reachable below: if arming failed
         # the fallback never appears. The target-side script defers its reboot (unitotem/files/unitotem-ota-arm),
         # and this stays tolerant for targets running an older image.
-        ssh_t "unitotem-ota-arm --port 2222 ${wipe_arg}" \
+        # The public line goes on stdin: --authkey-file - (unitotem-ota-arm validates it before any write).
+        ssh_t "unitotem-ota-arm --port 2222 ${wipe_arg} --authkey-file -" <<< "$arm_pub" \
             || warn "SSH session closed while arming (expected: the target is rebooting) - checking for the fallback to appear"
     else
+        local legacy_cmdline
+        legacy_cmdline=$(build_legacy_cmdline "$arm_pub") || exit 1
         push_recovery_kernel
         if [ "$FIRMWARE" = rpi ]; then
-            arm_rpi "$(build_legacy_cmdline)"
+            arm_rpi "$legacy_cmdline"
         else
             [ "${P[GRUB_REBOOT]}" = 1 ] || die "grub-reboot not found on the target: cannot arm a one-shot entry"
-            arm_grub "$(build_legacy_cmdline)"
+            arm_grub "$legacy_cmdline"
         fi
         do_reboot
     fi
@@ -859,7 +880,9 @@ cmd_recover() {
     # and DATA is lost.
     local host="${RECOVER_HOSTPORT%%:*}"
     log "Connecting to the target in fallback (${host})..."
-    ota_ssh "$host" true || die "cannot reach ${host} on the OTA session (port 2222)"
+    # Credentials: ota_ssh (ota_auth_for) uses the per-target key of this host when it exists, else OTA_FALLBACK_KEY,
+    # OTA_FALLBACK_OPEN=1 or OTA_FALLBACK_PASSWORD from the environment; --fallback-user sets the login user.
+    ota_ssh "$host" true || die "cannot reach ${host} on the OTA session (port 2222): check the fallback credentials (OTA_FALLBACK_KEY, or OTA_FALLBACK_USER with OTA_FALLBACK_PASSWORD, or OTA_FALLBACK_OPEN=1)"
 
     # Disk: --disk, else the one that carries our partitions, else the only disk.
     local disk="$OPT_DISK" cand d

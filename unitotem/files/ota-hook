@@ -13,16 +13,10 @@ case "$1" in prereqs) prereqs; exit 0 ;; esac
 # resolves its shared libs too.
 copy_exec /bin/bash /bin
 
-# root login for dropbear (deploy/ota-engine.sh's cmd_serve_fallback), fixed password: same value as
-# unitotem/common.sh's ROOT_PASSWORD and deploy/lib.sh's OTA_PASSWORD defaults (keep all three in sync).
-# The initrd ships /etc/passwd but no /etc/shadow, so without this no password auth can work. The hash
-# is baked in at build time (`openssl passwd -6 -salt unitotemota unitotem`, SHA-512 crypt) so the
-# initrd needs no chpasswd/PAM at runtime.
-mkdir -p "${DESTDIR}/etc"
-cat > "${DESTDIR}/etc/shadow" << 'EOF'
-root:$6$unitotemota$dDLHj98s/O9CVUWeDgxAoILrb/ZKm4bbv2Lf/X3GbkR4I2mk1rbcfYUWbOStbVbfxmU2UquFNHQokKcsHU6Cy0:19000:0:99999:7:::
-EOF
-chmod 600 "${DESTDIR}/etc/shadow"
+# /etc/passwd and /etc/shadow are generated at run time by fallback_auth_setup (deploy/ota-engine.sh): no password
+# hash is baked into the initrd.
+mkdir -p "${DESTDIR}/etc" "${DESTDIR}/root/.ssh"
+chmod 700 "${DESTDIR}/root/.ssh"
 # /etc/group: copied so getgrgid(0) lookups during login resolve.
 copy_file file /etc/group /etc/group
 

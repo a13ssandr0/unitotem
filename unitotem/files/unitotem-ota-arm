@@ -4,18 +4,35 @@
 # (unitotem/files/ota-init-premount) checks for, plus the network hints the fallback needs to
 # reach back out. remote-deploy.sh's deploy of an already-UniTotem target is one
 # `ssh_t unitotem-ota-arm ...` call (other targets use arm_grub/arm_rpi in deploy/remote-deploy.sh).
+# --authkey-file FILE ('-' = stdin) arms the public key line of the fallback's login key
+# (unitotem-ota.authorized_keys on the boot partition). Without it an existing key file is left as it is.
 set -euo pipefail
 
-HOST="" PORT="9700" WIPE_DATA=0
+HOST="" PORT="9700" WIPE_DATA=0 AUTHKEY_FILE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --host) HOST="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
         --wipe-data) WIPE_DATA=1; shift ;;
+        --authkey-file) AUTHKEY_FILE="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+# Read and validate the key BEFORE any mount, write or reboot: an invalid key stops the arming here.
+AUTHKEY_TYPE="" AUTHKEY_B64=""
+if [ -n "$AUTHKEY_FILE" ]; then
+    if [ "$AUTHKEY_FILE" = - ]; then
+        authkey_raw=$(head -c 1024)
+    else
+        authkey_raw=$(head -c 1024 -- "$AUTHKEY_FILE") || { echo "cannot read $AUTHKEY_FILE" >&2; exit 1; }
+    fi
+    authkey_line="${authkey_raw%%$'\n'*}"
+    authkey_re='^ssh-ed25519 [A-Za-z0-9+/=]+( [^ ]*)?$'
+    [[ "$authkey_line" =~ $authkey_re ]] || { echo "invalid --authkey-file: expected one ssh-ed25519 public key line" >&2; exit 1; }
+    read -r AUTHKEY_TYPE AUTHKEY_B64 _ <<< "$authkey_line"
+fi
 
 BOOTFS_LABEL=FIRMWARE
 [ -d /sys/firmware/efi ] && BOOTFS_LABEL=EFI
@@ -43,6 +60,11 @@ fi
     [ -n "$HOST" ] && echo "OTA_HOST=${HOST}"
     echo "OTA_CTRL_PORT=${PORT}"
 } > "$mnt/unitotem-ota.conf"
+
+# Only "type base64" is written: the comment field of the key is dropped.
+if [ -n "$AUTHKEY_FILE" ]; then
+    printf '%s %s\n' "$AUTHKEY_TYPE" "$AUTHKEY_B64" > "$mnt/unitotem-ota.authorized_keys"
+fi
 
 echo "UNITOTEM_OTA_WIPE_DATA=${WIPE_DATA}" > "$mnt/unitotem-ota.request"
 

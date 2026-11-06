@@ -391,7 +391,7 @@ check "round2: fsck.ext4 clean on DATA (preserved, not reformatted)" e2fsck -fn 
 check "guard: run_ota_sequence reads the manifest on fd 9, not stdin" \
     grep -qF 'done 9< "${OPT_PARTS}/parts.manifest"' /tmp/run_ota_sequence.sh
 check "guard: ota_ssh passes -n (does not consume the caller's stdin)" \
-    grep -qF '_sshpass ssh -n ' "$REPO/deploy/lib.sh"
+    grep -qF '_ota_ssh_exec -n "$OTA_AUTH_TARGET"' "$REPO/deploy/lib.sh"
 
 log "=== round2: promote-default (second confirmed boot) ==="
 cp "$REPO/unitotem/files/config-extra.txt" /etc/unitotem/config-extra.txt
