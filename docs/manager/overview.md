@@ -22,6 +22,7 @@ Technical documentation: [scheduler.md](scheduler.md), [webui.md](webui.md), [vi
 | `/settings/remote` | Remote | Role, clients, pairing, leave or forget |
 | `/settings/users` | Users | Accounts, capabilities, password change with the rules checklist |
 | `/settings/timers` | Timers | Scheduled reboot, shutdown, suspend, screen on/off |
+| `/settings/datetime` | Date and time | Time zone, network time (NTP) |
 | `/settings/network` | Network | Hostname, devices, connections, Wi-Fi |
 | `/settings/updates` | Updates | Installed version, check, fetch, apply, confirm, rollback, policy |
 | `/settings/backup` | Backup | Backup, restore and reset of selected parts |
@@ -154,6 +155,7 @@ Asset properties:
 | Remote | Role, pairing, clients, approval, leave, forget |
 | Users | Accounts, capabilities, password change (rules checklist) |
 | Timers | Cron-style jobs for reboot, shutdown, suspend, screen on/off. Run by the manager; no system cron |
+| Date and time | Time zone (searchable list), network time (NTP) on or off |
 | Network | Hostname (also updates `/etc/hosts`), devices, saved connections, Wi-Fi scan and connect, Wi-Fi roaming, hotspot |
 | Updates | Version, check, download, install, confirm, rollback, automatic policy |
 | Backup | Backup, restore and reset of selected parts: playlists, window layouts, users, security settings, pairing and certificates, RSS sources, uploads (optional in a backup), hostname, default audio device, network (netplan), timers, touch mapping |
