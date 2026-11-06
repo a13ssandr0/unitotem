@@ -20,7 +20,7 @@ Websocket API (`manager/api/ws/`)
 
 Routers (`manager/routers/`)
 - `login.py`: `LOGMAN` session manager, `/auth/token`, `/login`, `/logout`, `/api/settings/set_passwd`, `require_perm()`.
-- `setup.py`: first-access `/setup`.
+- `setup.py`: first-access `/setup`; the page state carries the password rules, refusals are 422 with a `detail` list.
 - `backup.py`: `/backup` (GET, POST, DELETE), `/backup/parts`.
 - `pairing.py`: `/remote/hello`, `/remote/adopt`, `/remote/pair-request` (public, rate limited).
 - `scheduler.py`: `POST /api/scheduler/upload`; catch-all `GET /{path}` (web UI shell), must stay last.
@@ -35,7 +35,7 @@ Utilities (`manager/utils/`)
 - `plugins.py`: `Plugin` and `BackupPart` contracts, loader (`load`, `each`, `provides`).
 - `constants.py`: version, `BOOT_ID`, default ports, paths.
 - `models/command_line.py`: `cmdargs`. `environment.py`: `environ` (secrets). `migration/`: `advance()` steps run at every start (`v_3_0_0.py`).
-- `models/user.py`: `UserPerms`, `UserData`, `User`, `user_manager`. `osusers.py`: system accounts, PAM. `passwords.py`: rules. `sessions.py`: logged-in websockets. See [security.md](security.md).
+- `models/user.py`: `UserPerms`, `UserData`, `User`, `user_manager`. `osusers.py`: system accounts, PAM. `passwords.py`: username rule and password policy (shared spec `tests/password_vectors.json`). `sessions.py`: logged-in websockets. See [security.md](security.md).
 - `storage/uploadmanager.py`: uploads folder, watcher, `save`, `remove`. `storage/file_info.py`: duration, mime, pages, colour probe.
 - `notifications.py`: notification center. `backup.py`: core backup parts, archive, legacy import. `changes.py`: content-change listeners. `ready.py`: `sd_notify READY=1`, once. `_logging.py`: Hypercorn log adapter for loguru.
 - `system/`: read-only machine facts: `ip.py` (reachable address, netlink changes), `sysinfo.py`, `machine.py`, `cpu.py`, `sensors.py`, `procfs.py`, `lsblk.py` (filesystem usage cache), `gpu.py` (Chromium switches for the viewer).
@@ -97,7 +97,7 @@ HTTP:
 | GET `/pdf-view`, POST `/pdf-view/failed` | loopback | PDF page; failure raises `pdf.render.<file>` |
 | GET `/api/schema` | session | API schema |
 | GET `/login`, `/login/users`, POST `/auth/token`, GET `/logout` | none | login (form: `username`, `password`, `src`, `remember_me`) |
-| POST `/api/settings/set_passwd` | session | JSON `{"password"}`; own password; other sessions revoked |
+| POST `/api/settings/set_passwd` | session | JSON `{"password"}`; own password; 422 `{"detail": [reasons]}` when refused; other sessions revoked |
 | GET, POST `/setup` | none, only with no admin | first administrator (404 afterwards) |
 | GET, POST, DELETE `/backup`, GET `/backup/parts` | admin | archive (POST and DELETE answer 204) |
 | POST `/api/scheduler/upload` | scheduler | multipart `files`, 201 |
@@ -167,5 +167,5 @@ Password rules: see [security.md](security.md).
 
 - `pytest` from the repository root (`pyproject.toml`: `testpaths = manager/tests`, `pythonpath = manager, manager/plugins`).
 - `manager/tests/conftest.py` clears `sys.argv` (the CLI parses on import) and sets an event loop.
-- Modules: `test_plugins.py`, `test_notifications.py`, `test_osusers.py`, `test_password_policy.py`, `test_templates_escape.py`, `test_webui_entries.py`, `test_machine.py`.
+- Modules: `test_plugins.py`, `test_notifications.py`, `test_osusers.py`, `test_password_policy.py`, `test_security_api.py`, `test_security_model.py`, `test_first_admin_script.py`, `test_setup_first_access.py`, `test_backup_users.py`, `test_login_hardening.py`, `test_templates_escape.py`, `test_webui_entries.py`, `test_machine.py`. Password tests and the shared vectors: [testing.md](testing.md).
 - Live checks against a running manager: `tools/ui-smoke.py`, `tools/ui-notifications.py`.

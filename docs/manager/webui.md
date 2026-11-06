@@ -15,7 +15,8 @@ Core (`webui/src/`):
 - `keyboard.js`, `keyboard-layouts.js`: on-screen keyboard module for the viewer page (layout ids `lang` or `lang/variant`). `keyboard/` is generated data (`tools/keyboard/aosp_layouts.py`, from AOSP LatinIME).
 - `ticker.js`, `ticker-core.js`: RSS ticker for the viewer page; `ticker-core.js` is DOM-free and tested. See [layout-and-ticker.md](layout-and-ticker.md).
 - `pdf-view.js`: one-page PDF renderer (pdf.js) for the viewer. `settings.scss`: Vuetify overrides.
-- `webui/vite.config.mjs`, `webui/package.json`: build, dev server, scripts. `webui/tests/ticker-core.test.mjs`: node tests.
+- `password-rules.js`: DOM-free mirror of the server password policy (`evaluate`, `failedIds`, `isValid`). Spec from `password_policy` (WS) or `window.__INITIAL_STATE__.rules`. Tested against `manager/tests/password_vectors.json`.
+- `webui/vite.config.mjs`, `webui/package.json`: build, dev server, scripts. `webui/tests/ticker-core.test.mjs`, `webui/tests/password-rules.test.mjs`: node tests.
 
 Pages (`webui/src/pages/`):
 
@@ -24,18 +25,18 @@ Pages (`webui/src/pages/`):
 | `scheduler.vue` | `/` | playlist tabs, items (drag to reorder), uploaded files, Add URL and playlist settings dialogs |
 | `viewers.vue` | `/viewers` | per-window matrix (playlist, sound, language, keyboard, interactive screen, refresh, developer tools), layout editors, RSS sources |
 | `info.vue` | `/info` | CPU chart (stacked per core), memory, temperatures, fans, storage tree |
-| `login.vue`, `setup.vue` | `/login`, `/setup` | login; first administrator (only while no administrator exists) |
+| `login.vue`, `setup.vue` | `/login`, `/setup` | login; first administrator (only while no administrator exists): name, password and confirmation with `PasswordChecklist`, submit disabled until all met |
 | `NotFound.vue`, `empty_page.vue` | catch-all | 404, placeholder |
 | `settings/audio.vue` | `/settings/audio` | default output, per-device volume and mute |
 | `settings/display.vue` | `/settings/display` | screen preview, orientation, flip, insecure certificates, GPU status, `ScreenControl`, `TouchMapping` |
 | `settings/remote.vue` | `/settings/remote` | server or client role, clients, pairing, adoption, leave or forget |
-| `settings/users.vue` | `/settings/users` | accounts, permissions, password policy, login page user list switch |
+| `settings/users.vue` | `/settings/users` | accounts, permissions, add and password dialogs with `PasswordChecklist`, login page user list switch |
 | `settings/timers.vue` | `/settings/timers` | scheduled jobs (shutdown, reboot, suspend, screen on/off) |
 | `settings/network.vue` | `/settings/network` | hostname, devices, saved connections, Wi-Fi scan and connect |
 | `settings/updates.vue` | `/settings/updates` | A/B slots, check, download, install, rollback, automatic policy |
 | `settings/backup.vue` | `/settings/backup` | backup, restore, reset of parts |
 
-Components (`webui/src/components/`): `FloatingWindow` (draggable, resizable, minimisable; base of terminal and screen), `TerminalWindow` (xterm.js), `VncWindow` (noVNC), `WindowTaskbar` (32 px strip), `NotificationMenu`, `NotificationToasts`, `SuspendDialog`, `CardColumn`, `WindowLayout`, `PaneTree`, `TickerSettings`, `TickerSources`, `AssetPreview`, `ScreenControl` (DDC/CI, CEC, Wake-on-LAN, serial, GPIO), `TouchMapping`.
+Components (`webui/src/components/`): `PasswordChecklist` (live rule rows, see Rules and gotchas), `FloatingWindow` (draggable, resizable, minimisable; base of terminal and screen), `TerminalWindow` (xterm.js), `VncWindow` (noVNC), `WindowTaskbar` (32 px strip), `NotificationMenu`, `NotificationToasts`, `SuspendDialog`, `CardColumn`, `WindowLayout`, `PaneTree`, `TickerSettings`, `TickerSources`, `AssetPreview`, `ScreenControl` (DDC/CI, CEC, Wake-on-LAN, serial, GPIO), `TouchMapping`.
 
 ## Navigation
 - Top bar: terminal and screen buttons (admin, node plugin only), notification bell, theme cycle (light, dark, auto), reboot, suspend, power off (each with its permission), user menu.
@@ -88,7 +89,7 @@ API groups (`api.*`, names as in the schema):
 - Settings: push `info`. `Audio`: `devices`, `set_default_device`, `set_volume`, `set_mute`. `Display`: `displays`, `bounds`, `orientation`, `flip`, `allow_insecure_certs`, `gpu_feature_stats`, `set_orientation`, `set_flip`, `set_allow_insecure_certs`. `Screens`: `screens`, `gpio_lines`, `probe`, `configure`, `set_power`, `set_input`, `set_volume`, `set_mute`. `Touch`: `devices`, `setup`, `start_setup`, `confirm_setup`, `cancel_setup`, `reset`, `forget`, `set_output`, `set_orientation`.
 - Settings `Network`: `hostname`, `set_hostname`, `devices`, `connections`, `connection_details`, `active_connections`, `has_wireless`, `wireless_enabled`, `set_wireless_enabled`, `wireless_networks`, `connect_wifi`, `default_wlan_device`, `activate_connection`, `deactivate_connection`, `edit_connection`, `delete_connection`.
 - Settings `Remote`: `mode`, `probe`, `become_client`, `become_server`, `adopt`, `request_pairing`, `cancel_pairing`, `approve_request`, `reject_request`, `set_client_enabled`, `unpair_client`, `leave_server`, `forget_server`.
-- Settings `Security`: `current_user`, `users`, `password_policy`, `login_user_list`, `add_user`, `delete_user`, `set_user_password`, `set_user_permissions`, `set_password_policy`, `set_login_user_list`. `Timers`: `jobs`, `add_job`, `edit_job`, `delete_job`, `set_job_enabled`. `Update`: `status`, `availability`, `check`, `fetch`, `apply`, `confirm`, `cancel`, `rollback`, `copy_to_other`, `set_policy`.
+- Settings `Security`: `current_user`, `users`, `password_policy`, `login_user_list`, `add_user`, `delete_user`, `set_user_password`, `set_user_permissions`, `set_login_user_list`. `Timers`: `jobs`, `add_job`, `edit_job`, `delete_job`, `set_job_enabled`. `Update`: `status`, `availability`, `check`, `fetch`, `apply`, `confirm`, `cancel`, `rollback`, `copy_to_other`, `set_policy`.
 - Power: `suspend_support`, `reboot`, `poweroff`, `suspend`. Notifications: push `list`; `mark_read`, `dismiss`, `dismiss_all`, `invoke`. Ticker: push `sources`, `settings`, `preview`; `add_source`, `edit_source`, `delete_source`, `enable_source`, `fetch_now`, `set_settings`. Vnc: push `outputs` (`{outputs, available}`).
 
 Payload fields used by pages:
@@ -99,7 +100,7 @@ Payload fields used by pages:
 - Network device state: NetworkManager `NM_DEVICE_STATE` (100 connected, 120 failed, 40-90 connecting); device type 32 has no connect or disconnect actions.
 
 Globals and storage:
-- `window.__INITIAL_STATE__`: `hostname`, `ip_addr`, `os_vers`, `ut_vers`, `plugins`, `src` (post-login target), `show_users` (login), `rules`, `min_length`, `max_length` (setup). Also `window.__BOOT_ID__`, `window.utKeyboard`, `window.utTicker`.
+- `window.__INITIAL_STATE__`: `hostname`, `ip_addr`, `os_vers`, `ut_vers`, `plugins`, `src` (post-login target), `show_users` (login), `rules` (setup: the password policy spec, `passwords.rules_spec()`). Also `window.__BOOT_ID__`, `window.utKeyboard`, `window.utTicker`.
 - `localStorage`: `themeMode` (`light`, `dark`, `auto`), `last_user`. `sessionStorage`: `unitotem-chunk-reload`, `unitotem-boot-reload`.
 - Keyboard config `{enabled, button_position, layout}`; positions are the 8 edge names.
 
@@ -128,11 +129,14 @@ Build and dev:
 - Moving or resizing something inside the viewer page (keyboard) uses pointer events directly, not interact.js or similar: page content is rotated and flipped with CSS and those libraries do not follow a transformed parent. `keyboard.js` limits (`KEEP_PX` = 160 px of the panel width and its header always stay on screen, minimum size, header never shrinks) are applied after every gesture, screen size change and rotation.
 - `npm run build ... | tail -1` hides a failing build: read the whole output. A backtick inside a CSS comment within a template literal of a Vue or keyboard file breaks the build.
 - English only, comments included.
+- Password form (setup, add user, change password): `PasswordChecklist` (props `spec` = server spec, `password`, `username`, `confirm`; `confirm` undefined = no match row; emits `valid` at mount and on change) shows one row per spec rule, met or not met. It only shows the rules: the server decides. `spec` null shows nothing and reports not valid. The inputs take `maxlength` = `max_length` characters.
+- Buttons stay disabled until the checklist reports valid (and the name is filled, for setup and add user): unavailable, not hidden.
+- Server refusals: `Password refused` with `extra` (list of reasons) shows in the snackbar, one reason per line (`base.vue` `errorMessage`). `setup.vue` shows the same list (`detail`) in an alert above the form.
 - Timer mutations (`add_job`, `edit_job`, `delete_job`, `set_job_enabled`) never edit the list locally: the backend answers each with a fresh `jobs` push and the listener rewrites the list.
 - `ScreenControl` lists every mechanism of a screen; an unavailable one stays visible (outlined chip) and its tooltip shows the reason.
 
 ## Tests
-- `cd webui && npm test` (`node --test tests/*.test.mjs`, covers `ticker-core.js`). `npm run lint` (eslint, runs with `--fix`).
+- `cd webui && npm test` (`node --test tests/*.test.mjs`): `ticker-core.js`, and `password-rules.js` against `manager/tests/password_vectors.json` (same vectors as pytest). `npm run lint` (eslint, runs with `--fix`).
 - UI tests check visibility by computed `display` or `aria-expanded`, not DOM presence: a hidden `v-badge` keeps its text in the DOM and a `v-menu` content stays after its first opening.
 - After changing an API function: `.venv/bin/python tools/gen-api-types.py` regenerates `webui/src/api.d.ts`.
 - Browser tools against a running node: see [testing.md](testing.md).

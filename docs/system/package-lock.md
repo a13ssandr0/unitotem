@@ -60,6 +60,7 @@ Build errors:
 ## Rules and gotchas
 
 - The lock is exact: any package not in the lock fails verify. Adding or removing a package in stage 1 requires `upgrade`.
+- `libpam-pwquality` is installed with `--no-install-recommends`; its locked set is `libpam-pwquality`, `libpwquality1`, `libpwquality-common`, `libcrack2`. The first build after adding it needs one `upgrade` per arch.
 - Local packages are recognised by version (`~devN`, `unitotem`, `+rptN-local`); recorded, never pinned. An archive package with such a version is treated as local.
 - A security renewal discards the lock and reinstalls everything at current versions; commit the new lock.
 - Build output never overwrites an existing lock.

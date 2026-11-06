@@ -36,6 +36,7 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 - Shell functions are extracted from `deploy/*.sh` by regex/awk and run in a bash harness; renaming them breaks the tests on purpose.
 - `test_rpi_backend.py`: synthetic GPT image (mtools FAT + mke2fs ext4, `sgdisk`, `dd`), `unitotem-release build-ab --arch arm64`, served by `fake-github.py`, updater driven with fake FAT dirs and a recorded reboot command.
 - `inside*.sh`: root in a `--privileged` `debian:bookworm` container; a loop device (or real device) stands in for the disk. The `ota-engine.sh` subcommand order mirrors `run_ota_sequence`. Each step is a `check`; the run ends `ALL CHECKS PASSED` or `SOME CHECKS FAILED`.
+- Fallback authentication (`fallback_auth_setup`, dropbear options): a scratch harness in a container, not in the repository. Covers the credential sources, key-line and name validation, and the `-F -E -p 2222 -r <host key> -T 3 -j -k` option set (`-B` in open mode). See [deploy-and-recovery](deploy-and-recovery.md#fallback-authentication).
 - `powercut-ab.sh`: each scenario starts from a qcow2 overlay, sets `UPDATE_CRASHPOINT`, kills QEMU with SIGKILL on a marker, reboots the disk, checks that the system comes up and the update completes. Results in `work/powercut/`.
 - `verify-image.sh`: runs every check, prints `PASS:`/`FAIL:`, exits 1 on any failure. Groups: English screen strings, packages removed/required, logo and frame blobs, Wayland session, Plymouth theme, Pi initramfs size and Wi-Fi module, device identity (no keys or passwords baked in), mount robustness, update machinery, A/B layout, Pi boot properties, amd64 GRUB entries.
 - `pi-sd-guard.sh`: every 30 s reads `/sys/block/mmcblk0/stat` field 7 (x512 bytes) over SSH; a rate above the limit stops `pwr-writer` and every `*-testload.service`.
@@ -79,6 +80,8 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 - Hot-plug check: after login (`/auth/token`) the manager pushes `Viewers/list` over WebSocket `/ws`; the viewer plugin handles `screenAdded`/`screenRemoved`.
 - `verify-image.sh` reads the mounted root only and checks labwc's `rc.xml` by grep for the `<labwc_config>` tags, not by parsing. Check on the board with `WAYLAND_DISPLAY=/run/unitotem/xdg/wayland-0 wlr-randr --json` and `wlopm`.
 - `work/` is git-ignored except `work/loopback-test/*.sh`.
+- Fallback authentication on hardware only: the initramfs libraries and the NSS and libcrypt lookups in the real initrd are confirmed on the first device test. Containers do not exercise them.
+- Remote check of a device: `work/slot-tests/lib.sh` `VF` logs in as root with `~/.ssh/id_ed25519` (or `OTA_FALLBACK_KEY`, when that key is in DATA's root `authorized_keys`), or as `OTA_FALLBACK_USER` with `OTA_FALLBACK_PASSWORD` from the environment.
 - `test-frame.sh` writes fixed paths under `scratch-frame/` and deletes nothing. `whiptail-geometry.py` reports, never asserts.
 
 ## Prerequisites

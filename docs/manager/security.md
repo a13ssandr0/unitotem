@@ -8,7 +8,7 @@ Paths: relative to unitotem-manager/
 
 | Path | Role |
 |---|---|
-| `manager/api/security.py` | WS API `Security`: users, add/delete, password, permissions, password policy |
+| `manager/api/security.py` | WS API `Security`: users, add/delete, password, permissions, password rules (`password_policy`) |
 | `manager/api/ws/permissions.py` | `check_permissions()`, `APIPermissionError` |
 | `manager/api/ws/endpoints.py` | `handle_call()` runs `check_permissions()` before every WS call |
 | `manager/routers/login.py` | `LOGMAN` (fastapi-login), `session_cookie()`, `/login`, `/auth/token`, `/logout`, `/login/users`, `/api/settings/set_passwd`, `require_perm()` |
@@ -17,7 +17,8 @@ Paths: relative to unitotem-manager/
 | `manager/utils/sessions.py` | Registry of authenticated websockets; server-side close |
 | `manager/utils/osusers.py` | System accounts: group membership, PAM check, adduser/gpasswd/usermod/chpasswd/deluser, shadow hash |
 | `manager/utils/first_access.py` | First administrator: `create_first_admin()`, `reconcile()`, lock `/run/unitotem/first-admin.lock`. Used by `/setup` and the script |
-| `manager/utils/passwords.py` | Username and password rules |
+| `manager/utils/passwords.py` | Username rule and password policy (`POLICY`, `failed_ids()`, `validate_password()`, `rules_spec()`) |
+| `unitotem/files/unitotem-pwquality` | Image source of the PAM profile (`/usr/share/pam-configs/unitotem-pwquality`): the policy as `pam_pwquality` |
 | `manager/utils/models/user.py` | `UserPerms`, `UserData` (users.json), `User`, `UserManager` |
 | `manager/utils/models/security.py` | `SecuritySettings` (security.json) |
 | `manager/utils/backup.py` | `_export_users`, `_restore_users`, `_reset_users` |
@@ -64,11 +65,22 @@ Paths: relative to unitotem-manager/
 - User list: entries of users.json whose account exists, plus members of `users` without an entry (no capabilities).
 - Passwords are never stored by UniTotem; `/etc/shadow` is the only store. Set with `chpasswd` on stdin (`--encrypted` for hashes). A failed creation is rolled back with `deluser`.
 - Deleting a user removes the system account only if UniTotem created it (GECOS `UniTotem user`); otherwise it only leaves group `users` and `sudo`.
-- Password rules:
-  - Basic (always): not empty, at most 128 characters, no control characters.
-  - Strict (only when `enforce_password_policy`; add user, admin password change, own change, first administrator at `/setup` and by the script): at least 10 characters, not the username (case-insensitive), not one repeated character, not a common word.
-  - Username (always): `^[a-z_][a-z0-9_-]{0,31}$`.
-- Backup: stores capabilities, the admin flag (membership of `sudo`) and each `/etc/shadow` hash, never a password. Restore recreates accounts with `adduser` + `chpasswd --encrypted` (admins also get `sudo`, shell and home). Reset deletes UniTotem accounts and removes the others from `users` and `sudo`.
+- Password policy: one policy, always on, enforced by PAM (`pam_pwquality`, image profile `unitotem/files/unitotem-pwquality`) for `passwd`, `sudo passwd` and `chpasswd`:
+  `retry=1 enforce_for_root minlen=8 minclass=2 maxrepeat=3 usercheck=1 dictcheck=0`.
+  - Manager and web UI mirror it as a pre-check (`passwords.validate_password()`, `password-rules.js`). PAM is the authority; the mirror only spares a round trip.
+  - No opt-in switch. The former "Enforce the password policy" switch and `enforce_password_policy` are removed.
+  - Rules, in the order they are reported (first failure only):
+    - `max_length`: at most 128 characters (manager) and at most 511 UTF-8 bytes (PAM's own limit);
+    - `control`: no control characters (ASCII below 32, and 127);
+    - `min_length`: at least 8 UTF-8 bytes;
+    - `classes`: at least 2 of lowercase, uppercase, digits, other (any non-ASCII byte, space or symbol is "other");
+    - `repeat`: no run of more than 3 identical bytes;
+    - `username`: applies only when the username has 4 or more characters; the password must not contain the username nor its reverse, case-insensitive (ASCII folding).
+  - Known difference from PAM: the manager refuses more than 128 characters, PAM accepts them.
+  - Shared spec: `manager/tests/password_vectors.json` (128 PAM-observed vectors) is read by pytest and by `npm test`, so Python and JS cannot drift ([testing.md](testing.md)).
+  - Username rule (always): `^[a-z_][a-z0-9_-]{0,31}$` (`osusers.valid_name`, Debian NAME_REGEX).
+- `osusers.create_user()` validates the password before `adduser`: a refused password creates nothing. Restore with a hash (`hashed=True`) skips the check.
+- Backup: stores capabilities, the admin flag (membership of `sudo`) and each `/etc/shadow` hash, never a password. Restore recreates accounts with `adduser` + `chpasswd --encrypted` (admins also get `sudo`, shell and home). Reset deletes UniTotem accounts and removes the others from `users` and `sudo`. The `security` part carries `show_login_users` only.
 - Assets (`.js` chunks) and uploads need a session, except from loopback (127.0.0.1, ::1).
 - Web TLS: Hypercorn serves HTTPS on `port_secure` (443) with `certfile` and `keyfile` (same PEM). Port 80 redirects to HTTPS. The certificate is self-signed.
 - No claim code and no default password exist. While no administrator exists the totem shows the WELCOME screen (idle asset `first_boot`). Two simultaneous setups have one winner (flock and asyncio lock).
@@ -104,7 +116,7 @@ Root has no password after first access and never logs in to the web. Its SSH ac
   - Ignores argv and environment (clean environment set first). `umask 077`.
   - Traps SIGINT, SIGQUIT, SIGTSTP and SIGHUP: exit. A 5-minute alarm ends an idle session. At most 3 attempts.
   - Never executes a shell, pager or editor.
-  - Asks for a name (`osusers.valid_name`) and a password twice (no echo), with the same rules as `/setup`.
+  - Prints the password rules, then asks for a name (`osusers.valid_name`) and a password twice (no echo), checked as `/setup` checks them. A refusal prints its reasons and asks again; at most 3 attempts.
   - If an administrator already exists, it prints `Root accepts SSH keys only. Log in with an administrator account.` and exits.
   - Errors: a generic message on the terminal; the detail goes to syslog.
   - On success it creates the administrator through `first_access.create_first_admin()` and prints `Administrator <name> created. Log in again as <name>.`.
@@ -116,7 +128,7 @@ Files (directory `/etc/unitotem/`, overridable by CLI flags):
 | File | Content |
 |---|---|
 | `users.json` (`--users_file`, 0600) | `{"<name>": {"permissions": [...], "invalid_before": float, "keep_sid": str or null}}`. `permissions` holds `scheduler`, `power`, `audio` only. No passwords; legacy `password` keys are dropped on next save |
-| `security.json` (beside users.json) | `{"enforce_password_policy": bool, "show_login_users": bool}`. Defaults: `enforce_password_policy` false, `show_login_users` true. Missing or broken file = defaults |
+| `security.json` (beside users.json) | `{"show_login_users": bool}`, default true. Missing or broken file = defaults. Unknown keys are ignored (an old `enforce_password_policy` is dropped on next save) |
 | `unitotem.env` (`--envfile`) | `AUTH_TOKEN` (cookie signing key), `INSTANCE_ID`, `HOTSPOT_UUID`. Generated when missing. Changing `AUTH_TOKEN` invalidates every cookie |
 | `/etc/ssl/unitotem.pem` (`--certfile`, `--keyfile`) | Certificate and key in one PEM |
 | `/run/unitotem/first-admin.lock` | flock of the first-administrator creation (web and script) |
@@ -133,8 +145,8 @@ HTTP:
 | GET `/logout` | none | Clears the browser cookie only; the token stays valid until expiry or revocation |
 | GET `/login/users` | none, rate limited per address (30 per 60 s) | JSON list of account names, never permissions; `[]` when `show_login_users` is off; 429 beyond the limit |
 | GET `/setup` | none | Setup page; 404 once an admin exists |
-| POST `/setup` | none | JSON `{username (max 64), password (max 512)}`: 200 `{"ok": true}`, 422 `{"detail": [...]}` (same policy as `set_passwd`), 409 account exists, 404 when set up |
-| POST `/api/settings/set_passwd` | session | JSON body `{"password": str (max 2048)}`; own password; 422 `{"detail": [...]}`. No web UI caller |
+| POST `/setup` | none | JSON `{username (max 64), password (max 512)}`: 200 `{"ok": true}`, 422 `{"detail": [reasons]}` (username and password rules, same as `set_passwd`), 409 account exists or another setup running, 404 when set up |
+| POST `/api/settings/set_passwd` | session | JSON body `{"password": str (max 2048)}`; own password; 422 `{"detail": [reasons]}`. No web UI caller |
 | GET `/api/schema` | session | Every WS function with permissions and arguments |
 
 WS class `Security`:
@@ -143,12 +155,11 @@ WS class `Security`:
 |---|---|---|---|
 | `users` | admin | none | multicast to administrator sessions only: `users: {name: {perms}}` |
 | `current_user` | none | none | `name`, `perms` |
-| `password_policy` | none | none | broadcast `enforced`, `rules` |
-| `set_password_policy` | admin | `enforce` | policy |
+| `password_policy` | none | none | broadcast `rules`: the spec of `passwords.rules_spec()` (numbers and checklist rows) |
 | `login_user_list` | admin | none | multicast to administrators: `show` |
 | `set_login_user_list` | admin | `show` | `show`, as `login_user_list` |
-| `add_user` | admin | `username`, `password` | users, or error |
-| `set_user_password` | admin | `username`, `password` | none, or error; that user's sessions end |
+| `add_user` | admin | `username`, `password` | users, or error (`Password refused` with `extra` = list of reasons) |
+| `set_user_password` | admin | `username`, `password` | none, or error (`Password refused` with `extra`); that user's sessions end |
 | `set_user_permissions` | admin | `username`, `perms` (`admin` in `perms` sets or removes `sudo`) | multicast `reload` to that user, then users |
 | `delete_user` | admin | `username` | users, or error |
 
@@ -161,6 +172,8 @@ Errors: `User already exists`, `Password refused` (`extra` list), `User <name> d
 - `has_admin()` ignores root: a node with only root shows the setup page.
 - Admin status is group membership: `usermod -aG sudo` or `gpasswd` outside UniTotem changes the web role at the next request.
 - Passwords never go on a command line or into logs. `set_password` refuses `\n`, `\r`, `\0` (chpasswd line format). Hashes must match crypt(3) format.
+- `chpasswd` runs with `CHPASSWD_ENV` (`LANG=C.UTF-8`, minimal `PATH`), so PAM messages are English. Lines `BAD PASSWORD: <reason>` become the reasons shown to the person; any other failure is `The password was refused`, and the raw stderr only goes to the log.
+- The policy runs twice (manager, then PAM); PAM decides. `password_vectors.json` keeps the two aligned.
 - PAM runs in a thread; a wrong password can take seconds (`pam_faildelay`). The PAM service falls back to `login` when `/etc/pam.d/unitotem-manager` is missing.
 - The backup archive holds shadow hashes: treat it like the private keys.
 - Logout does not revoke the token server-side.
@@ -173,5 +186,12 @@ Errors: `User already exists`, `Password refused` (`extra` list), `User <name> d
 
 - `pytest` from the repository root. `test_osusers.py` needs the module `pam`: pip `python-pam`, Debian `python3-pampy` (the package the deb depends on); `utils/osusers.py` imports `pam` lazily.
 - `manager/tests/test_osusers.py`: membership checks (`users`, `sudo`), root refused by `may_login` and `authenticate`, empty password refused, PAM not called for non-members, adduser/gpasswd/usermod/chpasswd argument lists, newline injection, deletion of UniTotem accounts only, backup hash read, revoked sessions (fake passwd/group, mocked PAM).
-- `manager/tests/test_password_policy.py`: default off, settings round trip, rules.
+- `manager/tests/test_password_policy.py`: every vector of `password_vectors.json` (first failed rule, messages empty iff accepted), control characters, non-text, lone surrogates, username and reverse, `rules_spec()` JSON, the removed opt-in gone, username rule.
+- `manager/tests/test_security_model.py`: `security.json` with the removed key loads and drops it on save; missing file shows the users.
+- `manager/tests/test_security_api.py`: `password_policy` returns the spec, `set_password_policy` gone, `add_user` and `set_user_password` refuse weak passwords and passwords containing the username, own session kept on own password change.
+- `manager/tests/test_osusers.py`: `create_user` refuses before `adduser`, hashes skip validation, `chpasswd` environment, `BAD PASSWORD:` reasons, generic refusal, newline injection.
+- `manager/tests/test_first_admin_script.py`: rules printed, retry after refusal, 3 attempts, umask 077.
+- `manager/tests/test_setup_first_access.py`: `/setup` 422 detail list, policy in the page state, 409 when busy, 404 after setup.
+- `manager/tests/test_backup_users.py`: admin flag and shadow hashes; `security` part carries `show_login_users` only.
 - `manager/tests/test_login_hardening.py`: rate limits on `/auth/token` and `/login/users`, `src` validation, `show_login_users` (default, `[]` when off, WS toggle), `set_passwd` JSON body, `users` and `login_user_list` multicast to administrators only, `/setup` policy, `/ws` internal error.
+- Run: `.venv/bin/python -m pytest -q manager/tests/<file>` from `unitotem-manager/`. Tests use mocks and `tmp_path` only: they never touch real `/etc`, `users.json`, `security.json`, PAM or the shadow files.

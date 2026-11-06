@@ -48,6 +48,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - amd64: linux-image-amd64, firmware, grub-efi-amd64, grub-pc-bin, efibootmgr, shim-signed, grub-efi-amd64-signed (staged only), mokutil, mesa, Intel/AMD/NVIDIA drivers (NVIDIA via DKMS).
   - arm64: linux-image-rpi-v8, raspi-firmware, firmware-brcm80211, v4l-utils, raspi-utils.
   - Both: plymouth (no text plugin), `labwc wlr-randr wlopm wayvnc xwayland qt6-wayland kbd`, pipewire, ddcutil. `xwayland` is present only because labwc starts it lazily and logs an error without it; no X client runs.
+  - Both: `libpam-pwquality` with `--no-install-recommends` (Recommends would add `cracklib-runtime`, `wamerican`, `file`). Pulls `libpam-pwquality`, `libpwquality1`, `libpwquality-common`, `libcrack2`. See [image-runtime](image-runtime.md#password-policy).
   - Manager .debs from `work/extra-debs/<arch>/` installed over the apt set; every unitotem package must be 3.x.
   - Purge: arm64 Chromium (apt); compilers (`dpkg --force-depends`, keeps DKMS modules); amd64 X server packages.
   - Asserts labwc, wlr-randr, wlopm, wayvnc survive and the NVIDIA module exists (amd64). Removes `/var/lib/dkms/mok.key`.
@@ -55,6 +56,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 - Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values.
 - Stage 2:
   - Hostname, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, root first-access state (`passwd -d`, login shell, marker group), sshd_config, packages `sudo` and `adduser`.
+  - Password policy: installs `unitotem/files/unitotem-pwquality` to `/usr/share/pam-configs/`, then `chroot pam-auth-update --package --force` with `DEBIAN_FRONTEND=noninteractive`. Prints "Incompatible PAM profiles selected" (its `Conflicts: pwquality` removes the stock profile); exit 0, one `pam_pwquality` line remains.
   - amd64: `/etc/default/grub`, `10_unitotem_ab` (A/B) or `45_unitotem_ota`.
   - arm64: `config.txt`, `cmdline.txt` (`root=LABEL=ROOT_A unitotem.slot=a`).
   - fstab (A/B drops the `/` and BOOT lines), NetworkManager, firewall, Chromium accel flags, apt timers masked.
@@ -145,7 +147,7 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 
 ## Tests
 
-- `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: runs at the end of stage 3; `FAT_DIR` when the boot FAT is mounted separately.
+- `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: runs at the end of stage 3; `FAT_DIR` when the boot FAT is mounted separately. Section "Password policy": package installed, `cracklib-runtime` and `wamerican` absent, profile present, exactly one `pam_pwquality` line with the required options, `chpasswd` and `passwd` include `common-password`.
 - `unitotem/check-recovery-commands.sh ROOTFS INITRD ENGINE.sh`: needs `lsinitramfs`; run by `verify-image.sh`.
 - `python3 tools/release/test_pkglock.py`: lock logic, offline.
 - No automated test boots an image or runs the stage scripts.

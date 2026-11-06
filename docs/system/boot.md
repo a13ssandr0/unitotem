@@ -18,7 +18,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 | `unitotem/files/ota-init-premount` | initramfs init-premount `zz-unitotem-ota` |
 | `unitotem/files/ota-recovery-init-premount` | init-premount of the resident fallback initrd (always OTA) |
 | `unitotem/files/ota-local-bottom-verify` | local-bottom `zz-unitotem-verify` |
-| `unitotem/files/ota-hook` | initramfs-tools hook: bash, dropbear, partclone, real mount/dd/mke2fs, modules, OTA root login |
+| `unitotem/files/ota-hook` | initramfs-tools hook: bash, dropbear, partclone, real mount/dd/mke2fs, modules; no OTA password (logins are generated at run time, see [Fallback authentication](deploy-and-recovery.md#fallback-authentication)) |
 | `unitotem/files/overlayfs-hook.sh` | init-bottom `setup-overlays` (`storage-and-persistence.md`) |
 | `unitotem/files/unitotem-boot-ok` | Boot confirmation (`ab-updates.md`) |
 | `unitotem/files/unitotem-ota-arm` | Writes `unitotem-ota.request` on the boot FAT and reboots into OTA |
@@ -66,7 +66,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 ### OTA fallback entry
 
-- `serve-fallback`: framebuffer progress UI, dropbear `-p 2222` (root login), optional reverse tunnel to `OTA_HOST:OTA_CTRL_PORT` from `unitotem-ota.conf`, idle watchdog.
+- `serve-fallback`: framebuffer progress UI, `fallback_auth_setup` (writes the login accounts and keys to the initramfs tmpfs; sources in [Fallback authentication](deploy-and-recovery.md#fallback-authentication), kernel token `unitotem.ota.authkey=`), dropbear `-p 2222` (`-T 3 -j -k`, `-B` in open mode only), optional reverse tunnel to `OTA_HOST:OTA_CTRL_PORT` from `unitotem-ota.conf`, idle watchdog.
 - x86 recovery entry (`UniTotem OTA`): `linux /unitotem/recovery-vmlinuz unitotem.ota=1 console=tty0`.
 - Deploy: `set-default-recovery` makes the fallback default; `set-trial-boot` arms the real system; `promote-default` runs after confirmation (single-root path).
 
@@ -98,7 +98,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 Kernel command line: `root=LABEL=ROOT_A|ROOT_B` (A/B) or `ROOT`, `rootfstype=ext4 rootwait ro`, `unitotem.slot=a|b`, `unitotem.ota=1|recover`, `unitotem.ota.bootcount=1` (single-root trial), `video=...`, `plymouth.ignore-serial-consoles`.
 
-Boot-partition files: `unitotem-ota.request` (`UNITOTEM_OTA_WIPE_DATA=0|1`, self-clearing), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, whitelisted `UNITOTEM_*`/`OTA_*`), `unitotem-ota.bootcount` (single-root), `unitotem-ota.failover` (guard), `tryboot.txt`, `cmdline.txt`, `config.txt`, `slota/`, `slotb/`. `grubenv` is a 1024-byte block written by `grubenv_write`. ESP `esp-grub.cfg` carries `# unitotem-grub-level: N`.
+Boot-partition files: `unitotem-ota.request` (`UNITOTEM_OTA_WIPE_DATA=0|1`, self-clearing), `unitotem-ota.authorized_keys` (one `ssh-ed25519` line, fallback login key written by `unitotem-ota-arm --authkey-file`; kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, whitelisted `UNITOTEM_*`/`OTA_*`), `unitotem-ota.bootcount` (single-root), `unitotem-ota.failover` (guard), `tryboot.txt`, `cmdline.txt`, `config.txt`, `slota/`, `slotb/`. `grubenv` is a 1024-byte block written by `grubenv_write`. ESP `esp-grub.cfg` carries `# unitotem-grub-level: N`.
 
 Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point-of-no-return`; dropbear on 2222.
 
@@ -119,7 +119,7 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 - `unitotem-boot-orientation set` rewrites only `panel_orientation`, keeps the mode.
 - `unitotem_video` is a contract with `${unitotem_video}` in `grub-ab-entries`.
 - Secure Boot: keep `BOOTX64.EFI` plain GRUB unless shim is active; copy the chain first, rename shim last.
-- `ota-hook` bakes a fixed OTA root password hash into the initrd (SHA-512 crypt, salt `unitotemota`). The fallback keeps its own fixed password `unitotem` (`OTA_FALLBACK_PASSWORD` in `deploy/lib.sh`), independent of the image's root first-access state.
+- `ota-hook` carries no password or hash. `/etc/passwd`, `/etc/shadow` and `/root/.ssh/authorized_keys` are generated in the initramfs tmpfs at each fallback start. The fallback is independent of the image's root first-access state.
 - OTA frame: drawn for 16 bpp RGB565 (Pi fallback framebuffer) and 32 bpp (KMS); geometry from `fb0` `virtual_size` and `bits_per_pixel`. `NEWT_COLORS` cannot hide the whiptail border: `ota_frame` paints the ring cells black.
 - The image sets no `hdmi_enable_4kp60`: 4Kp60 on a Pi 4 needs it in `[pi4]` of `config.txt` (HDMI0 only, more heat and power).
 - `promote-default` (rpi) writes `config.txt` without `os_prefix`: single-root path only.

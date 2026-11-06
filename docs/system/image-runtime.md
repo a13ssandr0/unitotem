@@ -28,6 +28,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 | `unitotem/files/plymouthd.conf` | `Theme=unitotem`, `ShowDelay=0`, `DeviceTimeout=8` |
 | `unitotem/files/chromium-accel` | `/etc/chromium.d/50-unitotem-accel` (decode flags) |
 | `unitotem/files/ota-preserve.list` | `/etc` paths kept across OTA |
+| `unitotem/files/unitotem-pwquality` | PAM profile for the password policy (see [Password policy](#password-policy)) |
 | `tools/release/test_wifi_roam.py` | Roam logic test |
 
 ## How it works
@@ -136,10 +137,52 @@ Identity merge at an A/B update (`unitotem_identity.py`): root's login shell and
 
 `/home` is bind-mounted from DATA (`persist/home`, 755 root). It is not in the `unitotem-ota-changes` scan.
 
-The OTA fallback and recovery dropbear keeps its own fixed root password `unitotem` (`OTA_FALLBACK_PASSWORD` in `deploy/lib.sh`), independent of the image.
+The OTA fallback and recovery dropbear has no fixed password, independent of the image: its logins are the armed key and the administrators of the installed system (see [fallback authentication](deploy-and-recovery.md#fallback-authentication)).
+
+## Password policy
+
+Always on. PAM is the authority for every path that changes a password: `passwd`, `sudo passwd`, `chpasswd` (manager user changes, first-administrator script). `/etc/pam.d/passwd` and `/etc/pam.d/chpasswd` both `@include common-password`.
+
+`/etc/pam.d/common-password` has exactly one `pam_pwquality` line:
+
+```
+password requisite pam_pwquality.so retry=1 enforce_for_root minlen=8 minclass=2 maxrepeat=3 usercheck=1 dictcheck=0
+```
+
+- Profile `unitotem-pwquality` (`/usr/share/pam-configs/`, `Conflicts: pwquality`) replaces Debian's stock profile (`retry=3`), which would add a second line. Built in stage 2 (see [build](build.md#stages)).
+- Options sit on the PAM line, not in a `pwquality.conf.d` drop-in: a drop-in with a syntax error fails open.
+- `dictcheck=0`: no dictionary is installed; `dictcheck=1` refuses every password.
+- `enforce_for_root`: without it root gets only a warning; `chpasswd` runs as root.
+- `retry=1`: `chpasswd` has no prompt; `passwd` exits 10 after one refusal.
+- Messages are English only under `LANG=C.UTF-8`. The image locale is it_IT: callers set `LANG=C.UTF-8`.
+
+Refusal messages (stderr; only the first failing check is reported):
+
+- `BAD PASSWORD: The password is shorter than 8 characters`
+- `BAD PASSWORD: The password contains less than 2 character classes`
+- `BAD PASSWORD: The password contains more than 3 same characters consecutively`
+- `BAD PASSWORD: The password contains the user name in some form`
+
+A refused `chpasswd` exits 1 and adds `chpasswd: (user X) pam_chauthtok() failed, error:`, `Authentication token manipulation error`, `chpasswd: (line 1, user X) password not changed`.
+
+Rules observed (pam_pwquality 1.4.5, trixie; `work/pam-matrix/RESULTS.md`):
+
+- Length counts UTF-8 bytes, no credits: 8 bytes with 2 classes pass; 7 are refused whatever the classes.
+- Classes: lower, upper, digit, other. Any non-ASCII byte counts as other.
+- `maxrepeat=3`: `aaa` passes, `aaaa` is refused anywhere in the password.
+- Check order: length, classes, repeat, username.
+- `usercheck`: case-insensitive substring of the user name, also reversed. Checked for names of 4+ characters; observed: 3-character names are not checked (differs from pwquality.conf(5)).
+- No sequence, GECOS or dictionary check. Spaces and symbols accepted.
+- PAM buffer: 511 bytes accepted; 512 gives `Authentication token manipulation error` (no pwquality message); 513+ gives `You must choose a shorter password.`. The manager's 128-character limit is not a PAM rule.
+- Non-root `passwd` also refuses the old password (`BAD PASSWORD: The password is the same as the old one`); root `chpasswd` does not check it.
+- Accept/refuse results: `unitotem-manager/manager/tests/password_vectors.json` (128 observed results).
+
+Bypasses (PAM not consulted, root only): `usermod -p`, `chpasswd --encrypted` (backup restore), `passwd -d`, direct `/etc/shadow` edits.
+
+On an A/B update the new image's PAM files replace the old ones; no `ota-preserve.list` entry is needed.
 
 ## Tests
 
-- `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: Wi-Fi NM conf, roam, CPU governor, labwc, PipeWire root units, manager drop-in, firewall 4443, no certificate, no blanking in labwc config, root first-access state (empty shadow field, login shell, marker group), sshd root policy and `Match` block, persist `home` entry.
+- `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: Wi-Fi NM conf, roam, CPU governor, labwc, PipeWire root units, manager drop-in, firewall 4443, no certificate, no blanking in labwc config, root first-access state (empty shadow field, login shell, marker group), sshd root policy and `Match` block, persist `home` entry, password policy (see [Password policy](#password-policy)).
 - `python3 tools/release/test_wifi_roam.py`.
 - Network and firewall on hardware: `nmcli`, `iptables -S`, `ip6tables -S`.
