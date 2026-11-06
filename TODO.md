@@ -14,6 +14,7 @@
 - [system] Pi 4K60 (hdmi_enable_4kp60) undecided; pin ~60 Raspberry packages and backports (kernel, Mesa, firmware) undecided.
 - [manager] Upstream CEF/cefpython issues and PRs are not opened (patches and docs/manager/cef/pr-*.md ready); user decides.
 - [manager] Lean CEF build (docs/manager/cef/lean-build.md section 6): decision open.
+- [system+manager] First administrator password policy: the basic rule (1 character minimum, strict policy off by default) now guards an account with sudo and SSH password login (UsePAM is off, sshd checks the shadow itself): raise the minimum for the first administrator, or enforce the strict policy by default?
 
 ## To build
 - [system] Reword the comments citing common.sh's ROOT_PASSWORD (unitotem/files/ota-hook:17, deploy/ota-engine.sh:1340): the variable no longer exists; the fallback's fixed password lives only in the hook.
