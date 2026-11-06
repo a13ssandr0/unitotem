@@ -8,21 +8,19 @@
 - [system] H.264/AAC licensing: belongs to whoever distributes the image, a business decision.
 - [system] Release signing: the 2.3.0 signing key was lost with a damaged disk. Before the first publication the user creates the new key and stores it safely (backup-keys.sh, 3 copies); confirm key model (release key + offline root) and custody. Intermediate development debs and images are never published.
 - [system] Real GitHub release test (redirects, API limits, 2 GiB asset limit, publish workflow) and whether images may be public once checked for secrets.
-- [system] Legacy pi-gen tree at the repo root (build.sh, stage0-2/, export-image/, Dockerfile...) and the broken single-root installer ISO (iso/): remove or keep.
+- [system] Legacy pi-gen tree at the repo root (build.sh, stage0-2/, export-image/, Dockerfile...): remove or keep.
 - [system] Windows-source installer: build (8-12 days MVP, docs/system/windows-install-research.md) or delete the research.
 - [system] Secure Boot: always ship the shim chain? QEMU proof pending; real firmware "Security Violation" text unverified.
 - [system] Pi 4K60 (hdmi_enable_4kp60) undecided; pin ~60 Raspberry packages and backports (kernel, Mesa, firmware) undecided.
 - [manager] Upstream CEF/cefpython issues and PRs are not opened (patches and docs/manager/cef/pr-*.md ready); user decides.
 - [manager] Lean CEF build (docs/manager/cef/lean-build.md section 6): decision open.
-- [system+manager] First administrator password policy: the basic rule (1 character minimum, strict policy off by default) now guards an account with sudo and SSH password login (UsePAM is off, sshd checks the shadow itself): raise the minimum for the first administrator, or enforce the strict policy by default?
 - [manager] Deleting a user keeps `/home/<name>` (deluser default; an account created again reuses it): remove the home when UniTotem deletes an account it created, or keep it? A later account with the same uid would inherit the files.
 - [system] Test Pi has an account `ale` (uid 1001, nologin, entry in users.json, not created by these tests): keep or remove?
 
 ## To build
-- [system] Reword the comments citing common.sh's ROOT_PASSWORD (unitotem/files/ota-hook:17, deploy/ota-engine.sh:1340): the variable no longer exists; the fallback's fixed password lives only in the hook.
-- [system] iso/installer.sh still asks for a root password and sets it (installer-iso.md): align with the first-access model or remove with the ISO (see the decision above).
-- [system+manager] First access over SSH/console and web: root starts with an empty password and the login shell `unitotem-first-admin` (forces creating the first administrator with adduser), then root is key-only; admin = group `sudo`, web access = group `users` (plan: ~/.claude/plans/la-creazione-dell-account-al-reflective-stonebraker.md). Includes `/home` on DATA, remote-deploy post-check without root password, key-based dev tooling, docs.
-- [system] OTA fallback/recovery dropbear accepts root with the fixed password `unitotem` (unitotem/files/ota-hook, ota-engine serve-fallback): design an operator credential for network deploy.
+- [system+manager] Always-on password policy (PAM pam_pwquality: min 8, 2 classes, max 3 repeats, no dictionary; `passwd`, `sudo passwd`, `chpasswd`; switch removed) with a live checklist in the web UI and the first-admin script. Plan: ~/.claude/plans/la-creazione-dell-account-al-reflective-stonebraker.md.
+- [system] OTA fallback without a fixed password: key sent by the deploy tool when armed from a running system; admin account + password and root keys read from DATA in automatic recovery; a never-configured device stays open like first access (everything must work remotely). Deploy tool: per-target key, `OTA_FALLBACK_USER`/`OTA_FALLBACK_KEY`/`OTA_FALLBACK_PASSWORD`.
+- [system] Fallback idle watchdog stands down on any TCP connection, even unauthenticated; dead reverse tunnel code (`OTA_HOST`, `dbclient -R`); the ephemeral fallback host key cannot be pinned by the tool.
 - [system] No UniTotem 3.0.0 device is deployed yet: account/identity changes need no migration of older devices.
 - [system] unitotem-update-auto.service has Documentation=file:///usr/share/doc/unitotem/ab-updates.md, which the image does not install.
 - [system] Regenerate the preboot SD image after the latest build.
@@ -79,7 +77,6 @@
 - [system] build-unitotem.sh: no nice/CPUWeight save-restore with EXIT trap (docs/system/build.md); own ssh helpers instead of deploy/lib.sh (no BatchMode, host key check off).
 - [system] build-unitotem.sh: MAKE_PARTS/EFI_SIZE/ROOT_SIZE not forwarded.
 - [system] build-unitotem.sh:166 lock gate handles exit 20 and 2 only, any other failure continues with locked versions; rsync failure silenced with `|| true`.
-- [system] iso/installer.sh:548,558 installs absent files (chromium-flags-amd64, start-xorg.service): aborts at step 9; :508 root password quoting breaks on `'`; Wi-Fi not carried; X11 system. iso/build-live.sh:195 `linuxefi` may not exist.
 - [system] deploy/ota-engine.sh promote-default rpi branch (~724) writes config.txt/cmdline.txt without os_prefix/slot: breaks A/B if run; :846 DATA/history never pruned.
 - [system] /root handling differs: unitotem-update:418 copies root.<old>, ota-engine migrate-etc-overlay leaves it.
 - [system] deploy/remote-deploy.sh: `--debug` unread, `--host` not passed (OTA_HOST dead), cmd_serve has no tunnel, changes check failure (2/127) exits 1 like "changes found", recover strips :PORT.
@@ -87,7 +84,7 @@
 - [system] overlayfs-hook.sh: DATA not found warns and continues with no overlays and no failure status.
 - [system] tools/pkglock.py: LOCAL_RE treats any `~devN` archive version as local; `.lock.prev` left untracked; tests missing for check/snapcheck/upgrade.
 - [system] tools/release/unitotem-release: `build` has no caller/test, build-ab has no split for roots over 2 GiB, no publish script or workflow.
-- [system] Stale files: deploy/unitotem-installer ISO, flash-*/flash.manifest, `.gitignore:3` deploy/flasher/, tools/assets/ unreferenced, docker-compose.yml unreferenced.
+- [system] Stale files: flash-*/flash.manifest, `.gitignore:3` deploy/flasher/, tools/assets/ unreferenced, docker-compose.yml unreferenced.
 - [system] Product text names developer items: stage1-packages.sh:143 "the Pi 4 test unit", manager rtc.py:151 "the test VM", gpu.py:213 and screens/identity.py/mechanism.py name test machines.
 - [manager] tools/ui-touch-setup.py raw sshpass/ssh (violates helper-only SSH rule); tools/vm-deploy has no lock; tools/gen-api-types.py monkeypatches `pathlib.Path.mkdir` and `shutil.disk_usage` globally (fragile); tools/ui-vnc.py docstring cites a runner script not in the repository, its token checks not re-run since the X11 era.
 - [manager] tools/cef-server build-all.sh/cef-rebuild.sh skip apply-patches.sh.
@@ -106,5 +103,6 @@
 - [manager/screens] Colour: ICC profile and colour precision/HDR per screen. Findings: labwc 0.20 (arm64) has the colour-management protocol, no ICC config key found, Pi 4 renderer support untested, vc4 `max bpc` 8 and not settable through the compositor; labwc 0.8.3 (amd64) has no colour protocol. Start with a read-only line (max bpc, colour space) and a Pi test on labwc 0.20.
 
 ## Later (only when the user says)
+- [system] Installer ISO as an automatic A/B installer: the live image writes the A/B image with the deploy engine, the person only selects the disk when there is more than one; first-access state, all other settings after installation, no password prompt. (The old single-root bookworm/X11 ISO is removed.)
 - [system/viewer] Boot gap of ~7 s between Plymouth and the first boot-splash frame with kernel text on screen. Try by hand on a Pi: tty1 KD_GRAPHICS at labwc start, `plymouth quit --retain-splash` instead of `pkill plymouthd` + `cat /dev/zero > /dev/fb0`, paint splash background at once. Kernel logs stay.
 - [manager] Backlog: custom scripts, custom image background, offline service worker, tidy up the web UI, separate modal for screen splitting.
