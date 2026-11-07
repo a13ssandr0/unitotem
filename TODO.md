@@ -35,6 +35,7 @@
 
 
 ## To verify on hardware
+- [system] Update load: the gentle fetch (`io_friendly`) is measured on one Pi 4 and one SD card model (28 MB/s class); other cards, a Pi 5 and USB disks not measured. The update of a device that already runs it (the 2026.11.50 -> next update) has not been run: the Pi 2026.11.50 got it through a bind mount.
 - [system] After a fallback the boot partition keeps `unitotem-ota.authorized_keys` and `unitotem-ota.conf` (only the request file is removed): the armed public key stays valid for a later automatic fallback, so the same PC can recover the device remotely. Decide whether that is wanted, or whether the key expires after the next successful boot.
 - [system] Fallback authentication verified on the test Pi (flag-file path) and on venus (amd64, GRUB, EFI partition): key from the boot partition, DATA slot read, root key and administrator password accepted, root password and empty password refused, DATA unmounted afterwards. Not run: open mode (never-configured device), the deploy tool's armed path with its per-target key and `discover_fallback`, automatic recovery with both slots broken, the `unitotem-ota.conf` / `unitotem-ota.authorized_keys` left on the boot partition.
 - [system] The fallback takes a new DHCP address (the Pi got .174 while its system uses .173): the tool finds it with `discover_fallback`; `work/pi-test/fallback-test-v48.sh` and docs assume the system address. Check what the deploy tool prints for the address.
