@@ -206,6 +206,18 @@ chk "adduser is installed (usr/sbin/adduser)" test -x "$R/usr/sbin/adduser"
 chk "/home exists as a directory (home directories of the web users)" test -d "$R/home"
 chk "unitotem-first-admin is installed and executable (shipped by the manager deb, installed in stage 1)" test -x "$R/usr/sbin/unitotem-first-admin"
 
+echo "== Locale and tools"
+chk "htop installed" installed htop
+chk "btop installed" installed btop
+LOCSRC="$(dirname "${BASH_SOURCE[0]}")/files/unitotem-locale.sh"
+chk "/etc/profile.d/unitotem-locale.sh is the repo source, byte for byte, mode 644" bash -c 'cmp -s "$1" "$2" && [ "$(stat -c %a "$1")" = 644 ]' _ "$R/etc/profile.d/unitotem-locale.sh" "$LOCSRC"
+chk "/etc/default/locale sets LANG=en_US.UTF-8" grep -qxF 'LANG=en_US.UTF-8' "$R/etc/default/locale"
+chk "en_US.utf8 locale generated (locale-gen writes it into locale-archive, no per-locale directory)" bash -c "test -d '$R/usr/lib/locale/en_US.utf8' || grep -aq 'en_US.utf8' '$R/usr/lib/locale/locale-archive'"
+chk "sshd_config: AcceptEnv LANG LC_* (login sessions keep the client locale)" grep -qxF 'AcceptEnv LANG LC_*' "$SSHD"
+chk "sshd_config: AcceptEnv comes before the first-access Match block (a Match block takes every line after it)" bash -c "a=\$(grep -nxF 'AcceptEnv LANG LC_*' '$SSHD' | head -1 | cut -d: -f1); m=\$(grep -nxF 'Match User root Group unitotem-first-admin' '$SSHD' | head -1 | cut -d: -f1); [ -n \"\$a\" ] && [ -n \"\$m\" ] && [ \"\$a\" -lt \"\$m\" ]"
+chk "timezone link: /etc/localtime is /usr/share/zoneinfo/UTC or Etc/UTC" bash -c "case \$(readlink '$R/etc/localtime') in /usr/share/zoneinfo/UTC|/usr/share/zoneinfo/Etc/UTC) ;; *) exit 1;; esac"
+chk "/etc/timezone is UTC or Etc/UTC" bash -c "t=\$(cat '$R/etc/timezone' 2>/dev/null); [ \"\$t\" = UTC ] || [ \"\$t\" = Etc/UTC ]"
+
 echo "== Update machinery"
 chk "the automatic update policy: timer enabled, service runs at the lowest priority" bash -c "test -L '$R/etc/systemd/system/timers.target.wants/unitotem-update-auto.timer' && grep -q '^Nice=19' '$R/etc/systemd/system/unitotem-update-auto.service' && grep -q '^IOSchedulingClass=idle' '$R/etc/systemd/system/unitotem-update-auto.service'"
 chk "unitotem-boot-orientation is installed (boot screen orientation: Pi cmdline.txt of both slots / grubenv)" test -x "$R/usr/sbin/unitotem-boot-orientation"

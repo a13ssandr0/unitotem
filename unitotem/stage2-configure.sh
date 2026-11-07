@@ -25,14 +25,19 @@ ff02::2     ip6-allrouters
 EOF
 
 # ---------- Locale ----------
+# /etc/default/locale is read by login sessions (profile.d/unitotem-locale.sh) and by Debian's systemd; /etc/locale.conf is the systemd-native file.
 
-sed -i "s/# ${UNITOTEM_LOCALE} UTF-8/${UNITOTEM_LOCALE} UTF-8/" "${ROOTFS}/etc/locale.gen"
+sed -i "s/^# *${UNITOTEM_LOCALE} UTF-8/${UNITOTEM_LOCALE} UTF-8/" "${ROOTFS}/etc/locale.gen"
 chroot "${ROOTFS}" locale-gen
-echo "LANG=${UNITOTEM_LOCALE}" > "${ROOTFS}/etc/locale.conf"
+printf 'LANG=%s\n' "${UNITOTEM_LOCALE}" > "${ROOTFS}/etc/default/locale"
+printf 'LANG=%s\n' "${UNITOTEM_LOCALE}" > "${ROOTFS}/etc/locale.conf"
+install -m 644 /unitotem/files/unitotem-locale.sh "${ROOTFS}/etc/profile.d/unitotem-locale.sh"
 
 # ---------- Timezone ----------
+# dpkg-reconfigure tzdata canonicalises the link (UTC -> Etc/UTC) and rewrites /etc/timezone from it.
 
 ln -sf "/usr/share/zoneinfo/${UNITOTEM_TIMEZONE}" "${ROOTFS}/etc/localtime"
+echo "${UNITOTEM_TIMEZONE}" > "${ROOTFS}/etc/timezone"
 chroot "${ROOTFS}" dpkg-reconfigure -f noninteractive tzdata
 
 # ---------- Root first-access state ----------

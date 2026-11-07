@@ -47,6 +47,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - With a lock: snapshot.debian.org at the lock date, preferences pin every locked package, `dist-upgrade`.
   - amd64: linux-image-amd64, firmware, grub-efi-amd64, grub-pc-bin, efibootmgr, shim-signed, grub-efi-amd64-signed (staged only), mokutil, mesa, Intel/AMD/NVIDIA drivers (NVIDIA via DKMS).
   - arm64: linux-image-rpi-v8, raspi-firmware, firmware-brcm80211, v4l-utils, raspi-utils.
+  - Both: base set (`unitotem/stage1-packages.sh`, installed with Recommends): `locales`, `sudo`, `openssh-server`, `htop`, `btop`, `nano`, `less`, network and Python packages. `htop` is in the base set; `btop` adds `btop` and `libncursesw6`, and `libgpm2` through its Recommends.
   - Both: plymouth (no text plugin), `labwc wlr-randr wlopm wayvnc xwayland qt6-wayland kbd`, pipewire, ddcutil. `xwayland` is present only because labwc starts it lazily and logs an error without it; no X client runs.
   - Both: `libpam-pwquality` with `--no-install-recommends` (Recommends would add `cracklib-runtime`, `wamerican`, `file`). Pulls `libpam-pwquality`, `libpwquality1`, `libpwquality-common`, `libcrack2`. See [image-runtime](image-runtime.md#password-policy).
   - Manager .debs from `work/extra-debs/<arch>/` installed over the apt set; every unitotem package must be 3.x.
@@ -55,7 +56,9 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Lock: verify (exact match) or freeze to `work/<arch>/<arch>.lock.new`.
 - Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values.
 - Stage 2:
-  - Hostname, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, root first-access state (`passwd -d`, login shell, marker group), sshd_config, packages `sudo` and `adduser`.
+  - Hostname, root first-access state (`passwd -d`, login shell, marker group), sshd_config, packages `sudo` and `adduser`.
+  - Locale (`UNITOTEM_LOCALE`): `<locale> UTF-8` is uncommented in `/etc/locale.gen` and `locale-gen` runs (`C.UTF-8` is built into libc-bin, always available). `LANG=<locale>` is written to `/etc/default/locale` and `/etc/locale.conf`. `unitotem/files/unitotem-locale.sh` is installed as `/etc/profile.d/unitotem-locale.sh` (mode 644).
+  - Timezone (`UNITOTEM_TIMEZONE`): `/etc/localtime` links to `/usr/share/zoneinfo/<timezone>`, `/etc/timezone` gets the same name, then `dpkg-reconfigure tzdata` canonicalises `UTC` to `Etc/UTC` (the link ends as `/usr/share/zoneinfo/Etc/UTC`, `/etc/timezone` as `Etc/UTC`).
   - Password policy: installs `unitotem/files/unitotem-pwquality` to `/usr/share/pam-configs/`, then `chroot pam-auth-update --package --force` with `DEBIAN_FRONTEND=noninteractive`. Prints "Incompatible PAM profiles selected" (its `Conflicts: pwquality` removes the stock profile); exit 0, one `pam_pwquality` line remains.
   - amd64: `/etc/default/grub`, `10_unitotem_ab` (A/B) or `45_unitotem_ota`.
   - arm64: `config.txt`, `cmdline.txt` (`root=LABEL=ROOT_A unitotem.slot=a`).
@@ -98,7 +101,7 @@ Defaults (`unitotem/common.sh`, env-overridable):
 
 - `RELEASE` trixie; `MIRROR` https://deb.debian.org/debian.
 - Root first-access state (stage 2, no variable): empty password field, login shell `/usr/sbin/unitotem-first-admin`, member of group `unitotem-first-admin`. See [image-runtime](image-runtime.md#root-and-first-access).
-- `UNITOTEM_HOSTNAME` unitotem; `UNITOTEM_LOCALE` it_IT.UTF-8; `UNITOTEM_TIMEZONE` Europe/Rome.
+- `UNITOTEM_HOSTNAME` unitotem; `UNITOTEM_LOCALE` en_US.UTF-8; `UNITOTEM_TIMEZONE` UTC.
 - `AB_LAYOUT` 1 (0 = single ROOT). `IMAGE_SIZE` 16G (A/B) or 11G. `ROOT_SLOT_SIZE` 6G; `ROOT_SIZE` 8G; `EFI_SIZE`, `BOOT_SIZE`, `FIRMWARE_SIZE` 1G.
 - `RELEASE_VERSION` default `date +%Y.%m.%d`; written to `/usr/share/unitotem/release-version`; must match `^[0-9]+(\.[0-9]+)+$`.
 - `ROOTFS` /tmp/rootfs, `IMG_MNT` /mnt (both overridden on the native path).

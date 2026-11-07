@@ -158,7 +158,7 @@ apt_install \
     sudo adduser curl wget ca-certificates gnupg2 \
     openssh-server \
     iproute2 iputils-ping net-tools \
-    htop nano less \
+    htop btop nano less \
     util-linux udev e2fsprogs \
     lsb-release initramfs-tools apt-utils zstd \
     dbus dbus-user-session libpam-systemd \

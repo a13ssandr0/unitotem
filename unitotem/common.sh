@@ -16,8 +16,8 @@ ROOTFS="${ROOTFS:-/tmp/rootfs}"
 IMG_MNT="${IMG_MNT:-/mnt}"
 
 UNITOTEM_HOSTNAME="${UNITOTEM_HOSTNAME:-unitotem}"
-UNITOTEM_LOCALE="${UNITOTEM_LOCALE:-it_IT.UTF-8}"
-UNITOTEM_TIMEZONE="${UNITOTEM_TIMEZONE:-Europe/Rome}"
+UNITOTEM_LOCALE="${UNITOTEM_LOCALE:-en_US.UTF-8}"
+UNITOTEM_TIMEZONE="${UNITOTEM_TIMEZONE:-UTC}"
 
 # A/B layout (docs/system/ab-updates.md): two ROOT slots. The image holds slot A populated;
 # slot B is written by the first update, but both partitions exist so DATA never moves.

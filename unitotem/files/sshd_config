@@ -17,6 +17,9 @@ X11Forwarding no
 AllowTcpForwarding no
 PrintMotd no
 
+# Locale of the client session.
+AcceptEnv LANG LC_*
+
 # First-access state: root in the marker group gets only the first-administrator script.
 Match User root Group unitotem-first-admin
     PermitRootLogin yes
