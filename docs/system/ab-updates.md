@@ -136,7 +136,7 @@ Boot interfaces:
 
 ## Load during an update
 
-`fetch` (and `repair`) write the image to the inactive slot through `xz -dc | partclone.restore`, as a transient unit with `Nice=19` and the idle I/O class. `Nice` and the I/O class do not reach the kernel's write-back of the page cache, so on a slow disk the writes alone fill the card and the manager's reads wait. Measured on a Raspberry Pi 4 (8 GB, SD card, `fetch --force` of a 580 MB asset, 175-195 s, sampled every second with a web and an SSH probe from another host every 2 s; `work/pi-test/fetch-load-test.sh`):
+`fetch` (and `repair`) write the image to the inactive slot through `xz -dc | partclone.restore`, as a transient unit with `Nice=19` and the idle I/O class. `Nice` and the I/O class do not reach the kernel's write-back of the page cache, so on a slow disk the writes alone fill the card and the manager's reads wait. Measured on a Raspberry Pi 4 (8 GB, SD card, `fetch --force` of a 580 MB asset, 175-195 s, sampled every second with a web and an SSH probe from another host every 2 s; `tools/update-load-test.sh`, `tools/update-load-analyze.py`):
 
 | Run | Web probes timing out (15 s) | Web worst / p90 | SSH worst | Dirty pages |
 |---|---|---|---|---|
