@@ -1,19 +1,21 @@
 #!/bin/bash
 # First-boot layout test in QEMU: boots a FLASH image (unitotem-<date>-amd64-flash.img[.xz], from unitotem/make-flash-image.sh)
 # written raw to a 20 GiB virtual disk, once with UEFI (OVMF) and once with legacy BIOS (SeaBIOS), and checks over ssh that
-# the first boot created ROOT_B and DATA, mounted DATA, and that unitotem-update repair fills ROOT_B.
+# the first boot created ROOT_B and DATA, mounted DATA, and that unitotem-update repair fills ROOT_B. A fresh image is in the
+# first-access state (root has no password): the test creates the administrator through /setup (forwarded HTTPS port) and then
+# works as that account with sudo.
 # Needs a BUILT flash image (path as the argument), qemu-system-x86_64 (KVM optional), OVMF, sshpass. It does not run in CI.
 #   tools/release/test_first_boot_layout.sh FLASH_IMG[.xz] [uefi|bios|both]
-# Environment: OTA_PASSWORD (login password of the image, default unitotem), DISK_GIB (default 20), PORT (default 2290),
+# Environment: ADMIN_PW (password of the administrator the test creates), DISK_GIB (default 20), PORT (default 2290),
 #   WORK (scratch folder, default work/grow-test/qemu-layout), BOOT_TIMEOUT (seconds, default 300), FILL_TIMEOUT (default 900).
 # Only a qemu process of this script and files under WORK are touched; no real disk or device.
 set -Eeuo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMG="${1:?usage: test_first_boot_layout.sh FLASH_IMG[.xz] [uefi|bios|both]}"; MODES="${2:-both}"
-DISK_GIB="${DISK_GIB:-20}"; PORT="${PORT:-2290}"; WORK="${WORK:-$DIR/work/grow-test/qemu-layout}"
+DISK_GIB="${DISK_GIB:-20}"; PORT="${PORT:-2290}"; ADMIN_PW="${ADMIN_PW:-Qw3rty-Test-2026}"; WORK="${WORK:-$DIR/work/grow-test/qemu-layout}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"; FILL_TIMEOUT="${FILL_TIMEOUT:-900}"
 source "$DIR/deploy/lib.sh"
-for c in qemu-system-x86_64 sshpass sgdisk; do require_cmd "$c"; done
+for c in qemu-system-x86_64 sshpass sgdisk curl; do require_cmd "$c"; done
 OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd; OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
 [ -f "$IMG" ] || die "flash image not found: $IMG"
 mkdir -p "$WORK"
@@ -24,8 +26,11 @@ bad() { failn=$((failn+1)); echo "FAIL: $1"; }
 chk() { local d="$1"; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
 # rchk DESCRIPTION REMOTE-COMMAND   (a command run in the VM)
 rchk() { if qssh "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
-qssh() { _sshpass_pw ssh -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-            -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 root@127.0.0.1 "$@"; }
+# A command in the VM as root: ssh as the administrator the test created, sudo with the password on stdin.
+qssh() { printf '%s\n' "$ADMIN_PW" | SSHPASS="$ADMIN_PW" SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS \
+            sshpass -e ssh -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+            -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 admin@127.0.0.1 \
+            "sudo -S -p '' sh -c $(printf '%q' "$*")"; }
 PIDF="$WORK/qemu.pid"
 stop_vm() { if [ -f "$PIDF" ]; then kill "$(cat "$PIDF")" 2>/dev/null || true; rm -f "$PIDF"; fi; }
 trap stop_vm EXIT
@@ -48,12 +53,19 @@ run_mode() {
     if [ -w /dev/kvm ]; then kvm=(-enable-kvm -cpu host); else kvm=(-cpu max); fi
     qemu-system-x86_64 -name "layout-$mode" "${kvm[@]}" -smp 4 -m 4096 "${fw[@]}" \
         -drive "file=$disk,if=virtio,format=raw" \
-        -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-:22" -device virtio-net-pci,netdev=n0 \
+        -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-:22,hostfwd=tcp:127.0.0.1:$((PORT+1))-:443" -device virtio-net-pci,netdev=n0 \
         -display none -serial "file:$WORK/serial-$mode.log" -pidfile "$PIDF" -daemonize
-    until qssh true 2>/dev/null; do
-        sleep 5; t=$((t+5)); [ "$t" -lt "$BOOT_TIMEOUT" ] || { bad "$mode: ssh up within ${BOOT_TIMEOUT}s"; stop_vm; return 0; }
+    until curl -sk -m 5 -o /dev/null "https://127.0.0.1:$((PORT+1))/login" 2>/dev/null; do
+        sleep 5; t=$((t+5)); [ "$t" -lt "$BOOT_TIMEOUT" ] || { bad "$mode: web interface up within ${BOOT_TIMEOUT}s"; stop_vm; return 0; }
     done
-    ok "$mode: booted, ssh reachable after ~${t}s"
+    ok "$mode: booted, web interface answers after ~${t}s"
+    code=$(curl -sk -m 60 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+        -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PW\"}" "https://127.0.0.1:$((PORT+1))/setup" || echo 000)
+    chk "$mode: first administrator created through /setup (HTTP $code)" [ "$code" = 200 ]
+    t=0
+    until qssh true 2>/dev/null; do
+        sleep 5; t=$((t+5)); [ "$t" -lt 120 ] || { bad "$mode: ssh as admin"; stop_vm; return 0; }
+    done
     lay=$(qssh 'lsblk -bno NAME,SIZE,PARTLABEL,LABEL,FSTYPE,MOUNTPOINT /dev/vda' || true)
     echo "$lay" | sed 's/^/    /'
     chk "$mode: PARTLABEL ROOT_B present" grep -q ROOT_B <<<"$lay"
