@@ -51,6 +51,7 @@ chroot "${ROOTFS}" usermod -s /usr/sbin/unitotem-first-admin -aG unitotem-first-
 # ---------- SSH ----------
 
 install -m 644 /unitotem/files/sshd_config "${ROOTFS}/etc/ssh/sshd_config"
+sed -i "s/^SetEnv LANG=.*/SetEnv LANG=${UNITOTEM_LOCALE}/" "${ROOTFS}/etc/ssh/sshd_config"
 mkdir -p "${ROOTFS}/root/.ssh"
 chmod 700 "${ROOTFS}/root/.ssh"
 
