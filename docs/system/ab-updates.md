@@ -43,7 +43,7 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
   - Staged pending on the other slot, no trial requested: no-op.
 - **confirm**: `confirm_now` without the health wait.
 - **rollback [--reboot]**: needs `other` valid; default := other; pending removed; result `armed`; the next boot of the old slot turns it into `ok`.
-- **repair**: if `other` fails `slot_sound` (label, `e2fsck -fn`, mount, `release-version`, `systemd`, Pi boot files), copy `cur` over it (`partclone.extfs -c -F | partclone.restore`), new UUID and label, `e2fsck -fy`, version check, Pi boot files cloned, overlays prepared. Under the lock, `RuntimeMaxSec=3600`.
+- **repair**: if `other` fails `slot_sound` (label, `e2fsck -fn`, mount, `release-version`, `systemd`, Pi boot files), copy `cur` over it (`partclone.extfs -c -F | partclone.restore`), new UUID and label, `e2fsck -fy`, version check, Pi boot files cloned, overlays prepared. Under the lock, `RuntimeMaxSec=3600`. The ROOT_B that the first boot of a flash image creates is a formatted, labelled, empty slot: `slot_sound` returns `empty`, so the first confirmed boot fills it (`storage-and-persistence.md#layout`).
 - **failover** (initramfs): chosen root missing or failing the read-only check and the other slot sound: write guard `/boot-ota/unitotem-ota.failover` (`cur->other`), switch default (`saved_entry` / `os_prefix`), `reboot -f`. Refused while the guard exists. Cleared by the next plain boot.
 - **Lock**: `/run/unitotem-update.lock` (flock); busy exits 12. Progress: `/run/unitotem-update.progress` (one JSON line, atomic rename).
 

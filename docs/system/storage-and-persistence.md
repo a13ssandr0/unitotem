@@ -8,11 +8,14 @@ Immutable Debian root on two A/B slots (ROOT_A, ROOT_B). Mutable state lives on 
 
 | Path | Role |
 |---|---|
-| `unitotem/common.sh` | `AB_LAYOUT`, `ROOT_SLOT_SIZE`, `IMAGE_SIZE`, `FIRMWARE_SIZE` |
-| `unitotem/stage3-image.sh` | Partition table, `mkfs`, baseline, final fsck |
+| `unitotem/common.sh` | `AB_LAYOUT`, `ROOT_SLOT_SIZE` 5G, `IMAGE_SIZE` 14G, `EFI_SIZE`, `FIRMWARE_SIZE` 512M |
+| `unitotem/stage3-image.sh` | Partition table, `mkfs`, baseline, final fsck, flash image |
+| `unitotem/make-flash-image.sh` | Full image -> flash image (boot partition(s) + ROOT_A only) |
+| `tools/release/test_grow_data.sh` | Container test of `layout_complete` and `grow_data` (privileged Docker) |
+| `tools/release/test_first_boot_layout.sh` | QEMU test of a built flash image (UEFI and BIOS) |
 | `unitotem/stage2-configure.sh` | fstab; A/B drops `LABEL=ROOT /` and `LABEL=BOOT`; installs overlay hook; cmdline `ro` |
 | `unitotem/files/fstab-arm64`, `fstab-amd64` | Boot FAT `ro,nofail`; tmpfs `/tmp`, `/run`, `/var/cache`, `/var/tmp` |
-| `unitotem/files/overlayfs-hook.sh` | initramfs init-bottom: mounts DATA, fsck, per-slot overlays, dpkg pin |
+| `unitotem/files/overlayfs-hook.sh` | initramfs init-bottom: `layout_complete`, DATA lookup, fsck, `grow_data`, mount, per-slot overlays, dpkg pin |
 | `unitotem/files/ota-preserve.list` | `/etc` whitelist carried across an update |
 | `unitotem/files/unitotem_identity.py` | Local account merge (passwd, shadow, group, gshadow) |
 | `unitotem/files/unitotem-update` | `prepare_overlays`, whitelist import, identity merge, state files |
@@ -29,13 +32,35 @@ A/B (`AB_LAYOUT=1`):
 
 | # | arm64 | amd64 |
 |---|---|---|
-| 1 | FIRMWARE FAT32 1 GiB | EFI FAT32 1 GiB |
-| 2 | ROOT_A ext4 6 GiB | ROOT_A ext4 6 GiB |
-| 3 | ROOT_B ext4 6 GiB | ROOT_B ext4 6 GiB |
-| 4 | DATA ext4 (rest) | DATA ext4 (rest) |
-| 5 | - | BIOS (ef02) |
+| 1 | FIRMWARE FAT32 512 MiB | EFI FAT32 512 MiB |
+| 2 | ROOT_A ext4 5 GiB | ROOT_A ext4 5 GiB |
+| 3 | ROOT_B ext4 5 GiB | ROOT_B ext4 5 GiB |
+| 4 | DATA ext4 (rest of the image, 3 GiB at `IMAGE_SIZE` 14G) | DATA ext4 (rest of the image) |
+| 5 | - | BIOS (ef02), sectors 34-2047, before partition 1 |
 
 amd64 A/B has no BOOT partition: each slot carries its kernel and initrd in `/boot`; GRUB lives on the ESP. Single-root (`AB_LAYOUT=0`): arm64 FIRMWARE, ROOT, DATA; amd64 EFI, BOOT, ROOT, DATA, BIOS; overlay suffix empty. Slot size is fixed: changing it means repartitioning and moving DATA.
+
+Images:
+
+- Full image (`unitotem-<date>-<arch>.img.xz`, 14 GiB): the layout above. Source of the parts set (network deploy), the release assets and `build-ab`.
+- Flash image (`unitotem-<date>-<arch>-flash.img.xz`, A/B only, ~5.6 GiB): written to a card or disk with Imager or `dd`. `unitotem/make-flash-image.sh` builds it from the full image: fresh GPT (same disk GUID) with every partition except ROOT_B and DATA (same numbers, GUIDs, names, attributes, start sectors; bytes copied unchanged; on amd64 the MBR boot code too), then 1 MiB. Checked at build: `sgdisk -v`, sha256 of every kept partition, fsck of boot and ROOT_A.
+- The BIOS-boot partition (amd64) sits at sectors 34-2047, before partition 1, so it is part of the flash image and never in the way of the space that is cut off.
+
+First boot of a flash image and of any image on a larger disk (initramfs init-bottom, `overlayfs-hook.sh`, before and after the DATA lookup; the OTA fallback and the resident recovery initrd do not carry the hook). Each decision is derived from the disk on every boot, no flag file; any failure logs one line and the boot continues.
+
+1. `layout_complete`: acts when ROOT_A is the last partition, the GPT has neither ROOT_B nor DATA and at least 5 GiB + 256 MiB are free after ROOT_A.
+   - `sgdisk -e` (backup GPT to the disk end), first MiB of both new areas zeroed (stale signatures of a reused card), then one `sgdisk` table write adds p3 ROOT_B (5 GiB, 1 MiB aligned right after ROOT_A) and p4 DATA (to the last usable sector), type 8300, both flagged pending (GPT attribute bit 48); `sgdisk -v` must be clean.
+   - `partx -a --nr 3` and `--nr 4` tell the kernel about the two new partitions only; the mounted ROOT_A is not touched.
+   - Every partition flagged pending is formatted (`mke2fs -t ext4 -L ROOT_B|DATA`, same defaults as stage3's `mkfs.ext4 -L`) and its flag cleared. ROOT_B is left as an empty labelled slot: `unitotem-update` `slot_sound` reports it `empty` and the auto-repair (`UPDATE_AUTOREPAIR=1`, started after the first confirmed boot) copies the running slot into it.
+   - Crash safety: before the table write nothing changed; after it the pending flags are the state, and the next boot formats what is still flagged. Only flagged partitions are ever formatted, so a damaged filesystem is never reformatted. ROOT_A and the boot partition are never written.
+2. `grow_data` (DATA found, `e2fsck -p` done, not mounted): acts when the disk is GPT, DATA is ext4 and the last partition by start sector, and at least 64 MiB are free after it.
+   - `sgdisk -e`; `sfdisk -N 4` (`--wipe never --wipe-partitions never`: sfdisk otherwise wipes the filesystem signature of the resized partition) rewrites only the DATA entry (type, GUID, name, attributes kept) in one table write; `sgdisk -v` must be clean; `partx -u --nr 4` updates the kernel size of DATA only.
+   - Then, if the filesystem is at least 32 MiB smaller than the partition: `e2fsck -fp` (must be clean), offline `resize2fs`. A cut after the table write is finished by the next boot (the filesystem is smaller than its partition); a cut inside `resize2fs` can leave "Resize inode not valid" (reproduced by SIGKILL at 0.08 s of the 0.18 s `resize2fs` of a 400 GB disk: 1 of 4 kill moments): the filesystem still mounts and the files are intact, `e2fsck -p` refuses it (exit 4, logged), growth is skipped with one log line on every boot, and `e2fsck -fy` repairs it completely (checked: clean, checksums unchanged, original size) after which the next boot grows it. No automatic `-fy`.
+   - Skipped with one log line: not ext4, not GPT, DATA not last. Skipped silently: less than 64 MiB free (also the case of an image on a disk of its own size), nothing to grow.
+   - Measured (privileged container, sparse loop disk, ROOT_A mounted from the same disk): 400 GB disk, DATA 3 GiB -> ~400 GB: whole `grow_data` 1.2 s offline (`resize2fs` alone online 0.18 s, so offline costs nothing noticeable; offline also has no reserved-GDT limit); `layout_complete` on 400 GB (ROOT_B 5 GiB + DATA ~395 GB, lazy inode tables) 4.3 s; on 20 GB 4.2 s.
+   - The kernel accepts the changes with the root partition of the same disk mounted: `partx -u/-a` use the BLKPG calls for the named partition only.
+   - Minimum disk for the layout: flash image (~5.6 GiB) + 5.25 GiB. Below that `layout_complete` logs one line and nothing is created.
+   - The network deploy grows DATA itself (`ota-engine.sh`, `resize2fs` after `restore-part --grow`); the hook then finds nothing to do.
 
 DATA tree (label `DATA`, mounted at `/mnt/data` by the initramfs):
 
@@ -57,9 +82,10 @@ Boot:
 - init-premount (`ota-engine.sh init-premount`): validates the slot with a read-only fsck; on failure uses the other slot, else the OTA fallback. A/B images skip the boot counter.
 - local-bottom (`local-bottom-verify`): `/sbin/init` must exist, else OTA fallback.
 - init-bottom (`overlayfs-hook.sh`):
+  0. `layout_complete` (see Images above).
   1. Find DATA by label (10 tries, `udevadm settle`). Not found: warning, boot continues without overlays.
   2. Add a journal if absent; `e2fsck -p` (exit 0/1 ok; others logged, never fatal).
-  3. Mount DATA `noatime,nodiratime` at `/mnt/data`.
+  3. `grow_data`; mount DATA `noatime,nodiratime` at `/mnt/data`.
   4. Stash ROOT's `/var/lib/dpkg`.
   5. Overlay `etc`, `root`, `var`: lower `ROOT/<d>`, upper `DATA/upper/<d><sfx>`, work `DATA/work/<d><sfx>`.
   6. Rebind dpkg over the `/var` overlay; drop the stash.
@@ -117,7 +143,7 @@ State in `DATA/unitotem/update/`: `slots.json` (`{slot: {version, valid, prepare
 - `unitotem-ota-changes` scans `SCAN_DIRS` = `usr boot opt srv media mnt` with `find -xdev` (DATA under `/mnt` and `/boot/firmware` are not walked). `/home` is not scanned: it is the DATA bind mount (`persist home`). `/etc`, `/var`, `/root` are left out on purpose: they are DATA overlays with their own rules, and `/var` is a plain directory at build but an overlay at runtime, so including it would flag every file.
 - `unexplained` = changed paths minus files listed in `/var/lib/dpkg/info/<pkg>.list` of added/removed/changed packages and the side effects `/boot/initrd.img*`, `/boot/vmlinuz*`, `/usr/lib/modules/*`. `digest` = sha256 of the concatenated `pkg.added`, `pkg.removed`, `pkg.changed` and `unexplained` lists, so it covers exactly what the operator sees.
 - `check` exits 2 when the baseline directory is missing (image built without it). A non-empty `OTA_CHANGES_PROGRESS` makes the tool write the phase text to `/run/unitotem-ota-changes.progress` (status bar only, not for parsing).
-- DATA is empty in the image; only `data-op mkfs` or a full disk deploy formats it.
+- DATA is empty in the image; only `data-op mkfs`, a full disk deploy or `layout_complete` (flash image, partition flagged pending) formats it. Everything that seeds DATA (`mkdir -p` in the hook, `unitotem-persist-paths`, `unitotem-ssh-hostkey`) assumes an empty, freshly formatted DATA.
 - State files are fsynced. Block-level power cuts and disk cache reordering are not covered by tests.
 
 ## Tests
@@ -126,3 +152,5 @@ State in `DATA/unitotem/update/`: `slots.json` (`{slot: {version, valid, prepare
 - `unitotem/verify-image.sh <rootfs> <arch> <ab>`: fstab, persist list, overlay hook; run by stage 3.
 - `work/loopback-test/run-ab.sh <parts dir>` (env `ARCH`): A/B deploy in a privileged container.
 - `work/loopback-test/powercut-ab.sh`: QEMU power cuts at crashpoints (`testing.md`).
+- `tools/release/test_grow_data.sh [--big]` (privileged Docker, loop devices inside the container only): builds the stage3 layouts of both architectures, writes them to larger disks and runs `layout_complete` and `grow_data` under `dash` with the root partition mounted; also flash-image creation, no-op and interruption cases, `--big` adds the 400 GB timings.
+- `tools/release/test_first_boot_layout.sh FLASH_IMG [uefi|bios|both]`: boots a built flash image in QEMU on a 20 GiB disk and checks ROOT_B, DATA, the mount and the repair over ssh.
