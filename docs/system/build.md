@@ -156,7 +156,7 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 
 ## Image size
 
-Installed size removed by the stage-1 reductions, from an `apt-get -s` replay of the stage-1 install order on Debian trixie (simulation; to be replaced by measurements on a built image). The Raspberry Pi archive packages are not in the replay. "Deb" is the sum of the .deb sizes, an estimate of the compressed size.
+Installed size removed by the stage-1 reductions, from an `apt-get -s` replay of the stage-1 install order on Debian trixie (simulation). Measured on the built images (2026.11.51 -> 2026.11.52): The Raspberry Pi archive packages are not in the replay. "Deb" is the sum of the .deb sizes, an estimate of the compressed size.
 
 | Step | amd64 installed MB (deb) | arm64 installed MB (deb) |
 |---|---|---|
@@ -166,6 +166,15 @@ Installed size removed by the stage-1 reductions, from an `apt-get -s` replay of
 | amd64: NVIDIA CUDA, NVDEC and Vulkan libraries purged | 139.2 (24.8) | - |
 | arm64: `firmware-linux*`, `firmware-misc-nonfree` not installed | - | 102.7 (18.5) |
 | Total | about 567 (137) | about 514 (119) |
+
+
+| Measured | 2026.11.51 | 2026.11.52 |
+|---|---|---|
+| arm64 root asset (`root.ext4.pc.xz`) | 639 MB | 499 MB (-22 %) |
+| amd64 root asset | 1059 MB | 913 MB (-14 %) |
+| arm64 root used (Pi 4) | 2.5 GB | 1.9 GB |
+| amd64 root used (PC) | 3.2 GB | 2.6 GB |
+| amd64 `.img.xz` | 1152 MB | 1009 MB |
 
 Kept because they are hard dependencies: `libavfilter10`/`libavcodec61` with `libflite1` and `libcodec2` (wayvnc -> libneatvnc -> ffmpeg), `libllvm19` + `libz3-4` (Mesa llvmpipe/radeonsi), `perl` (ddcutil -> i2c-tools), `firmware-nvidia-gsp`, `firmware-amd-graphics` (amd64).
 
