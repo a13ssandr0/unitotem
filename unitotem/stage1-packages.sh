@@ -331,6 +331,23 @@ purge_list() { # names from $@ that are actually installed
     # Always succeed: the loop's status is that of the last name, which would stop the build under set -e.
     return 0
 }
+# Libraries the product never loads, all pulled in by Recommends or by a Depends that links nothing:
+#  - mesa-vulkan-drivers: the viewer renders through ANGLE-GL (libgallium keeps llvmpipe and radeonsi); nothing depends on it.
+#  - amd64 NVIDIA extras: CUDA (libcuda1, ptxjit), NVDEC (libnvcuvid1, libnvidia-encode1) and the Vulkan ICD (+ ray-tracing core).
+#    libnvidia-allocator1, libnvidia-egl-gbm1 and libgles-nvidia* stay: labwc needs them on NVIDIA.
+# apt (not dpkg --force-depends): the dry run shows what else would go, and the DKMS module is asserted afterwards.
+# Before the compilers are force-purged below: afterwards dpkg has unmet dependencies (linux-headers needs gcc-14) and apt refuses to remove anything.
+REMOVE_LIBS=$(purge_list mesa-vulkan-drivers)
+if [ "$ARCH" = "amd64" ]; then
+    REMOVE_LIBS="$REMOVE_LIBS $(purge_list libcuda1 libnvidia-encode1 libnvcuvid1 nvidia-vulkan-icd libnvidia-rtcore libnvidia-ptxjitcompiler1)"
+fi
+echo ">>> removing unused libraries (apt): $(echo $REMOVE_LIBS)"
+if [ -n "$(echo $REMOVE_LIBS)" ]; then
+    # shellcheck disable=SC2086
+    { chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -s purge $REMOVE_LIBS 2>&1 | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'; } || true
+    # shellcheck disable=SC2086
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE_LIBS
+fi
 if [ "$ARCH" = "arm64" ]; then
     REMOVE=$(purge_list chromium chromium-browser chromium-common chromium-l10n rpi-chromium-mods)
     echo ">>> removing (arm64, apt): $(echo $REMOVE)"
@@ -363,22 +380,6 @@ else
     KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
     chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
         || { echo "ERROR: the NVIDIA module disappeared when removing the compilers" >&2; exit 1; }
-fi
-# Libraries the product never loads, all pulled in by Recommends or by a Depends that links nothing:
-#  - mesa-vulkan-drivers: the viewer renders through ANGLE-GL (libgallium keeps llvmpipe and radeonsi); nothing depends on it.
-#  - amd64 NVIDIA extras: CUDA (libcuda1, ptxjit), NVDEC (libnvcuvid1, libnvidia-encode1) and the Vulkan ICD (+ ray-tracing core).
-#    libnvidia-allocator1, libnvidia-egl-gbm1 and libgles-nvidia* stay: labwc needs them on NVIDIA.
-# apt (not dpkg --force-depends): the dry run shows what else would go, and the DKMS module is asserted afterwards.
-REMOVE_LIBS=$(purge_list mesa-vulkan-drivers)
-if [ "$ARCH" = "amd64" ]; then
-    REMOVE_LIBS="$REMOVE_LIBS $(purge_list libcuda1 libnvidia-encode1 libnvcuvid1 nvidia-vulkan-icd libnvidia-rtcore libnvidia-ptxjitcompiler1)"
-fi
-echo ">>> removing unused libraries (apt): $(echo $REMOVE_LIBS)"
-if [ -n "$(echo $REMOVE_LIBS)" ]; then
-    # shellcheck disable=SC2086
-    { chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -s purge $REMOVE_LIBS 2>&1 | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'; } || true
-    # shellcheck disable=SC2086
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE_LIBS
 fi
 # libshiboken6 declares a dependency on libclang1-19 (the generator's library) but no shared object of it links or loads libclang.
 # dpkg --force-depends like the compilers; libllvm19 stays (Mesa).
