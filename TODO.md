@@ -35,6 +35,9 @@
 
 
 ## To verify on hardware
+- [system] Fallback authentication verified on the test Pi (flag-file path, key from the boot partition, DATA slot a with one administrator): root key and administrator password accepted, root password/empty refused. Not run: open mode (never-configured device), the deploy tool's armed path with its per-target key, the fallback on venus (amd64/GRUB), automatic recovery with both slots broken.
+- [system] The fallback takes a new DHCP address (the Pi got .174 while its system uses .173): the tool finds it with `discover_fallback`; `work/pi-test/fallback-test-v48.sh` and docs assume the system address. Check what the deploy tool prints for the address.
+- [system] On venus a read during the end of a test showed `root:!*` in /etc/shadow and no `admin` once (not reproduced, five later reads normal): watch `close_first_access` / `userdel` ordering and the `!*` value (root `*` expected).
 - [system] Defaults en_US.UTF-8 / UTC, `/etc/profile.d/unitotem-locale.sh`, `AcceptEnv LANG LC_*`, htop and btop: in the code and checked on fake trees and in a container, not yet in a built image (stage 2 locale-gen and tzdata, `btop` in a fresh SSH session, `ssh -t host btop`).
 - [manager] Settings > Date and time never run against the real manager and timedated on a device (needs the build that ships it): zone change, NTP switch, a timer following the new zone, error shown by the snackbar, the page with the control waiting 5 s.
 - [manager/screens] VNC on venus (Intel Iris Xe, DP-2, image 2026.11.47): `wayvnc` delivers a uniform grey (96,96,96) frame while the viewer shows the black no-assets page (DevTools lists iframe `/unitotem-no-assets`); cause unknown (capture of the CEF surface?). Check on another PC and on a Pi with a display.
