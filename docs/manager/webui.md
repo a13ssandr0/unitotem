@@ -133,6 +133,8 @@ Build and dev:
 - `npm run build ... | tail -1` hides a failing build: read the whole output. A backtick inside a CSS comment within a template literal of a Vue or keyboard file breaks the build.
 - English only, comments included.
 - Password form (setup, add user, change password): `PasswordChecklist` (props `spec` = server spec, `password`, `username`, `confirm`; `confirm` undefined = no match row; emits `valid` at mount and on change) shows one row per spec rule, met or not met. It only shows the rules: the server decides. `spec` null shows nothing and reports not valid. The inputs take `maxlength` = `max_length` characters.
+- Checklist rows wrap onto a second line (no truncation, no horizontal scroll) in the 400 px dialogs and at 360 px; the dialog text areas clip horizontal overflow.
+- Users page: the trash icon opens a `Delete <username>?` dialog (Cancel focused, Delete in the error colour); `delete_user` is sent only on Delete.
 - Buttons stay disabled until the checklist reports valid (and the name is filled, for setup and add user): unavailable, not hidden.
 - Server refusals: `Password refused` with `extra` (list of reasons) shows in the snackbar, one reason per line (`base.vue` `errorMessage`). `setup.vue` shows the same list (`detail`) in an alert above the form.
 - Timer mutations (`add_job`, `edit_job`, `delete_job`, `set_job_enabled`) never edit the list locally: the backend answers each with a fresh `jobs` push and the listener rewrites the list.
