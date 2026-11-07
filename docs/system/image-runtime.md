@@ -9,7 +9,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 | Path | Role |
 |---|---|
 | `unitotem/stage2-configure.sh` | Installs the files below, enables/masks units, sysctl, initramfs |
-| `unitotem/files/sshd_config` | sshd policy, `AcceptEnv` locale, root first-access `Match` block |
+| `unitotem/files/sshd_config` | sshd policy, `SetEnv` locale, root first-access `Match` block |
 | `unitotem/files/unitotem-locale.sh` | `/etc/profile.d/unitotem-locale.sh`: login shells source `/etc/default/locale` (see [Locale of sessions](#locale-of-sessions)) |
 | `unitotem/files/iptables-firewall.sh`, `.service` | IPv4/IPv6 firewall |
 | `unitotem/files/nm-fallback.nmconnection` | Last-resort wired profile (mode 600, root) |
@@ -82,7 +82,7 @@ Config:
 - `/etc/unitotem/wifi-roam.conf` (optional, `KEY=VALUE` integers): `ENABLED=1`, `GOOD_DBM=-55`, `MARGIN_DB=10`, `MIN_INTERVAL_S=300`, `IGNORE_S=900`. Env: `UNITOTEM_WIFI_ROAM_CONF`, `UNITOTEM_WIFI_ROAM_STATE`. Not shipped; defaults apply.
 - `/etc/unitotem/update.conf`: `UPDATE_HEALTH_URL=` (empty) when the image has no manager with `/health`.
 - `/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf`: `connection.autoconnect-retries=0`, `wifi.powersave=2`.
-- `/etc/ssh/sshd_config`: `Port 22`, `PermitRootLogin prohibit-password`, `PermitEmptyPasswords no`, `PasswordAuthentication yes`, `PubkeyAuthentication yes`, `MaxAuthTries 5`, `LoginGraceTime 30`, `ClientAliveInterval 300`, `ClientAliveCountMax 2`, `X11Forwarding no`, `AllowTcpForwarding no`, `AcceptEnv LANG LC_*`, and the final block `Match User root Group unitotem-first-admin` (see [Root and first access](#root-and-first-access)).
+- `/etc/ssh/sshd_config`: `Port 22`, `PermitRootLogin prohibit-password`, `PermitEmptyPasswords no`, `PasswordAuthentication yes`, `PubkeyAuthentication yes`, `MaxAuthTries 5`, `LoginGraceTime 30`, `ClientAliveInterval 300`, `ClientAliveCountMax 2`, `X11Forwarding no`, `AllowTcpForwarding no`, `SetEnv LANG=<default locale>`, and the final block `Match User root Group unitotem-first-admin` (see [Root and first access](#root-and-first-access)).
 
 Runtime state: `/run/unitotem-net-watchdog.count`, `/run/unitotem-wifi-roam.json`, `/run/unitotem/xdg/wayland-0`, `/run/user/0`.
 
@@ -115,7 +115,7 @@ Logs: syslog tags `unitotem-net-watchdog`, `unitotem-wifi-roam`; journald keeps 
 - Image locale en_US.UTF-8, timezone UTC (`UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, see [build](build.md)).
 - sshd runs without PAM, so `pam_env` does not read `/etc/default/locale`: a session starts with `LANG` empty, and btop refuses to start without UTF-8.
 - `/etc/profile.d/unitotem-locale.sh` sources `/etc/default/locale` in login shells when `LANG` is unset.
-- `sshd_config` has `AcceptEnv LANG LC_*`: a client's locale is used when it sends one.
+- `sshd_config` has `SetEnv LANG=<default locale>` (set by stage 2 from `UNITOTEM_LOCALE`): every SSH session, with or without a login shell, gets the image locale whatever the client sends. A client locale the image does not have (an Italian client) would only produce `setlocale` warnings, so `AcceptEnv` is not used.
 
 ## Root and first access
 
@@ -203,6 +203,6 @@ On an A/B update the new image's PAM files replace the old ones; no `ota-preserv
 - `htop` and `btop` installed.
 - `/etc/profile.d/unitotem-locale.sh` identical to `unitotem/files/unitotem-locale.sh`.
 - `LANG` set in `/etc/default/locale`; `en_US.utf8` generated.
-- `AcceptEnv LANG LC_*` in `sshd_config`, before the `Match` block.
+- `SetEnv LANG=<default locale>` in `sshd_config`, before the `Match` block, no `AcceptEnv`.
 - `/etc/localtime` links to `/usr/share/zoneinfo/Etc/UTC`.
 - Network and firewall on hardware: `nmcli`, `iptables -S`, `ip6tables -S`.

@@ -17,8 +17,8 @@ X11Forwarding no
 AllowTcpForwarding no
 PrintMotd no
 
-# Locale of the client session.
-AcceptEnv LANG LC_*
+# Locale of every session: the image's UTF-8 locale, whatever the client sends (stage 2 sets it from UNITOTEM_LOCALE).
+SetEnv LANG=en_US.UTF-8
 
 # First-access state: root in the marker group gets only the first-administrator script.
 Match User root Group unitotem-first-admin
