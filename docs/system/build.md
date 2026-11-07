@@ -2,7 +2,7 @@
 
 Paths: relative to the repository root.
 
-Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-MM-DD>-<arch>.img.xz`. Stages 0-3 run in the `unitotem-builder` Docker image, or natively on an arm64 device when one is reachable.
+Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-MM-DD>-<arch>.img.xz` (full) and, for A/B, `unitotem-<YYYY-MM-DD>-<arch>-flash.img.xz` (boot partition(s) + ROOT_A, for Imager or `dd`). Stages 0-3 run in the `unitotem-builder` Docker image, or natively on an arm64 device when one is reachable.
 
 ## Files
 
@@ -16,7 +16,8 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | `unitotem/stage1-packages.sh` | Apt sources, package lock, kernel, firmware, bootloader, GPU, Wayland, manager .debs, purge, lock verify/freeze -> `stage1.tar.gz` |
 | `unitotem/stage1-recovery-initrd.sh` | Resident OTA fallback kernel+initrd and `recovery.manifest` |
 | `unitotem/stage2-configure.sh` | Hostname, locale, timezone, root first-access state, boot config, fstab, NetworkManager, services, initramfs, arm64 FIRMWARE files -> `stage2.tar.gz` |
-| `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, optional parts set, xz |
+| `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, optional parts set, flash image, xz |
+| `unitotem/make-flash-image.sh` | Flash image from the full image |
 | `unitotem/verify-image.sh` | Static rule checks on the mounted image (PASS/FAIL) |
 | `unitotem/check-recovery-commands.sh` | Every external command of `ota-engine.sh` exists in the recovery initrd |
 | `unitotem/slim-initramfs.py` | arm64 initramfs reduction: no `hwdb.bin`, Raspberry Pi Wi-Fi firmware only |
@@ -72,7 +73,8 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - arm64 A/B: kernel, initramfs, cmdline move to `slota/`; `config.txt` gets `os_prefix=slota/`; dtbs and overlays copied into `slota/`.
   - amd64: `grub-install` for EFI and BIOS (`--removable --no-uefi-secure-boot`), Secure Boot chain staged in `EFI/unitotem-sb/`, `grub-mkconfig` (A/B: `grub.cfg` and `grubenv` in `unitotem-grub/` on the ESP).
   - Boot assertions (kernel magic, dtb parse, initramfs `/init`, `config.txt` references), release-version, change baseline, `verify-image.sh`, fsck of all partitions.
-  - Optional parts set (`MAKE_PARTS=1`), `xz -T0`; the raw `.img` is removed.
+  - Optional parts set (`MAKE_PARTS=1`).
+  - A/B: `unitotem/make-flash-image.sh` writes the flash image from the full one (fresh GPT, partitions except ROOT_B and DATA copied unchanged, sgdisk/sha256/fsck verification), `xz -T0`; then `xz -T0` of the full image. The raw `.img` files are removed.
 
 ## Interfaces
 
@@ -103,7 +105,7 @@ Defaults (`unitotem/common.sh`, env-overridable):
 - `RELEASE` trixie; `MIRROR` https://deb.debian.org/debian.
 - Root first-access state (stage 2, no variable): empty password field, login shell `/usr/sbin/unitotem-first-admin`, member of group `unitotem-first-admin`. See [image-runtime](image-runtime.md#root-and-first-access).
 - `UNITOTEM_HOSTNAME` unitotem; `UNITOTEM_LOCALE` en_US.UTF-8; `UNITOTEM_TIMEZONE` UTC.
-- `AB_LAYOUT` 1 (0 = single ROOT). `IMAGE_SIZE` 16G (A/B) or 11G. `ROOT_SLOT_SIZE` 6G; `ROOT_SIZE` 8G; `EFI_SIZE`, `BOOT_SIZE`, `FIRMWARE_SIZE` 1G.
+- `AB_LAYOUT` 1 (0 = single ROOT). `IMAGE_SIZE` 14G (A/B; DATA 3 GiB in the image, fits 16 GB cards) or 11G. `ROOT_SLOT_SIZE` 5G; `ROOT_SIZE` 8G; `EFI_SIZE`, `FIRMWARE_SIZE` 512M; `BOOT_SIZE` 1G.
 - `RELEASE_VERSION` default `date +%Y.%m.%d`; written to `/usr/share/unitotem/release-version`; must match `^[0-9]+(\.[0-9]+)+$`.
 - `ROOTFS` /tmp/rootfs, `IMG_MNT` /mnt (both overridden on the native path).
 
@@ -111,7 +113,8 @@ Container mounts: `/dev`, `work` -> `/work`, `deploy` -> `/deploy`, `work/apt-ca
 
 Outputs:
 
-- `deploy/<arch>/unitotem-<date>-<arch>.img.xz` (build date, not `RELEASE_VERSION`).
+- `deploy/<arch>/unitotem-<date>-<arch>.img.xz` (build date, not `RELEASE_VERSION`): full image.
+- `deploy/<arch>/unitotem-<date>-<arch>-flash.img.xz` (A/B): flash image, `storage-and-persistence.md#layout`.
 - `deploy/<arch>/recovery-vmlinuz-<arch>`, `recovery-initrd-<arch>.img`, `recovery.manifest` (keys `UNITOTEM_RECOVERY_{ARCH,KERNEL_VERSION,VMLINUZ_SHA256,INITRD_SHA256,PARTCLONE_VERSION,BUILD_DATE}`).
 - Optional `deploy/<arch>/unitotem-<date>-<arch>.parts`.
 - `work/<arch>/`: `stage{0,1,2}.tar.gz`, `stage2.layout`, `<arch>.lock.new`.

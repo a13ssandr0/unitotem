@@ -73,6 +73,17 @@ chk "the frame works at any resolution (no fixed-geometry guard left in ota_fram
 chk "OTA hook carries the frame into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-frame-'
 chk "the engine draws the rounded frame and blanks whiptail's own border" bash -c "grep -q 'ota_frame' $R/usr/lib/unitotem/ota-engine.sh && grep -q 'blank whiptail' $R/usr/lib/unitotem/ota-engine.sh"
 chk "OTA hook carries the logo into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-logo-'
+HOOK_BOTTOM=$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays
+line_of() { grep -n -- "$2" "$1" 2>/dev/null | head -n 1 | cut -d: -f1; }
+before() { local a b; a=$(line_of "$1" "$2"); b=$(line_of "$1" "$3"); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; }
+chk "init-bottom hook defines layout_complete (ROOT_B and DATA are created on a flash image)" file_has "$HOOK_BOTTOM" '^layout_complete\(\)'
+chk "layout_complete runs before DATA is looked up by label" before "$HOOK_BOTTOM" '^layout_complete || true' 'blkid -L DATA'
+chk "init-bottom hook defines grow_data (DATA grown to the disk end)" file_has "$HOOK_BOTTOM" '^grow_data\(\)'
+chk "grow_data runs before DATA is mounted" before "$HOOK_BOTTOM" '^grow_data "\$DATA_DEV"' '^if ! mount -t ext4'
+chk "only partitions flagged by layout_complete are formatted (GPT attribute bit 48)" file_has "$HOOK_BOTTOM" 'GUID:48'
+for _t in sgdisk sfdisk partx resize2fs e2fsck dumpe2fs mke2fs blkid readlink dd udevadm; do
+    chk "$_t is in the initramfs hook list (layout and growth of DATA)" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" "(^|[[:space:]])${_t}([[:space:]]|\$)"
+done
 for pkg in unitotem unitotem-manager unitotem-node unitotem-viewer python3-cefpython3 plymouth-theme-unitotem; do
     chk "package $pkg is installed at 3.x" bash -c "awk -v p='$pkg' 'BEGIN{RS=\"\";FS=\"\\n\"} \$1==\"Package: \"p{for(i=1;i<=NF;i++) if(\$i ~ /^Version: 3\\./) f=1} END{exit !f}' $R/var/lib/dpkg/status"
 done

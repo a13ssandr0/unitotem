@@ -27,11 +27,11 @@ A display connected to the HDMI or DisplayPort output is required.
 
 ## Disk size
 
-The system is fixed at about 13 GiB: boot 1 GiB, two root slots (A and B) of 6 GiB each, of which 2.5-3.2 GB are used. The rest of the disk becomes the data partition (uploaded media, configuration, browser profile) and grows to fill it.
+The image written to the card is about 5.6 GiB (boot partition 512 MiB and root slot A of 5 GiB, of which 2.5-3.2 GB are used). At the first boot the system creates root slot B (5 GiB) and the data partition (the rest of the disk: uploaded media, configuration, browser profile), and copies slot A to slot B. The system is therefore about 11 GiB; a smaller disk cannot run it.
 
 | Target | Recommended | Minimum |
 |---|---|---|
-| Raspberry Pi | 32 GB card (about 17 GB for content); 64 GB or a USB SSD with many videos | 16 GB (2-3 GB for content) |
+| Raspberry Pi | 32 GB card (about 20 GB for content); 64 GB or a USB SSD with many videos | 16 GB card (about 3.5 GB for content) |
 | PC | 64 GB SSD; 128-256 GB with long videos | 16 GB |
 
 - Content is the only part that grows: size the disk for the media to be uploaded.
@@ -39,7 +39,7 @@ The system is fixed at about 13 GiB: boot 1 GiB, two root slots (A and B) of 6 G
 
 ## Install
 
-Disk images are built from this repository (see Build from source): `unitotem-<date>-arm64.img.xz` and `unitotem-<date>-amd64.img.xz`. GitHub Releases carry the signed update streams that installed nodes fetch, not disk images.
+Disk images are built from this repository (see Build from source): `unitotem-<date>-arm64-flash.img.xz` and `unitotem-<date>-amd64-flash.img.xz` are the images to write to a card or disk. GitHub Releases carry the signed update streams that installed nodes fetch, not disk images.
 
 **Raspberry Pi**
 

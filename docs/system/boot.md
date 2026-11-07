@@ -58,7 +58,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
    - Single-root only: `unitotem-ota.bootcount` incremented; 3 or more gives recovery.
 2. `ab_failover`: the other slot must pass `e2fsck -fn` and contain `/etc/unitotem/ota-preserve.list`. Writes guard `unitotem-ota.failover` (`cur->other`), switches the default (Pi: `os_prefix`, removes `tryboot.txt`; PC: `saved_entry`), `reboot -f`. Refused when the guard exists.
 3. mountroot, then local-bottom verify: `/sbin/init` and `/etc/unitotem/ota-preserve.list` must exist, else serve-fallback.
-4. init-bottom: DATA `e2fsck -p`, overlays on `/etc`, `/root`, `/var`, dpkg pinned to ROOT.
+4. init-bottom: `layout_complete` (flash image: ROOT_B and DATA created), DATA `e2fsck -p`, `grow_data` (DATA grown to the disk end), overlays on `/etc`, `/root`, `/var`, dpkg pinned to ROOT. Details: `storage-and-persistence.md`.
 5. multi-user: `unitotem-boot-ok`.
    - Plain A/B boot: slot confirmed, guard removed, ESP `grub.cfg` synced, auto-repair started.
    - Trial boot: waits for `UPDATE_HEALTH_URL` (180 s), then `confirm_now`. Timeout: `rolled-back`, plain reboot.

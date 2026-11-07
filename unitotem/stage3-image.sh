@@ -407,6 +407,16 @@ if [ "${MAKE_PARTS:-0}" = 1 ]; then
     trap - EXIT
 fi
 
+# ---------- Flash image (A/B): boot partition(s) + ROOT_A only ----------
+# The first boot creates ROOT_B and DATA (layout_complete in unitotem/files/overlayfs-hook.sh). The full image above
+# stays the source of the parts set, the release assets and the network deploy.
+if [ "$AB_LAYOUT" = 1 ]; then
+    FLASH_IMG="/deploy/${ARCH}/unitotem-${IMG_DATE}-${ARCH}-flash.img"
+    bash /unitotem/make-flash-image.sh "${IMG_FILE}" "${FLASH_IMG}"
+    rm -f "${FLASH_IMG}.xz"
+    xz -v -T0 "${FLASH_IMG}"
+fi
+
 # ---------- Compress ----------
 
 echo "Compressing image..."

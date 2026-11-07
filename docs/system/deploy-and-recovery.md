@@ -54,6 +54,8 @@ Stage 2 (system image):
 - `set-trial-boot` (GRUB `UniTotem (trial)`, `tryboot.txt`, or config swap), `umount-target`, reboot (Pi tryboot: `reboot -f '0 tryboot'`).
 - The fallback stays default until `unitotem-boot-ok` runs `promote-default` (single-root path).
 
+The network deploy takes its layout from the FULL image (parts set, release assets); the flash image (`-flash.img.xz`) is for writing to a card or disk directly and is never an input of `make-parts.sh`. Full image, flash image, parts set: `storage-and-persistence.md#layout`.
+
 Parts set (`deploy/<arch>/<name>.parts/`): `parts.manifest` (KEY=VALUE header, one block per partition), `layout.sfdisk`, `bootcode.bin` (440 bytes), `SHA256SUMS`, stream files (`*.xz`), `p1-FIRMWARE.bootfs.tar.*`.
 
 - Layout 1: single ROOT. Layout 2: A/B. A/B is supported only on amd64 UEFI and on Pi with tryboot; legacy BIOS and Pi 3/Zero 2 are refused.
