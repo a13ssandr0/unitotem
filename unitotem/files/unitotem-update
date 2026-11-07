@@ -11,7 +11,7 @@ Everything is JSON with --json; progress for long operations goes to /run/unitot
 line rewritten atomically. `fetch` runs detached (systemd-run) unless --foreground, so a manager restart
 does not interrupt it; poll `status`.
 """
-import argparse, datetime, fcntl, glob, hashlib, json, os, shutil, signal, ssl, subprocess, sys, tempfile, time
+import argparse, datetime, fcntl, glob, hashlib, json, os, re, shutil, signal, ssl, subprocess, sys, tempfile, time
 import urllib.request, urllib.error
 sys.path.insert(0, "/usr/lib/unitotem")          # unitotem_identity (the account merge)
 
@@ -32,6 +32,8 @@ CONF_DEFAULTS = {
     "UPDATE_ETC_CURRENT": "/etc",                 # the running system's /etc (source of the local accounts to carry over)
     "UPDATE_CMDLINE": "/proc/cmdline",
     "UPDATE_RUN_DIR": "/run",
+    "UPDATE_SYS_DIR": "/sys",                     # sysfs and procfs roots: where the I/O settings of an image write are applied
+    "UPDATE_VM_DIR": "/proc/sys/vm",
     "UPDATE_HEALTH_URL": "https://localhost/health",   # empty = no health gate
     "UPDATE_HEALTH_TIMEOUT": "180",
     "UPDATE_AUTOREPAIR": "1",                     # rebuild a damaged other slot from the running one after a plain boot
@@ -208,6 +210,85 @@ def run_out(*cmd, check=True):
     if check and r.returncode:
         raise Fail("command-failed", f"{' '.join(cmd)}: {r.stderr.strip() or r.stdout.strip()}")
     return r.stdout.strip()
+
+
+class io_friendly:
+    """Keep the system usable while an image is written to a slow disk (SD card, USB stick): the I/O scheduler bfq serves the
+    synchronous reads of the manager and sshd ahead of the stream of writes, and a small cap on dirty pages makes the writes go
+    out steadily instead of as bursts of hundreds of MB that fill the card for seconds. Everything is put back by restore();
+    the values to put back are kept in a run-time file, so a killed run is undone by the next one (a reboot undoes it anyway).
+    NVMe and virtual disks keep their settings. Failures are logged and never stop the update."""
+    DIRTY = {"dirty_background_bytes": 16 << 20, "dirty_bytes": 64 << 20}
+    # The kernel keeps a ratio or a byte value per limit, never both: writing one form zeroes the other, and the bytes cannot be
+    # set back to 0 while the ratios are 0. So the form that was active is written back, dirty_ratio before dirty_background_ratio.
+    KEYS = ("dirty_background_bytes", "dirty_bytes", "dirty_background_ratio", "dirty_ratio")
+    SLOW = re.compile(r"mmcblk\d+|sd[a-z]+")
+
+    def __init__(self, conf, dev):
+        self.conf, self.dev, self.disk, self.saved = conf, dev, None, None
+        self.state = os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update-io.json")
+
+    def _disk(self):
+        part = os.path.basename(os.path.realpath(self.dev))
+        link = os.path.join(self.conf["UPDATE_SYS_DIR"], "class/block", part)
+        if os.path.exists(os.path.join(link, "partition")):
+            return os.path.basename(os.path.dirname(os.path.realpath(link)))
+        return part
+
+    def _write(self, path, value):
+        with open(path, "w") as f: f.write(str(value))
+
+    def _put_back(self, saved):
+        sysd, vmd = self.conf["UPDATE_SYS_DIR"], self.conf["UPDATE_VM_DIR"]
+        vm = saved.get("vm", {})
+        if vm.get("dirty_bytes", "0") != "0":
+            order = ("dirty_bytes", "dirty_background_bytes")
+        else:
+            order = ("dirty_ratio", "dirty_background_ratio")
+        errors = []
+        for k in order:
+            if k in vm:
+                try: self._write(os.path.join(vmd, k), vm[k])
+                except OSError as e: errors.append(f"{k}: {e}")
+        if saved.get("sched"):
+            try: self._write(os.path.join(sysd, "block", saved["disk"], "queue/scheduler"), saved["sched"])
+            except OSError as e: errors.append(f"scheduler: {e}")
+        if errors:
+            raise OSError("; ".join(errors))
+
+    def apply(self):
+        try:
+            if os.path.exists(self.state):                       # an earlier run died before restoring
+                self._put_back(json.load(open(self.state))); os.unlink(self.state)
+            disk = self._disk()
+            if not self.SLOW.fullmatch(disk):
+                return
+            sysd, vmd = self.conf["UPDATE_SYS_DIR"], self.conf["UPDATE_VM_DIR"]
+            sched_path = os.path.join(sysd, "block", disk, "queue/scheduler")
+            text = open(sched_path).read()
+            cur = re.search(r"\[([^\]]+)\]", text)
+            has_bfq = "bfq" in text.replace("[", " ").replace("]", " ").split()
+            saved = {"disk": disk, "sched": cur.group(1) if cur and has_bfq else None,
+                     "vm": {k: open(os.path.join(vmd, k)).read().strip() for k in self.KEYS}}
+            _atomic_write(self.state, json.dumps(saved))
+            self.saved, self.disk = saved, disk
+            if saved["sched"] and saved["sched"] != "bfq":
+                self._write(sched_path, "bfq")
+            # writing the byte values makes them the active limits (the kernel zeroes the ratios)
+            for k in ("dirty_bytes", "dirty_background_bytes"):
+                self._write(os.path.join(vmd, k), self.DIRTY[k])
+            event(self.conf, f"update I/O: {disk} scheduler bfq, dirty pages capped at {self.DIRTY['dirty_bytes'] >> 20} MiB")
+        except Exception as e:
+            event(self.conf, f"update I/O tuning skipped: {e}")
+
+    def restore(self):
+        if not self.saved: return
+        try:
+            self._put_back(self.saved); os.unlink(self.state)
+            event(self.conf, f"update I/O: {self.disk} settings restored")
+        except Exception as e:
+            event(self.conf, f"update I/O restore failed: {e}")
+        self.saved = None
 
 
 def backend(conf):
@@ -538,7 +619,7 @@ def rpi_install_bootfiles(conf, cur, new, manifest, base):
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
     h = hashlib.sha256(); done = 0
-    xz = subprocess.Popen(["xz", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    xz = subprocess.Popen(["xz", "-dc", "-T1"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     # --no-same-owner/-permissions: the destination is a FAT, which has no owners; tar as root otherwise fails every
     # file with "Cannot change ownership" and exits 2.
     tar = subprocess.Popen(["tar", "--no-same-owner", "--no-same-permissions", "-C", tmp, "-xf", "-"], stdin=xz.stdout)
@@ -594,7 +675,7 @@ def do_fetch(a, conf):
     with Lock(conf):
         def on_term(*_): raise Cancelled()
         signal.signal(signal.SIGTERM, on_term)
-        dev = None
+        dev = None; iof = None
         st = slots_state(conf)
         try:
             progress(conf, op="fetch", phase="check", state="running", percent=0)
@@ -626,7 +707,8 @@ def do_fetch(a, conf):
             except OSError: pass
             base = conf["UPDATE_BASE_URL"].rstrip("/") + "/releases/latest/download/"
             total = part["size"]; done = 0; h = hashlib.sha256()
-            xz = subprocess.Popen(["xz", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            iof = io_friendly(conf, dev); iof.apply()
+            xz = subprocess.Popen(["xz", "-dc", "-T1"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)   # one thread: the disk is the limit, the other cores stay free
             pc = subprocess.Popen(["partclone.restore", "-C", "-s", "-", "-o", dev], stdin=xz.stdout,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             xz.stdout.close()
@@ -693,6 +775,8 @@ def do_fetch(a, conf):
             set_last_result(conf, op="fetch", result="failed", error_code=e.code, error=str(e))
             progress(conf, op="fetch", state="failed", error=str(e), error_code=e.code)
             raise
+        finally:
+            if iof: iof.restore()
 
 
 def cmd_fetch(a, conf):
@@ -945,6 +1029,7 @@ def do_repair(a, conf):
     ok, why = slot_sound(conf, new)
     if ok and not a.force:
         return 0, {"repaired": False, "reason": "other slot is sound"}
+    iof = None
     with Lock(conf):
         try:
             progress(conf, op="repair", phase="check", state="running", percent=0)
@@ -960,6 +1045,7 @@ def do_repair(a, conf):
             if subprocess.run(["findmnt", "-S", ndev], capture_output=True).returncode == 0:
                 raise Fail("slot-mounted", f"{ndev} is mounted: refusing to write to it")
             event(conf, f"repair: slot {new} ({whyc}) <- copy of slot {cur} ({ver})")
+            iof = io_friendly(conf, ndev); iof.apply()
             st[new] = {"version": None, "valid": False}
             write_state(conf, "slots.json", st)
             progress(conf, op="repair", phase="write", state="running", percent=10)
@@ -1006,6 +1092,8 @@ def do_repair(a, conf):
             set_last_result(conf, op="repair", result="failed", error_code=e.code, error=str(e))
             progress(conf, op="repair", state="failed", error=str(e), error_code=e.code)
             raise
+        finally:
+            if iof: iof.restore()
 
 
 def cmd_repair(a, conf):
