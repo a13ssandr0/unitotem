@@ -35,6 +35,7 @@
 
 
 ## To verify on hardware
+- [system] Package reductions (simulated, nothing built until 2026.11.52): wayvnc, audio, hardware video decode and the viewer GPU profile on venus (Intel, VA-API) and the Pi, Wi-Fi AP on a Pi without `firmware-linux*`/`firmware-misc-nonfree`, NVIDIA on amd64 (GBM/EGL/GLES, DKMS module intact after the NVIDIA library purge), `dpkg --audit` state after the forced `libclang1-19` purge. Not done: toolchain left by dkms (~102 MB) and perl (~50 MB).
 - [system] Minimal flash image and first-boot layout completion: verified for amd64 in QEMU (`tools/release/test_first_boot_layout.sh`, UEFI and BIOS, 20 GiB disk: ROOT_B and DATA created, DATA mounted, auto-repair filled ROOT_B in about 20 s, second boot clean; 26 checks) and in privileged containers (152 checks, arm64 and amd64 layouts). Not run: a real Pi 4/5 with a spare SD card (the arm64 FIRMWARE partition at 512 MiB, Pi firmware boot of the minimal GPT), a real PC, a card smaller than 16 GB.
 - [system] A power cut inside the offline `resize2fs` of DATA (about 0.2 s) can leave "Resize inode not valid": the boot continues and `grow_data` skips with one log line on every boot until `e2fsck -fy DATA` is run. Decide whether the hook runs `-fy` for exactly that case.
 - [system] A disk smaller than about 11 GiB (8 GB cards) cannot get ROOT_B and DATA: `layout_complete` logs one line and the system boots without DATA overlays.

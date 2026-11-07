@@ -88,6 +88,16 @@ if [ "${PKGLOCK:-on}" != off ]; then
     chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -y --allow-downgrades dist-upgrade
 fi
 
+# Recommends nobody needs, kept out of stage 1 only (the file is removed in "Clean up", the shipped image has no pin): the speech model of
+# libpocketsphinx3 (ffmpeg filter), ghostscript (ImageMagick), iso-codes, Qt/NetworkManager translations, glib data (translations).
+# None of them is an alternative of a Depends, so the pin cannot redirect apt to another provider (checked by simulation).
+mkdir -p "${ROOTFS}/etc/apt/preferences.d"
+cat > "${ROOTFS}/etc/apt/preferences.d/98-unitotem-stage1-skip" << 'EOF_PIN'
+Package: pocketsphinx-en-us ghostscript iso-codes qt6-translations-l10n network-manager-l10n libglib2.0-data
+Pin: release *
+Pin-Priority: -1
+EOF_PIN
+
 # ---------- Kernel + firmware + bootloader ----------
 
 if [ "$ARCH" = "amd64" ]; then
@@ -120,8 +130,6 @@ elif [ "$ARCH" = "arm64" ]; then
     apt_install --no-install-recommends \
         linux-image-rpi-v8 \
         firmware-brcm80211 \
-        firmware-linux \
-        firmware-linux-nonfree \
         raspi-firmware
 fi
 
@@ -193,10 +201,10 @@ if [ "$ARCH" = "amd64" ]; then
     # compositor (labwc) uses the kernel KMS drivers (i915/xe, amdgpu, nvidia-drm)
     # through libdrm/GBM.
 
-    # Mesa from trixie (iris + ANV for Intel ARC, RDNA3). mesa-vulkan-drivers and
-    # mesa-va-drivers are not in the shared block above.
+    # Mesa from trixie (iris, radeonsi). mesa-va-drivers is not in the shared block above. mesa-vulkan-drivers
+    # (libvulkan1 recommends it) is purged in "Remove what the shipped system does not need": the viewer uses ANGLE-GL only.
     apt_install \
-        libgl1-mesa-dri mesa-vulkan-drivers mesa-va-drivers mesa-utils
+        libgl1-mesa-dri mesa-va-drivers mesa-utils
 
     # Intel, including ARC. intel-media-va-driver-non-free is the iHD driver
     # and covers Gen8 onwards, DG2/ARC included; i965 is kept for Gen4-8
@@ -211,12 +219,12 @@ if [ "$ARCH" = "amd64" ]; then
     apt_install \
         firmware-amd-graphics libdrm-amdgpu1
 
-    # NVIDIA proprietary: blacklists nouveau; the 535 branch covers Maxwell onwards (older cards lose acceleration).
+    # NVIDIA proprietary (Debian's nvidia-driver, branch 550): blacklists nouveau; covers Maxwell onwards (older cards lose acceleration).
     # The module is built by DKMS against this image's kernel, which stays matched because nothing upgrades in place.
-    # nvidia-vaapi-driver bridges VAAPI onto NVDEC.
+    # No nvidia-vaapi-driver: Chromium does not use VA-API on NVIDIA (manager gpu.py, _NVIDIA_DRM_NAMES). The CUDA/Vulkan/NVDEC
+    # libraries the recommends bring are purged in "Remove what the shipped system does not need".
     apt_install \
-        nvidia-driver \
-        nvidia-vaapi-driver
+        nvidia-driver
 
     # Fail the build if the NVIDIA module did not build: apt only warns about DKMS failures.
     KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
@@ -229,11 +237,10 @@ if [ "$ARCH" = "amd64" ]; then
 
 elif [ "$ARCH" = "arm64" ]; then
     # No VAAPI on arm64 (VideoCore has none): hardware decode goes through V4L2 mem2mem (/dev/video10 for H.264,
-    # /dev/video19 for HEVC on Pi 4+). libva2 comes in via gstreamer1.0-plugins-bad with no driver behind it.
-    # Diagnostics only: v4l2-ctl, gst-inspect, vcgencmd (throttling detection).
+    # /dev/video19 for HEVC on Pi 4+).
+    # Diagnostics only: v4l2-ctl, vcgencmd (throttling detection).
     apt_install \
         v4l-utils \
-        gstreamer1.0-tools \
         raspi-utils
 fi
 
@@ -250,26 +257,16 @@ apt_install \
     labwc wlr-randr wlopm wayvnc xwayland qt6-wayland kbd \
     pipewire pipewire-audio pipewire-pulse pipewire-jack pipewire-alsa \
     wireplumber libpipewire-0.3-0 \
-    gstreamer1.0-pipewire \
-    gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-    gstreamer1.0-libav libspa-0.2-bluetooth
-
-# gstreamer1.0-vaapi is amd64-only: on a Pi it has no VAAPI driver and would pull libva back in.
-if [ "$ARCH" = "amd64" ]; then
-    apt_install \
-        gstreamer1.0-vaapi
-fi
+    libspa-0.2-bluetooth
+# No GStreamer: the viewer is CEF (own ffmpeg) and the VNC server is wayvnc.
 
 # ---------- UniTotem packages ----------
 
 # The manager (3.0.0~dev5 onwards) runs on the system Python with Debian's own packages: no virtualenv, so no pip/venv/-dev libraries
 # (python3-pip would pull build-essential into the arm64 image).
-# tigervnc-scraping-server: unitotem-node only RECOMMENDS it (VNC of the screen on demand, through a root-only UNIX socket, no TCP port) and the
-# local debs are installed with --no-install-recommends, so it is asked for here (0.6 MB plus libraries the image mostly has already).
 apt_install \
     python3-apt \
-    openssl mediainfo rfkill alsa-utils cron libxcb-icccm4 libxcb-shape0 \
-    tigervnc-scraping-server
+    openssl mediainfo rfkill alsa-utils cron libxcb-icccm4 libxcb-shape0
 
 # The packages come from the manager's own build (its tools/build-debs.sh), one directory per architecture:
 #   work/extra-debs/<arch>/  unitotem (metapackage), unitotem-manager, unitotem-node, unitotem-viewer, plymouth-theme-unitotem (all arch-all,
@@ -320,7 +317,7 @@ if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
 fi
 
 # ---------- Clean up ----------
-rm -f "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io"
+rm -f "${ROOTFS}/etc/apt/apt.conf.d/99-build-unsafe-io" "${ROOTFS}/etc/apt/preferences.d/98-unitotem-stage1-skip"
 # Unmount the cache BEFORE apt-get clean: clean empties the archive directory, which would wipe the cache.
 mountpoint -q "${ROOTFS}/var/cache/apt/archives" && umount "${ROOTFS}/var/cache/apt/archives"
 
@@ -367,6 +364,33 @@ else
     chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
         || { echo "ERROR: the NVIDIA module disappeared when removing the compilers" >&2; exit 1; }
 fi
+# Libraries the product never loads, all pulled in by Recommends or by a Depends that links nothing:
+#  - mesa-vulkan-drivers: the viewer renders through ANGLE-GL (libgallium keeps llvmpipe and radeonsi); nothing depends on it.
+#  - amd64 NVIDIA extras: CUDA (libcuda1, ptxjit), NVDEC (libnvcuvid1, libnvidia-encode1) and the Vulkan ICD (+ ray-tracing core).
+#    libnvidia-allocator1, libnvidia-egl-gbm1 and libgles-nvidia* stay: labwc needs them on NVIDIA.
+# apt (not dpkg --force-depends): the dry run shows what else would go, and the DKMS module is asserted afterwards.
+REMOVE_LIBS=$(purge_list mesa-vulkan-drivers)
+if [ "$ARCH" = "amd64" ]; then
+    REMOVE_LIBS="$REMOVE_LIBS $(purge_list libcuda1 libnvidia-encode1 libnvcuvid1 nvidia-vulkan-icd libnvidia-rtcore libnvidia-ptxjitcompiler1)"
+fi
+echo ">>> removing unused libraries (apt): $(echo $REMOVE_LIBS)"
+if [ -n "$(echo $REMOVE_LIBS)" ]; then
+    # shellcheck disable=SC2086
+    { chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -s purge $REMOVE_LIBS 2>&1 | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'; } || true
+    # shellcheck disable=SC2086
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE_LIBS
+fi
+# libshiboken6 declares a dependency on libclang1-19 (the generator's library) but no shared object of it links or loads libclang.
+# dpkg --force-depends like the compilers; libllvm19 stays (Mesa).
+CLANG=$(purge_list libclang1-19)
+echo ">>> removing (dpkg --force-depends): $(echo $CLANG)"
+# shellcheck disable=SC2086
+[ -z "$CLANG" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $CLANG
+if [ "$ARCH" = "amd64" ]; then
+    KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
+    chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
+        || { echo "ERROR: the NVIDIA module disappeared when removing the NVIDIA extras" >&2; exit 1; }
+fi
 # The NVIDIA module (amd64) is signed with a DKMS key generated in this build
 # (/var/lib/dkms/mok.key). That private key would be the same on every device, and a device
 # that enrolled mok.pub (Secure Boot) would accept modules signed by anyone holding the image.
@@ -384,6 +408,12 @@ echo ">>> removing the X server (dpkg --force-depends): $(echo $XPURGE)"
 # What the Wayland session needs must have survived the removals above, on every architecture.
 for t in labwc wlr-randr wlopm wayvnc; do
     chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERROR: $t disappeared with the removal of compilers/Chromium" >&2; exit 1; }
+done
+# ...and so must the libraries behind them (llvmpipe/radeonsi, the ffmpeg chain of wayvnc).
+for pkg in mesa-libgallium libllvm19 libneatvnc0 libavcodec61; do
+    chroot "${ROOTFS}" dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'ok installed' \
+        || { [ "$pkg" = libneatvnc0 ] && chroot "${ROOTFS}" dpkg-query -W -f='${Status}' libneatvnc1 2>/dev/null | grep -q 'ok installed'; } \
+        || { echo "ERROR: $pkg disappeared with the removal of unused libraries" >&2; exit 1; }
 done
 echo ">>> installed size of / after removal: $(du -sxm "${ROOTFS}" | cut -f1) MiB"
 
