@@ -143,6 +143,8 @@ Emergency and rescue: root `*` or empty gives sulogin no shell; the 120 s timeou
 
 Identity merge at an A/B update (`unitotem_identity.py`): root's login shell and root's membership of `unitotem-first-admin` come from the current slot, so a closed device never gets the image's open root back. Root's shadow hash is carried as for every account. If the current system has no such group or entry, the image's values apply. Carried accounts keep their `sudo` and `users` memberships. On failure root returns to the image's first-access state (empty password, first-administrator shell).
 
+Re-opening first access on a test device (root over SSH works only with the key until the last step): set root's shell first (`usermod -s /usr/sbin/unitotem-first-admin root`), then `passwd -d root`, remove the administrators, and add root to `unitotem-first-admin` last: from then on every root login runs the script, so a later `usermod` over SSH is refused.
+
 `/home` is bind-mounted from DATA (`persist/home`, 755 root). It is not in the `unitotem-ota-changes` scan.
 
 The OTA fallback and recovery dropbear has no fixed password, independent of the image: its logins are the armed key and the administrators of the installed system (see [fallback authentication](deploy-and-recovery.md#fallback-authentication)).
