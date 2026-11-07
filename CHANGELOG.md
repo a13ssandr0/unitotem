@@ -35,6 +35,7 @@
 - GRUB fallback list uses numeric entries; fallback waits 6 h for a host.
 - Persistent on DATA: SSH host key, uploads, TLS key, browser profile, crontabs.
 - Update root public key embedded in image; release tooling for keys, assembly, encrypted backup.
+- An update leaves the manager and SSH responsive on an SD card: `bfq` and capped dirty pages while the image is written, `xz` on one thread, everything restored afterwards (no web timeouts in 127 probes on a Pi 4).
 
 #### Deploy and recovery
 - Remote deploy over SSH reflashes existing devices without physical access.

@@ -134,8 +134,26 @@ Boot interfaces:
 - Manager restarts do not interrupt fetch or repair (transient units).
 - Power-cut model: `kill -9` drops un-submitted guest writes only.
 
+## Load during an update
+
+`fetch` (and `repair`) write the image to the inactive slot through `xz -dc | partclone.restore`, as a transient unit with `Nice=19` and the idle I/O class. `Nice` and the I/O class do not reach the kernel's write-back of the page cache, so on a slow disk the writes alone fill the card and the manager's reads wait. Measured on a Raspberry Pi 4 (8 GB, SD card, `fetch --force` of a 580 MB asset, 175-195 s, sampled every second with a web and an SSH probe from another host every 2 s; `work/pi-test/fetch-load-test.sh`):
+
+| Run | Web probes timing out (15 s) | Web worst / p90 | SSH worst | Dirty pages |
+|---|---|---|---|---|
+| Unchanged (`mq-deadline`, ratios 10/20) | 5 of 54 | 15 s | 0.23 s | up to 830 MB |
+| Dirty pages capped (16/64 MiB) | 6 of 31 | 15 s | 0.22 s | below 65 MB |
+| `bfq` and capped dirty pages | 0 of 138 | 6.6 s / 0.21 s | 0.26 s | below 65 MB |
+| The same set by the updater, `xz -T1` | 0 of 127 | 2.6 s / 0.42 s | 0.23 s | below 65 MB |
+
+- CPU is not the cause: `xz -dc` alone, at `Nice=19` on all four cores for 33 s, left the web at 0.07 s worst.
+- The SD card is: writes at 15-22 MB/s keep it busy (`iowait` 25-50 %), and a direct 4 KiB read took up to 6 s during the unchanged run.
+- `io_friendly` (`unitotem-update`) applies, for the time of the write: the I/O scheduler `bfq` on the disk, `vm.dirty_bytes` 64 MiB and `vm.dirty_background_bytes` 16 MiB; `xz` runs with one thread. Only disks named `mmcblk*` and `sd*` are touched; NVMe and virtual disks keep their settings. The duration of the update does not change.
+- The values to restore are kept in `/run/unitotem-update-io.json`; the next run puts back what a killed run left, and a reboot resets everything.
+- The kernel keeps either a ratio or a byte value per limit: writing one form zeroes the other, and `dirty_bytes` cannot be written back to 0 while the ratios are 0 (`EINVAL`). The form that was active is restored (`dirty_ratio` before `dirty_background_ratio`). A first version restored the bytes and left the Pi capped: only the run on the real kernel showed it.
+- A failure to tune is logged (`update I/O tuning skipped`) and never stops the update. Events: `update I/O: <disk> scheduler bfq, dirty pages capped at 64 MiB` and `settings restored`.
+
 ## Tests
 
-Host (repo root, no device): `python3 tools/release/test_auto.py`, `test_repair.py`, `test_identity_merge.py`, `test_boot_orientation.py`, `test_rpi_backend.py` (needs mtools, e2fsprogs; served by `tools/release/fake-github.py`).
+Host (repo root, no device): `python3 tools/release/test_auto.py`, `test_repair.py`, `test_identity_merge.py`, `test_boot_orientation.py`, `test_io_friendly.py`, `test_rpi_backend.py` (needs mtools, e2fsprogs; served by `tools/release/fake-github.py`).
 
 Image: `unitotem/verify-image.sh` (boot-ok, auto timer, failover, grub.cfg). QEMU power-cut and loopback harnesses: `testing.md`.
