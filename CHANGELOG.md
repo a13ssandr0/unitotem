@@ -20,6 +20,7 @@
 - Loopback and power-cut test harnesses for the A/B update path.
 - Legacy installer ISO removed (it installed a broken single-root system and asked for a root password); a new A/B installer is planned.
 - Neutral defaults: locale en_US.UTF-8 and time zone UTC; SSH sessions get the locale (`/etc/profile.d/unitotem-locale.sh`, sshd `SetEnv LANG`); `btop` added to `htop`; verify-image checks them.
+- README: disk size recommendations (Raspberry Pi 32 GB, PC 64 GB, minimum 16 GB); first-login text matches the sudo/users accounts.
 
 #### A/B updates
 - A/B root layout is the only layout: ROOT_A/ROOT_B slots, 6 GiB each, 16 GiB image.

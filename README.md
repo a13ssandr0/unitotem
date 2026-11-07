@@ -25,13 +25,25 @@ UniTotem is a managed kiosk system for digital signage. It runs on an immutable 
 
 A display connected to the HDMI or DisplayPort output is required.
 
+## Disk size
+
+The system is fixed at about 13 GiB: boot 1 GiB, two root slots (A and B) of 6 GiB each, of which 2.5-3.2 GB are used. The rest of the disk becomes the data partition (uploaded media, configuration, browser profile) and grows to fill it.
+
+| Target | Recommended | Minimum |
+|---|---|---|
+| Raspberry Pi | 32 GB card (about 17 GB for content); 64 GB or a USB SSD with many videos | 16 GB (2-3 GB for content) |
+| PC | 64 GB SSD; 128-256 GB with long videos | 16 GB |
+
+- Content is the only part that grows: size the disk for the media to be uploaded.
+- Each update writes about 3 GB to the inactive slot: use a high-endurance or A2 card of a known brand on a Raspberry Pi.
+
 ## Install
 
 Disk images are built from this repository (see Build from source): `unitotem-<date>-arm64.img.xz` and `unitotem-<date>-amd64.img.xz`. GitHub Releases carry the signed update streams that installed nodes fetch, not disk images.
 
 **Raspberry Pi**
 
-1. Write the arm64 image to a microSD card (class 10 or faster) with Raspberry Pi Imager ("Use custom") or any image writer.
+1. Write the arm64 image to a microSD card (see Disk size) with Raspberry Pi Imager ("Use custom") or any image writer.
 2. Insert the card and power on.
 
 **PC**
@@ -49,7 +61,7 @@ Disk images are built from this repository (see Build from source): `unitotem-<d
 - Without a network connection, the node starts a hotspot. Its name is the hostname; its password is shown on screen with a QR code.
 - Open `https://<hostname or IP>/` from a browser. Port 80 redirects to HTTPS.
 - The certificate is self-signed: the browser shows a warning to accept once.
-- On a new node, `/setup` creates the first administrator. Later, log in with a system account of the `unitotem` group.
+- On a new node, `/setup` creates the first administrator. Later, log in with a system account: administrators are the members of the group `sudo`, other web users the members of `users`. Root does not log in to the web.
 
 ## Updates
 
