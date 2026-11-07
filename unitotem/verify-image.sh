@@ -49,6 +49,17 @@ echo "== Content removed on purpose"
 for p in chromium chromium-browser chromium-common chromium-l10n build-essential gcc g++ cpp gcc-14 g++-14 cpp-14; do
     installed "$p" && bad "package $p must not be installed" || ok "package $p absent"
 done
+for p in gstreamer1.0-plugins-bad mesa-vulkan-drivers libclang1-19 tigervnc-scraping-server pocketsphinx-en-us ghostscript; do
+    installed "$p" && bad "package $p must not be installed (size reduction)" || ok "package $p absent"
+done
+if [ "$ARCH" = amd64 ]; then
+    for p in libcuda1 nvidia-vaapi-driver; do
+        installed "$p" && bad "package $p must not be installed (size reduction)" || ok "package $p absent"
+    done
+fi
+chk "no apt pin left under /etc/apt/preferences.d (stage-1 pins and the package lock are build-time only)" bash -c "[ -z \"\$(ls -A '$R/etc/apt/preferences.d' 2>/dev/null)\" ]"
+for p in wayvnc mesa-libgallium libllvm19 pipewire python3-libgpiod; do chk "package $p installed" installed "$p"; done
+[ "$ARCH" = amd64 ] && chk "package libnvidia-allocator1 installed (GBM on NVIDIA)" installed libnvidia-allocator1
 [ "$ARCH" = amd64 ] && chk "NVIDIA module still present after removing the compilers" bash -c "ls $R/lib/modules/*/updates/dkms/nvidia-current.ko* >/dev/null 2>&1"
 if installed unitotem-manager; then
     installed haproxy && bad "haproxy installed alongside a 3.x manager (it would hold ports 80/443)" || ok "haproxy absent with the 3.x manager"

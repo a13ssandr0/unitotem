@@ -48,13 +48,15 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Apt sources from `RELEASE` (trixie). arm64 adds the Raspberry Pi archive and keyring.
   - With a lock: snapshot.debian.org at the lock date, preferences pin every locked package, `dist-upgrade`.
   - amd64: linux-image-amd64, firmware, grub-efi-amd64, grub-pc-bin, efibootmgr, shim-signed, grub-efi-amd64-signed (staged only), mokutil, mesa, Intel/AMD/NVIDIA drivers (NVIDIA via DKMS).
-  - arm64: linux-image-rpi-v8, raspi-firmware, firmware-brcm80211, v4l-utils, raspi-utils.
+  - arm64: linux-image-rpi-v8, raspi-firmware, firmware-brcm80211, v4l-utils, raspi-utils. No `firmware-linux*`/`firmware-misc-nonfree` (they bring `firmware-amd-graphics`, 90 MB, for GPUs a Pi does not have).
+  - Stage-1-only apt pin `/etc/apt/preferences.d/98-unitotem-stage1-skip` (removed in the cleanup; the image has no pin): `pocketsphinx-en-us`, `ghostscript`, `iso-codes`, `qt6-translations-l10n`, `network-manager-l10n`, `libglib2.0-data` are Recommends only. Never pin a package that is the first alternative of a Depends or Recommends (`libvulkan1` recommends `mesa-vulkan-drivers | vulkan-icd`: the pin made apt install the NVIDIA tesla Vulkan stack instead): purge such packages after the install.
+  - Not installed: GStreamer (the viewer is CEF with its own ffmpeg, the VNC server is wayvnc), `tigervnc-scraping-server` (X11 scraper, pulls Perl), `nvidia-vaapi-driver` (Chromium does not use VA-API on NVIDIA).
   - Both: base set (`unitotem/stage1-packages.sh`, installed with Recommends): `locales`, `sudo`, `openssh-server`, `htop`, `btop`, `nano`, `less`, network and Python packages. `htop` is in the base set; `btop` adds `btop` and `libncursesw6`, and `libgpm2` through its Recommends.
   - Both: plymouth (no text plugin), `labwc wlr-randr wlopm wayvnc xwayland qt6-wayland kbd`, pipewire, ddcutil. `xwayland` is present only because labwc starts it lazily and logs an error without it; no X client runs.
   - Both: `libpam-pwquality` with `--no-install-recommends` (Recommends would add `cracklib-runtime`, `wamerican`, `file`). Pulls `libpam-pwquality`, `libpwquality1`, `libpwquality-common`, `libcrack2`. See [image-runtime](image-runtime.md#password-policy).
   - Manager .debs from `work/extra-debs/<arch>/` installed over the apt set; every unitotem package must be 3.x.
-  - Purge: arm64 Chromium (apt); compilers (`dpkg --force-depends`, keeps DKMS modules); amd64 X server packages.
-  - Asserts labwc, wlr-randr, wlopm, wayvnc survive and the NVIDIA module exists (amd64). Removes `/var/lib/dkms/mok.key`.
+  - Purge: arm64 Chromium (apt); compilers (`dpkg --force-depends`, keeps DKMS modules); `mesa-vulkan-drivers` (apt; the viewer renders through ANGLE-GL, llvmpipe/radeonsi stay in `mesa-libgallium` + `libllvm19`); amd64 NVIDIA extras `libcuda1 libnvidia-encode1 libnvcuvid1 nvidia-vulkan-icd libnvidia-rtcore libnvidia-ptxjitcompiler1` (apt; `libnvidia-allocator1`, `libnvidia-egl-gbm1`, `libgles-nvidia*` stay for GBM/EGL); `libclang1-19` (`dpkg --force-depends`: `libshiboken6` declares it, no shared object loads it); amd64 X server packages.
+  - Asserts labwc, wlr-randr, wlopm, wayvnc, mesa-libgallium, libllvm19, libneatvnc and libavcodec61 survive and the NVIDIA module exists (amd64, after each purge). Removes `/var/lib/dkms/mok.key`.
   - Lock: verify (exact match) or freeze to `work/<arch>/<arch>.lock.new`.
 - Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values.
 - Stage 2:
@@ -151,6 +153,21 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 - `purge_list` in stage 1 must end with `return 0` or `set -e` aborts the stage.
 - Builds are not prioritised against running services by the script; priority handling is an operator task.
 - `docker-compose.yml` (apt-cacher-ng) is not used by the build; stage 1 uses the `/aptcache` mount.
+
+## Image size
+
+Installed size removed by the stage-1 reductions, from an `apt-get -s` replay of the stage-1 install order on Debian trixie (simulation; to be replaced by measurements on a built image). The Raspberry Pi archive packages are not in the replay. "Deb" is the sum of the .deb sizes, an estimate of the compressed size.
+
+| Step | amd64 installed MB (deb) | arm64 installed MB (deb) |
+|---|---|---|
+| GStreamer, `tigervnc-scraping-server`, `nvidia-vaapi-driver` removed; six Recommends-only packages pinned out (speech model, ghostscript and its fonts/data, iso-codes, translations) | 312.6 (90.9) | 306.1 (83.2) |
+| `mesa-vulkan-drivers` purged | 79.2 (13.5) | 69.8 (10.8) |
+| `libclang1-19` purged | 36.3 (7.3) | 35.3 (6.5) |
+| amd64: NVIDIA CUDA, NVDEC and Vulkan libraries purged | 139.2 (24.8) | - |
+| arm64: `firmware-linux*`, `firmware-misc-nonfree` not installed | - | 102.7 (18.5) |
+| Total | about 567 (137) | about 514 (119) |
+
+Kept because they are hard dependencies: `libavfilter10`/`libavcodec61` with `libflite1` and `libcodec2` (wayvnc -> libneatvnc -> ffmpeg), `libllvm19` + `libz3-4` (Mesa llvmpipe/radeonsi), `perl` (ddcutil -> i2c-tools), `firmware-nvidia-gsp`, `firmware-amd-graphics` (amd64).
 
 ## Tests
 
