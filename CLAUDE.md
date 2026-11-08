@@ -30,7 +30,7 @@ Developer machines, devices, credentials and procedures: `CLAUDE.local.md` (not 
 
 ## Git
 - Always commit and push after each finished piece of work (code, docs, TODO, CHANGELOG together), one concern per commit; `git add` specific paths only. Submodule first, then the superproject.
-- The release signing key never enters a repository or a build host. Only exception, decided by the user 2026-11-08: a secret of the protected GitHub environment `release` (deployment limited to tags on the default branch, manual approval by the user on every run, every change to `.github/` approved by the user); the signing job is separate from the build job and signs only the hashes it produced.
+- The release signing key never enters a repository or a build host.
 - Upstream PRs/issues are opened only by the user.
 
 ## Code and docs
