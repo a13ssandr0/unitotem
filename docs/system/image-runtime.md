@@ -28,6 +28,8 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 | `unitotem/files/emergency-dropin.conf` | emergency/rescue shells time out after 120 s, then reboot |
 | `unitotem/files/plymouthd.conf` | `Theme=unitotem`, `ShowDelay=0`, `DeviceTimeout=8` |
 | `unitotem/files/chromium-accel` | `/etc/chromium.d/50-unitotem-accel` (decode flags) |
+| `unitotem/files/unitotem-nouveau-fallback.sh` | `/usr/lib/unitotem/nouveau-fallback` (amd64): loads nouveau for an NVIDIA display device with no driver ([NVIDIA](#nvidia-amd64)) |
+| `unitotem/files/unitotem-nouveau-fallback.service` | `/usr/lib/systemd/system/unitotem-nouveau-fallback.service`, enabled by a `multi-user.target.wants` symlink |
 | `unitotem/files/ota-preserve.list` | `/etc` paths kept across OTA |
 | `unitotem/files/unitotem-pwquality` | PAM profile for the password policy (see [Password policy](#password-policy)) |
 | `tools/release/test_wifi_roam.py` | Roam logic test |
@@ -48,7 +50,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 - Display: Wayland only. `unitotem-compositor.service` (labwc, from the `unitotem-viewer` package) is enabled; `getty@tty1` is masked. X server packages are purged; `xwayland` stays.
 - Manager start: drop-in `20-unitotem-wayland.conf` orders it after the compositor and `user@0.service` and waits up to 60 s for `/run/unitotem/xdg/wayland-0`.
 - Audio: PipeWire, pipewire-pulse, wireplumber run as root user units (`ConditionUser=` cleared by `/etc/systemd/user/*.d/10-root.conf`; without it no audio stream appears). Root has linger so `/run/user/0` exists from boot; the manager runs with `XDG_RUNTIME_DIR=/run/user/0` so pulsectl/libpulse find the socket.
-- Maintenance: `enter` stops manager and compositor (aborts if still active), remounts `/` and `/var/lib/dpkg` rw, `/var/cache` size=1G, `apt-get update`. `exit [--initramfs]` optionally rebuilds initramfs and GRUB, remounts ro, reboots after 5 s.
+- Maintenance: `enter` stops manager and compositor (aborts if still active), remounts `/` and `/var/lib/dpkg` rw, `/var/cache` size=1G, `apt-get update`. `exit [--initramfs]` optionally rebuilds initramfs and GRUB, remounts ro, reboots after 5 s; a failed `update-grub` exits 1 without rebooting.
 - Persistence: `unitotem-persist-paths` binds `/mnt/data/unitotem/persist/{uploaded,crontabs,browser,home}` onto `/var/lib/unitotem/uploaded`, `/var/spool/cron/crontabs`, `/var/lib/unitotem/browser`, `/home`; seeded from the target on first boot. `/home` is ordered before `ssh.service` and `systemd-user-sessions.service`.
 - SSH host keys: `/mnt/data/unitotem/ssh-host-keys` is restored into `/etc/ssh` if present; otherwise keys are generated and copied there.
 - TLS: `/etc/ssl/unitotem.pem` generated once (RSA 2048, self-signed, 365000 days); absent from the image; listed in `ota-preserve.list`.
@@ -59,14 +61,25 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 - Pi: `vc4` and `v3d` are both listed in `modules-load.d/rpi-gpu.conf` and the initramfs modules; the device tree selects the one it needs.
 - Pi hardware decode is V4L2 mem2mem, not VAAPI: `/dev/video10` H.264 (all models), `/dev/video19` HEVC (Pi 4 and later). arm64 has no VAAPI driver.
 - sshd reads `.ssh/authorized_keys`: root keys go in `/root/.ssh/authorized_keys` (`/root` is an overlay). Before the first administrator exists, root keys reach the first-administrator script (see [Root and first access](#root-and-first-access)); afterwards root accepts keys only.
-- Device apt sources: `deb.debian.org` and `security.debian.org` (suite, `-updates`, `-security`; `main contrib non-free non-free-firmware`); arm64 also `archive.raspberrypi.org`. `maintenance enter` runs `apt-get update`.
+- Device apt sources: `deb.debian.org` and `security.debian.org` (suite, `-updates`, `-security`, `-backports`; `main contrib non-free non-free-firmware`); arm64 also `archive.raspberrypi.org`. amd64 has no NVIDIA source: stage 1 removes it. `maintenance enter` runs `apt-get update`.
+- Device pins: `97-unitotem-backports` only (priority 990 for the backports packages, see [build](build.md#stages)).
 - `/etc/netplan/00-default.yaml` is mode 600.
 - `i2c-dev` is loaded at boot (`modules-load.d/unitotem-i2c.conf`); without it DDC/CI and CEC report unavailable.
 - Headless: with no reachable display the viewer logs a warning, signals ready and polls every 5 s until a Wayland display appears; a node with no monitor is a supported state.
 
+## NVIDIA (amd64)
+
+- Driver: NVIDIA 620.70.06 with the open kernel modules, for Turing and newer GPUs. Maxwell, Pascal and Volta run on nouveau (NVK, Mesa 26); NVIDIA's legacy branch for them is 580. Build and package set: [build](build.md#stages).
+- `nvidia-kernel-support` 620 ships `/etc/modprobe.d/nvidia.conf` with `blacklist nouveau` and `blacklist nova-core`, unconditionally. It ships no `modules-load.d` file and no `nvidia-drm` options, so the image adds:
+  - `/etc/modules-load.d/unitotem-nvidia.conf`: `nvidia-drm`;
+  - `/etc/modprobe.d/unitotem-nvidia-drm.conf`: `options nvidia-drm modeset=1 fbdev=1`.
+- The open modules bind by PCI alias to any NVIDIA device and fail at init on a GPU they do not support. On a Pascal or older GPU nothing would then drive the display. `unitotem-nouveau-fallback.service` covers that case:
+  - Unit: `Type=oneshot`, `RemainAfterExit=yes`, `After=systemd-modules-load.service systemd-udev-trigger.service`, `Before=unitotem-compositor.service`, `ConditionPathExists=/sys/bus/pci/devices`, `WantedBy=multi-user.target`.
+  - Script `/usr/lib/unitotem/nouveau-fallback`: `udevadm settle --timeout=20`; for every PCI device with vendor `0x10de` and class `0x03xxxx` (display) that has no `driver` symlink, `modprobe nouveau`. An explicit `modprobe` ignores the blacklist. Logs to syslog tag `unitotem-nouveau-fallback`. Exits 0 in every case; no NVIDIA display device means no action.
+
 ## Interfaces
 
-Enabled units: `systemd-timesyncd`, `NetworkManager`, `dbus`, `ssh`, `iptables-firewall`, `unitotem-maintenance-mode`, `unitotem-compositor`, `unitotem-boot-ok`, `unitotem-ssh-hostkey`, `unitotem-persist-paths`, `unitotem-first-boot-cert`, `unitotem-net-watchdog.timer`, `unitotem-wifi-roam.timer`, `unitotem-cpu-performance`, `unitotem-update-auto.timer`.
+Enabled units: `systemd-timesyncd`, `NetworkManager`, `dbus`, `ssh`, `iptables-firewall`, `unitotem-maintenance-mode`, `unitotem-compositor`, `unitotem-boot-ok`, `unitotem-ssh-hostkey`, `unitotem-persist-paths`, `unitotem-first-boot-cert`, `unitotem-net-watchdog.timer`, `unitotem-wifi-roam.timer`, `unitotem-cpu-performance`, `unitotem-update-auto.timer`, `unitotem-nouveau-fallback` (amd64, by symlink, not `systemctl enable`).
 
 Masked: `apt-daily(-upgrade).timer/.service`, `getty@tty1`, `wayvnc`, `wayvnc-control`, `wayvnc-generate-keys`.
 
@@ -107,6 +120,7 @@ Logs: syslog tags `unitotem-net-watchdog`, `unitotem-wifi-roam`; journald keeps 
 - The first-boot certificate must not exist in the image; `verify-image.sh` fails the build otherwise.
 - SSH host keys live on DATA: they survive OTA and reset only with `--wipe-data`.
 - `nvidia-persistenced` and `systemd-modules-load` are patched so non-NVIDIA PCs are not "degraded".
+- `nvidia-kernel-support` blacklists nouveau and nova-core unconditionally. On an NVIDIA GPU the open modules do not drive, only the fallback loads nouveau ([NVIDIA](#nvidia-amd64)).
 - VAAPI decode flags are amd64 only. Chromium is purged on arm64 images, where `chromium-accel` is inert.
 - The compositor unit, labwc config and Wayland environment come from the `unitotem-viewer`/`unitotem-node` packages ([viewer](../manager/viewer.md), [packaging](../manager/packaging.md)).
 
@@ -195,6 +209,7 @@ On an A/B update the new image's PAM files replace the old ones; no `ota-preserv
 
 - `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: Wi-Fi NM conf, roam, CPU governor, labwc, PipeWire root units, manager drop-in, firewall 4443, no certificate, no blanking in labwc config, root first-access state (empty shadow field, login shell, marker group), sshd root policy and `Match` block, persist `home` entry, password policy (see [Password policy](#password-policy)).
 - `python3 tools/release/test_wifi_roam.py`.
+- Not verified: the nouveau fallback on a real Pascal or older GPU. The script's logic was tested with stubs (2026-11-08).
 
 ### Locale and tools
 

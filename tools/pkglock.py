@@ -7,13 +7,20 @@
   pkglock.py prefs   LOCK                      apt preferences that pin every locked package to its version (stage 1 installs with them)
   pkglock.py snapshot LOCK                     the snapshot timestamp (YYYYMMDDTHHMMSSZ) recorded in the lock
   pkglock.py verify  LOCK ROOTFS|tarball       the installed set must be exactly the lock (exit 1 and a list of differences otherwise)
-  pkglock.py snapcheck LOCK                    repeatable from online repositories only? (Debian snapshot + the live Raspberry Pi archive)
+  pkglock.py snapcheck LOCK                    repeatable from online repositories only? (Debian snapshot + the live repository without snapshots:
+                                               the Raspberry Pi archive on arm64, NVIDIA's CUDA repository on amd64)
   pkglock.py upgrade ARCH                      retire the lock: the next stage-1 build resolves fresh and freezes a new one
   pkglock.py check   LOCK [--json]             ask the archives NOW what is newer than the lock; report, with urgency
         exit 0: nothing newer   10: updates, none security-related   20: security updates (build-unitotem.sh renews the lock)
 
 Lock line:   name==version        (an archive package, pinned)
              local name==version  (built by us - unitotem-*, the CEF wheel, the repackaged python libs - recorded, never pinned)
+
+Backports. A package locked at a trixie-backports build (version with ~bpo) is compared with the newest backports version and reported as an
+update from trixie-backports. A package locked at a stable version is only reported when backports has a newer one (NOT used: the lock stays).
+
+Repositories without snapshots. The Raspberry Pi archive (arm64) and NVIDIA's CUDA repository (amd64) are read live. NVIDIA's versions are
+candidates only for the packages locked at an NVIDIA version (the image installs NVIDIA's own packages only, see stage 1).
 
 Urgency. apt itself carries no urgency; two real sources are used and shown separately:
   * the archive pocket: an update that comes from `<release>-security` is a SECURITY update;
@@ -28,7 +35,7 @@ os.environ["LC_ALL"] = "C"          # apt output is localised: every parser belo
 LOCAL_RE = re.compile(r"~dev\d+|unitotem|\+rpt\d*-local")
 SECURITY_RE = re.compile(r"-security")
 URGENCY_ORDER = ["low", "medium", "high", "critical", "emergency"]
-WATCH_BACKPORTS = re.compile(r"^(linux-image-(amd64|rpi.*)|linux-headers-amd64|mesa-.*|libgl1-mesa-dri|nvidia-driver|nvidia-kernel-dkms|firmware-.*|labwc|"
+WATCH_BACKPORTS = re.compile(r"^(linux-image-(amd64|rpi.*)|linux-headers-amd64|mesa-.*|libgl1-mesa-dri|firmware-.*|labwc|"
                              r"libwlroots.*|wayvnc|pipewire|wireplumber|ffmpeg|libavcodec.*|systemd|network-manager)$")
 LOCK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "unitotem", "locks")
 
@@ -173,16 +180,43 @@ def parse_policy(text):
     return res
 
 
+def origin_of(line):
+    """Origin of an apt-cache policy line: the suite for backports (trixie-backports/main), else the repository URL."""
+    f = line.split()
+    return f[2].split("/")[0] if len(f) > 2 and "backports" in f[2] else f[1]
+
+
 def classify(entry, locked):
-    """-> (candidate, origins list, newer_in_backports (version or None)) for one package."""
+    """-> (candidate, origins list, newer_in_backports (version or None)) for one package.
+    A lock at a backports build (~bpo) is compared with the newest backports version: apt's candidate is the stable one (priority 500 beats
+    the backports 100), so it would hide the update. Any other lock is compared with the candidate; newer backports versions are only reported."""
     cand = entry["candidate"]
     bpo = None
     for v, origs in entry["versions"].items():
         if any("backports" in o for o in origs) and vcmp(v, locked) > 0:
             if bpo is None or vcmp(v, bpo) > 0: bpo = v
+    if "~bpo" in locked and bpo:
+        return bpo, entry["versions"][bpo], None
     if not cand or vcmp(cand, locked) <= 0:
         return None, [], bpo
     return cand, entry["versions"].get(cand, []), bpo
+
+
+def drop_nvidia_candidates(entry, locked):
+    """Keeps apt's view of the packages apart: a version offered only by NVIDIA's repository is a candidate for a package locked at an NVIDIA
+    version only (the image pins NVIDIA's packages to that repository, every other package is pinned away from it). The candidate is then
+    recomputed as the highest remaining version (the check runs without pins, so apt's own choice is not available here)."""
+    nv = {v for v, origs in entry["versions"].items() if origs and all(NVIDIA_HOST in origin_of(o) for o in origs)}
+    if not nv:
+        return entry
+    keep = nv if locked in nv else set(entry["versions"]) - nv
+    versions = collections.OrderedDict((v, o) for v, o in entry["versions"].items() if v in keep)
+    cand = entry["candidate"]
+    if cand not in keep:
+        cand = None
+        for v in versions:
+            if cand is None or vcmp(v, cand) > 0: cand = v
+    return {"candidate": cand, "versions": versions}
 
 
 def changelog_info(source, component_path, new, old):
@@ -204,6 +238,21 @@ def changelog_info(source, component_path, new, old):
     return urg, sorted(cves)
 
 
+NVIDIA_HOST = "developer.download.nvidia.com"
+NVIDIA_SUITE = {"trixie": "debian13"}          # NVIDIA's repository is laid out per Debian major: the trixie build is debian13
+LIVE_NAME = {"arm64": "the Raspberry Pi archive", "amd64": "NVIDIA's CUDA repository"}
+
+
+def live_source(arch, release):
+    """apt line of the repository that has no snapshots and is read live, or None: the Raspberry Pi archive (arm64), NVIDIA's CUDA repository
+    (amd64, the driver stack)."""
+    if arch == "arm64":
+        return "deb [arch=arm64 trusted=yes] http://archive.raspberrypi.org/debian/ %s main" % release
+    if arch == "amd64" and release in NVIDIA_SUITE:
+        return "deb [arch=amd64 trusted=yes] https://%s/compute/cuda/repos/%s/x86_64/ /" % (NVIDIA_HOST, NVIDIA_SUITE[release])
+    return None
+
+
 def apt_env(arch, release, workdir):
     for d in ("etc/apt", "state/lists/partial", "cache/archives/partial"):
         os.makedirs(os.path.join(workdir, d), exist_ok=True)
@@ -211,8 +260,8 @@ def apt_env(arch, release, workdir):
            "deb [arch=%s trusted=yes] http://deb.debian.org/debian %s-updates main contrib non-free non-free-firmware" % (arch, release),
            "deb [arch=%s trusted=yes] http://security.debian.org/debian-security %s-security main contrib non-free non-free-firmware" % (arch, release),
            "deb [arch=%s trusted=yes] http://deb.debian.org/debian %s-backports main contrib non-free non-free-firmware" % (arch, release)]
-    if arch == "arm64":
-        src.append("deb [arch=arm64 trusted=yes] http://archive.raspberrypi.org/debian/ %s main" % release)
+    live = live_source(arch, release)
+    if live: src.append(live)
     open(os.path.join(workdir, "etc/apt/sources.list"), "w").write("\n".join(src) + "\n")
     open(os.path.join(workdir, "status"), "w").close()
     opts = ["-o", "Dir::Etc::sourcelist=%s/etc/apt/sources.list" % workdir, "-o", "Dir::Etc::sourceparts=/dev/null",
@@ -240,15 +289,15 @@ def cmd_check(a):
         updates, backports = [], []
         for n in names:
             if n not in pol: continue
-            cand, origs, bpo = classify(pol[n], pinned[n])
+            cand, origs, bpo = classify(drop_nvidia_candidates(pol[n], pinned[n]), pinned[n])
             if bpo and WATCH_BACKPORTS.match(n): backports.append((n, pinned[n], bpo))
             if cand:
                 sec = any(SECURITY_RE.search(o) for o in origs)
-                updates.append({"package": n, "locked": pinned[n], "new": cand, "security_pocket": sec, "origins": sorted({o.split()[1] for o in origs if len(o.split()) > 1}),
+                updates.append({"package": n, "locked": pinned[n], "new": cand, "security_pocket": sec, "origins": sorted({origin_of(o) for o in origs if len(o.split()) > 1}),
                                 "urgency": None, "cves": []})
         # changelogs (Debian archive only) for the updates that come from a Debian origin
         def enrich(u):
-            if not any("deb.debian.org" in o or "security.debian.org" in o for o in u["origins"]):
+            if not any(o == "trixie-backports" or "deb.debian.org" in o or "security.debian.org" in o for o in u["origins"]):
                 return u                                  # Raspberry Pi's archive publishes no changelog: only the pocket is known
             show = subprocess.run(["apt-cache", *opts, "show", "%s=%s" % (u["package"], u["new"])], capture_output=True, text=True).stdout
             src = re.search(r"(?m)^Source: (\S+)", show); fn = re.search(r"(?m)^Filename: (\S+)", show)
@@ -285,7 +334,8 @@ def _snapshot_missing(lock):
         opts = apt_env(arch, release, tmp)
         src = ["deb [arch=%s trusted=yes] http://snapshot.debian.org/archive/debian/%s/ %s main contrib non-free non-free-firmware" % (arch, ts, release),
                "deb [arch=%s trusted=yes] http://snapshot.debian.org/archive/debian/%s/ %s-updates main contrib non-free non-free-firmware" % (arch, ts, release),
-               "deb [arch=%s trusted=yes] http://snapshot.debian.org/archive/debian-security/%s/ %s-security main contrib non-free non-free-firmware" % (arch, ts, release)]
+               "deb [arch=%s trusted=yes] http://snapshot.debian.org/archive/debian-security/%s/ %s-security main contrib non-free non-free-firmware" % (arch, ts, release),
+               "deb [arch=%s trusted=yes] http://snapshot.debian.org/archive/debian/%s/ %s-backports main contrib non-free non-free-firmware" % (arch, ts, release)]
         open(os.path.join(tmp, "etc/apt/sources.list"), "w").write("\n".join(src) + "\n")
         r = subprocess.run(["apt-get", *opts, "update", "-qq"], capture_output=True, text=True)
         if r.returncode != 0:
@@ -300,25 +350,27 @@ def _snapshot_missing(lock):
 
 
 def cmd_snapcheck(a):
-    """Can the lock be rebuilt from online repositories only? Debian packages come from the snapshot recorded in the lock; the Raspberry Pi archive
-    (no snapshots) must still offer the locked versions. Lists what is not available from either."""
+    """Can the lock be rebuilt from online repositories only? Debian packages come from the snapshot recorded in the lock; the repository that has
+    no snapshots (live_source: the Raspberry Pi archive or NVIDIA's) must still offer the locked versions. Lists what is not available from either."""
     res = _snapshot_missing(a.lock)
     if isinstance(res, int): return res
     gone, names, ts = res
     meta, pinned, _ = read_lock(a.lock)
+    arch = meta.get("arch", "amd64"); release = meta.get("release", "trixie")
+    live = live_source(arch, release)
     if not gone:
         print("repeatable: all %d locked packages are in Debian snapshot %s" % (len(names), ts)); return 0
-    if meta.get("arch") != "arm64":
+    if live is None:
         print("%d locked versions are NOT in snapshot %s:" % (len(gone), ts))
         for n, v in gone[:60]: print("   %s==%s" % (n, v))
         return 1
-    # the rest has to come from the live Raspberry Pi archive
-    tmp = tempfile.mkdtemp(prefix="pkglock-rpi-")
+    # the rest has to come from the live repository without snapshots
+    tmp = tempfile.mkdtemp(prefix="pkglock-live-")
     try:
-        opts = apt_env("arm64", meta.get("release", "trixie"), tmp)
-        open(os.path.join(tmp, "etc/apt/sources.list"), "w").write("deb [arch=arm64 trusted=yes] http://archive.raspberrypi.org/debian/ %s main\n" % meta.get("release", "trixie"))
+        opts = apt_env(arch, release, tmp)
+        open(os.path.join(tmp, "etc/apt/sources.list"), "w").write(live + "\n")
         if subprocess.run(["apt-get", *opts, "update", "-qq"], capture_output=True, text=True).returncode != 0:
-            print("cannot reach the Raspberry Pi archive", file=sys.stderr); return 2
+            print("cannot reach %s" % LIVE_NAME[arch], file=sys.stderr); return 2
         names2 = [n for n, _ in gone]; pol = {}
         for i in range(0, len(names2), 400):
             pol.update(parse_policy(subprocess.run(["apt-cache", *opts, "policy", *names2[i:i + 400]], capture_output=True, text=True).stdout))
@@ -326,11 +378,11 @@ def cmd_snapcheck(a):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if lost:
-        print("%d locked versions are no longer offered by any online repository (Raspberry Pi's archive keeps no old versions):" % len(lost))
+        print("%d locked versions are no longer offered by any online repository (%s):" % (len(lost), LIVE_NAME[arch]))
         for n, v in lost[:60]: print("   %s==%s" % (n, v))
-        print("   -> the lock has to be renewed: pkglock.py upgrade %s" % meta.get("arch")); return 1
-    print("repeatable: %d packages from Debian snapshot %s, %d from the Raspberry Pi archive (still online; it keeps no snapshots, so this part lasts as long as the archive keeps those versions)"
-          % (len(names) - len(gone), ts, len(gone)))
+        print("   -> the lock has to be renewed: pkglock.py upgrade %s" % arch); return 1
+    print("repeatable: %d packages from Debian snapshot %s, %d from %s (still online; it keeps no snapshots, so this part lasts as long as the repository keeps those versions)"
+          % (len(names) - len(gone), ts, len(gone), LIVE_NAME[arch]))
     return 0
 
 
@@ -350,7 +402,7 @@ def print_report(r):
     nsec = r["security"]
     print("   -- %d newer, %d of them SECURITY" % (len(ups), nsec))
     if r["backports_available"]:
-        print("   -- newer major versions in backports (NOT used; a decision, not an update):")
+        print("   -- newer versions in backports for packages locked at stable (NOT used; a decision, not an update):")
         for n, old, new in r["backports_available"][:40]:
             print("        %-38s %s -> %s" % (n, old, new))
     if nsec:

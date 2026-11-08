@@ -115,4 +115,40 @@ with tempfile.TemporaryDirectory() as td:
     cand, origs, bpo = P.classify(pol["curl"], "8.14.1-2+deb13u8")
     check("classify: an older candidate than the locked version is not an update", cand is None)
 
+    # NVIDIA's repository (amd64): live, no snapshots; its versions count only for the packages locked at NVIDIA versions
+    check("live source: amd64 trixie is NVIDIA's debian13 repository", P.live_source("amd64", "trixie") ==
+          "deb [arch=amd64 trusted=yes] https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/ /", P.live_source("amd64", "trixie"))
+    check("live source: arm64 is the Raspberry Pi archive, other releases have none", P.live_source("arm64", "trixie").startswith("deb [arch=arm64 trusted=yes] http://archive.raspberrypi.org/")
+          and P.live_source("amd64", "bookworm") is None)
+    ap = os.path.join(td, "apt"); P.apt_env("amd64", "trixie", ap)
+    check("apt_env: amd64 sources include the NVIDIA line", P.live_source("amd64", "trixie") in open(os.path.join(ap, "etc/apt/sources.list")).read())
+    P.apt_env("arm64", "trixie", os.path.join(td, "apt-arm"))
+    check("apt_env: arm64 sources have no NVIDIA line", P.NVIDIA_HOST not in open(os.path.join(td, "apt-arm", "etc/apt/sources.list")).read())
+    NV_POLICY = """dkms:
+  Installed: (none)
+  Candidate: 3.4.4-1
+  Version table:
+     3.4.4-1 500
+        500 https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64  Packages
+     3.2.2-1~deb13u1 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+nvidia-kernel-open-dkms:
+  Installed: (none)
+  Candidate: 620.70.06-1
+  Version table:
+     620.70.06-1 500
+        500 https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64  Packages
+     550.163.01-1 500
+        500 http://deb.debian.org/debian trixie/non-free amd64 Packages
+"""
+    nvp = P.parse_policy(NV_POLICY)
+    cand, _, _ = P.classify(P.drop_nvidia_candidates(nvp["dkms"], "3.2.2-1~deb13u1"), "3.2.2-1~deb13u1")
+    check("nvidia candidates: NVIDIA's dkms 3.4.4 is no update of the Debian dkms 3.2.2", cand is None, cand)
+    cand, _, _ = P.classify(P.drop_nvidia_candidates(nvp["nvidia-kernel-open-dkms"], "620.70.06-1"), "620.70.06-1")
+    check("nvidia candidates: an NVIDIA-locked package takes NVIDIA's version (no Debian 550 candidate)", cand is None, cand)
+    cand, _, _ = P.classify(P.drop_nvidia_candidates(nvp["nvidia-kernel-open-dkms"], "550.163.01-1"), "550.163.01-1")
+    check("nvidia candidates: a Debian-locked package gets no NVIDIA candidate (NVIDIA's 620 is not an update of Debian's 550)", cand is None, cand)
+    check("nvidia candidates: WATCH_BACKPORTS no longer names the Debian NVIDIA driver", P.WATCH_BACKPORTS.match("nvidia-driver") is None
+          and P.WATCH_BACKPORTS.match("firmware-nvidia-gsp") is not None)
+
 print("\n%d passed, %d failed" % (ok, fail)); sys.exit(1 if fail else 0)
