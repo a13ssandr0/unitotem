@@ -1,6 +1,7 @@
 # TODO (open items only; done items are in CHANGELOG.md)
 
 ## Waiting for the user (decisions)
+- [system] Pi 3 A/B (decision, needs a real Pi 3): NOOBS/PINN switch OS with `reboot "N"` (kernel bcm2835_wdt writes the partition into PM_RSTS 0x7e100020; the firmware boots partition N), MBR with FAT primaries/logicals. Design with confirmed pieces only: MBR (not GPT), p1 slot A + default, p2 slot B firmware copy, `reboot 2` for a trial, early clear of PM_RSTS in the slot B initramfs, `bcm2835_wdt` armed. Unknown until a bench test: tryboot and PM_RSTS persistence on Pi 3, hang before the kernel arms the watchdog, 1 GB RAM for CEF. Plan and sources: work/agents/agent-I/ report; effort ~8-13 days.
 - [manager] utils/async_timer.py is adapted from a CC BY-SA 3.0 answer (not one-way compatible with GPL-3): keep with attribution, or rewrite it.
 - [system] Wi-Fi roaming: keep `unitotem-wifi-roam` if stable (flapping/dropped links); a strong AP sometimes times out in auth (router side).
 - [manager/viewer] Long press on a real panel must show no context menu (needs a finger).
