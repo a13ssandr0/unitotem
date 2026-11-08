@@ -11,7 +11,7 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
 | `unitotem/files/unitotem-update` | CLI and all A/B logic |
 | `unitotem/files/unitotem-update-auto.service` | oneshot `unitotem-update --json auto`; `Nice=19`, idle IO, `TimeoutStartSec=2h` |
 | `unitotem/files/unitotem-update-auto.timer` | 10 min after boot, then every 10 min |
-| `unitotem/files/unitotem-boot-ok` (+ `.service`) | Runs `unitotem-update --json boot-ok` on A/B boots; also a single-root bootcount branch (`unitotem.ota.bootcount=1`) never used on A/B |
+| `unitotem/files/unitotem-boot-ok` (+ `.service`) | Runs `unitotem-update --json boot-ok` on every boot (A/B only: the single-root bootcount branch is removed) |
 | `unitotem/files/grub-ab-entries` | `/etc/grub.d/10_unitotem_ab`: `slot-a`, `slot-b`, `slot-a-recover`, `slot-b-recover`, `ota-recovery`; `fallback` list |
 | `unitotem/files/grub-default` | `/etc/default/grub`; A/B sets `GRUB_DEFAULT=saved`, `GRUB_SAVEDEFAULT=false` |
 | `unitotem/files/grub-ota-entry` | Single-root recovery entry (`45_unitotem_ota`); not on A/B |
@@ -43,9 +43,9 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
   - Staged pending on the other slot, no trial requested: no-op.
 - **confirm**: `confirm_now` without the health wait.
 - **rollback [--reboot]**: needs `other` valid; default := other; pending removed; result `armed`; the next boot of the old slot turns it into `ok`.
-- **repair**: if `other` fails `slot_sound` (label, `e2fsck -fn`, mount, `release-version`, `systemd`, Pi boot files), copy `cur` over it (`partclone.extfs -c -F | partclone.restore`), new UUID and label, `e2fsck -fy`, version check, Pi boot files cloned, overlays prepared. Under the lock, `RuntimeMaxSec=3600`. The ROOT_B that the first boot of a flash image creates is a formatted, labelled, empty slot: `slot_sound` returns `empty`, so the first confirmed boot fills it (`storage-and-persistence.md#layout`).
+- **repair**: if `other` fails `slot_sound` (label, `e2fsck -fn`, mount, `release-version`, `systemd`, on GRUB `vmlinuz` and `initrd.img`, Pi boot files), copy `cur` over it (`partclone.extfs -c -F | partclone.restore`), new UUID and label, `e2fsck -fy`, version check, Pi boot files cloned, overlays prepared. Under the lock, `RuntimeMaxSec=3600`. The ROOT_B that the first boot of a flash image creates is a formatted, labelled, empty slot: `slot_sound` returns `empty`, so the first confirmed boot fills it (`storage-and-persistence.md#layout`).
 - **failover** (initramfs): chosen root missing or failing the read-only check and the other slot sound: write guard `/boot-ota/unitotem-ota.failover` (`cur->other`), switch default (`saved_entry` / `os_prefix`), `reboot -f`. Refused while the guard exists. Cleared by the next plain boot.
-- **Lock**: `/run/unitotem-update.lock` (flock); busy exits 12. Progress: `/run/unitotem-update.progress` (one JSON line, atomic rename).
+- **Lock**: `/run/unitotem-update.lock` (flock); busy exits 12. The file is never unlinked: release closes the descriptor, so no waiter can lock a stale inode. Progress: `/run/unitotem-update.progress` (one JSON line, atomic rename).
 
 ### Automatic policy (`auto`)
 
@@ -87,6 +87,7 @@ Config `/etc/unitotem/update.conf` (`key=value`; env `UNITOTEM_<KEY>` overrides;
 | `UPDATE_BACKEND` | empty = detect (`grub`/`rpi`) |
 | `UPDATE_DT_BOOTLOADER` | `/proc/device-tree/chosen/bootloader` |
 | `UPDATE_HEALTH_URL` | `https://localhost/health` (empty = no gate) |
+| `UPDATE_HEALTH_CA` | `/etc/ssl/unitotem.pem` (the manager's certificate, the health check's only trust anchor) |
 | `UPDATE_HEALTH_TIMEOUT` | `180` |
 | `UPDATE_AUTOREPAIR` | `1` |
 | `UPDATE_ESP_GRUBCFG` | `/usr/share/unitotem/esp-grub.cfg` |
@@ -127,7 +128,7 @@ Boot interfaces:
 - ESP `grub.cfg` is replaced only from a confirmed boot, only when the image's `# unitotem-grub-level` is higher, and only if it contains `--id slot-a`, `--id slot-b`, `--id ota-recovery`. Raise the level to push a bootloader change.
 - Pi: tryboot is honoured only on a reboot with the tryboot flag; a plain reboot or power cut boots the old slot and a staged update stays armed. Boards without the EEPROM bootloader: `backend-unsupported`.
 - Pi has no RTC: deadlines use the monotonic clock.
-- `UPDATE_HEALTH_URL` is checked without certificate verification. Images without a 3.x manager set it empty.
+- `UPDATE_HEALTH_URL` is verified against `UPDATE_HEALTH_CA` (the manager's own self-signed certificate, `/etc/ssl/unitotem.pem`); no hostname check. A missing CA file counts as unhealthy. Images without a 3.x manager set the URL empty.
 - Failover runs at most once per failure.
 - An update changes only the slot directory and the ESP `grub.cfg` (the latter after a confirmed boot, when the shipped level is higher); Pi EEPROM/firmware and PC shim/GRUB binaries are never touched.
 - `fetch --accept-changes` is accepted and ignored.

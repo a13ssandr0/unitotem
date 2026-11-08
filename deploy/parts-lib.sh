@@ -71,7 +71,7 @@ make_parts() {
         ptype=$(sfdisk --part-type "$loop" "$n" 2>/dev/null || echo "")
 
         action=$(parts_action_for_label "$label")
-        if [ "$action" = skip ] && [ "${ptype,,}" = "ef02" ]; then
+        if [ "$action" = skip ] && [ "${ptype,,}" = "21686148-6449-6e6f-744e-656564454649" ]; then  # GPT BIOS boot (ef02); sfdisk prints the GUID
             label=BIOS; action=raw
         fi
         [ "$action" != skip ] || continue
@@ -140,9 +140,15 @@ make_parts() {
 
         stream="p${n}-${label:-part${n}}.${fstype:-raw}.pc.xz"
         log_parts "Generating ${stream} (cloner=${cloner}, partition ${n})..."
-        "partclone.${cloner}" -c -s "$dev" -o - -F -B 2>/dev/null \
-            | xz -T0 -9 --check=sha256 > "$outdir/$stream" \
-            || { echo "partclone.${cloner} on $dev failed" >&2; return 1; }
+        # cloner dd (BIOS-boot partition): partclone.dd has no clone mode, the stream is the raw partition content.
+        if [ "$cloner" = dd ]; then
+            dd if="$dev" bs=512 status=none | xz -T0 -9 --check=sha256 > "$outdir/$stream" \
+                || { echo "raw copy of $dev failed" >&2; return 1; }
+        else
+            "partclone.${cloner}" -c -s "$dev" -o - -F -B 2>/dev/null \
+                | xz -T0 -9 --check=sha256 > "$outdir/$stream" \
+                || { echo "partclone.${cloner} on $dev failed" >&2; return 1; }
+        fi
 
         stream_bytes=$(stat -c%s "$outdir/$stream")
         stream_sha256=$(sha256sum "$outdir/$stream" | cut -d' ' -f1)

@@ -8,10 +8,11 @@ SCRATCH_IMG="$1"
 ARCH="$2"
 SETNAME="$3"
 SRCIMG_BASENAME="$4"
+OUTDIR_OVERRIDE="${5:-}"
 
 [ -f "$SCRATCH_IMG" ] || { echo "Scratch image not found: $SCRATCH_IMG" >&2; exit 1; }
 
-OUTDIR="/deploy/${ARCH}/${SETNAME}.parts"
+OUTDIR="${OUTDIR_OVERRIDE:-/deploy/${ARCH}/${SETNAME}.parts}"
 rm -rf "$OUTDIR"
 
 LOOP=$(losetup --find --show --partscan --read-only "$SCRATCH_IMG")

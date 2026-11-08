@@ -111,6 +111,8 @@ read_kv_lines() {
 # there is nothing to roll back to, so fail() never reboots: it drops into the fallback console.
 # ---------------------------------------------------------------------------
 DEBUG="${UNITOTEM_OTA_DEBUG:-0}"
+# Newest DATA/history entries kept by migrate-etc-overlay; older ones are deleted.
+HISTORY_KEEP=10
 # Kept in /run (not a shell variable) because restore-table and restore-part run as separate invocations of
 # this script.
 NO_RETURN_MARKER=/run/unitotem-ota-point-of-no-return
@@ -214,7 +216,7 @@ cmd_probe() {
         else
             echo "UNITOTEM_HAVE_DATA=0"
         fi
-        echo "UNITOTEM_NPARTS=$(lsblk -lno TYPE "$disk" 2>/dev/null | grep -c '^part$')"
+        echo "UNITOTEM_NPARTS=$(lsblk -lno TYPE "$disk" 2>/dev/null | grep -c '^part$' || true)"
 
         fw_dev=$(blkid -L FIRMWARE -o device 2>/dev/null || blkid -L EFI -o device 2>/dev/null || true)
         [ -n "$fw_dev" ] && [ "$(lsblk -no PKNAME "$fw_dev" 2>/dev/null)" = "${disk##*/}" ] \
@@ -323,19 +325,16 @@ cmd_restore_part() {
     ota_status_set "Writing partition ${ARG[part]} (${ARG[cloner]})"
     local have_pv=0
     command -v pv >/dev/null 2>&1 && have_pv=1
+    # cloner dd (the BIOS-boot partition holding GRUB's core.img): the stream is the raw partition content.
+    local -a restore_cmd=(partclone.restore "${restore_flags[@]}" -F -B)
+    [ "${ARG[cloner]}" = dd ] && restore_cmd=(dd "of=${part_dev}" bs=512 conv=fsync status=none)
     case "${ARG[comp]:-xz}" in
-        xz)
+        xz|zstd)
+            local dec=(unxz -dc); [ "${ARG[comp]:-xz}" = zstd ] && dec=(unzstd -dc)
             if [ "$have_pv" = 1 ]; then
-                unxz -dc <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | partclone.restore "${restore_flags[@]}" -F -B
+                "${dec[@]}" <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | "${restore_cmd[@]}"
             else
-                unxz -dc <&4 | partclone.restore "${restore_flags[@]}" -F -B
-            fi
-            ;;
-        zstd)
-            if [ "$have_pv" = 1 ]; then
-                unzstd -dc <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | partclone.restore "${restore_flags[@]}" -F -B
-            else
-                unzstd -dc <&4 | partclone.restore "${restore_flags[@]}" -F -B
+                "${dec[@]}" <&4 | "${restore_cmd[@]}"
             fi
             ;;
         *)    fail "unknown compression: ${ARG[comp]:-}" ;;
@@ -728,6 +727,12 @@ cmd_promote_default() {
             local bootfs_dev; bootfs_dev=$(pdev_target "$disk" "${ARG[bootfs-part]}")
             local mnt=/tmp/ota-bootfs
             ota_mount_bootfs_rw "$bootfs_dev" "$mnt"
+            # The config below has no os_prefix: on an A/B device it would drop the slot selection. A/B devices are
+            # promoted by unitotem-update confirm (config.txt os_prefix), so refuse before anything is written.
+            if grep -q '^os_prefix=' "$mnt/config.txt" 2>/dev/null; then
+                ota_umount_bootfs_rw "$bootfs_dev" "$mnt"
+                fail "promote-default refused: A/B device (os_prefix in config.txt), promotion is done by unitotem-update"
+            fi
             cat > "$mnt/config.txt" << 'EOF'
 arm_64bit=1
 enable_uart=1
@@ -815,6 +820,26 @@ cmd_populate_real_kernel() {
 # etc-overlay migration: the new image's /etc always wins; DATA's old overlay content is moved aside wholesale,
 # then only an explicit whitelist is reintroduced.
 # ---------------------------------------------------------------------------
+# prune_history DATA KEEP_NAME: keeps the newest HISTORY_KEEP DATA/history entries, deletes the rest. Only names of
+# the form YYYYMMDDTHHMMSSZ are candidates (fixed width, so name order is time order); KEEP_NAME is never removed.
+prune_history() {
+    local hist="$1/history" keep_name="$2" d name i
+    local -a names=()
+    [ -d "$hist" ] || return 0
+    for d in "$hist"/*; do
+        [ -d "$d" ] || continue
+        name="${d##*/}"
+        [[ "$name" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || continue
+        names+=("$name")
+    done
+    local n=${#names[@]}
+    (( n > HISTORY_KEEP )) || return 0
+    for (( i = 0; i < n - HISTORY_KEEP; i++ )); do
+        [ "${names[i]}" = "$keep_name" ] && continue
+        rm -rf -- "$hist/${names[i]}"
+    done
+}
+
 cmd_migrate_etc_overlay() {
     ota_status_set "Migrating configuration from DATA"
     parse_args "$@"
@@ -863,6 +888,7 @@ cmd_migrate_etc_overlay() {
             done
         done < "$list"
     fi
+    prune_history "$data" "$ts"
     echo "UNITOTEM_ETC_MIGRATED=1"
 }
 
@@ -951,6 +977,7 @@ AUTH_HASH_RE='^\$[0-9a-z]+\$[A-Za-z0-9./$,=+-]*$'
 AUTH_KEYS=()     # "type base64" of every accepted key, deduplicated
 AUTH_ADMINS=()   # "name:hash" per admin; hash is "*" when there is no usable password
 AUTH_USABLE=0    # admins with a usable password hash
+AUTH_SAVED_SLOT=""   # slot named by the boot FAT grubenv (saved_entry), "" when unknown
 
 # valid_authkey_line LINE [ed25519]: 0 when LINE is one plain public key line (no options) within the length cap.
 valid_authkey_line() {
@@ -1030,16 +1057,28 @@ auth_cmdline_key() {
     return 0
 }
 
+# auth_read_saved_slot DIR: AUTH_SAVED_SLOT = a|b from saved_entry=slot-x in DIR/unitotem-grub/grub/grubenv (PC), the slot whose
+# DATA state the fallback reads when the command line carries no unitotem.slot (entry "ota-recovery" of the GRUB menu).
+auth_read_saved_slot() {
+    local f="$1/unitotem-grub/grub/grubenv" v
+    [ -r "$f" ] || return 0
+    v=$(tr -d '\000' < "$f" 2>/dev/null | grep -a '^saved_entry=' | head -1) || v=""
+    case "$v" in saved_entry=slot-a*) AUTH_SAVED_SLOT=a ;; saved_entry=slot-b*) AUTH_SAVED_SLOT=b ;; esac
+    return 0
+}
+
 # auth_boot_keys: unitotem-ota.authorized_keys on the boot FAT. Uses /boot-ota when mounted, else FIRMWARE or EFI
 # mounted read-only on a private directory and unmounted again.
 auth_boot_keys() {
     local dir="${OTA_AUTH_BOOTDIR:-}" mnt=/run/ota-auth-boot dev=""
     if [ -n "$dir" ]; then
         auth_read_keys_file "$dir/unitotem-ota.authorized_keys" "" "boot partition"
+        auth_read_saved_slot "$dir"
         return 0
     fi
     if mountpoint -q /boot-ota 2>/dev/null; then
         auth_read_keys_file /boot-ota/unitotem-ota.authorized_keys "" "boot partition"
+        auth_read_saved_slot /boot-ota
         return 0
     fi
     dev=$(blkid -L FIRMWARE 2>/dev/null) || dev=""
@@ -1053,6 +1092,7 @@ auth_boot_keys() {
     mkdir -p "$mnt" 2>/dev/null || return 0
     if mount -t vfat -o ro "$dev" "$mnt" 2>/dev/null; then
         auth_read_keys_file "$mnt/unitotem-ota.authorized_keys" "" "boot partition"
+        auth_read_saved_slot "$mnt"
         umount "$mnt" 2>/dev/null || log "fallback auth: cannot unmount $mnt"
     else
         log "fallback auth: cannot mount the boot partition read-only, boot keys skipped"
@@ -1090,7 +1130,7 @@ auth_shadow_hash() {
 auth_data_scan() {
     local d="$1" cur s slot="" u h dup x group_members
     local -a order=(a b)
-    cur=$(auth_cmdline_get unitotem.slot) || cur=""
+    cur=$(auth_cmdline_get unitotem.slot) || cur="$AUTH_SAVED_SLOT"
     if [ "$cur" = b ]; then order=(b a); fi
     for s in "${order[@]}"; do
         if [ -f "$d/upper/etc.$s/group" ]; then slot=$s; break; fi
@@ -1157,7 +1197,7 @@ auth_data_read() {
 fallback_auth_setup() {
     local root="${OTA_AUTH_ROOT:-}" open=0 e k
     local pw="${root}/etc/passwd" shadow="${root}/etc/shadow" ak="${root}/root/.ssh/authorized_keys"
-    AUTH_KEYS=(); AUTH_ADMINS=(); AUTH_USABLE=0; FALLBACK_OPEN=0
+    AUTH_KEYS=(); AUTH_ADMINS=(); AUTH_USABLE=0; FALLBACK_OPEN=0; AUTH_SAVED_SLOT=""
 
     auth_cmdline_key
     auth_boot_keys
@@ -1422,15 +1462,16 @@ ota_led_maintenance() {
     return 0
 }
 
-# ota_idle_watchdog SECONDS : leave the fallback by rebooting if no host connects to dropbear (port 2222 = 0x08AE in
-# /proc/net/tcp*) within SECONDS, so a transient trigger does not leave the device waiting indefinitely. Once a host has
-# connected the watchdog stands down for good. 0 = never.
+# ota_idle_watchdog SECONDS : leave the fallback by rebooting if no host logs in to dropbear within SECONDS, so a transient
+# trigger does not leave the device waiting indefinitely. A TCP connection alone does not count: the watchdog stands down
+# once dropbear logs a successful authentication (password, key or blank password, see serve-fallback's log file). 0 = never.
 ota_idle_watchdog() {
     local limit="${1:-0}" waited=0
     [ "$limit" -gt 0 ] 2>/dev/null || return 0
     while [ "$waited" -lt "$limit" ]; do
         sleep 5; waited=$((waited + 5))
-        grep -qE ':08AE [0-9A-F]+:[0-9A-F]+ 01 ' /proc/net/tcp /proc/net/tcp6 2>/dev/null && return 0
+        # dropbear -E: "Password auth succeeded for ...", "Pubkey auth succeeded for ...", "Auth succeeded with blank password for ..."
+        grep -q 'uth succeeded' /run/ota-dropbear.log 2>/dev/null && return 0
     done
     log "no host connected within ${limit}s: rebooting to retry the normal boot"
     sync
@@ -1611,13 +1652,6 @@ Address: ${myip:-none}   Port: 2222" || true
     # the progress screen clears the console when it starts: put the logo back above it once it is up
     ( sleep 2; ota_logo; ota_frame ) </dev/null >/dev/null 2>&1 &
 
-    if [ -f /boot-ota/unitotem-ota.conf ]; then
-        read_kv_lines < /boot-ota/unitotem-ota.conf
-        if [ -n "${OTA_HOST:-}" ] && [ -n "${OTA_CTRL_PORT:-}" ]; then
-            ( dbclient -y -N -R "${OTA_CTRL_PORT}:localhost:2222" "$OTA_HOST" 2>/dev/null & ) || true
-        fi
-    fi
-
     # Fallback credentials and mode. The `||` context keeps a failed DATA or boot mount from aborting here: the
     # credentials then stay locked (FALLBACK_OPEN=0).
     fallback_auth_setup || warn "fallback credentials not written: root login stays locked"
@@ -1625,8 +1659,7 @@ Address: ${myip:-none}   Port: 2222" || true
     # bash read loop is used because sed/awk are not guaranteed in the minimal fallback. The pipeline is what blocks:
     # dropbear runs with -F and never returns, and if it does, park here instead of falling through into a normal boot.
     # The console belongs to the progress screen: dropbear's log goes to a file and to the kernel log at debug level.
-    # -T 3: three auth tries. -j -k: no port forwarding (the reverse tunnel above is requested by the client, which
-    # dropbear does not need to grant). -B (blank passwords) only in open mode.
+    # -T 3: three auth tries. -j -k: no local or remote port forwarding. -B (blank passwords) only in open mode.
     local -a dbopts=(-F -E -p 2222 -r /run/dropbear_ed25519_host_key -T 3 -j -k)
     if [ "$FALLBACK_OPEN" = 1 ]; then dbopts+=(-B); fi
     dropbear "${dbopts[@]}" 2>&1 \

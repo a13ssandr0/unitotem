@@ -36,6 +36,7 @@ CONF_DEFAULTS = {
     "UPDATE_VM_DIR": "/proc/sys/vm",
     "UPDATE_HEALTH_URL": "https://localhost/health",   # empty = no health gate
     "UPDATE_HEALTH_TIMEOUT": "180",
+    "UPDATE_HEALTH_CA": "/etc/ssl/unitotem.pem",  # the manager's own certificate (cert+key PEM): the only trust anchor of the health check
     "UPDATE_AUTOREPAIR": "1",                     # rebuild a damaged other slot from the running one after a plain boot
 }
 TIMEOUT = 30
@@ -443,23 +444,26 @@ def read_progress(conf):
 
 
 class Lock:
-    """One long operation at a time; the pid file lets `cancel` find it."""
+    """One long operation at a time; the pid file lets `cancel` find it.
+    The lock file is never unlinked: a waiter that opened the old inode would lock it while a new
+    file at the same path is locked too. Closing the descriptor releases the flock; the file stays
+    (on /run, tmpfs) and its stale pid is only read while the flock is held (see op_running)."""
     def __init__(self, conf):
         self.path = os.path.join(conf["UPDATE_RUN_DIR"], "unitotem-update.lock")
         self.f = None
 
     def __enter__(self):
-        self.f = open(self.path, "a+")
+        f = open(self.path, "a+")
         try:
-            fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
+            f.close()
             raise Fail("busy", "another update operation is running", rc=12)
-        self.f.seek(0); self.f.truncate(); self.f.write(str(os.getpid())); self.f.flush()
+        self.f = f
+        f.seek(0); f.truncate(); f.write(str(os.getpid())); f.flush()
         return self
 
     def __exit__(self, *e):
-        try: os.unlink(self.path)
-        except OSError: pass
         self.f.close()
 
 
@@ -865,11 +869,16 @@ def cmd_confirm(a, conf):
 
 
 def health_ok(conf):
+    """GET the health URL, verified against the manager's own certificate (UPDATE_HEALTH_CA): the server
+    certificate must chain to that exact self-signed certificate. The hostname is not checked: the
+    certificate has no name for localhost, and the pinned trust anchor already identifies the server.
+    A missing or unreadable certificate file counts as unhealthy."""
     url = conf["UPDATE_HEALTH_URL"]
     if not url:
         return True
-    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
     try:
+        ctx = ssl.create_default_context(cafile=conf["UPDATE_HEALTH_CA"])
+        ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_REQUIRED
         with urllib.request.urlopen(url, timeout=5, context=ctx) as r:
             return r.status == 200
     except (urllib.error.URLError, OSError, ValueError):
@@ -980,7 +989,10 @@ def slot_sound(conf, slot):
         if subprocess.run(["mount", "-o", "ro", dev, mnt], capture_output=True).returncode != 0:
             return False, "mount"
         try:
-            has = all(os.path.getsize(os.path.join(mnt, f)) > 0 for f in ("usr/share/unitotem/release-version", "usr/lib/systemd/systemd"))
+            need = ["usr/share/unitotem/release-version", "usr/lib/systemd/systemd"]
+            if backend(conf) == "grub":
+                need += ["vmlinuz", "initrd.img"]     # what the GRUB slot entries load (relative symlinks into boot/)
+            has = all(os.path.getsize(os.path.join(mnt, f)) > 0 for f in need)
         except OSError:
             has = False
         subprocess.run(["umount", mnt])
