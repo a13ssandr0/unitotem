@@ -358,6 +358,18 @@ UNITEOF
 [Service]
 SuccessExitStatus=1
 UNITEOF
+    # nvidia-drm with KMS: the display stays on the NVIDIA driver (modeset + fbdev for the console and Plymouth)
+    install -d "${ROOTFS}/etc/modules-load.d" "${ROOTFS}/etc/modprobe.d"
+    echo nvidia-drm > "${ROOTFS}/etc/modules-load.d/unitotem-nvidia.conf"
+    echo "options nvidia-drm modeset=1 fbdev=1" > "${ROOTFS}/etc/modprobe.d/unitotem-nvidia-drm.conf"
+    # nouveau fallback: nvidia-kernel-support blacklists nouveau, so the script loads it with an explicit modprobe
+    # when an NVIDIA display device has no driver (Pascal and older are not supported by the open modules)
+    install -d "${ROOTFS}/usr/lib/unitotem" "${ROOTFS}/etc/systemd/system/multi-user.target.wants"
+    install -m 755 /unitotem/files/unitotem-nouveau-fallback.sh "${ROOTFS}/usr/lib/unitotem/nouveau-fallback"
+    install -m 644 /unitotem/files/unitotem-nouveau-fallback.service \
+        "${ROOTFS}/usr/lib/systemd/system/unitotem-nouveau-fallback.service"
+    ln -sf /usr/lib/systemd/system/unitotem-nouveau-fallback.service \
+        "${ROOTFS}/etc/systemd/system/multi-user.target.wants/unitotem-nouveau-fallback.service"
 fi
 
 # ---------- root keeps a session D-Bus (/run/user/0/bus) from boot ----------

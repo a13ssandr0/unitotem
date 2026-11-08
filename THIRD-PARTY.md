@@ -25,8 +25,23 @@ GPL/LGPL software (Linux kernel, GRUB, systemd, glibc, ...). When an image is di
 available from the Debian and Raspberry Pi archives (`deb-src`); the exact package versions of each image are pinned in
 `unitotem/locks/` (snapshot.debian.org). A copy of the source for any of them is also available on request to the
 project maintainer for three years after the image was distributed. The amd64 images also copy the shim and GRUB
-binaries signed by Microsoft/Debian to the ESP (`unitotem/stage3-image.sh`); NVIDIA and Debian non-free firmware are
-installed as packages under their own licenses.
+binaries signed by Microsoft/Debian to the ESP (`unitotem/stage3-image.sh`); NVIDIA packages (amd64, below) and Debian
+non-free firmware are installed as packages under their own licenses.
+
+### NVIDIA packages in the amd64 images
+
+Installed from NVIDIA's CUDA repository (`developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/`), version 620.70.06,
+not from Debian (`unitotem/stage1-packages.sh`). The packages carry their copyright file in `/usr/share/doc/<package>/copyright`.
+
+| Component | Used as | License | Copyright | Upstream |
+|---|---|---|---|---|
+| nvidia-kernel-open-dkms (source package nvidia-kmod-open) | Source in `/usr/src/nvidia-620.70.06`, compiled by DKMS in the image build into `nvidia`, `nvidia-modeset`, `nvidia-drm`, `nvidia-uvm`, `nvidia-peermem` | MIT; dual MIT/GPL-2.0 when linked into a Linux kernel module (text below) | 2021 NVIDIA CORPORATION & AFFILIATES | https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/ |
+| libnvidia-allocator1 (source package nvidia-graphics-drivers) | Binary library, unmodified | NVIDIA Driver License Agreement (not free software; text below) | 1993-2023 NVIDIA Corporation | https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/ |
+| firmware-nvidia-gsp (source package nvidia-graphics-drivers) | GSP firmware loaded by the open modules, unmodified | NVIDIA Driver License Agreement (not free software; text below) | 1993-2023 NVIDIA Corporation | same |
+| libnvidia-egl-gbm1, libgles-nvidia1, libgles-nvidia2, libegl-nvidia0, libglx-nvidia0, nvidia-egl-icd, nvidia-kernel-support | Binary libraries and ICD, unmodified | Expected NVIDIA Driver License Agreement (copyright files not read) | not read | same |
+
+The open module source (`/usr/src/nvidia-620.70.06`) is in the image with the package. Not verified: the copyright files of the
+last row's packages.
 
 ## Manager (Python, `unitotem-manager/manager/`)
 
@@ -139,3 +154,71 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+### NVIDIA open GPU kernel modules (MIT; dual MIT/GPL-2.0 when linked)
+
+Source: `/usr/share/doc/nvidia-kernel-open-dkms/copyright` in the package (also in the image, with the package).
+
+```
+Except where noted otherwise, the individual files within this package are
+licensed as MIT:
+
+Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+However, when linked together to form a Linux kernel module, the resulting Linux
+kernel module is dual licensed as MIT/GPLv2.
+```
+
+### NVIDIA Driver License Agreement (excerpt; not free software)
+
+Source: `/usr/share/doc/firmware-nvidia-gsp/copyright` in the package, version v. February 25, 2025. The copyright file of
+`libnvidia-allocator1` is identical. The complete text is in the image at that path; the excerpt quotes the clauses that
+govern redistribution. Clauses quoted from the file, with `[...]` for omitted words.
+
+```
+1.1 [...]
+ d. Distribute the SOFTWARE provided for use with operating system kernels distributed under the terms of an OSI-approved open
+ source license as listed by the Open Source Initiative at http://opensource.org, provided that (i) the binary files thereof are
+ not modified in any way (except for uncompressing of compressed files) and (ii) this Agreement is provided to each SOFTWARE
+ recipient.
+
+2.1 [...] You may only use firmware in NVIDIA Platforms. You may not translate firmware, nor cause or permit firmware to be
+ translated, from the architecture or language in which it is originally provided by NVIDIA, into any other architecture or
+ language.
+
+2.3 You may not modify or create derivative works of the SOFTWARE provided in binary form.
+
+2.7 Except as expressly granted in this Agreement, you may not sell, rent, sublicense, distribute or transfer the SOFTWARE or
+ provide commercial hosting services with the SOFTWARE.
+
+2.8 You agree that GeForce or Titan SOFTWARE: (i) is licensed for use only on GeForce or Titan hardware products you own, and
+ (ii) is not licensed for datacenter deployment.
+
+2.9 You may not use the SOFTWARE in any manner that would cause it to become subject to an open source software license,
+ subject to the terms in the "Components Under Other Licenses" section below.
+```
+
+Redistribution in an image, as the text states it:
+
+- Allowed by 1.1(d) only: with an operating system kernel under an OSI-approved open source licence (the image kernel is Linux, GPL-2.0), with the binaries not modified except for decompression, and with the Agreement provided to each recipient (the copyright file in the image).
+- Firmware: only for NVIDIA Platforms; no translation (2.1).
+- No other sale, sublicence, distribution or transfer is granted (2.7). Use that makes the SOFTWARE subject to an open source licence is not allowed (2.9).
+- Inference, not a legal opinion: the NVIDIA binaries are unmodified; the DKMS module `nvidia.ko` is compiled from the MIT source package and is not one of them.

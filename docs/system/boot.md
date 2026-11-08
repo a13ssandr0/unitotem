@@ -59,6 +59,8 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 2. `ab_failover`: the other slot must pass `e2fsck -fn` and contain `/etc/unitotem/ota-preserve.list`. Writes guard `unitotem-ota.failover` (`cur->other`), switches the default (Pi: `os_prefix`, removes `tryboot.txt`; PC: `saved_entry`), `reboot -f`. Refused when the guard exists.
 3. mountroot, then local-bottom verify: `/sbin/init` and `/etc/unitotem/ota-preserve.list` must exist, else serve-fallback.
 4. init-bottom: `layout_complete` (flash image: ROOT_B and DATA created), DATA `e2fsck -p`, `grow_data` (DATA grown to the disk end), overlays on `/etc`, `/root`, `/var`, dpkg pinned to ROOT. Details: `storage-and-persistence.md`.
+   - Overlay outcome: `/run/unitotem-overlay.status` (initramfs, one line): `ok`, `no-data` (no DATA: boot with no overlays, intended on an 8 GB card), `failed:data-mount`, `failed:overlay-etc|overlay-root|overlay-var`, `failed:dpkg-pin`. Log lines carry the prefix `overlay: status <state>`. The same state is the `overlay-status=` key of `/mnt/data/.unitotem-overlay-status`.
+   - Not verified on hardware: fstab mounts a tmpfs on `/run` after switch_root (`fstab-amd64`, `fstab-arm64`), which may hide the initramfs file. Consumers must not rely on `/run/unitotem-overlay.status` after boot until checked; the DATA record is the post-boot source.
 5. multi-user: `unitotem-boot-ok`.
    - Plain A/B boot: slot confirmed, guard removed, ESP `grub.cfg` synced, auto-repair started.
    - Trial boot: waits for `UPDATE_HEALTH_URL` (180 s), then `confirm_now`. Timeout: `rolled-back`, plain reboot.
@@ -66,7 +68,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 ### OTA fallback entry
 
-- `serve-fallback`: framebuffer progress UI, `fallback_auth_setup` (writes the login accounts and keys to the initramfs tmpfs; sources in [Fallback authentication](deploy-and-recovery.md#fallback-authentication), kernel token `unitotem.ota.authkey=`), dropbear `-p 2222` (`-T 3 -j -k`, `-B` in open mode only), optional reverse tunnel to `OTA_HOST:OTA_CTRL_PORT` from `unitotem-ota.conf`, idle watchdog.
+- `serve-fallback`: framebuffer progress UI, `fallback_auth_setup` (writes the login accounts and keys to the initramfs tmpfs; sources in [Fallback authentication](deploy-and-recovery.md#fallback-authentication), kernel token `unitotem.ota.authkey=`), dropbear `-p 2222` (`-T 3 -j -k`, `-B` in open mode only), idle watchdog (stands down on a successful dropbear login, see [Fallback authentication](deploy-and-recovery.md#fallback-authentication)).
 - x86 recovery entry (`UniTotem OTA`): `linux /unitotem/recovery-vmlinuz unitotem.ota=1 console=tty0`.
 - Deploy: `set-default-recovery` makes the fallback default; `set-trial-boot` arms the real system; `promote-default` runs after confirmation (single-root path).
 
@@ -85,6 +87,8 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 - Staged in `EFI/unitotem-sb/`: `shimx64.efi`, `mmx64.efi`, `grubx64.efi` (Debian-signed), `grub-unsigned.efi`, `grub.cfg` stub (`search --label EFI`, `configfile` of `unitotem-grub/grub/grub.cfg`).
 - `BOOTX64.EFI` stays plain GRUB until activation; `grub-install --no-uefi-secure-boot`.
 - The staged `shim-signed` is dual-signed with the Microsoft UEFI CA 2011 and 2023.
+- Kernel (amd64): from trixie-backports, `linux-image-7.2.12+deb13-amd64` (version `7.2.12-1~bpo13+1` in the index of 2026-11-08). Its source package is `linux-signed-amd64`: the Debian-signed `linux-binary` image is what GRUB loads. The staging names no kernel version: GRUB loads `/vmlinuz` and `/initrd.img`, which are symlinks in each ROOT slot.
+- NVIDIA module (amd64): signed by the DKMS key generated in the image build (signer `DKMS module signing key`). The private key is removed from the image; `mok.pub` stays. `mokutil` in the image is for MOK enrolment of that public key, which is the physical-intervention path.
 - Activation: `ota-engine populate-bootfs --secure-boot shim` copies signed GRUB, MokManager and `grub.cfg` into `EFI/BOOT` (and `EFI/debian/grub.cfg`), renames shim over `BOOTX64.EFI` last, writes `EFI/unitotem-sb/active`, prints `UNITOTEM_SECURE_BOOT=shim`.
 - The choice `shim|noshim|abort` is made in `deploy/remote-deploy.sh` (`secure_boot_gate`).
 
@@ -94,11 +98,11 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 `unitotem-boot-orientation`: `get [CONNECTOR]`, `set CONNECTOR normal|left|right|inverted`; JSON output; exit 0 ok, 1 failure, 2 bad arguments; error codes `no-backend`, `write-failed`. Env `UNITOTEM_BOOTFS` (`/boot/firmware`), `UNITOTEM_ESP` (`/boot/efi`), `UNITOTEM_GRUBENV`.
 
-`deploy/ota-engine.sh` boot subcommands: `init-premount`, `serve-fallback --reason R --kind update|recovery --idle-timeout S`, `local-bottom-verify --rootmnt P`, `set-default-recovery`, `set-trial-boot`, `promote-default`, `populate-bootfs [--secure-boot shim]`, `prepare-bootfs` (options: `deploy-and-recovery.md`). Stdout markers: `UNITOTEM_TRIAL_ARMED=1`, `UNITOTEM_PROMOTED=1`, `UNITOTEM_DEFAULT_RECOVERY=1`, `UNITOTEM_SECURE_BOOT=shim`. `UNITOTEM_OTA_DEBUG=1`: failures drop to an emergency shell.
+`deploy/ota-engine.sh` boot subcommands: `init-premount`, `serve-fallback --reason R --kind update|recovery --idle-timeout S`, `local-bottom-verify --rootmnt P`, `set-default-recovery`, `set-trial-boot`, `promote-default` (single-root only, refused on A/B), `populate-bootfs [--secure-boot shim]`, `prepare-bootfs` (options: `deploy-and-recovery.md`). Stdout markers: `UNITOTEM_TRIAL_ARMED=1`, `UNITOTEM_PROMOTED=1`, `UNITOTEM_DEFAULT_RECOVERY=1`, `UNITOTEM_SECURE_BOOT=shim`. `UNITOTEM_OTA_DEBUG=1`: failures drop to an emergency shell.
 
-Kernel command line: `root=LABEL=ROOT_A|ROOT_B` (A/B) or `ROOT`, `rootfstype=ext4 rootwait ro`, `unitotem.slot=a|b`, `unitotem.ota=1|recover`, `unitotem.ota.bootcount=1` (single-root trial), `video=...`, `plymouth.ignore-serial-consoles`.
+Kernel command line: `root=LABEL=ROOT_A|ROOT_B` (A/B) or `ROOT`, `rootfstype=ext4 rootwait ro`, `unitotem.slot=a|b`, `unitotem.ota=1|recover`, `video=...`, `plymouth.ignore-serial-consoles`.
 
-Boot-partition files: `unitotem-ota.request` (`UNITOTEM_OTA_WIPE_DATA=0|1`, self-clearing), `unitotem-ota.authorized_keys` (one `ssh-ed25519` line, fallback login key written by `unitotem-ota-arm --authkey-file`; kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, whitelisted `UNITOTEM_*`/`OTA_*`), `unitotem-ota.bootcount` (single-root), `unitotem-ota.failover` (guard), `tryboot.txt`, `cmdline.txt`, `config.txt`, `slota/`, `slotb/`. `grubenv` is a 1024-byte block written by `grubenv_write`. ESP `esp-grub.cfg` carries `# unitotem-grub-level: N`.
+Boot-partition files: `unitotem-ota.request` (`UNITOTEM_OTA_WIPE_DATA=0|1`, self-clearing), `unitotem-ota.authorized_keys` (one `ssh-ed25519` line, fallback login key written by `unitotem-ota-arm --authkey-file`; kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, whitelisted `UNITOTEM_*`/`OTA_*`), `unitotem-ota.failover` (guard), `tryboot.txt`, `cmdline.txt`, `config.txt`, `slota/`, `slotb/`. `grubenv` is a 1024-byte block written by `grubenv_write`. ESP `esp-grub.cfg` carries `# unitotem-grub-level: N`.
 
 Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point-of-no-return`; dropbear on 2222.
 
@@ -122,7 +126,7 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 - `ota-hook` carries no password or hash. `/etc/passwd`, `/etc/shadow` and `/root/.ssh/authorized_keys` are generated in the initramfs tmpfs at each fallback start. The fallback is independent of the image's root first-access state.
 - OTA frame: drawn for 16 bpp RGB565 (Pi fallback framebuffer) and 32 bpp (KMS); geometry from `fb0` `virtual_size` and `bits_per_pixel`. `NEWT_COLORS` cannot hide the whiptail border: `ota_frame` paints the ring cells black.
 - The image sets no `hdmi_enable_4kp60`: 4Kp60 on a Pi 4 needs it in `[pi4]` of `config.txt` (HDMI0 only, more heat and power).
-- `promote-default` (rpi) writes `config.txt` without `os_prefix`: single-root path only.
+- `promote-default` (rpi) refuses a device whose `config.txt` has `os_prefix` (A/B): it fails before writing anything. A/B promotion is `unitotem-update confirm`.
 - On deployed Pi devices `config.txt` is rewritten at runtime by `ota-engine.sh` (`set-default-recovery`, `set-trial-boot`, `promote-default`); the shipped `config.txt` applies only to the built `.img`. Dtoverlay/dtparam changes go in `config-extra.txt`.
 - `plymouth-theme-unitotem` (manager repository) postinst: `update-alternatives` for `default.plymouth` (priority 100), `plymouth-set-default-theme unitotem`, `update-initramfs -u`, errors ignored. An image that pins another theme by hand puts the alternative in manual mode.
 - Stage 2 appends `FRAMEBUFFER=y` to `initramfs.conf`: the splash in the initramfs needs it.
@@ -130,6 +134,7 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 ## Tests
 
 - `python3 tools/release/test_boot_orientation.py`, `test_rpi_backend.py`, `test_repair.py`, `test_secure_boot_gate.py`.
+- `dash tools/release/test_overlay_status.sh`: overlay hook under dash with mocked mount, blkid, e2fsck (status states, log prefix, one-line file).
 - `bash unitotem/check-recovery-commands.sh ROOTFS INITRD deploy/ota-engine.sh`.
 - `unitotem/verify-image.sh`: GRUB entries, fallback numbering, Secure Boot staging, Pi slot dirs, initramfs contents.
 - Firmware behaviour (`os_prefix`, tryboot) is verified on hardware only.

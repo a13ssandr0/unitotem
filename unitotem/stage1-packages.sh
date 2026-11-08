@@ -32,6 +32,7 @@ cat > "${ROOTFS}/etc/apt/sources.list" << EOF
 deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
 deb http://security.debian.org/debian-security ${RELEASE}-security main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian ${RELEASE}-backports main contrib non-free non-free-firmware
 EOF
 
 if [ "$ARCH" = "arm64" ]; then
@@ -51,7 +52,63 @@ if [ "$ARCH" = "arm64" ]; then
     echo "deb http://archive.raspberrypi.org/debian/ ${RELEASE} main" \
         > "${ROOTFS}/etc/apt/sources.list.d/raspi.list"
 fi
-# No backports entry: every package comes from the stable suite.
+if [ "$ARCH" = "amd64" ]; then
+    # The NVIDIA driver comes from NVIDIA's CUDA repository, not Debian: Debian's branch 550 does not build on kernel 7.x. The repository
+    # is laid out for Debian 13 only, hence the guard. The key is the one of NVIDIA's cuda-keyring package, downloaded over HTTPS (trust on
+    # first fetch); its only primary key must have the fingerprint pinned here. NVIDIA publishes no fingerprint page: the key ID 8793F200 is
+    # confirmed by a forum thread. The key is used through signed-by only (no apt-key, nothing in trusted.gpg.d).
+    [ "$RELEASE" = trixie ] || { echo "ERROR: the NVIDIA repository is debian13 (trixie only), RELEASE=${RELEASE}" >&2; exit 1; }
+    NVIDIA_KEY_FPR=02182E60104FCDC26EAE1B8597A5D4CB8793F200
+    NVIDIA_REPO=https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64
+    rm -rf /tmp/unitotem-nvidia-keyring
+    mkdir -p /tmp/unitotem-nvidia-keyring/gnupg
+    chmod 700 /tmp/unitotem-nvidia-keyring/gnupg
+    curl -fsSL "${NVIDIA_REPO}/cuda-keyring_1.1-1_all.deb" -o /tmp/unitotem-nvidia-keyring/cuda-keyring.deb
+    dpkg-deb -x /tmp/unitotem-nvidia-keyring/cuda-keyring.deb /tmp/unitotem-nvidia-keyring/x
+    NVIDIA_KEYRING=/tmp/unitotem-nvidia-keyring/x/usr/share/keyrings/cuda-archive-keyring.gpg
+    [ -s "$NVIDIA_KEYRING" ] || { echo "ERROR: cuda-archive-keyring.gpg is not in cuda-keyring_1.1-1_all.deb" >&2; exit 1; }
+    # 'pub' opens a primary key and the 'fpr' line after it is that key's fingerprint: two keys give two lines, which is a mismatch.
+    NVIDIA_FPRS=$(gpg --homedir /tmp/unitotem-nvidia-keyring/gnupg --no-default-keyring --with-colons --show-keys "$NVIDIA_KEYRING" 2>/dev/null \
+        | awk -F: '$1=="pub"{want=1; next} $1=="fpr" && want {print $10; want=0}') \
+        || { echo "ERROR: cannot read the NVIDIA keyring" >&2; exit 1; }
+    [ "$NVIDIA_FPRS" = "$NVIDIA_KEY_FPR" ] || { echo "ERROR: NVIDIA key fingerprint is '${NVIDIA_FPRS}', expected ${NVIDIA_KEY_FPR}" >&2; exit 1; }
+    mkdir -p "${ROOTFS}/usr/share/keyrings" "${ROOTFS}/etc/apt/sources.list.d" "${ROOTFS}/etc/apt/preferences.d"
+    install -m 644 "$NVIDIA_KEYRING" "${ROOTFS}/usr/share/keyrings/unitotem-nvidia.gpg"
+    echo "deb [signed-by=/usr/share/keyrings/unitotem-nvidia.gpg] ${NVIDIA_REPO} /" > "${ROOTFS}/etc/apt/sources.list.d/unitotem-nvidia.list"
+    # Stage 1 only (removed in "Package lock: verify or freeze"). NVIDIA's packages come from 995, so they beat the backports pin (990);
+    # every other NVIDIA-origin package is excluded, so NVIDIA's dkms, libegl1, ... never replace Debian's.
+    cat > "${ROOTFS}/etc/apt/preferences.d/96-unitotem-nvidia" << 'EOF_NV'
+Package: nvidia-* libnvidia-* libgles-nvidia* libegl-nvidia* libglx-nvidia* firmware-nvidia-gsp xserver-xorg-video-nvidia glx-alternative-nvidia
+Pin: origin developer.download.nvidia.com
+Pin-Priority: 995
+
+Package: *
+Pin: origin developer.download.nvidia.com
+Pin-Priority: -1
+EOF_NV
+    rm -rf /tmp/unitotem-nvidia-keyring
+fi
+
+# trixie-backports is NotAutomatic (priority 100): only the packages named in 97-unitotem-backports (priority 990) come from it.
+# A pin, not `apt-get -t`: -t would pull every dependency that has a backports build. The file stays in the image.
+mkdir -p "${ROOTFS}/etc/apt/preferences.d"
+if [ "$ARCH" = "amd64" ]; then
+    cat > "${ROOTFS}/etc/apt/preferences.d/97-unitotem-backports" << 'EOF_BPO'
+# trixie-backports: only these packages (and what their dependencies force) come from it; everything else stays on the stable suite
+Package: linux-base linux-image-* linux-headers-* linux-kbuild-* linux-compiler-gcc-* linux-support-* firmware-* mesa-* libgl1-mesa-dri libegl-mesa0 libglx-mesa0 libgbm1 libglapi-mesa pipewire pipewire-* libpipewire-* libspa-0.2-* wireplumber wireplumber-* libwireplumber-* gir1.2-wp-*
+Pin: release n=trixie-backports
+Pin-Priority: 990
+EOF_BPO
+elif [ "$ARCH" = "arm64" ]; then
+    cat > "${ROOTFS}/etc/apt/preferences.d/97-unitotem-backports" << 'EOF_BPO'
+# trixie-backports: only PipeWire and WirePlumber come from it (the kernel, firmware and Mesa come from the Raspberry Pi archive / stable)
+Package: pipewire pipewire-* libpipewire-* libspa-0.2-* wireplumber wireplumber-* libwireplumber-* gir1.2-wp-*
+Pin: release n=trixie-backports
+Pin-Priority: 990
+EOF_BPO
+else
+    echo "ERROR: no backports pins for ${ARCH}" >&2; exit 1
+fi
 
 # UniTotem Manager repository
 curl -fsSL https://a13ssandr0.github.io/unitotem-manager/KEY.gpg \
@@ -74,12 +131,15 @@ if [ "${PKGLOCK:-on}" != off ] && [ -f "$PKGLOCK_FILE" ]; then
 deb http://snapshot.debian.org/archive/debian/${SNAP}/ ${RELEASE} main contrib non-free non-free-firmware
 deb http://snapshot.debian.org/archive/debian/${SNAP}/ ${RELEASE}-updates main contrib non-free non-free-firmware
 deb http://snapshot.debian.org/archive/debian-security/${SNAP}/ ${RELEASE}-security main contrib non-free non-free-firmware
+deb http://snapshot.debian.org/archive/debian/${SNAP}/ ${RELEASE}-backports main contrib non-free non-free-firmware
 EOF
     echo 'Acquire::Check-Valid-Until "false";' > "${ROOTFS}/etc/apt/apt.conf.d/99-pkglock"
     mkdir -p "${ROOTFS}/etc/apt/preferences.d"
     python3 /unitotem/pkglock.py prefs "$PKGLOCK_FILE" > "${ROOTFS}/etc/apt/preferences.d/99-unitotem-lock"
 fi
 
+# The NVIDIA repository (sources.list.d/unitotem-nvidia.list) has no snapshot and is read live, also with a lock. A locked NVIDIA version
+# that NVIDIA has withdrawn makes the installs below fail: renew the lock (tools/pkglock.py upgrade amd64).
 chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get update
 PKGLOCK_FROZEN_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if [ "${PKGLOCK:-on}" != off ]; then
@@ -100,16 +160,49 @@ EOF_PIN
 
 # ---------- Kernel + firmware + bootloader ----------
 
+# The kernel version of the rootfs. Fails unless /lib/modules holds exactly one kernel: a second one (stable and backports) would make
+# the checks below test an arbitrary one.
+rootfs_kver() {
+    local dirs n
+    dirs=$(chroot "${ROOTFS}" find /lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n') || dirs=""
+    n=$(printf '%s' "$dirs" | grep -c . || true)
+    if [ "$n" != 1 ]; then
+        echo "ERROR: expected exactly one kernel in /lib/modules, found ${n}: $(echo $dirs)" >&2
+        return 1
+    fi
+    echo "$dirs"
+}
+
+# The NVIDIA module DKMS builds (nvidia-kernel-open-dkms 620: nvidia.ko, or a compressed nvidia.ko.*) for kernel $1.
+nvidia_module_present() {
+    chroot "${ROOTFS}" sh -c "ls /lib/modules/$1/updates/dkms/nvidia.ko* >/dev/null 2>&1"
+}
+
 if [ "$ARCH" = "amd64" ]; then
+    # Kernel and firmware come from trixie-backports (pinned in 97-unitotem-backports).
     # linux-headers-amd64 provides the headers for the NVIDIA DKMS build below and
     # stays in the shipped image (see the note beside that build).
+    # initramfs-tools first: the 7.2 kernel depends on `dracut | initramfs-tools` and apt would pick dracut.
+    apt_install --no-install-recommends initramfs-tools zstd
     apt_install --no-install-recommends \
         linux-image-amd64 \
         linux-headers-amd64 \
         firmware-linux \
         firmware-linux-nonfree \
         firmware-misc-nonfree \
-        firmware-intel-graphics
+        firmware-intel-graphics \
+        firmware-iwlwifi \
+        firmware-realtek \
+        firmware-atheros \
+        firmware-mediatek \
+        firmware-brcm80211 \
+        firmware-intel-misc \
+        intel-microcode \
+        amd64-microcode
+    # Wi-Fi and Bluetooth firmware of the common PC cards (Intel, Realtek, Atheros, MediaTek, Broadcom): in Debian 13
+    # firmware-linux-nonfree depends only on firmware-misc-nonfree and firmware-amd-graphics, so without these a PC has no
+    # Wi-Fi or Bluetooth (the kernel drivers are there, the firmware files are not). intel-microcode and amd64-microcode:
+    # CPU microcode updates, loaded early from the initramfs.
     # firmware-intel-graphics: i915 display (DMC), GuC and HuC firmware. Without it i915 logs
     # 'failed to load i915/adlp_dmc.bin' and the iHD VA-API driver cannot initialise (vaInitialize failed): no hardware video decode.
     apt_install --no-install-recommends \
@@ -201,7 +294,7 @@ if [ "$ARCH" = "amd64" ]; then
     # compositor (labwc) uses the kernel KMS drivers (i915/xe, amdgpu, nvidia-drm)
     # through libdrm/GBM.
 
-    # Mesa from trixie (iris, radeonsi). mesa-va-drivers is not in the shared block above. mesa-vulkan-drivers
+    # Mesa from trixie-backports (iris, radeonsi). mesa-va-drivers is not in the shared block above. mesa-vulkan-drivers
     # (libvulkan1 recommends it) is purged in "Remove what the shipped system does not need": the viewer uses ANGLE-GL only.
     apt_install \
         libgl1-mesa-dri mesa-va-drivers mesa-utils
@@ -219,16 +312,19 @@ if [ "$ARCH" = "amd64" ]; then
     apt_install \
         firmware-amd-graphics libdrm-amdgpu1
 
-    # NVIDIA proprietary (Debian's nvidia-driver, branch 550): blacklists nouveau; covers Maxwell onwards (older cards lose acceleration).
-    # The module is built by DKMS against this image's kernel, which stays matched because nothing upgrades in place.
-    # No nvidia-vaapi-driver: Chromium does not use VA-API on NVIDIA (manager gpu.py, _NVIDIA_DRM_NAMES). The CUDA/Vulkan/NVDEC
-    # libraries the recommends bring are purged in "Remove what the shipped system does not need".
-    apt_install \
-        nvidia-driver
+    # NVIDIA proprietary driver, branch 620 with the open kernel modules, from NVIDIA's repository (source block at the top of this file).
+    # Turing and newer only: the open modules do not support Maxwell, Pascal or Volta, which run on nouveau/NVK.
+    # --no-install-recommends: no CUDA, NVDEC or Vulkan libraries. The module is built by DKMS against this image's kernel, which stays
+    # matched because nothing upgrades in place. nvidia-kernel-support blacklists nouveau; stage 2 loads nvidia-drm and falls back to nouveau
+    # for an NVIDIA display device the open modules do not drive.
+    # No nvidia-vaapi-driver: Chromium does not use VA-API on NVIDIA (manager gpu.py, _NVIDIA_DRM_NAMES).
+    apt_install --no-install-recommends \
+        nvidia-kernel-open-dkms nvidia-kernel-support firmware-nvidia-gsp \
+        libnvidia-allocator1 libnvidia-egl-gbm1 libgles-nvidia1 libgles-nvidia2 libegl-nvidia0 libglx-nvidia0 nvidia-egl-icd
 
     # Fail the build if the NVIDIA module did not build: apt only warns about DKMS failures.
-    KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
-    chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
+    KVER=$(rootfs_kver)
+    nvidia_module_present "$KVER" \
         || { echo "ERROR: the NVIDIA module was not built for ${KVER}" >&2; exit 1; }
     echo "NVIDIA module built for ${KVER}"
 
@@ -331,16 +427,13 @@ purge_list() { # names from $@ that are actually installed
     # Always succeed: the loop's status is that of the last name, which would stop the build under set -e.
     return 0
 }
-# Libraries the product never loads, all pulled in by Recommends or by a Depends that links nothing:
+# Libraries the product never loads, pulled in by Recommends or by a Depends that links nothing:
 #  - mesa-vulkan-drivers: the viewer renders through ANGLE-GL (libgallium keeps llvmpipe and radeonsi); nothing depends on it.
-#  - amd64 NVIDIA extras: CUDA (libcuda1, ptxjit), NVDEC (libnvcuvid1, libnvidia-encode1) and the Vulkan ICD (+ ray-tracing core).
-#    libnvidia-allocator1, libnvidia-egl-gbm1 and libgles-nvidia* stay: labwc needs them on NVIDIA.
+# No NVIDIA library is listed: the NVIDIA set is installed with --no-install-recommends and pulls no CUDA, NVDEC or Vulkan ICD library
+# (simulated against NVIDIA's repository, 2026-11-08). libnvidia-allocator1, libnvidia-egl-gbm1 and libgles-nvidia* are needed by labwc.
 # apt (not dpkg --force-depends): the dry run shows what else would go, and the DKMS module is asserted afterwards.
 # Before the compilers are force-purged below: afterwards dpkg has unmet dependencies (linux-headers needs gcc-14) and apt refuses to remove anything.
 REMOVE_LIBS=$(purge_list mesa-vulkan-drivers)
-if [ "$ARCH" = "amd64" ]; then
-    REMOVE_LIBS="$REMOVE_LIBS $(purge_list libcuda1 libnvidia-encode1 libnvcuvid1 nvidia-vulkan-icd libnvidia-rtcore libnvidia-ptxjitcompiler1)"
-fi
 echo ">>> removing unused libraries (apt): $(echo $REMOVE_LIBS)"
 if [ -n "$(echo $REMOVE_LIBS)" ]; then
     # shellcheck disable=SC2086
@@ -371,14 +464,15 @@ if [ "$ARCH" = "arm64" ]; then
 else
     # dkms depends on the compilers, so apt would remove them and dkms's prerm would delete the
     # built NVIDIA module. dpkg --force-depends removes only the compilers.
-    REMOVE=$(purge_list build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 \
+    # gcc-14-for-host and cpp-14-for-host: the kernel headers (7.2) depend on them.
+    REMOVE=$(purge_list build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 gcc-14-for-host cpp-14-for-host \
                         gcc-x86-64-linux-gnu g++-x86-64-linux-gnu cpp-x86-64-linux-gnu \
                         gcc-14-x86-64-linux-gnu g++-14-x86-64-linux-gnu cpp-14-x86-64-linux-gnu)
     echo ">>> removing (amd64, dpkg --force-depends): $(echo $REMOVE)"
     # shellcheck disable=SC2086
     [ -z "$REMOVE" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $REMOVE
-    KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
-    chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
+    KVER=$(rootfs_kver)
+    nvidia_module_present "$KVER" \
         || { echo "ERROR: the NVIDIA module disappeared when removing the compilers" >&2; exit 1; }
 fi
 # libshiboken6 declares a dependency on libclang1-19 (the generator's library) but no shared object of it links or loads libclang.
@@ -388,8 +482,8 @@ echo ">>> removing (dpkg --force-depends): $(echo $CLANG)"
 # shellcheck disable=SC2086
 [ -z "$CLANG" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $CLANG
 if [ "$ARCH" = "amd64" ]; then
-    KVER=$(chroot "${ROOTFS}" sh -c 'ls /lib/modules | head -1')
-    chroot "${ROOTFS}" test -e "/lib/modules/${KVER}/updates/dkms/nvidia-current.ko.xz" \
+    KVER=$(rootfs_kver)
+    nvidia_module_present "$KVER" \
         || { echo "ERROR: the NVIDIA module disappeared when removing the NVIDIA extras" >&2; exit 1; }
 fi
 # The NVIDIA module (amd64) is signed with a DKMS key generated in this build
@@ -434,12 +528,15 @@ if [ "$PKGLOCKED" = 1 ]; then
 deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
 deb http://security.debian.org/debian-security ${RELEASE}-security main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian ${RELEASE}-backports main contrib non-free non-free-firmware
 EOF
 elif [ "${PKGLOCK:-on}" != off ]; then
     mkdir -p "${WORK_DIR}"
     python3 /unitotem/pkglock.py freeze "${ROOTFS}" --arch "${ARCH}" --release "${RELEASE}" --snapshot "${PKGLOCK_FROZEN_AT}" --out "${WORK_DIR}/${ARCH}.lock.new"
     echo ">>> NEW package lock in work/${ARCH}/${ARCH}.lock.new: copy it to unitotem/locks/${ARCH}.lock and commit it"
 fi
+# The NVIDIA repository is a build-time source, like the snapshot sources above: the image carries none of its files (amd64 only, no-op elsewhere).
+rm -f "${ROOTFS}/etc/apt/sources.list.d/unitotem-nvidia.list" "${ROOTFS}/usr/share/keyrings/unitotem-nvidia.gpg" "${ROOTFS}/etc/apt/preferences.d/96-unitotem-nvidia"
 
 tar -I pigz -C "${ROOTFS}" -cf "${WORK_DIR}/stage1.tar.gz" .
 

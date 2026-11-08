@@ -46,7 +46,7 @@ chk "chpasswd uses common-password" file_has "$R/etc/pam.d/chpasswd" '^@include[
 chk "passwd uses common-password" file_has "$R/etc/pam.d/passwd" '^@include[[:space:]]+common-password'
 
 echo "== Content removed on purpose"
-for p in chromium chromium-browser chromium-common chromium-l10n build-essential gcc g++ cpp gcc-14 g++-14 cpp-14; do
+for p in chromium chromium-browser chromium-common chromium-l10n build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 gcc-14-for-host cpp-14-for-host; do
     installed "$p" && bad "package $p must not be installed" || ok "package $p absent"
 done
 for p in gstreamer1.0-plugins-bad mesa-vulkan-drivers libclang1-19 tigervnc-scraping-server pocketsphinx-en-us ghostscript; do
@@ -57,10 +57,55 @@ if [ "$ARCH" = amd64 ]; then
         installed "$p" && bad "package $p must not be installed (size reduction)" || ok "package $p absent"
     done
 fi
-chk "no apt pin left under /etc/apt/preferences.d (stage-1 pins and the package lock are build-time only)" bash -c "[ -z \"\$(ls -A '$R/etc/apt/preferences.d' 2>/dev/null)\" ]"
+chk "no apt pin left under /etc/apt/preferences.d except 97-unitotem-backports (stage-1 skip, NVIDIA and package-lock pins are build-time only)" bash -c "[ -z \"\$(ls -A '$R/etc/apt/preferences.d' 2>/dev/null | grep -vx 97-unitotem-backports)\" ]"
 for p in wayvnc mesa-libgallium libllvm19 pipewire python3-libgpiod; do chk "package $p installed" installed "$p"; done
 [ "$ARCH" = amd64 ] && chk "package libnvidia-allocator1 installed (GBM on NVIDIA)" installed libnvidia-allocator1
-[ "$ARCH" = amd64 ] && chk "NVIDIA module still present after removing the compilers" bash -c "ls $R/lib/modules/*/updates/dkms/nvidia-current.ko* >/dev/null 2>&1"
+echo "== Backports stack (trixie-backports: amd64 kernel, firmware, NVIDIA driver, Mesa; PipeWire and WirePlumber on both)"
+# Installed package whose name matches the ERE $1: prints "name version" (empty when none)
+pkgmatch() { awk -v re="$1" 'BEGIN{RS="";FS="\n"} { n=""; v=""; s=0; for(i=1;i<=NF;i++){ if($i ~ /^Package: /) n=substr($i,10); else if($i ~ /^Version: /) v=substr($i,10); else if($i=="Status: install ok installed") s=1 } if(s && n ~ re){ print n " " v; exit } }' "$R/var/lib/dpkg/status"; }
+pkgver() { pkgmatch "^$1\$" | cut -d' ' -f2; }
+kdirs() { ls -1d "$R"/lib/modules/*/ 2>/dev/null; }
+one_kdir() { [ "$(kdirs | wc -l)" = 1 ]; }
+kernel_bpo13() { pkgmatch '^linux-image-[0-9].*-amd64$' | cut -d' ' -f2 | grep -q 'bpo13'; }
+fw_2026() { pkgver firmware-linux-nonfree | grep -qE '^([0-9]+:)?2026'; }
+fw_misc_2026() { pkgver firmware-misc-nonfree | grep -qE '^([0-9]+:)?2026'; }
+mesa_26() { pkgver mesa-libgallium | grep -qE '^([0-9]+:)?26\.'; }
+nvidia_open_620() { pkgver nvidia-kernel-open-dkms | grep -qE '^([0-9]+:)?620\.70\.06-'; }
+# NVIDIA module $1 (nvidia, nvidia-drm, nvidia-modeset) built into the single kernel directory, any compression
+nvidia_mod() { local k f; one_kdir || return 1; k=$(kdirs); for f in "$k"updates/dkms/"$1".ko "$k"updates/dkms/"$1".ko.xz "$k"updates/dkms/"$1".ko.zst "$k"updates/dkms/"$1".ko.gz; do test -s "$f" && return 0; done; return 1; }
+pkg_bpo13() { pkgver "$1" | grep -q '~bpo13'; }
+if [ "$ARCH" = amd64 ]; then
+    chk "backports kernel: the linux-image-*-amd64 package Version contains bpo13" kernel_bpo13
+    chk "firmware-linux-nonfree Version starts with 2026" fw_2026
+    if installed firmware-misc-nonfree; then chk "firmware-misc-nonfree Version starts with 2026" fw_misc_2026; else ok "firmware-misc-nonfree absent"; fi
+    chk "mesa-libgallium Version starts with 26." mesa_26
+    chk "nvidia-kernel-open-dkms is installed at 620.70.06 (NVIDIA's repository)" nvidia_open_620
+    chk "NVIDIA module nvidia.ko* present in lib/modules/<kver>/updates/dkms for the single kernel directory" nvidia_mod nvidia
+    chk "NVIDIA module nvidia-drm.ko* present in lib/modules/<kver>/updates/dkms for the single kernel directory" nvidia_mod nvidia-drm
+    chk "NVIDIA module nvidia-modeset.ko* present in lib/modules/<kver>/updates/dkms for the single kernel directory" nvidia_mod nvidia-modeset
+fi
+if [ "$ARCH" = amd64 ]; then
+    echo "== NVIDIA (amd64): NVIDIA's 620 stack only, nouveau fallback, no NVIDIA apt source in the image"
+    # Installed NVIDIA-family packages: "name version" per line
+    nv_pkgs() { awk 'BEGIN{RS="";FS="\n"} { n=""; v=""; s=0; for(i=1;i<=NF;i++){ if($i ~ /^Package: /) n=substr($i,10); else if($i ~ /^Version: /) v=substr($i,10); else if($i=="Status: install ok installed") s=1 } if(s && n ~ /^(nvidia-|libnvidia-|libgles-nvidia|libegl-nvidia|libglx-nvidia|firmware-nvidia)/) print n " " v }' "$R/var/lib/dpkg/status"; }
+    # Debian 550 stack: named packages, or any package at a 550.x version
+    nv_debian550() { nv_pkgs | awk '$1 ~ /^(nvidia-driver|nvidia-kernel-dkms|nvidia-kernel-common)$/ || $2 ~ /^([0-9]+:)?550\./'; }
+    l550=$(nv_debian550 | paste -sd';' -)
+    if [ -z "$l550" ]; then ok "no Debian 550 NVIDIA package installed"; else bad "Debian 550 NVIDIA package installed: $l550"; fi
+    fw_gsp_same() { local a b; a=$(pkgver nvidia-kernel-open-dkms); b=$(pkgver firmware-nvidia-gsp); [ -n "$a" ] && [ "$a" = "$b" ]; }
+    chk "firmware-nvidia-gsp is installed at the nvidia-kernel-open-dkms version" fw_gsp_same
+    chk "nouveau fallback is executable (usr/lib/unitotem/nouveau-fallback)" test -x "$R/usr/lib/unitotem/nouveau-fallback"
+    chk "unitotem-nouveau-fallback.service is shipped" test -s "$R/usr/lib/systemd/system/unitotem-nouveau-fallback.service"
+    chk "unitotem-nouveau-fallback.service is enabled (multi-user.target.wants)" bash -c "test \"\$(readlink '$R/etc/systemd/system/multi-user.target.wants/unitotem-nouveau-fallback.service')\" = /usr/lib/systemd/system/unitotem-nouveau-fallback.service"
+    chk "nvidia-drm is loaded at boot (modules-load.d/unitotem-nvidia.conf)" file_has "$R/etc/modules-load.d/unitotem-nvidia.conf" '^nvidia-drm$'
+    chk "nvidia-drm options: modeset=1 fbdev=1 (modprobe.d/unitotem-nvidia-drm.conf)" file_has "$R/etc/modprobe.d/unitotem-nvidia-drm.conf" '^options nvidia-drm modeset=1 fbdev=1[[:space:]]*$'
+    for f in etc/apt/sources.list.d/unitotem-nvidia.list etc/apt/keyrings/unitotem-nvidia.gpg usr/share/keyrings/unitotem-nvidia.gpg etc/apt/preferences.d/96-unitotem-nvidia; do
+        chk "no NVIDIA apt file in the image ($f)" test ! -e "$R/$f"
+    done
+fi
+chk "pipewire is the backports build (Version contains ~bpo13)" pkg_bpo13 pipewire
+chk "wireplumber is the backports build (Version contains ~bpo13)" pkg_bpo13 wireplumber
+chk "exactly one directory under lib/modules (no leftover second kernel)" one_kdir
 if installed unitotem-manager; then
     installed haproxy && bad "haproxy installed alongside a 3.x manager (it would hold ports 80/443)" || ok "haproxy absent with the 3.x manager"
 fi
@@ -147,7 +192,9 @@ if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
     chk "the theme has its wordmark and spinner for every screen tier (the script loads wordmark-TIER.png / spinner-TIER.png; dev3 shipped no wordmark)" bash -c "for t in 1280 1920 2560 3840; do for k in wordmark spinner; do test -s '$R/usr/share/plymouth/themes/unitotem/'\$k-\$t.png || { echo missing \$k-\$t.png; exit 1; }; done; done"
     INITRD=""
     if [ "$ARCH" = arm64 ]; then INITRD="$FAT/initramfs8"; [ "$AB" = 1 ] && INITRD="$FAT/slota/initramfs8"
-    else INITRD=$(ls -t "$R"/boot/initrd.img-* 2>/dev/null | head -1); fi
+    else INITRD=$(ls -t "$R"/boot/initrd.img-* 2>/dev/null | head -1)
+        kv=$(kdirs | head -1); kv=${kv%/}; kv=${kv##*/}   # the single kernel dir under lib/modules (one_kdir)
+        [ -n "$kv" ] && [ -s "$R/boot/initrd.img-$kv" ] && INITRD="$R/boot/initrd.img-$kv"; fi
     if [ "$ARCH" = arm64 ]; then
         # the Pi firmware reads the initramfs at ~5 MB/s: 40 MB is 8 s of black screen; slimmed it is ~26 MB
         chk "the Pi initramfs is slim (< 32 MB, no hwdb.bin; unitotem/slim-initramfs.py)" bash -c "[ \$(stat -c %s '$INITRD') -lt 33554432 ] && ! lsinitramfs '$INITRD' | grep -q 'udev/hwdb.bin'"

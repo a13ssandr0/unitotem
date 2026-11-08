@@ -45,18 +45,41 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 - Stage 0: debootstrap (arm64: `--foreign`; second stage under qemu-aarch64 in Docker, native on the device).
 - Stage 1:
   - The manager apt key (`/etc/apt/trusted.gpg.d/unitotem-manager.asc`) and source list (`sources.list.d/unitotem-manager.list`) are fetched from the project's GitHub Pages apt repository on every build.
-  - Apt sources from `RELEASE` (trixie). arm64 adds the Raspberry Pi archive and keyring.
-  - With a lock: snapshot.debian.org at the lock date, preferences pin every locked package, `dist-upgrade`.
-  - amd64: linux-image-amd64, firmware, grub-efi-amd64, grub-pc-bin, efibootmgr, shim-signed, grub-efi-amd64-signed (staged only), mokutil, mesa, Intel/AMD/NVIDIA drivers (NVIDIA via DKMS).
+  - Apt sources from `RELEASE` (trixie): `trixie`, `trixie-updates`, `trixie-security`, `trixie-backports` (`main contrib non-free non-free-firmware`). arm64 adds the Raspberry Pi archive and keyring. amd64 adds NVIDIA's repository (below).
+  - With a lock: snapshot.debian.org at the lock date for `trixie`, `trixie-updates` and `trixie-backports` (`archive/debian/<TS>/`), and `debian-security/<TS>/`; preferences pin every locked package (`Pin-Priority: 1001`); `dist-upgrade --allow-downgrades`. The Raspberry Pi archive and NVIDIA's repository have no snapshots and are read live ([package-lock](package-lock.md)).
+  - Backports, both archs: `trixie-backports` is `NotAutomatic` (priority 100). `/etc/apt/preferences.d/97-unitotem-backports` (priority 990, selector `n=trixie-backports`: the Release file's Codename; the Suite is `stable-backports` and `a=` never matches) selects the packages taken from it. A pin, not `apt-get -t`: `-t` would pull every dependency that has a backports build. The file stays in the shipped image.
+    - amd64: `linux-base`, `linux-image-*`, `linux-headers-*`, `linux-kbuild-*`, `linux-compiler-gcc-*`, `linux-support-*`, `firmware-*`, `mesa-*`, `libgl1-mesa-dri`, `libegl-mesa0`, `libglx-mesa0`, `libgbm1`, `libglapi-mesa`, PipeWire and WirePlumber packages. Kernel 7.2.x with headers and `linux-base`, all `firmware-*`, Mesa 26.1.
+    - arm64: PipeWire and WirePlumber packages only. The kernel, firmware and Mesa come from the Raspberry Pi archive and stable.
+    - Why PipeWire 1.6 and WirePlumber 0.5.12: newer WirePlumber and PipeWire create the HDMI audio sink when the display appears after boot.
+  - amd64 kernel: exactly one kernel directory under `/lib/modules` is required (`rootfs_kver()` in `stage1-packages.sh` and `stage1-recovery-initrd.sh`, plus a `verify-image.sh` check). The 7.2 kernel package depends on `dracut | initramfs-tools`: apt installs dracut first, and installing initramfs-tools removes it again (`dracut-core` and `busybox` stay). The image uses initramfs-tools (the OTA hooks are initramfs-tools hooks).
+  - amd64 NVIDIA driver (NVIDIA's repository, not Debian):
+    - Why: Debian stops at branch 550, which does not compile against kernel 7.x (66 compile errors measured on 7.2.12). NVIDIA's repository serves branch 620 (kernel 7.2 builds). The stable kernel 6.12 with the 550 branch builds, but is not used.
+    - Source: `https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/`, suite `/`, no components: `deb [signed-by=/usr/share/keyrings/unitotem-nvidia.gpg] <url> /`. The Debian 13 repository only: any `RELEASE` other than trixie stops the build.
+    - Key: from `cuda-keyring_1.1-1_all.deb` (sha256 `d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f`, key file `usr/share/keyrings/cuda-archive-keyring.gpg`). The primary key fingerprint must be `02182E60104FCDC26EAE1B8597A5D4CB8793F200` (pinned in `stage1-packages.sh`); any other fingerprint stops the build. NVIDIA publishes no fingerprint page: the key ID `8793F200` is confirmed only by a forum thread. Trust on first fetch, pinned by fingerprint afterwards. Used through `signed-by` only (no `apt-key`, nothing in `trusted.gpg.d`).
+    - Installed with `--no-install-recommends`, at `620.70.06-1` (`libnvidia-egl-gbm1` at its own version `1.1.4-2`): `nvidia-kernel-open-dkms`, `nvidia-kernel-support`, `firmware-nvidia-gsp`, `libnvidia-allocator1`, `libnvidia-egl-gbm1`, `libgles-nvidia1`, `libgles-nvidia2`, `libegl-nvidia0`, `libglx-nvidia0`, `nvidia-egl-icd`. Debian's `nvidia-driver`, `nvidia-kernel-dkms` and `firmware-nvidia-gsp` 550 are not installed.
+    - Pins, `/etc/apt/preferences.d/96-unitotem-nvidia` (stage 1 only): NVIDIA-origin packages `nvidia-*`, `libnvidia-*`, `libgles-nvidia*`, `libegl-nvidia*`, `libglx-nvidia*`, `firmware-nvidia-gsp`, `xserver-xorg-video-nvidia`, `glx-alternative-nvidia` at priority 995 (above the backports 990, so NVIDIA's `firmware-nvidia-gsp` wins over Debian's `firmware-*` from backports). Every other package of that origin at -1, so NVIDIA's `dkms` 3.4.4 and `libegl1` never replace Debian's (`dkms` 3.2.2 is kept).
+    - Supported GPUs: Turing and newer (the open kernel modules). Maxwell, Pascal and Volta run on nouveau with NVK and Mesa 26; NVIDIA's legacy branch for them is 580.
+    - DKMS module: `nvidia/620.70.06` builds `nvidia`, `nvidia-modeset`, `nvidia-drm`, `nvidia-uvm` and `nvidia-peermem` into `/lib/modules/<kver>/updates/dkms/` as uncompressed `.ko` (measured). Vermagic `7.2.12+deb13-amd64`. Signed by the DKMS key generated in the build (signer `DKMS module signing key`); `/var/lib/dkms/mok.key` is removed, `mok.pub` kept. The build fails unless `nvidia.ko*` exists for the single kernel.
+    - Replay measurements (`apt-get -s` of the stage-1 install order, Installed-Size sums before the purges; not image sizes):
+
+      | Variant | Packages | Installed MiB |
+      |---|---|---|
+      | Before the change (stable suite, Debian `nvidia-driver` 550) | 903 | 2693.5 |
+      | Backports, NVIDIA 550 from Debian | 914 | 2993.9 |
+      | Final: backports, NVIDIA repository 620 | 878 | 3052.0 |
+
+      Largest NVIDIA packages of the final replay (Installed-Size, KiB): `nvidia-kernel-open-dkms` 113043, `firmware-nvidia-gsp` 101345, `libnvidia-gpucomp` 126875, `libnvidia-glcore` 35105, `libnvidia-eglcore` 33212, `libnvidia-glvkspirv` 10546. 16 NVIDIA packages in the replay.
+  - amd64 firmware and CPU microcode (added to the first install): `firmware-iwlwifi`, `firmware-realtek`, `firmware-atheros`, `firmware-mediatek`, `firmware-brcm80211`, `firmware-intel-misc`, `intel-microcode`, `amd64-microcode`. Debian 13 `firmware-linux-nonfree` depends only on `firmware-misc-nonfree` and `firmware-amd-graphics`, so without these a PC has no Wi-Fi or Bluetooth firmware. Microcode is loaded early from the initramfs.
+  - amd64: linux-image-amd64, linux-headers-amd64 (kept in the image: the NVIDIA DKMS build needs the headers), firmware (`firmware-linux`, `firmware-linux-nonfree`, `firmware-misc-nonfree`, `firmware-intel-graphics`), grub-efi-amd64, grub-pc-bin, efibootmgr, shim-signed, grub-efi-amd64-signed (staged only), mokutil, Mesa 26.1 (trixie-backports), Intel and AMD drivers, the NVIDIA set above.
   - arm64: linux-image-rpi-v8, raspi-firmware, firmware-brcm80211, v4l-utils, raspi-utils. No `firmware-linux*`/`firmware-misc-nonfree` (they bring `firmware-amd-graphics`, 90 MB, for GPUs a Pi does not have).
-  - Stage-1-only apt pin `/etc/apt/preferences.d/98-unitotem-stage1-skip` (removed in the cleanup; the image has no pin): `pocketsphinx-en-us`, `ghostscript`, `iso-codes`, `qt6-translations-l10n`, `network-manager-l10n`, `libglib2.0-data` are Recommends only. Never pin a package that is the first alternative of a Depends or Recommends (`libvulkan1` recommends `mesa-vulkan-drivers | vulkan-icd`: the pin made apt install the NVIDIA tesla Vulkan stack instead): purge such packages after the install.
+  - Stage-1-only apt pin `/etc/apt/preferences.d/98-unitotem-stage1-skip` (removed in the cleanup; the image keeps only `97-unitotem-backports`): `pocketsphinx-en-us`, `ghostscript`, `iso-codes`, `qt6-translations-l10n`, `network-manager-l10n`, `libglib2.0-data` are Recommends only. Never pin a package that is the first alternative of a Depends or Recommends (`libvulkan1` recommends `mesa-vulkan-drivers | vulkan-icd`: the pin made apt install the NVIDIA tesla Vulkan stack instead): purge such packages after the install.
   - Not installed: GStreamer (the viewer is CEF with its own ffmpeg, the VNC server is wayvnc), `tigervnc-scraping-server` (X11 scraper, pulls Perl), `nvidia-vaapi-driver` (Chromium does not use VA-API on NVIDIA).
   - Both: base set (`unitotem/stage1-packages.sh`, installed with Recommends): `locales`, `sudo`, `openssh-server`, `htop`, `btop`, `nano`, `less`, network and Python packages. `htop` is in the base set; `btop` adds `btop` and `libncursesw6`, and `libgpm2` through its Recommends.
   - Both: plymouth (no text plugin), `labwc wlr-randr wlopm wayvnc xwayland qt6-wayland kbd`, pipewire, ddcutil. `xwayland` is present only because labwc starts it lazily and logs an error without it; no X client runs.
   - Both: `libpam-pwquality` with `--no-install-recommends` (Recommends would add `cracklib-runtime`, `wamerican`, `file`). Pulls `libpam-pwquality`, `libpwquality1`, `libpwquality-common`, `libcrack2`. See [image-runtime](image-runtime.md#password-policy).
   - Manager .debs from `work/extra-debs/<arch>/` installed over the apt set; every unitotem package must be 3.x.
-  - Purge: arm64 Chromium (apt); compilers (`dpkg --force-depends`, keeps DKMS modules); `mesa-vulkan-drivers` (apt; the viewer renders through ANGLE-GL, llvmpipe/radeonsi stay in `mesa-libgallium` + `libllvm19`); amd64 NVIDIA extras `libcuda1 libnvidia-encode1 libnvcuvid1 nvidia-vulkan-icd libnvidia-rtcore libnvidia-ptxjitcompiler1` (apt; `libnvidia-allocator1`, `libnvidia-egl-gbm1`, `libgles-nvidia*` stay for GBM/EGL); `libclang1-19` (`dpkg --force-depends`: `libshiboken6` declares it, no shared object loads it); amd64 X server packages.
-  - Asserts labwc, wlr-randr, wlopm, wayvnc, mesa-libgallium, libllvm19, libneatvnc and libavcodec61 survive and the NVIDIA module exists (amd64, after each purge). Removes `/var/lib/dkms/mok.key`.
+  - Purge: arm64 Chromium (apt); compilers (`dpkg --force-depends`, keeps DKMS modules: `build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 gcc-14-for-host cpp-14-for-host` and the `x86-64-linux-gnu` cross variants; the 7.2 headers depend on `gcc-14-for-host`/`cpp-14-for-host`); `mesa-vulkan-drivers` (apt; the viewer renders through ANGLE-GL, llvmpipe/radeonsi stay in `mesa-libgallium` + `libllvm19`); `libclang1-19` (`dpkg --force-depends`: `libshiboken6` declares it, no shared object loads it); amd64 X server packages. No NVIDIA library is purged: the NVIDIA set is installed with `--no-install-recommends` and pulls no CUDA, NVDEC or Vulkan library.
+  - Asserts labwc, wlr-randr, wlopm, wayvnc, mesa-libgallium, libllvm19, libneatvnc and libavcodec61 survive and the NVIDIA module `nvidia.ko*` exists in the single kernel directory (amd64, after each purge). Removes `/var/lib/dkms/mok.key`.
   - Lock: verify (exact match) or freeze to `work/<arch>/<arch>.lock.new`.
 - Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values.
 - Stage 2:
@@ -67,6 +90,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - amd64: `/etc/default/grub`, `10_unitotem_ab` (A/B) or `45_unitotem_ota`.
   - arm64: `config.txt`, `cmdline.txt` (`root=LABEL=ROOT_A unitotem.slot=a`).
   - fstab (A/B drops the `/` and BOOT lines), NetworkManager, firewall, Chromium accel flags, apt timers masked.
+  - amd64 NVIDIA: `/etc/modules-load.d/unitotem-nvidia.conf` (`nvidia-drm`), `/etc/modprobe.d/unitotem-nvidia-drm.conf` (`options nvidia-drm modeset=1 fbdev=1`), `unitotem-nouveau-fallback.service` (script in `/usr/lib/unitotem/nouveau-fallback`, enabled by a `multi-user.target.wants` symlink). Reason: `nvidia-kernel-support` blacklists nouveau unconditionally, and the open modules do not drive Pascal and older GPUs ([image-runtime](image-runtime.md#nvidia-amd64)).
   - Services enabled, `update-initramfs -u -k all`, arm64 slim initramfs, `kernel8.img`, `initramfs8`, `bcm27*.dtb` copied to FIRMWARE.
   - Removes the build-time TLS certificate (each device generates its own).
 - Stage 3:
@@ -100,7 +124,7 @@ Environment of `build-unitotem.sh`:
 | `PKGLOCK` | `on` | `off`: skip all lock logic |
 | `PKGLOCK_KEEP` | `0` | `1`: keep the lock on security updates |
 
-Forwarded to the stages: `RELEASE`, `MIRROR`, `UNITOTEM_HOSTNAME`, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, `IMAGE_SIZE`, `AB_LAYOUT`, `ROOT_SLOT_SIZE`, `RELEASE_VERSION`. `MAKE_PARTS`, `EFI_SIZE`, `BOOT_SIZE`, `ROOT_SIZE`, `FIRMWARE_SIZE` are read by the stages but not forwarded.
+Forwarded to the stages (Docker and native): `RELEASE`, `MIRROR`, `UNITOTEM_HOSTNAME`, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, `IMAGE_SIZE`, `AB_LAYOUT`, `ROOT_SLOT_SIZE`, `RELEASE_VERSION`, `MAKE_PARTS`, `EFI_SIZE`, `ROOT_SIZE`. `BOOT_SIZE`, `FIRMWARE_SIZE` are read by the stages but not forwarded.
 
 Defaults (`unitotem/common.sh`, env-overridable):
 
@@ -130,7 +154,7 @@ Partition layouts:
 | amd64 single | EFI | BOOT | ROOT | DATA | BIOS |
 | arm64 single | FIRMWARE | ROOT | DATA | - | - |
 
-Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. Stage scripts `set -e`. `verify-image.sh` 1 on any FAIL. `pkglock.py check` 0/10/20/2.
+Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. Stage scripts `set -e`. `verify-image.sh` 1 on any FAIL. `pkglock.py check` (lock gate): 0 nothing newer and 10 updates without security fixes continue with the lock; 20 renews the lock; 2 warns and continues; any other code (crash, missing python3) stops that arch with exit 1.
 
 ## Rules and gotchas
 
@@ -151,7 +175,8 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 - Container output is root-owned: remove it with `docker run --rm -v <parent>:/w <present image> rm -rf -- /w/<name>`, not sudo; creating it with `--user $(id -u):$(id -g)` avoids the problem.
 - Editing a stage script or `Dockerfile.unitotem` while a build runs breaks that build; the newer mtime also makes the next run rebuild from stage 0.
 - `purge_list` in stage 1 must end with `return 0` or `set -e` aborts the stage.
-- Builds are not prioritised against running services by the script; priority handling is an operator task.
+- Build priority (parent process, Docker and native): the build runs with nice -20 (needs root; otherwise a warning); the UniTotem units of `BUILD_PRIO_UNITS` (default `unitotem-manager unitotem-splash start-xorg`, loaded ones only) get `CPUWeight=1` at runtime. The EXIT trap restores the previous nice value and CPUWeight (`[not set]` is restored as a reset).
+- Native arm64 ssh and rsync go through `deploy/lib.sh` (`OTA_AUTH` defaults to `key` here: BatchMode, publickey). The host key is checked as lib.sh's `SSH_OPTS` do: a reflashed Pi with a new host key fails the native path (warning, then Docker + qemu-aarch64) until its old entry is removed from `known_hosts`. A failed rsync fails the native path with a message.
 - `docker-compose.yml` (apt-cacher-ng) is not used by the build; stage 1 uses the `/aptcache` mount.
 
 ## Image size
@@ -163,7 +188,7 @@ Installed size removed by the stage-1 reductions, from an `apt-get -s` replay of
 | GStreamer, `tigervnc-scraping-server`, `nvidia-vaapi-driver` removed; six Recommends-only packages pinned out (speech model, ghostscript and its fonts/data, iso-codes, translations) | 312.6 (90.9) | 306.1 (83.2) |
 | `mesa-vulkan-drivers` purged | 79.2 (13.5) | 69.8 (10.8) |
 | `libclang1-19` purged | 36.3 (7.3) | 35.3 (6.5) |
-| amd64: NVIDIA CUDA, NVDEC and Vulkan libraries purged | 139.2 (24.8) | - |
+| amd64: NVIDIA CUDA, NVDEC and Vulkan libraries purged (Debian 550 stack; the NVIDIA repository set pulls none of them) | 139.2 (24.8) | - |
 | arm64: `firmware-linux*`, `firmware-misc-nonfree` not installed | - | 102.7 (18.5) |
 | Total | about 567 (137) | about 514 (119) |
 
@@ -181,6 +206,8 @@ Kept because they are hard dependencies: `libavfilter10`/`libavcodec61` with `li
 ## Tests
 
 - `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: runs at the end of stage 3; `FAT_DIR` when the boot FAT is mounted separately. Section "Password policy": package installed, `cracklib-runtime` and `wamerican` absent, profile present, exactly one `pam_pwquality` line with the required options, `chpasswd` and `passwd` include `common-password`.
+- `unitotem/verify-image.sh`, section "Backports stack" (both archs unless noted): the amd64 kernel package Version contains `bpo13`; `pipewire` and `wireplumber` Version contain `~bpo13`; `mesa-libgallium` Version starts with `26.`; `firmware-linux-nonfree` and `firmware-misc-nonfree` (when installed) start with `2026` (amd64); `nvidia-kernel-open-dkms` is `620.70.06-` (amd64); `nvidia.ko*`, `nvidia-drm.ko*`, `nvidia-modeset.ko*` exist in the single kernel directory (amd64); exactly one directory under `lib/modules`.
+- `unitotem/verify-image.sh`, section "NVIDIA (amd64)": no Debian 550 NVIDIA package; `firmware-nvidia-gsp` at the `nvidia-kernel-open-dkms` version; `usr/lib/unitotem/nouveau-fallback` executable; `unitotem-nouveau-fallback.service` shipped and enabled by its `multi-user.target.wants` symlink; `nvidia-drm` in `modules-load.d/unitotem-nvidia.conf`; the `modprobe.d` options line; no NVIDIA apt source, keyring or pin file in the image. Section "Content removed": `gcc-14-for-host` and `cpp-14-for-host` absent.
 - `unitotem/check-recovery-commands.sh ROOTFS INITRD ENGINE.sh`: needs `lsinitramfs`; run by `verify-image.sh`.
 - `python3 tools/release/test_pkglock.py`: lock logic, offline.
 - No automated test boots an image or runs the stage scripts.

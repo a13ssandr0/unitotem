@@ -40,8 +40,10 @@ install -m 755 /unitotem/files/ota-recovery-init-premount \
 grep -q '^MODULES=most' "${ROOTFS}/etc/initramfs-tools/initramfs.conf" \
     || sed -i 's/^MODULES=.*/MODULES=most/' "${ROOTFS}/etc/initramfs-tools/initramfs.conf"
 
-KVER=$(cd "${ROOTFS}/lib/modules" && ls -1 | head -1)
-[ -n "${KVER}" ] || { echo "No kernel found under ${ROOTFS}/lib/modules" >&2; exit 1; }
+KDIRS=$(find "${ROOTFS}/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
+KCOUNT=$(printf '%s' "${KDIRS}" | grep -c . || true)
+[ "${KCOUNT}" = 1 ] || { echo "ERROR: expected exactly one kernel under ${ROOTFS}/lib/modules, found ${KCOUNT}" >&2; exit 1; }
+KVER="${KDIRS}"
 echo "Kernel version: ${KVER}"
 
 chroot "${ROOTFS}" mkinitramfs -o "/tmp/recovery-initrd.img" "${KVER}"

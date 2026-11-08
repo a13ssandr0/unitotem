@@ -1,0 +1,14 @@
+[Unit]
+Description=UniTotem nouveau fallback for NVIDIA display devices without a driver
+# nvidia-kernel-support blacklists nouveau; the script loads it when the open NVIDIA modules did not bind (Pascal and older)
+After=systemd-modules-load.service systemd-udev-trigger.service
+Before=unitotem-compositor.service
+ConditionPathExists=/sys/bus/pci/devices
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/unitotem/nouveau-fallback
+
+[Install]
+WantedBy=multi-user.target
