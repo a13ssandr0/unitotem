@@ -158,7 +158,7 @@ Asset properties:
 | Date and time | Time zone (searchable list), network time (NTP) on or off |
 | Network | Hostname (also updates `/etc/hosts`), devices, saved connections, Wi-Fi scan and connect, Wi-Fi roaming, hotspot |
 | Updates | Version, check, download, install, confirm, rollback, automatic policy |
-| Backup | Backup, restore and reset of selected parts: playlists, window layouts, users, security settings, pairing and certificates, RSS sources, uploads (optional in a backup), hostname, default audio device, network (netplan), timers, touch mapping |
+| Backup | Backup, restore and reset of selected parts: playlists, window layouts, users, security settings, pairing and certificates, RSS sources, uploads (optional in a backup), hostname, default audio device, timers, touch screens (mapping, orientation, calibration), screen power and control |
 
 ## Updates
 

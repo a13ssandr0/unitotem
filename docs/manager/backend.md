@@ -54,12 +54,12 @@ Utilities (`manager/utils/`)
 - Plugins: `utils/plugins.load()` runs when `api/ws/endpoints.py` is imported, before routers are included. A plugin adds API classes, routers (factory), backup parts, hooks. A failing plugin is logged, raises admin notification `plugin.<name>` and is skipped.
 - Notifications: in memory under one lock, persisted to `/var/lib/unitotem/notifications.json`. Each change pushes `Notifications/list` to every open page, once per user.
 - Sysinfo: `Settings/info` is broadcast every 3 s, only while a websocket is connected.
-- Uploads: `UploadManager.save` writes the file and appends it to the default playlist. Name collisions get `_N` suffixes.
+- Uploads: `UploadManager.save` creates the folder if missing, writes the file and appends it to the default playlist. Name collisions get `_N` suffixes. A failure while reading the stream removes the partial file and re-raises (no retry on a half-read stream).
 - First boot: no `users.json` runs plugin `on_first_boot`; `first_boot_context` hooks feed the welcome page, served to loopback only.
 
 ## Interfaces
 
-CLI (`utils/models/command_line.py`, pydantic-settings, parsed at import; names use underscores):
+`--version` is answered first thing in `main.py` (prints `unitotem-manager <version>`, exit 0), before any module reads argv. The other options are parsed by `utils/models/command_line.py` (pydantic-settings, at import; names use underscores):
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -85,7 +85,7 @@ Systemd (`debian/unitotem-manager.service`): `Type=notify`, `NotifyAccess=main`,
 
 Environment: `UNITOTEM_LABWC_RUN` (compositor config dir, default `/run/unitotem/labwc`), `LABWC_PID`.
 
-Exit codes: 0 normal stop; 1 when the viewer raises (systemd restarts).
+Exit codes: 0 normal stop; 1 when the viewer raises or the web server cannot bind (`--port`/`--port_secure` taken or denied): systemd restarts the service.
 
 HTTP:
 
@@ -109,7 +109,7 @@ HTTP:
 Websocket protocol:
 - Client to server: `{"target": "Class/Sub/method", ...args}`. No correlation ids.
 - Server to client: `{"target": ..., ...fields}`. On connect: `{"target": "connected", "boot": BOOT_ID}`.
-- Errors: `target: "error"` with `error` and `extra`: `Invalid command` (also the answer to any `KeyError` raised inside a call), `Permission error: not allowed to execute <target>`, `Exception` (`extra` holds the traceback).
+- Errors: `target` is the command that failed (only the page that sent it reacts; the page's `unitotem:api-error` event carries it), with `error` and `extra`: `Invalid command` (also the answer to any `KeyError` raised inside a call), `Permission error: not allowed to execute <target>`, `Exception` (`extra` holds the traceback; `target` is `error` when the frame had no readable target).
 - Return values: dict or `WSResponse` to the caller; `WSBroadcast` to all sockets; `WSMulticast(users)` to the sockets of the named users.
 - Names: `Class/method`; nested classes add a prefix (`Settings/Remote/...`). Names containing `/_` are private.
 - Permissions: `@UserPerms.requires.<scheduler|power|audio|admin>` (stacked = OR); `requires.none` = any logged-in user; no decorator = admin.
@@ -167,5 +167,5 @@ Password rules: see [security.md](security.md).
 
 - `pytest` from the repository root (`pyproject.toml`: `testpaths = manager/tests`, `pythonpath = manager, manager/plugins`).
 - `manager/tests/conftest.py` clears `sys.argv` (the CLI parses on import) and sets an event loop.
-- Modules: `test_plugins.py`, `test_notifications.py`, `test_osusers.py`, `test_password_policy.py`, `test_security_api.py`, `test_security_model.py`, `test_first_admin_script.py`, `test_setup_first_access.py`, `test_backup_users.py`, `test_login_hardening.py`, `test_templates_escape.py`, `test_webui_entries.py`, `test_machine.py`. Password tests and the shared vectors: [testing.md](testing.md).
+- Modules: `test_plugins.py`, `test_notifications.py`, `test_osusers.py`, `test_password_policy.py`, `test_security_api.py`, `test_security_model.py`, `test_first_admin_script.py`, `test_setup_first_access.py`, `test_backup_users.py`, `test_backup_node_parts.py`, `test_upload_manager.py`, `test_login_hardening.py`, `test_templates_escape.py`, `test_webui_entries.py`, `test_machine.py`. Password tests and the shared vectors: [testing.md](testing.md).
 - Live checks against a running manager: `tools/ui-smoke.py`, `tools/ui-notifications.py`.

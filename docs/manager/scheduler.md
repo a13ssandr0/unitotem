@@ -32,10 +32,11 @@ Paths: relative to unitotem-manager/
 - Every change (add, delete, move, edit, enable/disable) ends with `revalidate_current()` then `save()`; without it the playback loop, parked on `_waiting_evt`, does not wake.
 - `save()` writes `<file>.tmp`, fsyncs, renames. Broadcasts: `Scheduler/assets` (`playlist_id`, `items`, `current`) and `Scheduler/current`.
 - Duration: an asset whose `duration` is None takes the playlist `default_duration` (default 30 s). Uploads take the MediaInfo duration when present (video, audio); images and PDFs get None.
-- Media type: uploads from MediaInfo mime (PDF by extension). URL assets: `probe_media_type()` (HEAD, then 1-byte ranged GET, 5 s each). Probe failure gives `undefined`; the viewer decides.
+- Media type: uploads from MediaInfo mime (PDF by extension). URL assets: `probe_media_type()` (HEAD, then 1-byte ranged GET, 5 s each, TLS verified). Probe failure, including a certificate error, gives `undefined`; the viewer decides. Run in a thread from `add_url_assets` and `edit_asset` (a changed URL), never on the event loop.
 - Container sent to the viewer = `media_type + 1` (undefined -> -1, viewer probes the URL).
 - PDF (`file:*.pdf`): sent as `/pdf-view?file=&page=&fit=&bg=`, one page per `duration`. Unreadable PDF = 1 page.
-- Scheduling: `ena_date` / `dis_date` each arm a `Timer` (`TIMERS[uuid]`). On expiry the asset is enabled/disabled and the date cleared.
+- Scheduling: `ena_date` / `dis_date` each arm a `Timer` (`TIMERS[uuid]`). On expiry the asset is enabled/disabled, the date cleared, then `_owner.scheduled_change()` runs: `revalidate_current()` (a parked playlist starts) and `save()`.
+- Ownership: every asset of a playlist has `_owner` set to its `AssetsManager` (validator on construction, load, assignment; `_asset()` for add, insert, set, extend, copy, move). `_owner` is a private attribute, never serialised. An asset that has left the playlist is ignored by its schedule.
 - Upload (`upload_manager.save`): file written to the uploads folder, appended to the default playlist as disabled. The watcher rescans and broadcasts `Scheduler/files`.
 - `delete_files`: removes every `file:<name>` asset from all playlists, then unlinks the file.
 - `transfer_assets` (copy/move): copies get new uuids; move deletes sources. Same source and target is refused.
@@ -95,7 +96,7 @@ Files (beside `--assets_file`, default `/etc/unitotem/`; uploads in `/var/lib/un
 - The main pane's playlist is the window assignment, never stored in `window_layouts.json`.
 - Remote viewers have no audio outputs; only the local viewer reports them.
 - The idle page is the same for "playlist empty" and "window unassigned"; no separate path.
-- Timers are per asset; `Asset.__del__` cancels them. `Timer` calls `asyncio.ensure_future`: create assets only with a running event loop.
+- Timers are per asset; `Asset.__del__` cancels them. `Timer` creates its task only when it has a timeout and a callback (no task otherwise); create assets with a running event loop when they carry dates.
 - `edit_asset` treats `bg_color=None` as unchanged: the background colour cannot be cleared through it.
 - In `api/viewers.py` the method `list` shadows the builtin inside the class body: annotations after it use `typing.List` (`list[str]` fails).
 - Upload always goes to the default playlist, as disabled.
@@ -104,4 +105,5 @@ Files (beside `--assets_file`, default `/etc/unitotem/`; uploads in `/var/lib/un
 
 - `python -m pytest manager/tests/test_playlists.py manager/tests/test_layout.py manager/tests/test_layout_controller.py manager/tests/test_asset_zoom.py` from the repository root.
 - Related: `test_remote_transfer.py`, `test_remote_filecache.py`, `test_viewer_lockdown.py`.
+- `test_asset_schedule.py`: scheduled enable/disable, save of a scheduled change, ownership, timer lookups.
 - `test_layout_controller.py` covers playback and layout reconciliation (`WebviewManager` with a temporary `viewer_assignments.json`).

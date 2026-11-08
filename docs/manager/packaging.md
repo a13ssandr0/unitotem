@@ -27,7 +27,7 @@ Third-party packages built in `packaging/` (not in Debian): `python3-fastapi-log
 - `debian/plymouth-theme-unitotem.{postinst,prerm}`.
 - `debian/*.lintian-overrides`: netplan file mode 0600; embedded Chromium libraries in `libcef.so`.
 - `debian/tests/{control,unit}`: autopkgtest `unit` (needs root, allows stderr): copies `manager/tests`, runs pytest with `PYTHONPATH=/usr/share/unitotem-manager`.
-- `tools/build-debs.sh`: container build. `plymouth/generate-assets.py`: renders theme PNGs (wordmark, spinner; tiers 1280, 1920, 2560, 3840). `manager/requirements*.txt` and `manager/plugins/*/requirements.txt`: Python dependencies for a development venv (not packaged: `debian/rules` deletes them). `frozen_requirements.txt`: pinned pip versions, not used by any script.
+- `tools/build-debs.sh`: container build. `plymouth/generate-assets.py`: renders theme PNGs (wordmark, spinner; tiers 1280, 1920, 2560, 3840). `manager/requirements*.txt` and `manager/plugins/*/requirements.txt`: Python dependencies for a development venv (not packaged: `debian/rules` deletes them). Every pin in `manager/requirements.txt` is the version installed in the development venv (`unitotem-manager/.venv`).
 - `docs/`: GitHub Pages apt repository (`Packages`, `Packages.gz`, `Release`, `Release.gpg`, `InRelease`, `KEY.gpg`, `unitotem-manager.list`, `*.deb`) plus developer notes. `docs/update-pkgs.sh` regenerates it.
 
 ## How it works
@@ -37,7 +37,7 @@ Build (`debian/rules`):
 - `dh_python3` runs per package on its own directory, so no package shares modules with another.
 - `dh_builddeb -Zgzip`: gzip so that older dpkg on a system being updated can read the packages.
 - `unitotem-manager.service`: `dh_installsystemd`, enabled and started. `unitotem-splash.service`: enabled, not started on install (it would sit on a running screen). `unitotem-compositor.service`: neither enabled nor started; the image enables it.
-- `python3-cefpython3` (`dh_auto_install-arch`): unpacks `vendor/cefpython-wheels/cefpython3-*-cpXY-*-linux_<cpu>.whl` matching the build Python (`PYTAG`) and CPU; the build fails when there is none and never falls back to the stock `cefpython3` wheel (every UniTotem CEF build ships proprietary codecs), sets rpath of `cefpython3/subprocess` to `$ORIGIN`, deletes every locale pak except `en-US.pak`, `chmod 755` on `subprocess`. `dh_strip --no-automatic-dbgsym` (libcef.so 465 MB unstripped, 252 MB stripped), `dh_python3` skipped (it would rename `libcef.so` with an ABI tag), `dh_shlibdeps` with `-l` on the package directory.
+- `python3-cefpython3` (`dh_auto_install-arch`): unpacks `vendor/cefpython-wheels/cefpython3-*-cpXY-*-linux_<cpu>.whl` for `PYTAG` (`cp313`, pinned by `CEF_PYTHON` in `debian/rules`) and CPU; the build fails when there is none and never falls back to the stock `cefpython3` wheel (every UniTotem CEF build ships proprietary codecs), sets rpath of `cefpython3/subprocess` to `$ORIGIN`, deletes every locale pak except `en-US.pak`, `chmod 755` on `subprocess`. `dh_strip --no-automatic-dbgsym` (libcef.so 465 MB unstripped, 252 MB stripped), `dh_python3` skipped (it would rename `libcef.so` with an ABI tag), `dh_shlibdeps` with `-l` on the package directory.
 - `unitotem-node`: `01-unitotem-nm.yaml` chmod 600 (netplan refuses wider modes).
 - Plymouth spinner (`plymouth/unitotem/unitotem.script`): `Image.Rotate` pivots on integer division, so the script forces the ring size odd (`size += 1` when even) or the ring wobbles. The ring PNG is rendered at `SPINNER_OVERSAMPLE=2` times its displayed size and the script divides by the same factor, so `Scale()` averages pixels before every `Rotate()`; bilinear-only rotation facets the circle. A new rotating sprite needs the same 2x source.
 
@@ -66,8 +66,8 @@ Runtime units and config:
 
 - Env: `TARGET_ARCH` (`amd64` default, `arm64` cross builds `python3-cefpython3` with `crossbuild-essential-arm64`, no emulation), `PLATFORM` (container platform, default `linux/amd64`). Arch-all packages are identical on every architecture.
 - `cefpython` copies the `cp313` wheel of the target CPU only from `vendor/cefpython-wheels/` (the package pins Python 3.13).
-- `docs/update-pkgs.sh`: `dpkg-buildpackage -A`, copies `../unitotem-manager_*.deb` to `docs/`, then `dpkg-scanpackages --multiversion`, `Packages.gz`, `apt-ftparchive release`, signs `Release.gpg` and `InRelease` with the maintainer key.
-- apt client: `docs/unitotem-manager.list` (`deb https://a13ssandr0.github.io/unitotem-manager ./`), key `KEY.gpg` into `/etc/apt/trusted.gpg.d/`.
+- `docs/update-pkgs.sh`: runs `tools/build-debs.sh all` and `TARGET_ARCH=arm64 tools/build-debs.sh cefpython`, copies every package of the current version (both architectures of `python3-cefpython3`) and the two third-party packages from `dist/` to `docs/`, refuses to continue when one is missing, then writes `Packages`, `Packages.gz` (`dpkg-scanpackages --multiversion`) and `Release` (`apt-ftparchive`, `Architectures: amd64 arm64 all`). `SKIP_BUILD=1` uses `dist/` as it is. `docs/update-pkgs.sh sign` signs `Release.gpg` and `InRelease`: a maintainer step, key from `UNITOTEM_REPO_KEY`.
+- apt client: `docs/unitotem-manager.list` (`deb https://a13ssandr0.github.io/unitotem-manager ./`), key `KEY.gpg` in `/etc/apt/trusted.gpg.d/unitotem-manager.asc` (the image and [README](../../unitotem-manager/README.md#install) use the same two files).
 
 ## Rules and gotchas
 - Plugin packages share nothing: a module imported by two packages belongs to the core.
@@ -79,7 +79,7 @@ Runtime units and config:
 - `ddcutil` is a Recommends of `unitotem-node`, never a Depends and never versioned: a versioned dependency would make the package uninstallable on a distribution with an older ddcutil. The runtime gate (`supports_ddc`, ddcutil 2.0 or newer) reports DDC unavailable with the reason instead. `i2c-tools` is not in the Recommends (image package set only).
 - DDC/CI and CEC need `/dev/i2c-*`: the image's stage 2 writes `/etc/modules-load.d/unitotem-i2c.conf` (`i2c-dev`); without it the manager reports both unavailable. Stage 1 installs `ddcutil`, `v4l-utils` (`cec-ctl`) and `i2c-tools` from the distribution archive.
 - Do not run `dh_python3` on `python3-cefpython3` (ABI tag renames break CEF's own library loading).
-- The apt repository in `docs/` holds `unitotem-manager` 2.1.0 to 2.3.0 only (older single-package line).
+- The apt repository in `docs/` holds `unitotem-manager` 2.1.0 to 2.3.0 only (older single-package line): the 3.0 packages are not in it until `docs/update-pkgs.sh` runs and the maintainer signs.
 - A development venv uses `manager/requirements.txt` plus the plugin files; `cefpython3` has no PyPI release and comes from `vendor/cefpython-wheels/`.
 
 ## Tests

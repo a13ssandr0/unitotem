@@ -19,7 +19,7 @@ Paths: relative to `unitotem-manager/`
 | `.../splash.py` | Qt splash per output, shown before CEF starts |
 | `.../bootsplash.py` | Standalone first-frame process, run as a script, not as part of the plugin package (QtGui only, no QtWidgets, no UniTotem imports; plus Pillow and `sdnotify`) |
 | `.../boot.py` | Stops `unitotem-splash.service` through D-Bus |
-| `.../output_transform.py` | Standalone script: applies saved turns and mirrors with `wlr-randr` |
+| `.../output_transform.py` | Standalone script: applies saved modes, turns and mirrors with `wlr-randr` |
 | `.../wayland.py` | `socket_available()` |
 | `.../static/boot-screen.html` | Page of every window (`?window=N`): containers, panes, layout, screensaver, keyboard, ticker hooks |
 | `.../static/NotoSans.ttf` | Font of the page |
@@ -41,7 +41,7 @@ Boot (order set by the image build):
 - `unitotem-manager.service` starts after the compositor and `user@0.service`.
 
 Viewer start (`run_gui`):
-- Qt or CEF import fails: `ready('no viewer')`, returns False.
+- Qt import fails, or cefpython3 is missing (`cef` is None in `app.py`): `ready('no viewer')`, returns False before any display check.
 - No socket: `ready('no display')`, polls every 5 s until a display appears or shutdown.
 - `WebviewApp.__init__`: `QT_QPA_PLATFORM=wayland`, `QT_NO_GLIB=1`; one splash per output, painted before return (3 s max); `stop_boot_splash()`; `ready('first frame on screen')`.
 - Profile `/var/lib/unitotem/browser` (persistent); stale `Singleton*` locks removed. `profile_prefs.apply()` writes kiosk prefs and `intl.accept_languages`. HTTP cache `/var/cache/unitotem-cef` (RAM).
@@ -72,6 +72,8 @@ Window and page:
 - CEF paints opaque white before a document loads: the application and per-browser `background_color` are `0xFF000000`, so a new window shows no white flash.
 - Occlusion handling is off (`disable-backgrounding-occluded-windows`, `disable-renderer-backgrounding`, features `CalculateNativeWinOcclusion` and `NativeWindowOcclusion`): Chromium otherwise stops painting a window covered by the Qt splash, the page never draws and the splash never leaves. The splash closes on the page's `utFrame`.
 - DevTools bindings are window globals: `utSaver`, `utKey`, `utFocus`, `utActivity`, `utFrame`. Page functions must not reuse these names.
+- Identify: `identify()` in `boot-screen.html` shows an overlay (`#identify`) over the whole content for 5 s: output name and `Screen N`. It is in the content, so it turns and mirrors with the page; it has no pointer events and does not end the screensaver.
+- Screen labels: with more than one connected screen the idle pages (no-assets, first-boot) show `Screen N: <output>` under the IP. The address carries `?screen=<name>&index=<N>` and is served on loopback only (`/unitotem-{page}`). N is the screen's place in `WebviewInfo`, from 1. A change in the screen count sends the idle pages again. With one screen the pages are byte-identical to the earlier ones (golden fixtures in `manager/tests/fixtures/idle-pages`).
 
 Profile and switches:
 - Kiosk preferences (password manager, profile and card autofill, translation off; notifications, geolocation, popups blocked) are merged into `<profile>/Default/Preferences` by `profile_prefs.apply()` before `cef.Initialize`. CEF reads Chrome enterprise policies only when the application names a policy directory, which cefpython does not expose.
@@ -114,6 +116,7 @@ Commands from the manager (`target`, `window_id`):
 | `SetKeyboard` | enabled, button_position, layout | `applyKeyboard` |
 | `SetTicker` / `TickerItems` | config / items | `applyTicker` |
 | `SetLanguage` | language, reload | `Emulation.*` overrides, `refreshPage` |
+| `Identify` | screen_name (null = every screen) | `identify(name, caption, 5000)` |
 | `AddWindow` | display, x, y, width, height | new window |
 | `RemoveWindow` | window_id | close |
 
@@ -122,7 +125,7 @@ Commands from the manager (`target`, `window_id`):
 - Incoming frames: JSON, or `b64(json).b64(signature)`.
 - Env: `WAYLAND_DISPLAY` (default `wayland-0`; absolute or relative to `XDG_RUNTIME_DIR`); `XDG_RUNTIME_DIR` (default `/run/user/0`); `UNITOTEM_NO_SCANOUT_BUFFERS` (set by the viewer with `setdefault` on the `pi` GPU profile); `UNITOTEM_CEF_SWITCHES` (`name=value;name2`); `JOURNAL_STREAM` (log lines prefixed `<4>`).
 - Paths: `/run/unitotem/xdg/wayland-0`; `/run/unitotem/xdg/output-pending`; `/run/unitotem/labwc/node/labwc/rc.xml` (touch mapping fragment); `/usr/share/unitotem/xdg/labwc/rc.xml`; `/var/lib/unitotem/browser`; `/var/cache/unitotem-cef`.
-- `output_transform.py [CONFIG_DIR]` (default `/etc/unitotem`): reads `viewer_settings.json` keys `orientations`, `flips`, indexed `<viewer id>|<output name>` (`local-webview|<output>`). Always exits 0. `viewer_settings.json` sits beside `assets.json` (`--assets_file`, default `/etc/unitotem/assets.json`).
+- `output_transform.py [CONFIG_DIR]` (default `/etc/unitotem`): reads `viewer_settings.json` keys `modes` (applied only when the compositor lists the mode), `orientations`, `flips`, indexed `<viewer id>|<output name>` (`local-webview|<output>`); the mode and the transform of all outputs go in one `wlr-randr` call. Always exits 0. `viewer_settings.json` sits beside `assets.json` (`--assets_file`, default `/etc/unitotem/assets.json`).
 - Constants: CDP port 9223 (loopback); `APP_ID=org.unitotem.viewer`; window title `unitotem-<window_id>`; `SPLASH_MAX_MS=20000`; `PRESENT_MS=300`.
 - Screensaver `idle_timeout`: 5 to 86400 s, default 120. Refresh: 10 to 604800 s. Schedules: five cron fields.
 - Language tag: `[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,3}`, max 35 chars. Stored in `viewer_settings.languages[<viewer>|<output>]`; `''` = node language.
@@ -156,6 +159,6 @@ Commands from the manager (`target`, `window_id`):
 - Pages cannot open popups or print; `window.print` is a no-op; drops are cancelled unless the page handles them.
 
 ## Tests
-- `python -m pytest manager/tests/test_viewer_profile.py manager/tests/test_viewer_lockdown.py manager/tests/test_viewer_turn.py manager/tests/test_output_transform.py` (repository root).
+- `python -m pytest manager/tests/test_viewer_profile.py manager/tests/test_viewer_lockdown.py manager/tests/test_viewer_turn.py manager/tests/test_output_transform.py manager/tests/test_identify_pages.py` (repository root).
 - `manager/tests/test_touch_panel.py` also imports viewer code. `debian/tests/unit` runs the whole suite.
 - Not unit tested: `app.py`, `window.py`, `cdp.py`, `bootsplash.py`, `splash.py`. These need a board with a compositor (`tools/cef-wayland-tests/`, `tools/ui-panes.py` for the page).

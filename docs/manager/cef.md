@@ -5,7 +5,7 @@ Chromium Embedded Framework 147 as `cefpython` (Python bindings, fork in `vendor
 Paths: relative to `unitotem-manager/`
 
 ## Files
-- `.gitmodules`: submodule `vendor/cefpython` (fork URL, `branch = cefpython147-qt`).
+- `.gitmodules`: submodule `vendor/cefpython` (fork URL, `branch = cefpython147-qt`). The pin is in no remote branch of the fork (only local `wayland-views`, one commit ahead of `origin/wayland-views`); `branch` is not changed until it is pushed.
 - `vendor/cefpython/`: submodule, pinned commit `65a5ad0` (branch `wayland-views`, `v147.0.0-arm64-16-g65a5ad0`).
 - `vendor/cefpython-wheels/`: built wheels, untracked. Input of `python3-cefpython3`.
 - `tools/build-cef-wheels.sh`: copies the submodule to the build server, builds wheels detached, fetches them.
@@ -30,8 +30,8 @@ Paths: relative to `unitotem-manager/`
 - Build order on the server: `automate-git.py` (CEF's own patches), `apply-patches.sh`, `python3 tools/version_manager.py -u --fast-check` in `chromium/src/cef`, `autoninja libcef`.
 - Distributions: `binary_distrib/cef_binary_*_linux64` (x64) and `*_linuxarm64` (arm64, `use_v4l2_codec=true use_vaapi=false`).
 - Wheel build (`cef-wheels-inner.sh`):
-  - Per arch `prepare_cef` makes `bin/` (Release and Resources, debug-stripped `libcef.so`), `lib/` (wrapper), `include/`; cached while newer than the distribution.
-  - Per Python 3.10 to 3.14: venv with `cython==3.2.9`, interpreters from `uv`.
+  - Per arch `prepare_cef` makes `bin/` (Release and Resources, debug-stripped `libcef.so`), `lib/` (wrapper), `include/`. Cache: `.ready` holds `CEF_KEY` (sha256 of `tools/cef-server/patches/*` and the pinned commit); reused only if equal and newer than `libcef.so`.
+  - Python 3.13 only (`CEF_PYTHON` in `build-cef-wheels.sh`): venv with `cython==3.2.9`, interpreter from `uv`.
   - aarch64 is cross compiled (`gcc-aarch64-linux-gnu`, arm64 libgtk, x11, glib dev packages); only the arm64 Python `include/` is used. No emulation.
   - Extension renamed `cefpython_pyXY.so` (no ABI suffix); platform tag pinned `linux_x86_64` or `linux_aarch64`; wheel written by `build_distrib.py` (`--out-dir /work/out`).
 - Host side: `start` copies the submodule (without `build/`, `.git`, `cefpython3/*` except `__init__.py`), runs the container under systemd, writes `DONE` or `FAILED`. `fetch` rsyncs `out/` to `vendor/cefpython-wheels/`.
@@ -46,12 +46,12 @@ Paths: relative to `unitotem-manager/`
 - Chromium patch `0002`: `UNITOTEM_NO_SCANOUT_BUFFERS` selects tiled non-scanout GBM buffers on V3D (60 fps instead of 30). Patch `0003`: `--unitotem-allow-framing` lets pages that forbid framing load. A stock CEF ignores both.
 
 ## Interfaces
-- `tools/build-cef-wheels.sh start|status|fetch` (exit 2 on unknown command). Env: `BUILD_HOST` (ssh target), `WHEEL_VERSION` (`147.0+codecs`), `PYTHONS` (`3.10 3.11 3.12 3.13 3.14`), `ARCHES` (`x86_64 aarch64`). Server side: systemd unit `cef-wheels`, `build.log`, markers `DONE`/`FAILED`, output `out/*.whl`.
+- `tools/build-cef-wheels.sh start|status|fetch` (exit 2 on unknown command). Env: `BUILD_HOST` (ssh target), `WHEEL_VERSION` (`147.0+codecs`), `CEF_PYTHON` (`3.13`, passed as `PYTHONS`), `ARCHES` (`x86_64 aarch64`). Server side: systemd unit `cef-wheels`, `build.log`, markers `DONE`/`FAILED`, output `out/*.whl`.
 - `tools/cef-wheels-inner.sh` (container): mounts `/work/src` (rw), `/work/distrib` (ro), `/work/out`, `/work/tmp` (kept between runs).
 - `build-all.sh`, `cef-rebuild.sh`: env `CEF_WORK`, `CEF_DEPOT_TOOLS`. Markers `logs/x64.done`, `logs/arm64.done` (delete one to redo the stage); timeline `logs/stages.log`.
 - `apply-patches.sh [CHROMIUM_SRC]`: `DRY_RUN=1` checks only. Per patch: already applied (reverse applies) skipped; applies cleanly applied; else stop. Exit 1 on a patch that fits neither state, 2 on bad input.
 - `sync.sh push|pull`: env `CEF_HOST`, `CEF_WORK`.
-- `probe-gn-args.sh RESULTS < SETS`: set line `name|arg arg ...`; output `name | ok | steps=N` or `GN REFUSES`.
+- `probe-gn-args.sh RESULTS < SETS`: set line `name|arg arg ...`; output `name | ok | steps=N` or `GN REFUSES`. Base args: `out/Release_GN_x64/args.gn` of the tree (`BASE_ARGS` overrides); exit 2 with usage when missing.
 - `nm-areas.py LLVM_NM libcef.so`. `check-nonozone.py ozone|nonozone FILE...` (FILE relative to `chromium/src/cef`; env `OUTDIR`, `CEF_OVERLAY`).
 - `tools/build-debs.sh cefpython`: env `TARGET_ARCH=arm64` (cross), `CEF_WHEEL_DIR` (default `vendor/cefpython-wheels`).
 - Runtime env: `WAYLAND_DISPLAY`, `DISPLAY`, `GDK_BACKEND` (ozone selection); `UNITOTEM_NO_SCANOUT_BUFFERS` (any value, read once; the viewer sets it for the `pi` GPU profile); switch `--unitotem-allow-framing`.
@@ -76,7 +76,7 @@ Paths: relative to `unitotem-manager/`
 - V3D: `gbm_bo_create_with_modifiers` gives LINEAR scanout buffers that the compositor presents two vblanks late (about 31 flips/s, a 30 fps cap). Do not add the SCANOUT flag; patch `0002` (`UNITOTEM_NO_SCANOUT_BUFFERS`) gives tiled non-scanout buffers (60 fps). Diagnose with `WAYLAND_DEBUG=1` and the DRM vblank tracepoint.
 - Never write into `binary_distrib/` while a wheel build reads it. Never delete the Chromium tree (incremental builds).
 - `automate-git.py --force-clean` and `--force-update` reset patched files: run `apply-patches.sh` again.
-- `build-all.sh` and `cef-rebuild.sh` do not apply patches: run `apply-patches.sh` first.
+- `build-all.sh` and `cef-rebuild.sh` run `apply-patches.sh` between the `automate-git.py` download and each build. `cef-arm64-v4l2.sh`, `cef-arm64-dbg.sh`, `cef-lean-x64.sh` do not: run `apply-patches.sh` first.
 - After changing the CEF series run `version_manager.py -u --fast-check` before `autoninja` (C API wrappers).
 - Patched headers with an unpatched `libcef` (or the reverse) fail at `CefInitialize`: "API hashes for libcef and libcef_dll_wrapper do not match". Headers of CEF patches 0002, 0003, 0006 are copied to `vendor/cefpython/src/include/views/`.
 - Every new CEF API is `added=experimental` (`CEF_EXPERIMENTAL`).

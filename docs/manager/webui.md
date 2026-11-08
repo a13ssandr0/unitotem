@@ -23,21 +23,21 @@ Pages (`webui/src/pages/`):
 | File | Route | Content |
 |---|---|---|
 | `scheduler.vue` | `/` | playlist tabs, items (drag to reorder), uploaded files, Add URL and playlist settings dialogs |
-| `viewers.vue` | `/viewers` | per-window matrix (playlist, sound, language, keyboard, interactive screen, refresh, developer tools), layout editors, RSS sources |
-| `info.vue` | `/info` | CPU chart (stacked per core), memory, temperatures, fans, storage tree |
+| `viewers.vue` | `/viewers` | matrix of playlists x windows (checkboxes), RSS sources (admin); a window name opens `ViewerDetail` |
+| `info.vue` | `/info` | CPU chart (stacked per core), memory, temperatures, fans, storage tree, Graphics card (viewer GPU features) |
 | `login.vue`, `setup.vue` | `/login`, `/setup` | login; first administrator (only while no administrator exists): name, password and confirmation with `PasswordChecklist`, submit disabled until all met |
 | `NotFound.vue`, `empty_page.vue` | catch-all | 404, placeholder |
 | `settings/audio.vue` | `/settings/audio` | default output, per-device volume and mute |
-| `settings/display.vue` | `/settings/display` | screen preview, orientation, flip, insecure certificates, GPU status, `ScreenControl`, `TouchMapping` |
+| `settings/display.vue` | `/settings/display` | one button per output, Identify, resolution and refresh rate (keep or revert), Reset, orientation, flip, `ScreenControl`, `TouchMapping` |
 | `settings/remote.vue` | `/settings/remote` | server or client role, clients, pairing, adoption, leave or forget |
-| `settings/users.vue` | `/settings/users` | accounts, permissions, add and password dialogs with `PasswordChecklist`, login page user list switch |
+| `settings/users.vue` | `/settings/users` | accounts, permissions, add, password and delete dialogs with `PasswordChecklist`, login page user list switch, Certificates card (`allow_insecure_certs`) |
 | `settings/timers.vue` | `/settings/timers` | scheduled jobs (shutdown, reboot, suspend, screen on/off) |
 | `settings/network.vue` | `/settings/network` | hostname, devices, saved connections, Wi-Fi scan and connect |
 | `settings/updates.vue` | `/settings/updates` | A/B slots, check, download, install, rollback, automatic policy |
 | `settings/backup.vue` | `/settings/backup` | backup, restore, reset of parts |
 | `settings/datetime.vue` | `/settings/datetime` | server time zone (searchable selector), NTP switch and status |
 
-Components (`webui/src/components/`): `PasswordChecklist` (live rule rows, see Rules and gotchas), `FloatingWindow` (draggable, resizable, minimisable; base of terminal and screen), `TerminalWindow` (xterm.js), `VncWindow` (noVNC), `WindowTaskbar` (32 px strip), `NotificationMenu`, `NotificationToasts`, `SuspendDialog`, `CardColumn`, `WindowLayout`, `PaneTree`, `TickerSettings`, `TickerSources`, `AssetPreview`, `ScreenControl` (DDC/CI, CEC, Wake-on-LAN, serial, GPIO), `TouchMapping`.
+Components (`webui/src/components/`): `PasswordChecklist` (live rule rows, see Rules and gotchas), `FloatingWindow` (draggable, resizable, minimisable; base of terminal and screen), `TerminalWindow` (xterm.js), `VncWindow` (noVNC), `WindowTaskbar` (32 px strip), `NotificationMenu`, `NotificationToasts`, `SuspendDialog`, `CardColumn`, `WindowLayout`, `PaneTree`, `TickerSettings`, `TickerSources`, `AssetPreview`, `ScreenControl` (DDC/CI, CEC, Wake-on-LAN, serial, GPIO), `TouchMapping`, `ViewerDetail` (window dialog: Audio, Interaction, Maintenance, Layout and panes), `ViewerInteraction`, `ViewerKeyboard`, `ViewerMaintenance`, `ViewerCore.js` (DOM-free helpers of the Viewers page).
 
 ## Navigation
 - Top bar: terminal and screen buttons (admin, node plugin only), notification bell, theme cycle (light, dark, auto), reboot, suspend, power off (each with its permission), user menu.
@@ -51,14 +51,14 @@ Components (`webui/src/components/`): `PasswordChecklist` (live rule rows, see R
 - Reads: `api.X.Y.on(cb, {init})` or `api.X.Y.use({pick, initial})`. The server pushes state, pages never poll.
 - Writes: `api.X.Y.z(args)` is fire-and-forget; the page updates when the server pushes the new state.
 - Permissions: `/api/schema` loaded at mount; `canCall(path, user)` hides menus and controls; the server checks every call.
-- Errors: a message with an `error` key goes to the snackbar (and console) in `base.vue` and never reaches page listeners.
+- Errors: a reply with an `error` key goes to the snackbar (every error, and console) in `base.vue`. Page listeners (`.on`) never get it; it is emitted as the window event `unitotem:api-error` (`detail` = the reply, `target` = the failed command). Pages reset their state with `onApiError(target, cb)` (network, updates, remote).
 - Reconnect: socket reopens after 3 s. Close reason `Not Authenticated` reloads (goes to login).
 - Notifications: bell and pop-ups show `Notifications/list`. A click runs the default action if any, marks read, opens `link` if it is a same-origin path.
 - Windows: floating windows register in `windows.js` and show in the taskbar; minimised ones keep state.
 - Terminal: `POST /terminal/token`, then `/terminal` websocket; closes with the window.
 - Screen: `POST /vnc/token`, then `/vnc` websocket (noVNC). View-only by default; control chosen per session, never stored. Sends `{"activity":1}` every 5 s.
-- Scheduler: selecting a playlist requests `assets`, `current`, `default_duration`. Upload `POST /api/scheduler/upload` per file; download `GET /uploaded/<name>`.
-- Viewers: rows are playlists, columns windows (`Viewers/list`); a cell toggles the playlist of a window. Area and panes are edited in `WindowLayout.vue`, pushed back by `Viewers/layout`.
+- Scheduler: selecting a playlist requests `assets`, `current`, `default_duration`. Upload `POST /api/scheduler/upload` per file; download `GET /uploaded/<name>`. Reload re-requests `playlists`, `files` and the selected playlist; its icon turns once (500 ms). A failed upload shows an error snackbar with each file and the server `detail`. Deleting a playlist, a timer, or a file used by a playlist asks in a `v-dialog` (the file dialog lists the playlists using it); there is no native `confirm()`.
+- Viewers: rows are playlists, columns windows (`Viewers/list`); a cell toggles the playlist of a window. A window name opens `ViewerDetail` (sound, interaction, maintenance, layout and panes). Area and panes are edited in `WindowLayout.vue`, pushed back by `Viewers/layout`.
 - Date and time: the clock is drawn in the browser (1 s tick) in the server zone. The zone selector is searchable. The NTP switch shows a status chip; it is disabled with a hint when `CanNTP` is false. Controls are disabled while a call is pending and always show the server value.
 - Updates: `Settings/Update/status` pushed; progress in `status.op.progress`; install and slot switch need confirmation dialogs.
 - Backup: `GET /backup?parts=...` download, `POST /backup` (multipart) restore, `DELETE /backup?parts=...` reset; parts from `GET /backup/parts`.
@@ -77,7 +77,7 @@ HTTP endpoints:
 | Endpoint | Use |
 |---|---|
 | `POST /auth/token` (form: username, password, remember_me) | login |
-| `GET /login/users`, `GET /logout` | user list on login, logout |
+| `GET /login/users`, `GET /logout` | user list on login (its only source), logout |
 | `POST /setup` (JSON username, password) | first administrator; 404 once an administrator exists |
 | `POST /api/scheduler/upload` (multipart `files`) | 201 per stored file |
 | `GET /uploaded/<name>` | download, preview |
@@ -88,7 +88,7 @@ HTTP endpoints:
 API groups (`api.*`, names as in the schema):
 - Scheduler: push `playlists`, `assets`, `current`, `files`, `default_duration`. Commands `create_playlist`, `rename_playlist`, `set_default_playlist`, `delete_playlist`, `set_default_duration`, `add_url_assets`, `add_file_assets`, `edit_asset`, `delete_asset`, `copy_assets`, `move_assets`, `reorder_assets`, `goto_asset`, `next_asset`, `previous_asset`, `delete_files`.
 - Viewers: push `list`, `layout`, `audio_outputs`, `screensaver`, `refresh`, `keyboard`, `language`. Commands `assign_playlist`, `unassign_playlist`, `set_audio_output`, `set_keyboard`, `set_language`, `set_screensaver`, `set_refresh`, `refresh`, `set_area`, `split_pane`, `close_pane`, `set_split_ratio`.
-- Settings: push `info`. `Audio`: `devices`, `set_default_device`, `set_volume`, `set_mute`. `Display`: `displays`, `bounds`, `orientation`, `flip`, `allow_insecure_certs`, `gpu_feature_stats`, `set_orientation`, `set_flip`, `set_allow_insecure_certs`. `Screens`: `screens`, `gpio_lines`, `probe`, `configure`, `set_power`, `set_input`, `set_volume`, `set_mute`. `Touch`: `devices`, `setup`, `start_setup`, `confirm_setup`, `cancel_setup`, `reset`, `forget`, `set_output`, `set_orientation`.
+- Settings: push `info`. `Audio`: `devices`, `set_default_device`, `set_volume`, `set_mute`. `Display`: `displays`, `bounds`, `orientation`, `flip`, `allow_insecure_certs`, `gpu_feature_stats`, `set_orientation`, `set_flip`, `set_allow_insecure_certs`. `Screens`: `screens`, `identify` (power), `gpio_lines`, `probe`, `configure`, `set_power`, `set_input`, `set_volume`, `set_mute`. `Outputs`: `outputs`, `set_mode`, `confirm_mode`, `reset_output` (admin). `Touch`: `devices`, `setup`, `start_setup`, `confirm_setup`, `cancel_setup`, `reset`, `forget`, `set_output`, `set_orientation`.
 - Settings `Network`: `hostname`, `set_hostname`, `devices`, `connections`, `connection_details`, `active_connections`, `has_wireless`, `wireless_enabled`, `set_wireless_enabled`, `wireless_networks`, `connect_wifi`, `default_wlan_device`, `activate_connection`, `deactivate_connection`, `edit_connection`, `delete_connection`.
 - Settings `Remote`: `mode`, `probe`, `become_client`, `become_server`, `adopt`, `request_pairing`, `cancel_pairing`, `approve_request`, `reject_request`, `set_client_enabled`, `unpair_client`, `leave_server`, `forget_server`.
 - Settings `Security`: `current_user`, `users`, `password_policy`, `login_user_list`, `add_user`, `delete_user`, `set_user_password`, `set_user_permissions`, `set_login_user_list`. `Timers`: `jobs`, `add_job`, `edit_job`, `delete_job`, `set_job_enabled`. `Update`: `status`, `availability`, `check`, `fetch`, `apply`, `confirm`, `cancel`, `rollback`, `copy_to_other`, `set_policy`.
@@ -103,7 +103,7 @@ Payload fields used by pages:
 - Network device state: NetworkManager `NM_DEVICE_STATE` (100 connected, 120 failed, 40-90 connecting); device type 32 has no connect or disconnect actions.
 
 Globals and storage:
-- `window.__INITIAL_STATE__`: `hostname`, `ip_addr`, `os_vers`, `ut_vers`, `plugins`, `src` (post-login target), `show_users` (login), `rules` (setup: the password policy spec, `passwords.rules_spec()`). Also `window.__BOOT_ID__`, `window.utKeyboard`, `window.utTicker`.
+- `window.__INITIAL_STATE__`: `hostname`, `ip_addr`, `os_vers`, `ut_vers`, `plugins`, `src` (post-login target), `show_users` (sent to login; `login.vue` does not read it), `rules` (setup: the password policy spec, `passwords.rules_spec()`). Also `window.__BOOT_ID__`, `window.utKeyboard`, `window.utTicker`.
 - `localStorage`: `themeMode` (`light`, `dark`, `auto`), `last_user`. `sessionStorage`: `unitotem-chunk-reload`, `unitotem-boot-reload`.
 - Keyboard config `{enabled, button_position, layout}`; positions are the 8 edge names.
 
@@ -114,12 +114,17 @@ Build and dev:
 
 ## Rules and gotchas
 - The websocket API is id-less by design; do not add request or response correlation.
-- Error replies never reach page listeners: a page must not wait for a success reply to clear a busy flag.
+- Error replies never reach page listeners: a page clears a busy flag on failure through `onApiError` (the window event), never by waiting for a success reply.
 - State flows one way: server pushes, pages read. Screen and window changes arrive as events, never by polling.
 - Pages are not mounted before the user is known and allowed (`routeAllowed`, `base.vue`).
-- The permission list of `settings/users.vue` mirrors `UserPerms` (`scheduler`, `audio`, `power`, `admin`); `admin` implies all, enforced client-side too.
+- The permission list of `settings/users.vue` mirrors `UserPerms` (`scheduler`, `audio`, `power`, `admin`); `admin` implies all, enforced client-side too. Kept equal to `UserPerms` and `api.d.ts` by `tests/users-permissions.test.mjs`.
 - Cron fields are comboboxes, not selects: `*/15`, `1-5`, `0,30` must round-trip.
-- Admin rows (keyboard, language, layout, RSS sources) are hidden from non-admins with `canCall`; the server still checks.
+- Viewers page: controls a user may not use are disabled, not hidden (`canCall`); the server still checks. The area editor, the ticker settings and RSS sources are admin only and hidden for the others (`v-if`).
+- Display page: Identify, Reset, resolution and refresh are disabled without their permission. The keep-or-revert bar counts down from `pending.revert_at` (Unix seconds); Keep sends `confirm_mode`. Orientation and flip go to the window whose `screen_name` is the selected output. No scale control.
+- Display page sections: `ScreenControl` takes prop `screen`, `TouchMapping` prop `output`; a touch device on automatic is listed under every screen.
+- Info page: a temperature above 300 °C is grey: an unset hwmon limit reports a sentinel (65261.85 °C on an NVMe drive). The value stays visible.
+- Colours use Vuetify 3 names (`error`, `red-darken-1`); text buttons use `variant="text"`.
+- Network: `edit_connection` and `delete_connection` answer with `connections` (the saved list); a failed `edit_connection` clears the saving state through `onApiError`.
 - Keyboard and ticker are separate entries loaded by the viewer, not Vue pages; they publish on `window`, do not rely on chunk exports.
 - Layout-editor drags listen on `window`, not on the grabbed element; UI tests send mouse events with `buttons` set.
 - The RSS crawl moves by compositor transforms only; no per-frame JavaScript positioning.
@@ -141,7 +146,8 @@ Build and dev:
 - `ScreenControl` lists every mechanism of a screen; an unavailable one stays visible (outlined chip) and its tooltip shows the reason.
 
 ## Tests
-- `cd webui && npm test` (`node --test tests/*.test.mjs`): `ticker-core.js`, and `password-rules.js` against `manager/tests/password_vectors.json` (same vectors as pytest). `npm run lint` (eslint, runs with `--fix`).
+- `cd webui && npm test` (`node --test tests/*.test.mjs`): `ticker-core.js`, and `password-rules.js` against `manager/tests/password_vectors.json` (same vectors as pytest); `users-permissions.test.mjs` (permission lists of `UserPerms`, `api.d.ts` and `users.vue`); `viewer-core.test.mjs` (`ViewerCore.js`). `npm run lint` (eslint, runs with `--fix`).
+- Login errors (wrong password, 429, hidden user list, network down) were checked in headless Chrome against a mock; not part of `npm test`.
 - UI tests check visibility by computed `display` or `aria-expanded`, not DOM presence: a hidden `v-badge` keeps its text in the DOM and a `v-menu` content stays after its first opening.
 - After changing an API function: `.venv/bin/python tools/gen-api-types.py` regenerates `webui/src/api.d.ts`.
 - Browser tools against a running node: see [testing.md](testing.md).
