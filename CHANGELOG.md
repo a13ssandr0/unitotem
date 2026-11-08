@@ -23,6 +23,7 @@
 - README: disk size recommendations (Raspberry Pi 32 GB, PC 64 GB, minimum 16 GB); first-login text matches the sudo/users accounts.
 - Minimal flash image (`unitotem-<date>-<arch>-flash.img.xz`, boot 512 MiB + slot A, ~5.6 GiB): the first boot creates slot B and DATA to the end of the disk and the existing auto-repair fills slot B; DATA grows to the disk end on raw-written images. Full image, parts and releases are unchanged. Slots 5 GiB, boot partition 512 MiB; fits 16 GB cards.
 - Smaller root: GStreamer, `tigervnc-scraping-server`, `nvidia-vaapi-driver`, Mesa Vulkan drivers, `libclang1-19`, NVIDIA CUDA/NVDEC/Vulkan libraries and (arm64) the `firmware-linux*` packages are no longer installed (root asset 639 -> 499 MB arm64, 1059 -> 913 MB amd64); verify-image checks them.
+- A power cut inside the first-boot resize of DATA resumes by itself: one `e2fsck -fy`, only while the growth is pending, then the resize continues (reproduced and tested in containers: 163 checks).
 
 #### A/B updates
 - A/B root layout is the only layout: ROOT_A/ROOT_B slots, 6 GiB each, 16 GiB image.

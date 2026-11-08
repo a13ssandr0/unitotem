@@ -9,7 +9,8 @@ prereqs() { echo "$PREREQ"; }
 #   2. sfdisk -N      rewrites the entry of DATA only (type, GUID, name, attributes kept) in one table write;
 #   3. partx -u       tells the kernel the new size of that one partition (others, e.g. the mounted root, untouched);
 #   4. e2fsck -f + resize2fs   grows the filesystem. A cut after 2 or 3 is finished by the next boot (the
-#      filesystem is smaller than its partition); a cut inside 4 leaves a filesystem that fsck repairs.
+#      filesystem is smaller than its partition); a cut inside resize2fs leaves metadata that one e2fsck -fy
+#      (only in this state) repairs before the growth resumes.
 # Acts only when DATA is the last partition by start sector, the disk is GPT, DATA is ext4 and at least 64 MiB
 # are free after it. Never moves or removes another partition. Any failure logs one line and returns 0.
 GROW_MIN_FREE=131072   # sectors (64 MiB)
@@ -64,7 +65,14 @@ grow_data() {
     [ $((gd_psz - gd_fs)) -ge "$GROW_MIN_FS_GAP" ] || return 0
     e2fsck -fp "$gd_dev" >/dev/null 2>&1
     gd_rc=$?
-    [ "$gd_rc" -le 1 ] || { log_warning_msg "grow: e2fsck returned ${gd_rc}, filesystem not grown"; return 0; }
+    if [ "$gd_rc" -gt 1 ]; then
+        # Reached only when the filesystem is smaller than its partition, i.e. a growth is pending: a resize2fs cut by
+        # a power loss leaves metadata (resize inode, bitmaps) that e2fsck repairs; -p refuses it (exit 4). One -fy.
+        e2fsck -fy "$gd_dev" >/dev/null 2>&1
+        gd_rc=$?
+        [ "$gd_rc" -le 1 ] || { log_warning_msg "grow: e2fsck returned ${gd_rc}, filesystem not grown"; return 0; }
+        log_success_msg "grow: repaired DATA after an interrupted resize"
+    fi
     resize2fs "$gd_dev" >/dev/null 2>&1 || { log_warning_msg "grow: resize2fs failed"; return 0; }
     log_success_msg "grow: DATA grown to $((gd_psz / 2048)) MiB"
     return 0

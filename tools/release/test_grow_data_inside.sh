@@ -10,7 +10,7 @@ IMAGE_SIZE=14G; ROOT_SLOT_SIZE=5G; EFI_SIZE=512M; FIRMWARE_SIZE=512M
 export LOOP=
 pass=0; failn=0
 # loop devices of this test are detached on any exit (only those backed by our own files)
-cleanup() { for f in t.img big.img base-amd64.img base-arm64.img; do for l in $(losetup -j $W/$f -O NAME -n 2>/dev/null); do umount -l ${l}p2 ${l}p4 2>/dev/null; losetup -d $l 2>/dev/null; done; done; }
+cleanup() { for f in t.img big.img pr.img base-amd64.img base-arm64.img; do for l in $(losetup -j $W/$f -O NAME -n 2>/dev/null); do umount -l ${l}p2 ${l}p4 2>/dev/null; losetup -d $l 2>/dev/null; done; done; }
 trap cleanup EXIT; trap 'exit 1' TERM INT
 ok()  { pass=$((pass+1)); echo "PASS: $1"; }
 bad() { failn=$((failn+1)); echo "FAIL: $1"; }
@@ -180,6 +180,70 @@ chk "resize2fs failure: one warning line, rc=0" bash -c "[ \"\$(grep -vc '^rc=' 
 runfn ${LOOP}p4
 chk "next run finishes the filesystem" bash -c "e2fsck -fn ${LOOP}p4 >/dev/null 2>&1 && [ \$(blockdev --getsz ${LOOP}p4) -gt 40000000 ]"
 losetup -d $LOOP
+
+echo "=== interruption: SIGKILL inside resize2fs (400 GB), next run repairs and grows"
+# pristine: the table and the kernel already give DATA its new size, the filesystem is still the small one
+cp --sparse=always $B $W/pr.img; truncate -s 400G $W/pr.img
+LOOP=$(losetup --find --show --partscan $W/pr.img); nodes
+sgdisk -e $LOOP >/dev/null; echo ", +" | sfdisk --no-reread --no-tell-kernel --wipe never --wipe-partitions never -q -N 4 $LOOP >/dev/null 2>&1; partx -u --nr 4 $LOOP
+e2fsck -fp ${LOOP}p4 >/dev/null 2>&1
+mount -o ro ${LOOP}p2 /mnt/r; umount /mnt/r
+# reference checksums of this image's files (/tmp/sums.txt belongs to the last base made, arm64)
+mount -o ro ${LOOP}p4 /mnt/d; (cd /mnt/d && find . -type f -not -name '.*' -exec sha256sum {} + | sort -k2) > /tmp/grow-a-sums.txt; umount /mnt/d
+losetup -d $LOOP
+delays=(0.085 0.09 0.095 0.10); N=60; found=0; tries=0
+for ((i=0; i<N; i++)); do
+    d=${delays[$((i%4))]}; tries=$((i+1))
+    cp --sparse=always $W/pr.img $W/t.img
+    LOOP=$(losetup --find --show --partscan $W/t.img); nodes
+    resize2fs ${LOOP}p4 >/dev/null 2>&1 & rp=$!; sleep $d; kill -9 $rp 2>/dev/null; wait $rp 2>/dev/null
+    e2fsck -fn ${LOOP}p4 >/dev/null 2>&1; rc=$?
+    if [ "$rc" = 4 ]; then found=1; break; fi
+    losetup -d $LOOP; rm -f -- $W/t.img
+done
+if [ "$found" = 1 ]; then
+    echo "attempts needed: $tries (delay $d)"; echo "    tries: $tries, damage hits: $found"
+    e2fsck -fp ${LOOP}p4 >/tmp/grow-a-fp.out 2>&1; rcp=$?
+    e2fsck -fn ${LOOP}p4 >/tmp/grow-a-fn.out 2>&1
+    echo "    e2fsck -fp rc=$rcp: $(head -n 3 /tmp/grow-a-fp.out | tr '\n' '|')"
+    chk "damage is the resize inode one: e2fsck -fp rc 4" [ "$rcp" = 4 ]
+    chk "damage is the resize inode one: 'Resize inode not valid' in -fp and -fn output" bash -c "grep -q 'Resize inode not valid' /tmp/grow-a-fp.out && grep -q 'Resize inode not valid' /tmp/grow-a-fn.out"
+    mount -o ro ${LOOP}p2 /mnt/r
+    runfn ${LOOP}p4; sed 's/^/    log: /' $LOGF
+    chk "repair run: exactly the two lines (repaired, then grown)" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 2 ] && grep -qxF 'I: grow: repaired DATA after an interrupted resize' $LOGF && grep -q '^I: grow: DATA grown to ' $LOGF"
+    chk "repair run: e2fsck -fn clean" bash -c "e2fsck -fn ${LOOP}p4 >/dev/null 2>&1"
+    sz1=$(blockdev --getsz ${LOOP}p4)
+    bc=$(dumpe2fs -h ${LOOP}p4 2>/dev/null | sed -n 's/^Block count: *//p'); bs=$(dumpe2fs -h ${LOOP}p4 2>/dev/null | sed -n 's/^Block size: *//p')
+    chk "repair run: filesystem fills the partition ($((bc*bs/512)) of $sz1 sectors)" [ $((sz1 - bc*bs/512)) -lt 4096 ]
+    mount ${LOOP}p4 /mnt/d
+    chk "repair run: file checksums unchanged" bash -c "cd /mnt/d && find . -type f -not -name '.*' -exec sha256sum {} + | sort -k2 | cmp -s - /tmp/grow-a-sums.txt"
+    umount /mnt/d
+    runfn ${LOOP}p4
+    chk "repair run: second run is a no-op (zero log lines)" [ "$(lines)" = 0 ]
+    umount /mnt/r; losetup -d $LOOP; rm -f -- $W/t.img
+else
+    bad "interrupted resize: no damage produced in $N attempts"
+fi
+rm -f -- $W/pr.img
+
+echo "=== damaged but not smaller than its partition: left alone"
+# The warning for this damage comes from the hook's own e2fsck -p, which runs before grow_data.
+# grow_data itself logs nothing here: it returns before any fsck or write.
+cp --sparse=always $B $W/t.img
+LOOP=$(losetup --find --show --partscan $W/t.img); nodes
+debugfs -w -R 'clri <7>' ${LOOP}p4 >/dev/null 2>&1   # zero the resize inode (ino 7)
+e2fsck -fn ${LOOP}p4 >/tmp/grow-b-fn.out 2>&1; rcb=$?
+bc=$(dumpe2fs -h ${LOOP}p4 2>/dev/null | sed -n 's/^Block count: *//p'); bs=$(dumpe2fs -h ${LOOP}p4 2>/dev/null | sed -n 's/^Block size: *//p')
+psz=$(blockdev --getsz ${LOOP}p4)
+chk "precondition: e2fsck -fn reports damage (rc=$rcb)" [ "$rcb" != 0 ]
+chk "precondition: filesystem not smaller than its partition (gap $((psz - bc*bs/512)) sectors)" [ $((psz - bc*bs/512)) -lt 65536 ]
+h1=$(dd if=${LOOP}p4 bs=1M status=none | sha256sum)
+mount -o ro ${LOOP}p2 /mnt/r
+runfn ${LOOP}p4; sed 's/^/    log: /' $LOGF
+chk "damaged, not smaller: no log line" [ "$(lines)" = 0 ]
+h2=$(dd if=${LOOP}p4 bs=1M status=none | sha256sum)
+chk "damaged, not smaller: DATA content unchanged (no e2fsck -fy)" [ "$h1" = "$h2" ]
+umount /mnt/r; losetup -d $LOOP; rm -f -- $W/t.img
 
 }
 if [ "${PHASE2_ONLY:-0}" = 1 ]; then for arch in amd64 arm64; do make_img $arch $W/base-$arch.img; done; else phase1; fi

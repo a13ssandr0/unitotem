@@ -12,5 +12,5 @@ docker run --name grow-test --privileged -e PHASE2_ONLY="${PHASE2_ONLY:-0}" \
     -v "${DIR}:/repo:ro" -v "${DIR}/work/grow-test:/work" --workdir /work \
     debian:trixie bash /repo/tools/release/test_grow_data_inside.sh "$@" || rc=$?
 docker rm -f grow-test >/dev/null 2>&1 || true
-docker run --rm -v "${DIR}/work:/w" debian:trixie rm -rf -- /w/grow-test/base-amd64.img /w/grow-test/base-arm64.img /w/grow-test/t.img /w/grow-test/big.img /w/grow-test/flash-amd64.img /w/grow-test/flash-arm64.img || true
+docker run --rm -v "${DIR}/work:/w" debian:trixie rm -rf -- /w/grow-test/base-amd64.img /w/grow-test/base-arm64.img /w/grow-test/t.img /w/grow-test/big.img /w/grow-test/pr.img /w/grow-test/flash-amd64.img /w/grow-test/flash-arm64.img || true
 exit "$rc"
