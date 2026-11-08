@@ -41,6 +41,8 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 ### PC (amd64, UEFI or BIOS, `backend=grub`)
 
+- BIOS: the MBR boot code loads `core.img` from the `BIOS` partition (ef02, p5), which reads `unitotem-grub/` on the EFI partition as under UEFI. Run time: `/boot/efi` is mounted read-only; remount read-write for `grub-editenv`.
+
 - ESP: `unitotem-grub/grub/grub.cfg`, `unitotem-grub/grub/grubenv`, `EFI/BOOT/BOOTX64.EFI` (plain GRUB), `EFI/unitotem-sb/` (staged Secure Boot chain), `unitotem/` (fallback kernel and initrd).
 - Slot kernel and initrd: `/vmlinuz`, `/initrd.img` in each ROOT slot, found by `search --label ROOT_A|ROOT_B`.
 - grubenv keys: `saved_entry`, `next_entry` (one-shot, cleared by GRUB), `unitotem_video`.

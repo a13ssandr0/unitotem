@@ -8,13 +8,14 @@
 #   ./deploy/remote-deploy.sh changes root@host [--json]
 #   ./deploy/remote-deploy.sh deploy  root@host [--parts DIR] [--disk BYID]
 #                                     [--port N] [--wipe-data] [--backup-dir DIR] [--no-backup]
-#                                     [--console STR] [--debug] [--yes]
+#                                     [--console STR] [--yes]
 #                                     [--accept-changes DIGEST]
 #                                     [--secure-boot shim|noshim|abort]
 #   ./deploy/remote-deploy.sh disarm  root@host
 #
 #   ./deploy/remote-deploy.sh recover HOST[:PORT] [--fallback-user NAME] [--parts DIR] ...
-#   ./deploy/remote-deploy.sh serve   [--parts DIR] ...
+#
+# Exit codes of `changes`: 0 no changes, 1 changes found, 2 check failed on the target, 3 target has no unitotem-ota-changes.
 #
 # OTA fallback credentials (port 2222), read from the environment only (deploy/lib.sh, ota_auth_for):
 #   OTA_FALLBACK_KEY=PATH       private key (default: the per-target key of the host, created when arming)
@@ -46,8 +47,7 @@ case "$SUBCMD" in
         RECOVER_HOSTPORT="${1:-}"; shift || true
         [ -n "$RECOVER_HOSTPORT" ] || { echo "Usage: $0 recover HOST[:PORT] [options]" >&2; exit 1; }
         ;;
-    serve) ;;
-    *) echo "Usage: $0 {probe|deploy|changes|disarm|recover|serve} ... [options]" >&2; exit 1 ;;
+    *) echo "Usage: $0 {probe|deploy|changes|disarm|recover} ... [options]" >&2; exit 1 ;;
 esac
 
 OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
@@ -55,7 +55,7 @@ OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
 OPT_BACKUP_DIR="${UNITOTEM_BACKUP_DIR:-${DIR}/backups}" OPT_NO_BACKUP=0
 # Empty by default: build_legacy_cmdline() picks the console per architecture (tty0 for amd64, tty1 +
 # serial for arm64) unless --console is given.
-OPT_CONSOLE="" OPT_DEBUG=0 OPT_YES=0 OPT_FALLBACK_ONLY=0
+OPT_CONSOLE="" OPT_YES=0 OPT_FALLBACK_ONLY=0
 # What to do when the target has Secure Boot enabled (amd64/UEFI): shim | noshim | abort. Empty = ask (or
 # refuse, when non-interactive). See secure_boot_gate.
 OPT_SECURE_BOOT="" SB_MODE=""
@@ -72,7 +72,6 @@ while [ $# -gt 0 ]; do
         --backup-dir) OPT_BACKUP_DIR="$2"; shift 2 ;;
         --no-backup)  OPT_NO_BACKUP=1; shift ;;
         --console)    OPT_CONSOLE="$2"; shift 2 ;;
-        --debug)      OPT_DEBUG=1; shift ;;
         --yes)        OPT_YES=1; shift ;;
         --fallback-only) OPT_FALLBACK_ONLY=1; shift ;;
         --fallback-user) [[ "${2:-}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "--fallback-user: invalid user name '${2:-}'"
@@ -501,7 +500,7 @@ populate_bootfs_step() {
     [ -n "$bootfs_tar" ] || return 0
     local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
     wait_port_bound "$OPT_PORT" 10 || die "data listener not ready (bootfs)"
-    local lay=""; [ "${P_LAYOUT:-1}" = 2 ] && lay="--layout ab"
+    local lay="--layout ab"
     [ "$SB_MODE" = shim ] && lay="$lay --secure-boot shim"
     # shellcheck disable=SC2086
     ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}' ${lay}"
@@ -577,13 +576,9 @@ run_ota_sequence() {
     # entry set-default-recovery selects, so it must be there BEFORE the default is switched, and is not
     # repeated in stage 2.
     local bootfs_populated=0
-    if [ "${P_LAYOUT:-1}" = 2 ]; then
-        populate_bootfs_step "$host" "$disk" "$bootfs_part" || die "populating the boot partition failed"
-        bootfs_populated=1
-        ota_ssh "$host" "unitotem-ota-engine set-default-recovery --disk '${disk}' --firmware '${firmware_grub}' --bootfs-part '${bootfs_part}' --layout ab"
-    else
-        ota_ssh "$host" "unitotem-ota-engine set-default-recovery --disk '${disk}' --firmware '${firmware_grub}' --bootfs-part '${bootfs_part}'"
-    fi
+    populate_bootfs_step "$host" "$disk" "$bootfs_part" || die "populating the boot partition failed"
+    bootfs_populated=1
+    ota_ssh "$host" "unitotem-ota-engine set-default-recovery --disk '${disk}' --firmware '${firmware_grub}' --bootfs-part '${bootfs_part}' --layout ab"
     log "Stage 1 complete: from here any power loss reboots into the fallback."
 
     log "=== Stage 2: UniTotem image ==="
@@ -640,13 +635,7 @@ run_ota_sequence() {
     # shellcheck disable=SC2086
     ota_ssh "$host" "unitotem-ota-engine mount-target ${mount_args}"
 
-    if [ "$ARCH" = arm64 ] && [ "${P_LAYOUT:-1}" != 2 ]; then
-        # (A/B images already carry their kernel, initramfs and dtbs in slota/ on the boot partition.)
-        log "Populating the real system's kernel/initrd/dtb on the boot partition..."
-        ota_ssh "$host" "unitotem-ota-engine populate-real-kernel"
-    fi
-
-    local slot_arg=""; [ "${P_LAYOUT:-1}" = 2 ] && slot_arg="--slot a"
+    local slot_arg="--slot a"
     ota_ssh "$host" "unitotem-ota-engine migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data ${slot_arg}" || warn "/etc migration failed (non-fatal: the new system uses its own /etc)"
 
     # Carry the probed network settings onto the installed system. A non-UniTotem device's configuration lives
@@ -662,16 +651,11 @@ run_ota_sequence() {
     ota_ssh "$host" "unitotem-ota-engine apply-network ${net_args}" \
         || warn "applying the network settings failed (non-fatal)"
 
-    local trial_mode="$FIRMWARE"
-    [ "$FIRMWARE" = rpi ] && trial_mode=$([ "$TRYBOOT_CAPABLE" = 1 ] && echo rpi-tryboot || echo rpi-legacy)
-    if [ "$FIRMWARE" = rpi ] && [ "${P_LAYOUT:-1}" = 2 ]; then
-        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --disk '${disk}' --bootfs-part '${bootfs_part}' --target /mnt/newroot --layout ab"
-    elif [ "$FIRMWARE" = rpi ]; then
-        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --disk '${disk}' --bootfs-part '${bootfs_part}'"
-    elif [ "${P_LAYOUT:-1}" = 2 ]; then
-        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --target /mnt/newroot --layout ab"
+    # Layout 2 only: rpi-tryboot on Raspberry (P_LAYOUT check), GRUB on amd64/UEFI.
+    if [ "$FIRMWARE" = rpi ]; then
+        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware rpi-tryboot --disk '${disk}' --bootfs-part '${bootfs_part}' --target /mnt/newroot --layout ab"
     else
-        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${trial_mode}' --target /mnt/newroot"
+        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${FIRMWARE}' --target /mnt/newroot --layout ab"
     fi
 
     ota_ssh "$host" "unitotem-ota-engine umount-target" || true
@@ -682,7 +666,7 @@ run_ota_sequence() {
     # boot the fallback again. rpi-legacy (config.txt already swapped by set-trial-boot) and uefi/bios
     # (grub-reboot's one-shot) need nothing special. The real systemd reboot binary is required, not BusyBox's
     # (see unitotem/files/ota-hook), and `-f` skips the logind/D-Bus path that this initrd cannot satisfy.
-    if [ "$trial_mode" = rpi-tryboot ]; then
+    if [ "$FIRMWARE" = rpi ]; then
         ota_ssh "$host" "sync; reboot -f '0 tryboot'" 2>/dev/null || true
     else
         ota_ssh "$host" "sync; reboot -f" 2>/dev/null || true
@@ -705,14 +689,10 @@ load_parts() {
         ' "${OPT_PARTS}/parts.manifest"
     }
     P_LAYOUT=$(awk -F= '/^UNITOTEM_LAYOUT=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
-    P_LAYOUT="${P_LAYOUT:-1}"
-    if [ "$P_LAYOUT" = 2 ]; then
-        { [ "$ARCH" = amd64 ] && [ "$FIRMWARE" = uefi ]; } || { [ "$ARCH" = arm64 ] && [ "$FIRMWARE" = rpi ] && [ "$TRYBOOT_CAPABLE" = 1 ]; } \
-            || die "the A/B layout is supported on amd64/UEFI and on Raspberry with tryboot (target: ${ARCH}/${FIRMWARE}, tryboot=${TRYBOOT_CAPABLE:-0}); legacy BIOS and Raspberry without tryboot are not supported"
-        P_ROOT_PART=$(part_num_for_label ROOT_A)
-    else
-        P_ROOT_PART=$(part_num_for_label ROOT)
-    fi
+    [ "$P_LAYOUT" = 2 ] || die "the parts set is not A/B (UNITOTEM_LAYOUT=${P_LAYOUT:-none}): only A/B parts sets (layout 2) are supported"
+    [ "$ARCH" = amd64 ] || { [ "$ARCH" = arm64 ] && [ "$FIRMWARE" = rpi ] && [ "$TRYBOOT_CAPABLE" = 1 ]; } \
+        || die "the A/B layout is supported on amd64 (UEFI and legacy BIOS) and on Raspberry with tryboot (target: ${ARCH}/${FIRMWARE}, tryboot=${TRYBOOT_CAPABLE:-0}); Raspberry without tryboot is not supported"
+    P_ROOT_PART=$(part_num_for_label ROOT_A)
     P_BOOT_PART=$(part_num_for_label BOOT)
     P_BOOTFS_VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
 }
@@ -878,8 +858,17 @@ cmd_recover() {
     # arm, everything is learned from the engine's probe. DATA is kept when the partition table still has the
     # expected shape and DATA passes a read-only fsck; otherwise (or with --wipe-data) the disk is laid out again
     # and DATA is lost.
-    local host="${RECOVER_HOSTPORT%%:*}"
-    log "Connecting to the target in fallback (${host})..."
+    local host port
+    [[ "$RECOVER_HOSTPORT" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*)(:([0-9]{1,5}))?$ ]] \
+        || die "recover: invalid address '${RECOVER_HOSTPORT}' (HOST or HOST:PORT)"
+    host="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[3]:-${OTA_PORT:-2222}}"
+    (( 10#$port >= 1 && 10#$port <= 65535 )) || die "recover: port out of range: ${port}"
+    # OTA_SSH_OPTS (deploy/lib.sh) is built at source time: replace the port value after its -p flag.
+    local i
+    for i in "${!OTA_SSH_OPTS[@]}"; do
+        [ "${OTA_SSH_OPTS[i]}" = -p ] && OTA_SSH_OPTS[i+1]="$((10#$port))"
+    done
+    log "Connecting to the target in fallback (${host}:$((10#$port)))..."
     # Credentials: ota_ssh (ota_auth_for) uses the per-target key of this host when it exists, else OTA_FALLBACK_KEY,
     # OTA_FALLBACK_OPEN=1 or OTA_FALLBACK_PASSWORD from the environment; --fallback-user sets the login user.
     ota_ssh "$host" true || die "cannot reach ${host} on the OTA session (port 2222): check the fallback credentials (OTA_FALLBACK_KEY, or OTA_FALLBACK_USER with OTA_FALLBACK_PASSWORD, or OTA_FALLBACK_OPEN=1)"
@@ -914,8 +903,8 @@ cmd_recover() {
     # The table must still have the shape the parts set would write: same number of partitions, DATA on the expected
     # number and start sector (otherwise restore-part would write the slots over a different geometry than DATA's).
     local nparts_exp data_start_exp
-    nparts_exp=$(grep -c ' : start=' "${OPT_PARTS}/layout.sfdisk")
-    data_start_exp=$(grep -E "(^|[^0-9])${P_DATA_PART}[[:space:]]*:" "${OPT_PARTS}/layout.sfdisk" | head -1 | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
+    nparts_exp=$(grep -c ' : start=' "${OPT_PARTS}/layout.sfdisk" || true)
+    data_start_exp=$(grep -E "(^|[^0-9])${P_DATA_PART}[[:space:]]*:" "${OPT_PARTS}/layout.sfdisk" | head -1 | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+' || true)
     # asked here, not of the engine: the recovery initrd on the target may be older than this script
     E[UNITOTEM_DATA_START]=$(ota_ssh "$host" 'd=$(blkid -L DATA 2>/dev/null) && cat /sys/class/block/${d##*/}/start' 2>/dev/null || true)
     local keep=1 why=""
@@ -957,12 +946,6 @@ cmd_recover() {
     log "Recovery sequence sent: the target reboots into the restored system."
 }
 
-cmd_serve() {
-    log "Listening for a target calling home (dropbear reverse tunnel, port 2222)..."
-    log "No further automatic action: use 'ssh -p 2222 root@localhost' once the tunnel is up."
-    while :; do sleep 3600; done
-}
-
 # What has changed on the target since its image was built. An OTA replaces ROOT wholesale, so local edits are lost.
 # The scan runs on the target (/usr/sbin/unitotem-ota-changes needs dpkg, so it cannot live in the fallback's
 # ota-engine.sh); this side presents the result and gates on it.
@@ -985,8 +968,8 @@ cmd_changes() {
     fi
     case "$CHANGES_RC" in
         0|1) printf '%s\n' "$CHANGES_OUT" ;;
-        127) die "the target has no unitotem-ota-changes (image predates this feature)" ;;
-        *)   die "change check failed on the target: ${CHANGES_OUT}" ;;
+        127) echo "changes: the target has no unitotem-ota-changes (image predates this feature)" >&2; return 3 ;;
+        *)   echo "changes: check failed on the target (exit ${CHANGES_RC}): ${CHANGES_OUT}" >&2; return 2 ;;
     esac
     return "$CHANGES_RC"
 }
@@ -1005,7 +988,7 @@ secure_boot_gate() {
 
     # A UniTotem already running with Secure Boot on boots through a trusted path: keep the shim chain (only with an
     # A/B parts set, the only one that stages it; otherwise fall through to the choice).
-    if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ "${P_LAYOUT:-1}" = 2 ] && [ -z "$OPT_SECURE_BOOT" ]; then
+    if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ -z "$OPT_SECURE_BOOT" ]; then
         log "Secure Boot is active and the target is already UniTotem: keeping the shim chain"
         SB_MODE=shim; return 0
     fi
@@ -1044,7 +1027,6 @@ secure_boot_gate() {
     case "$OPT_SECURE_BOOT" in
         abort)  die "aborted: Secure Boot is active on the target. Disable it in the firmware (or choose --secure-boot shim|noshim) and run again" ;;
         shim)
-            [ "${P_LAYOUT:-1}" = 2 ] || die "the shim chain is staged only in A/B images: this parts set does not contain it (use an A/B image or --secure-boot noshim)"
             SB_MODE=shim
             warn "Secure Boot: installing with shim. With an NVIDIA GPU the MOK key must be enrolled from the console (physical intervention)."
             ;;
@@ -1142,5 +1124,4 @@ case "$SUBCMD" in
     deploy)  cmd_deploy ;;
     disarm)  cmd_disarm ;;
     recover) cmd_recover ;;
-    serve)   cmd_serve ;;
 esac

@@ -8,7 +8,7 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
 
 | Path | Role |
 |---|---|
-| `deploy/remote-deploy.sh` | Orchestrator: `probe`, `changes`, `deploy`, `recover`, `disarm`, `serve` |
+| `deploy/remote-deploy.sh` | Orchestrator: `probe`, `changes`, `deploy`, `recover`, `disarm` |
 | `deploy/ota-engine.sh` | Target engine, `/usr/sbin/unitotem-ota-engine`; one subcommand per step |
 | `deploy/lib.sh` | SSH/SCP wrappers, sudo escalation, data channel, `backup_stream` |
 | `deploy/make-parts.sh` | `.img.xz` -> parts set via container `unitotem-parts-builder` (`Dockerfile.parts`) |
@@ -32,34 +32,33 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
   4. `wait_ota_reachable`: polls `OTA_FALLBACK_USER@host:2222` (default `root`) up to 600 s; after 60 s without answer scans the local /24 for dropbear on 2222.
   5. `run_ota_sequence`.
   6. Polls `https://<ip>/login` on the new system up to 600 s, credential-free (see Rules).
-- `recover HOST[:PORT]`: target already in the fallback. Engine `probe` picks the disk (holding DATA/ROOT/EFI labels, or the only disk). DATA is kept only if: no `--wipe-data`, DATA mounts, read-only `e2fsck -fn` passes, DATA partition number and start sector match the parts set, partition count matches. Otherwise the table is rewritten and DATA is lost (saved first if it mounts). The boot partition is reformatted if missing or failing `fsck.fat -n`. Secure Boot active forces `shim`. The `:PORT` part is ignored; the port is `OTA_PORT`. Login: see [Fallback authentication](#fallback-authentication).
+- `recover HOST[:PORT]`: target already in the fallback. Engine `probe` picks the disk (holding DATA/ROOT/EFI labels, or the only disk). DATA is kept only if: no `--wipe-data`, DATA mounts, read-only `e2fsck -fn` passes, DATA partition number and start sector match the parts set, partition count matches. Otherwise the table is rewritten and DATA is lost (saved first if it mounts). The boot partition is reformatted if missing or failing `fsck.fat -n`. Secure Boot active forces `shim`. `HOST:PORT` (fullmatch, port 1-65535) sets the fallback SSH port; without `:PORT` it is `OTA_PORT`. Login: see [Fallback authentication](#fallback-authentication).
 - `disarm`: restores `config.txt`/`cmdline.txt` from `*.unitotem-bak` (Pi) or removes `/etc/grub.d/99_unitotem_flash` (x86); removes recovery files.
 - `changes [--json]`: runs `unitotem-ota-changes check` on the target.
   - UI sequence: `changes --json`; if `verdict` is `clean`, deploy; else show packages and unexplained files, keep `digest`, and after confirmation run `deploy --accept-changes DIGEST`. A digest mismatch means the system changed: restart from `changes`.
   - The check runs over `ssh_t` with no timeout of its own and is I/O bound: the first run after a boot is much slower than later ones, so callers allow generous time.
-  - Exit 127 comes from the SSH wrapper when the target lacks the tool (image predates it): `changes` dies, the deploy gate only warns and continues.
+  - Exit 127 comes from the SSH wrapper when the target lacks the tool (image predates it): `changes` exits 3, the deploy gate only warns and continues.
 - `probe` prints `Secure Boot : enabled (deploy will ask how to proceed) | disabled | cannot be detected` and `Earlier UniTotem (single root): <version|none>`. The state is read from the `SecureBoot` EFI variable on a UEFI boot only, never guessed.
 
 Stage 1 (fallback installed; a power loss boots the fallback):
 
 - `restore-table` (skipped when DATA and table are kept); marks the point of no return.
 - `prepare-bootfs --fresh 1` (`--volid` from the image); `write-bootfile` for recovery kernel and initrd.
-- A/B: `populate-bootfs`, then `set-default-recovery --layout ab`. Otherwise `set-default-recovery`.
+- `populate-bootfs --layout ab`, then `set-default-recovery --layout ab`.
 
 Stage 2 (system image):
 
-- Non-A/B: `populate-bootfs`.
 - Each block of `parts.manifest`: `restore`/`raw` -> `restore-part` (bulk over the data channel); `format` -> `format-part`; `data` -> `data-op` (`mkfs` if wiping or DATA absent, else `preserve`). `filecopy` partitions are covered by `populate-bootfs`.
-- `mount-target`; arm64 non-A/B: `populate-real-kernel`; `migrate-etc-overlay` and `apply-network` (non-fatal).
-- `set-trial-boot` (GRUB `UniTotem (trial)`, `tryboot.txt`, or config swap), `umount-target`, reboot (Pi tryboot: `reboot -f '0 tryboot'`).
-- The fallback stays default until `unitotem-boot-ok` runs `promote-default` (single-root path).
+- `mount-target`; `migrate-etc-overlay` and `apply-network` (non-fatal).
+- `set-trial-boot --layout ab` (GRUB one-shot `slot-a`, or `tryboot.txt` on Pi), `umount-target`, reboot (Pi tryboot: `reboot -f '0 tryboot'`).
+- The fallback stays default until the trial slot is confirmed by `unitotem-update --json boot-ok` (`saved_entry` / `config.txt` flip then).
 
 The network deploy takes its layout from the FULL image (parts set, release assets); the flash image (`-flash.img.xz`) is for writing to a card or disk directly and is never an input of `make-parts.sh`. Full image, flash image, parts set: `storage-and-persistence.md#layout`.
 
 Parts set (`deploy/<arch>/<name>.parts/`): `parts.manifest` (KEY=VALUE header, one block per partition), `layout.sfdisk`, `bootcode.bin` (440 bytes), `SHA256SUMS`, stream files (`*.xz`), `p1-FIRMWARE.bootfs.tar.*`.
 
-- Layout 1: single ROOT. Layout 2: A/B. A/B is supported only on amd64 UEFI and on Pi with tryboot; legacy BIOS and Pi 3/Zero 2 are refused.
-- Actions by label (`parts_action_for_label`): `EFI`/`FIRMWARE` filecopy (fat); `DATA` data (never streamed); `BOOT`/`ROOT`/`ROOT_A` restore (partclone extfs); `ROOT_B` format (shipped empty); `BIOS` raw (dd).
+- Layout 2 (A/B) is the only layout: a parts set without `UNITOTEM_LAYOUT=2` is refused. Supported targets: amd64 (UEFI and legacy BIOS) and Pi with tryboot; Pi 3/Zero 2 are refused. On legacy BIOS the MBR boot code (`bootcode.bin`, written by `restore-table`) and the `BIOS` partition (ef02, raw stream with GRUB's core.img) are restored from the parts set; GRUB then reads `unitotem-grub/` on the EFI partition exactly as under UEFI.
+- `parts-lib.sh` recognises the BIOS partition by its GPT type GUID (21686148-6449-6E6F-744E-656564454649); without that stream a BIOS target would not boot. Actions by label (`parts_action_for_label`): `EFI`/`FIRMWARE` filecopy (fat); `DATA` data (never streamed); `BOOT`/`ROOT`/`ROOT_A` restore (partclone extfs); `ROOT_B` format (shipped empty); `BIOS` raw (the stream is the raw partition content, `xz` of `dd`; `partclone.dd` has no clone mode; restored with `dd of=PART conv=fsync`).
 
 Preboot SD image: one FAT32 partition from 1 MiB (MBR type 0c) with Pi firmware, `recovery8.img`, `recovery-initrd.img`, `config.txt` (640x480), `cmdline.txt` with `unitotem.ota=recover`. Waits with no idle timeout; `recover` lays out the whole card.
 
@@ -72,13 +71,12 @@ Preboot SD image: one FAT32 partition from 1 MiB (MBR type 0c) with Pi firmware,
 | `probe user@host` | none |
 | `changes user@host` | `--json` |
 | `deploy user@host` | `--parts DIR`, `--disk NAME\|BYID`, `--port N` (data channel, default 9700), `--wipe-data`, `--backup-dir DIR`, `--no-backup`, `--fallback-only`, `--console STR`, `--yes`, `--accept-changes DIGEST`, `--secure-boot shim\|noshim\|abort`, `--fallback-user NAME` |
-| `recover HOST[:PORT]` | `--parts DIR`, `--disk`, `--wipe-data`, `--backup-dir`, `--no-backup`, `--yes`, `--fallback-user NAME` |
+| `recover HOST[:PORT]` | `--disk`, `--wipe-data`, `--backup-dir`, `--no-backup`, `--yes`, `--fallback-user NAME` (`--parts` is not read by `recover`) |
 | `disarm user@host` | none |
-| `serve` | idle loop (`sleep 3600`) |
 
 Environment: `OTA_PASSWORD` (login password of an adopted foreign system, default `unitotem`), `OTA_FALLBACK_KEY` (private key of the fallback login; default: the per-target key of the host), `OTA_FALLBACK_USER` (fallback login user, default `root`; `--fallback-user NAME`), `OTA_FALLBACK_PASSWORD` (password of that user; environment only, never on a command line; no default), `OTA_FALLBACK_OPEN=1` (open mode: empty password, see [Fallback authentication](#fallback-authentication)), `OTA_AUTH` (`password` by default; `key`: `BatchMode=yes`, `PreferredAuthentications=publickey`, no sshpass, for hosts with the dev PC's key installed: test devices and the native arm64 build host `PI_HOST`), `OTA_PORT` (fallback SSH port, 2222), `OTA_HOSTIP` (address the target uses to reach the host), `UNITOTEM_BACKUP_DIR` (default `backups/`), `UNITOTEM_OTA_DEBUG=1` (engine: emergency shell on failure).
 
-Exit codes: `remote-deploy.sh` 0 success, 1 any error. `deploy` returns 0 with a warning if the new system is not reachable within 600 s. Engine: 0 / 1 via `fail()`; stdout carries only `UNITOTEM_*=value` lines, logs go to stderr and kmsg.
+Exit codes: `remote-deploy.sh` 0 success, 1 any error. `changes`: 0 no changes, 1 changes found, 2 check failed on the target (or unreachable), 3 target has no `unitotem-ota-changes`. `deploy` returns 0 with a warning if the new system is not reachable within 600 s. Engine: 0 / 1 via `fail()`; stdout carries only `UNITOTEM_*=value` lines, logs go to stderr and kmsg.
 
 Engine subcommands (`--name value`; `--disk` on disk operations):
 
@@ -101,7 +99,7 @@ Engine subcommands (`--name value`; `--disk` on disk operations):
 | `apply-network` | `--data-mnt [--slot --link wired\|wifi --mode dhcp\|static --addr --gw --dns --ssid-b64 --psk-b64]` | `UNITOTEM_NET_APPLIED=1\|skip-existing\|not-needed` |
 | `serve-fallback` | `[--reason --kind update\|recovery --idle-timeout S]` | blocks |
 
-Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.bootcount=1`, `unitotem.ota.authkey=<base64 of one ssh-ed25519 line>` (fallback login key); boot-FAT files `unitotem-ota.request`, `unitotem-ota.authorized_keys` (fallback login key, kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, `OTA_NET_LINK/MODE/IFACE/ADDR/GW`, `OTA_WIFI_SSID_B64`, `OTA_WIFI_PSK_B64`), `unitotem-ota.bootcount`, `unitotem-ota.failover`, `unitotem-grub/grub/grubenv`, `tryboot.txt`, `cmdline-trial.txt`. Semantics: `boot.md`.
+Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.authkey=<base64 of one ssh-ed25519 line>` (fallback login key); boot-FAT files `unitotem-ota.request`, `unitotem-ota.authorized_keys` (fallback login key, kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_NET_LINK/MODE/IFACE/ADDR/GW`, `OTA_WIFI_SSID_B64`, `OTA_WIFI_PSK_B64`), `unitotem-ota.failover`, `unitotem-grub/grub/grubenv`, `tryboot.txt`, `cmdline-trial.txt`. Semantics: `boot.md`.
 
 ## Fallback authentication
 
@@ -111,7 +109,7 @@ The fallback dropbear (port 2222) has no fixed password. `fallback_auth_setup` (
    - kernel command line token `unitotem.ota.authkey=<base64 of one ssh-ed25519 line>` (foreign OS, `arm_rpi`/`arm_grub`);
    - file `unitotem-ota.authorized_keys` on the boot FAT (FIRMWARE or EFI), written by `unitotem-ota-arm --authkey-file FILE` (installed UniTotem). The engine mounts the boot FAT read-only itself when `/boot-ota` is not mounted.
 2. DATA, mounted read-only on demand and unmounted after reading:
-   - `upper/root.<slot>/.ssh/authorized_keys` (slot from `unitotem.slot=`, else both slots);
+   - `upper/root.<slot>/.ssh/authorized_keys` (one slot: `unitotem.slot=` on the command line, else `saved_entry=slot-x` of the boot FAT `unitotem-grub/grub/grubenv` (GRUB entry `ota-recovery` carries no slot), else slot a; the other slot's accounts are never read);
    - for every member of group `sudo` in `upper/etc.<slot>/group`: the shadow hash (`upper/etc.<slot>/shadow`) and `unitotem/persist/home/<user>/.ssh/authorized_keys`.
 3. Open mode, only when no key and no administrator was found at all: root with an empty password and dropbear `-B`. Logged. A configured device never falls back to open. A device whose administrator password is forgotten stays closed unless a key is armed or present in DATA. DATA that is absent or cannot be mounted counts as nothing found, so a device with a damaged DATA stays recoverable remotely; the price is that an intact device whose DATA fails to mount at that moment is open until the next boot.
 
@@ -143,6 +141,8 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 - All SSH/SCP to targets goes through `deploy/lib.sh`: `ssh_t`, `scp_t`, `scp_root`, `ota_ssh`, `ota_ssh_send`, `_sshpass`. They set `SSH_ASKPASS_REQUIRE=never` and unset `DISPLAY`/`SSH_ASKPASS`; a raw `ssh`/`scp` makes OpenSSH try a graphical askpass when no password is ready, then fail with repeated `Permission denied` and no clear error. Check: `grep -n '\bssh \|\bscp \b' deploy/*.sh | grep -v '_sshpass\|ssh_t\|ota_ssh\|scp_t\|command -v\|ssh-keyscan'`.
 - `ota_ssh` keeps `-n` (loops read `parts.manifest` on fd 9); `ota_ssh_send` keeps stdin.
 - Fallback host key changes every boot: `StrictHostKeyChecking=accept-new`, `UserKnownHostsFile=/dev/null`.
+- Limitation, host key not pinned: the fallback key is generated in the initramfs at each boot (`dropbearkey` in serve-fallback) and the tool keeps no copy, so nothing verifies it. Pinning needs the host to create the key at arming and deliver the private part the way the authorized key is delivered (boot FAT or cmdline), a change across `unitotem-ota-arm`, `remote-deploy.sh` and the initramfs. Effect: a man-in-the-middle on the LAN during the fallback session cannot log in with the key, but receives the password in password mode (`OTA_FALLBACK_PASSWORD`).
+- The idle watchdog of serve-fallback stands down only when dropbear logs a successful login (`auth succeeded` in `/run/ota-dropbear.log`). A bare TCP connection does not stop it.
 - Non-root login escalates with `sudo -n` or an askpass helper `/tmp/.unitotem-ota-askpass` (mode 700), removed by the EXIT trap.
 - Post-deploy check is credential-free: the new system's `https://<ip>/login` must answer 200, or 302/303 to `/setup` (first access open). Plain HTTP redirects to HTTPS. Budget 600 s. No SSH login is used; see [image-runtime](image-runtime.md#root-and-first-access).
 - `unitotem-ota-arm` reboots the target: its ssh exit status is a race; the verdict is `wait_ota_reachable`.
@@ -152,14 +152,21 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 - Data channel is plain unauthenticated TCP: host serves with `socat FILE:... TCP-LISTEN` (`serve_file_once`), target pulls via `/dev/tcp`. The listener must be bound (`wait_port_bound`) before the target pulls; never probe the port with a throwaway connection.
 - `restore-part` uses `partclone -C` only if used bytes + 20% + 256 MiB fit the partition; `e2fsck -fy` after restore (not after `dd`).
 - `populate-bootfs` never overwrites `config.txt`, `cmdline.txt`, recovery files, `unitotem-ota.*`, `*.unitotem-bak`, `tryboot.txt`. Only `set-default-recovery` and `promote-default` write `config.txt`. `--layout ab` anchors tar excludes.
-- Pi: `enable_uart=1` in every fallback and trial config. Pi without tryboot (3, Zero 2): `rpi-legacy`, config swap guarded by the boot counter.
-- Secure Boot (amd64 UEFI): `shim` requires layout 2; non-interactive runs without `--secure-boot` refuse; unknown state is treated as off with a warning; `noshim` needs a firmware change on site.
+- Pi: `enable_uart=1` in every fallback and trial config. Pi without tryboot (3, Zero 2) is refused.
+- Secure Boot (amd64 UEFI): non-interactive runs without `--secure-boot` refuse; unknown state is treated as off with a warning; `noshim` needs a firmware change on site.
 - Secure Boot `shim` may need physical intervention: with an NVIDIA GPU the MOK key is enrolled from the console; firmware that does not trust the Microsoft UEFI CA rejects shim; a non-Debian running system may stop at the GRUB prompt (`bad shim signature`) on the first one-shot step. A target already UniTotem with Secure Boot active keeps the shim chain automatically (A/B parts set only).
 - Backups of an installed UniTotem exclude the target's `unitotem-native-build` scratch tree (deploy backup and `recover` DATA save).
 - `--accept-changes DIGEST` implies `--yes` and must equal the current digest. `--yes` overwrites changes without showing them.
-- `changes` exits 0 clean, 1 changes found; check failure and missing tool also exit 1 via `die`. A UI reads the `--json` `verdict`.
-- `cmd_serve` starts no tunnel; `OTA_HOST` is unset in the deploy path.
+- `changes` exits 0 clean, 1 changes found, 2 check failed, 3 tool missing (see Interfaces). A UI reads the `--json` `verdict` and must check the exit code before it.
+- The fallback has no reverse tunnel: the host always connects to the target on `OTA_PORT`.
 - Layout 2 installs leave ROOT_B formatted and empty.
+- Legacy BIOS (amd64): `restore-table` writes `bootcode.bin` into the MBR area, the `BIOS` partition (ef02) is restored raw. Proven in a SeaBIOS q35 VM: empty disk -> `recover` -> reboot -> slot A trial -> automatic confirm; fetch + apply of a newer release; trial rollback to the other slot; power cuts after arming, in the trial boot and during the write of the other slot; `repair`; `ota-recovery` entry with key, administrator password and open mode.
+- `make-parts.sh` input is the FULL image (`unitotem-*-<arch>.img.xz`: EFI, ROOT_A, ROOT_B, DATA, BIOS), never the flash image (its table lacks ROOT_B and DATA). `--out DIR` is honoured (the container writes below `/out`). Generation takes about 20 min on 20 cores, mostly the single-threaded `xz -d` of a 14 GiB sparse image (about 20 MB/s) and the xz compression of ROOT_A. The BIOS stream is the raw partition (1 MiB) as `xz` of `dd`: `partclone.dd -c` writes nothing and `partclone.restore` crashes on a raw stream; `restore-part` restores it with `dd of=PART conv=fsync`. `sfdisk --part-type` prints the GPT GUID `21686148-6449-6E6F-744E-656564454649`, not `ef02`.
+- `write-bootfile` copies the host's `deploy/<arch>/recovery-vmlinuz-<arch>` and `recovery-initrd-<arch>.img` onto the target ESP: they are the resident fallback of that device. Rebuild them with every release (`unitotem/stage1-recovery-initrd.sh`); an older initrd ships an older engine (an initrd from before open mode refused the empty password on a first-access device). `remote-deploy.sh recover` also runs the engine of the initrd it is connected to.
+- `/boot/efi` is mounted read-only on the running system: remount it read-write before `grub-editenv ... next_entry=ota-recovery` and the like, and read-only again afterwards.
+- Measured in a SeaBIOS q35 KVM VM (4 vCPU, 4 GiB): `recover` of a 3.7 GB system about 3 min; the restarted VM reaches `/setup` about 1 min after the reboot.
+- `unitotem-update repair` on GRUB treats a slot as sound only with `vmlinuz` and `initrd.img` present (relative symlinks into `boot/`): the entries `slot-a`/`slot-b` load those paths.
+- `/health` answers on loopback only (404 from outside): a host-side post-deploy check uses `/login` or `/setup`.
 - Post-restore addressing uses `blkid -L` labels (`ROOT_A`, `ROOT_B`, `DATA`, `FIRMWARE`/`EFI`): two UniTotem disks in one machine make the lookup ambiguous; no duplicate-label check exists.
 - `make-parts.sh`: arch from the `-amd64.img.xz`/`-arm64.img.xz` suffix or `--arch`; scratch `work/parts-scratch.<pid>` removed unless `--keep-scratch`.
 - `make-preboot-image.sh`: default parts set is the newest `deploy/arm64/*.parts`; needs `recovery-*` and `p1-FIRMWARE.bootfs.tar.*`; output `deploy/arm64/unitotem-preboot-arm64.img` (+ `.xz`).
@@ -168,6 +175,9 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 ## Tests
 
 - `python3 tools/release/test_deploy_backup.py`: `backup_stream`, `backup_running_system`.
-- `python3 tools/release/test_secure_boot_gate.py`: SecureBoot parsing, gate branches.
+- `python3 tools/release/test_secure_boot_gate.py`: SecureBoot parsing, gate branches (a non-A/B parts set is refused in `load_parts`, before the gate).
+- `python3 tools/release/test_deploy_bios.py`: BIOS parts set through `load_parts`, the manifest loop and the `restore-part` dd branch (no partclone).
+- `tools/release/test_parts_bios.sh`: `make_parts` on a loop image with an ef02 partition (Docker, privileged): raw `dd` stream, sha256, byte identity.
+- `python3 tools/release/test_fallback_auth_slot.py`: the slot the fallback reads for its logins.
 - `unitotem/check-recovery-commands.sh ROOTFS INITRD ENGINE.sh`.
 - Loopback and QEMU harnesses: `testing.md`.

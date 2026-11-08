@@ -56,15 +56,21 @@ log "Decompressing ${IMAGE} into ${SCRATCH_DIR} (sparse)..."
 xz -dc "$IMAGE" | dd of="${SCRATCH_DIR}/$(basename "$IMAGE" .xz)" bs=4M conv=sparse status=progress
 
 mkdir -p "${DIR}/deploy/${ARCH}"
+# --out: the container writes the set below /out (the parent of OUTDIR on the host).
+OUT_PARENT=$(dirname "$OUTDIR")
+mkdir -p "$OUT_PARENT"
+OUT_PARENT=$(cd "$OUT_PARENT" && pwd)
+OUTDIR="${OUT_PARENT}/$(basename "$OUTDIR")"
 
 log "Generating the parts set (${ARCH})..."
 ${DOCKER} run --rm --privileged \
     -v /dev:/dev \
     -v "${SCRATCH_DIR}:/scratch" \
     -v "${DIR}/deploy:/deploy" \
+    -v "${OUT_PARENT}:/out" \
     unitotem-parts-builder \
     /parts/make-parts-image.sh \
-        "/scratch/$(basename "$IMAGE" .xz)" "$ARCH" "$SETNAME" "$(basename "$IMAGE" .xz)"
+        "/scratch/$(basename "$IMAGE" .xz)" "$ARCH" "$SETNAME" "$(basename "$IMAGE" .xz)" "/out/$(basename "$OUTDIR")"
 
-log "Done: deploy/${ARCH}/${SETNAME}.parts/"
+log "Done: ${OUTDIR}"
 ls -lh "${OUTDIR}"

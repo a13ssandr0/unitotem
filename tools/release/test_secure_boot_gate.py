@@ -82,7 +82,7 @@ check("SB=1 --secure-boot abort: dies", rc != 0 and has(err, r"annullato|abort|c
 rc, out, err = gate("1", yes=1)
 check("SB=1 non-interactive (--yes) without the flag: dies, asking for an explicit choice", rc != 0 and "--secure-boot" in err and "SB_MODE" not in out, (rc, out, err))
 rc, out, err = gate("1", layout=1, flag="shim")
-check("SB=1 shim with a non-A/B parts set: dies", rc != 0 and "A/B" in err and "SB_MODE" not in out, (rc, out, err))
+check("non-A/B parts set is refused in load_parts, before the Secure Boot gate", SCRIPT.index("\n    load_parts\n") < SCRIPT.index("\n    secure_boot_gate\n") and has(SCRIPT[SCRIPT.index("load_parts() {"):SCRIPT.index("\n}\n", SCRIPT.index("load_parts() {"))], r'P_LAYOUT" = 2 \] \|\| die'))
 rc, out, err = gate("1", layout=1, flag="noshim")
 check("SB=1 noshim works with any layout", rc == 0 and "SB_MODE=[noshim]" in out, (rc, out, err))
 rc, out, err = gate("1", have=1)
@@ -90,7 +90,6 @@ check("SB=1 on a target that already is UniTotem (A/B): keeps shim, no question"
 rc, out, err = gate("1", have=1, yes=1)
 check("SB=1 already UniTotem, non-interactive: keeps shim without the flag", rc == 0 and "SB_MODE=[shim]" in out, (rc, out, err))
 rc, out, err = gate("1", have=1, layout=1, yes=1)
-check("SB=1 already UniTotem but non-A/B parts set, non-interactive: dies (no staged chain to keep)", rc != 0 and "SB_MODE" not in out, (rc, out, err))
 rc, out, err = gate("1", have=1, flag="noshim")
 check("SB=1 already UniTotem + explicit noshim: the explicit choice wins", rc == 0 and "SB_MODE=[noshim]" in out, (rc, out, err))
 for choice, exp in (("1", "shim"), ("2", "noshim")):
@@ -109,7 +108,7 @@ check("amd64/legacy BIOS: the gate is a no-op", rc == 0 and "SB_MODE=[]" in out,
 # ---- D3: wiring ----------------------------------------------------------------------------------------------------------
 check("populate_bootfs_step passes --secure-boot shim only when SB_MODE=shim", '[ "$SB_MODE" = shim ] && lay="$lay --secure-boot shim"' in SCRIPT)
 check("the gate runs before the changes gate", SCRIPT.index("\n    secure_boot_gate\n") < SCRIPT.index("\n    changes_gate\n"))
-i = SCRIPT.index('if [ "$SB_MODE" = noshim ]; then\n        echo ""'); j = re.search(r"(Attendo che|Waiting for) \$\{post\}", SCRIPT).start()
+i = SCRIPT.index('if [ "$SB_MODE" = noshim ]; then\n        echo ""'); j = re.search(r"Waiting for \$\{target_ip\} to answer on the new system", SCRIPT).start()
 check("noshim: the big warning + return come BEFORE the 10-minute wait for the target", i < j and "return 0" in SCRIPT[i:j])
 
 print(f"== {ok + fail} checks, {fail} failed")
