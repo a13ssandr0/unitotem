@@ -199,6 +199,10 @@ if [ "$ARCH" = "amd64" ]; then
         firmware-intel-misc \
         intel-microcode \
         amd64-microcode
+    # firmware-nvidia-graphics (stable, not the backports build: 63 MiB installed against 153 MiB, same gp10x blobs): the signed
+    # firmware nouveau needs on Pascal and older GPUs (GP106 acr/gr/sec2). Without it labwc dies at 'nvc0_screen_create' and the kiosk
+    # never starts. Installed here because apt cannot install anything after the compiler purge.
+    apt_install --no-install-recommends firmware-nvidia-graphics/trixie
     # Wi-Fi and Bluetooth firmware of the common PC cards (Intel, Realtek, Atheros, MediaTek, Broadcom): in Debian 13
     # firmware-linux-nonfree depends only on firmware-misc-nonfree and firmware-amd-graphics, so without these a PC has no
     # Wi-Fi or Bluetooth (the kernel drivers are there, the firmware files are not). intel-microcode and amd64-microcode:

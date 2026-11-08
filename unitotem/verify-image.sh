@@ -94,6 +94,10 @@ if [ "$ARCH" = amd64 ]; then
     if [ -z "$l550" ]; then ok "no Debian 550 NVIDIA package installed"; else bad "Debian 550 NVIDIA package installed: $l550"; fi
     fw_gsp_same() { local a b; a=$(pkgver nvidia-kernel-open-dkms); b=$(pkgver firmware-nvidia-gsp); [ -n "$a" ] && [ "$a" = "$b" ]; }
     chk "firmware-nvidia-gsp is installed at the nvidia-kernel-open-dkms version" fw_gsp_same
+    nv_fw() { [ -e "$R/lib/firmware/nvidia/gp106/$1" ] || [ -L "$R/lib/firmware/nvidia/gp106/$1" ]; }
+    chk "firmware-nvidia-graphics is installed (nouveau firmware for Pascal and older)" installed firmware-nvidia-graphics
+    chk "nouveau firmware for GP106 present (nvidia/gp106/acr/ucode_load.bin)" nv_fw acr/ucode_load.bin
+    chk "nouveau firmware for GP106 present (nvidia/gp106/gr/fecs_bl.bin)" nv_fw gr/fecs_bl.bin
     chk "nouveau fallback is executable (usr/lib/unitotem/nouveau-fallback)" test -x "$R/usr/lib/unitotem/nouveau-fallback"
     chk "unitotem-nouveau-fallback.service is shipped" test -s "$R/usr/lib/systemd/system/unitotem-nouveau-fallback.service"
     chk "unitotem-nouveau-fallback.service is enabled (multi-user.target.wants)" bash -c "test \"\$(readlink '$R/etc/systemd/system/multi-user.target.wants/unitotem-nouveau-fallback.service')\" = /usr/lib/systemd/system/unitotem-nouveau-fallback.service"
