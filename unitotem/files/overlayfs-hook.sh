@@ -151,6 +151,17 @@ layout_complete() {
     [ -z "$lc_did" ] || log_success_msg "layout: created${lc_did}"
     return 0
 }
+# overlay_status STATE: writes the one-line overlay outcome to $OVERLAY_STATUS_FILE (ok, no-data, failed:<reason>)
+# and logs it with the "overlay:" prefix. The initramfs moves /run to the root; the record on DATA carries the same state.
+OVERLAY_STATUS_FILE=${UNITOTEM_OVERLAY_STATUS:-/run/unitotem-overlay.status}
+overlay_status() {
+    mkdir -p "${OVERLAY_STATUS_FILE%/*}" 2>/dev/null
+    echo "$1" > "$OVERLAY_STATUS_FILE" 2>/dev/null || log_warning_msg "overlay: cannot write $OVERLAY_STATUS_FILE"
+    case "$1" in
+        ok) log_success_msg "overlay: status ok" ;;
+        *) log_warning_msg "overlay: status $1" ;;
+    esac
+}
 # Sourced by tools/release/test_grow_data_inside.sh: only the function is wanted.
 [ -z "${UNITOTEM_SOURCE_ONLY:-}" ] || return 0 2>/dev/null || exit 0
 
@@ -173,7 +184,7 @@ while [ -z "$DATA_DEV" ] && [ "$tries" -lt 10 ]; do
     tries=$((tries + 1))
 done
 if [ -z "$DATA_DEV" ]; then
-    log_warning_msg "overlay: DATA not found, skipping"
+    overlay_status no-data
     exit 0
 fi
 
@@ -196,7 +207,7 @@ grow_data "$DATA_DEV" || true
 
 mkdir -p "${rootmnt}/mnt/data"
 if ! mount -t ext4 -o noatime,nodiratime "$DATA_DEV" "${rootmnt}/mnt/data"; then
-    log_warning_msg "overlay: mounting DATA failed, skipping"
+    overlay_status failed:data-mount
     exit 0
 fi
 
@@ -226,6 +237,8 @@ for tok in $(cat /proc/cmdline); do
     case "$tok" in unitotem.slot=a|unitotem.slot=b) slot_sfx=".${tok#unitotem.slot=}" ;; esac
 done
 
+# ov_fail: the first failure of this boot (overlay-<dir> or dpkg-pin), empty when none.
+ov_fail=""
 for d in etc root var; do
     mkdir -p "${rootmnt}/mnt/data/upper/${d}${slot_sfx}" \
              "${rootmnt}/mnt/data/work/${d}${slot_sfx}"
@@ -233,7 +246,7 @@ for d in etc root var; do
     mount -t overlay overlay \
         -o lowerdir="${rootmnt}/${d}",upperdir="${rootmnt}/mnt/data/upper/${d}${slot_sfx}",workdir="${rootmnt}/mnt/data/work/${d}${slot_sfx}" \
         "${rootmnt}/${d}" \
-        || log_warning_msg "overlay: /${d} failed"
+        || { log_warning_msg "overlay: /${d} failed"; [ -n "$ov_fail" ] || ov_fail=overlay-$d; }
     mount --make-shared "${rootmnt}/${d}" 2>/dev/null || true
 done
 
@@ -245,6 +258,7 @@ if [ "$dpkg_pin" = stashed ]; then
         dpkg_pin=yes
     else
         dpkg_pin=FAILED
+        [ -n "$ov_fail" ] || ov_fail=dpkg-pin
         log_warning_msg "overlay: /var/lib/dpkg not pinned to ROOT"
     fi
     umount "$DPKG_STASH" 2>/dev/null || true
@@ -254,9 +268,11 @@ fi
 # Record the outcome on DATA (visible at /mnt/data/.unitotem-overlay-status after boot): what this
 # script observed in the initramfs, and a write probe proving each overlay is writable, not just
 # mounted. Best-effort: never fails the boot.
+if [ -n "$ov_fail" ]; then ov_state="failed:$ov_fail"; else ov_state=ok; fi
 {
     echo "boot-marker=1"
     echo "overlay-slot-suffix=${slot_sfx:-none}"
+    echo "overlay-status=${ov_state}"
     for d in etc root var; do
         if grep -q " ${rootmnt}/${d} overlay " /proc/mounts 2>/dev/null; then
             echo "initramfs-${d}=overlay-mounted"
@@ -275,3 +291,4 @@ fi
     # Whether the dpkg database is on ROOT or on DATA can only be known from this early-boot state.
     echo "initramfs-dpkg-pinned-to-root=${dpkg_pin}"
 } > "${rootmnt}/mnt/data/.unitotem-overlay-status" 2>/dev/null || true
+overlay_status "$ov_state"

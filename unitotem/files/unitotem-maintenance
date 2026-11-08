@@ -54,8 +54,12 @@ _exit() {
         update-initramfs -u -k all
     fi
 
+    # A failed update-grub leaves the old boot menu: abort without rebooting, so the admin can fix it and run exit again.
     if command -v update-grub &>/dev/null; then
-        update-grub 2>/dev/null || true
+        if ! update-grub; then
+            echo "[unitotem-maintenance] ERROR: update-grub failed, not rebooting. Fix the error and run: unitotem-maintenance exit" >&2
+            exit 1
+        fi
     fi
 
     echo "[unitotem-maintenance] Remounting rootfs read-only..."

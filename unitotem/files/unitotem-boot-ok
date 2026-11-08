@@ -1,58 +1,6 @@
 #!/bin/bash
-# Runs once per boot, After=multi-user.target: reaching it means the whole system came up. Two jobs:
-#   1. clear the boot counter on the boot FAT partition on every good boot;
-#   2. if this was a trial boot (unitotem.ota.bootcount=1 on the cmdline, from set-trial-boot), promote it to the
-#      permanent default so a reboot no longer lands on the resident fallback.
+# Runs once per boot, After=multi-user.target: reaching it means the whole system came up. Confirms the A/B slot.
 set -euo pipefail
-
-BOOTFS_LABEL=FIRMWARE
-[ -d /sys/firmware/efi ] && BOOTFS_LABEL=EFI
-
-# A/B images keep no boot counter on the FAT (see ota-engine.sh, cmd_init_premount): nothing to clear, and not
-# touching that partition on a normal boot is the point.
-BOOTFS_DEV=""
-grep -q 'unitotem.slot=' /proc/cmdline || BOOTFS_DEV=$(blkid -L "$BOOTFS_LABEL" -o device 2>/dev/null || true)
-if [ -n "$BOOTFS_DEV" ]; then
-    mnt=/run/unitotem-bootfs
-    mkdir -p "$mnt"
-    # Reuse the existing mount of $BOOTFS_DEV (normally /boot/firmware) instead of a second mount
-    # (see unitotem-ota-arm and ota_mount_bootfs_rw in deploy/ota-engine.sh).
-    mounted=0
-    if mountpoint -q "$mnt"; then
-        mount -o remount,rw "$mnt" 2>/dev/null && mounted=1
-    else
-        existing=$(awk -v d="$BOOTFS_DEV" '$1==d{print $2; exit}' /proc/mounts)
-        if [ -n "$existing" ]; then
-            mount -o remount,rw "$existing" 2>/dev/null \
-                && mount --bind "$existing" "$mnt" 2>/dev/null && mounted=1
-        else
-            mount -t vfat "$BOOTFS_DEV" "$mnt" 2>/dev/null && mounted=1
-        fi
-    fi
-    if [ "$mounted" = 1 ]; then
-        rm -f "$mnt/unitotem-ota.bootcount"
-        sync
-        umount "$mnt" 2>/dev/null || true
-        [ -n "${existing:-}" ] && mount -o remount,ro "$existing" 2>/dev/null || true
-    fi
-fi
-
-if grep -qw "unitotem.ota.bootcount=1" /proc/cmdline; then
-    FIRMWARE=bios
-    if [ -d /sys/firmware/efi ]; then
-        FIRMWARE=uefi
-    elif [ -r /proc/device-tree/model ] && grep -qi "raspberry pi" /proc/device-tree/model; then
-        FIRMWARE=rpi
-    fi
-
-    if [ "$FIRMWARE" = rpi ]; then
-        ROOTSRC=$(findmnt -no SOURCE / 2>/dev/null || true)
-        PK=$(lsblk -no PKNAME "$ROOTSRC" 2>/dev/null || true)
-        [ -n "$PK" ] && unitotem-ota-engine promote-default --firmware rpi --disk "/dev/$PK" --bootfs-part 1
-    else
-        unitotem-ota-engine promote-default --firmware "$FIRMWARE"
-    fi
-fi
 
 # A/B layout (unitotem.slot= on the cmdline): confirmation is gated on the manager answering its
 # health check, and a trial slot that does not come up healthy reboots into the previous slot.

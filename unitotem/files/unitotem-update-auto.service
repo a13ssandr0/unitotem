@@ -1,6 +1,5 @@
 [Unit]
 Description=UniTotem automatic update policy (one tick)
-Documentation=file:///usr/share/doc/unitotem/ab-updates.md
 ConditionPathExists=/usr/sbin/unitotem-update
 
 [Service]

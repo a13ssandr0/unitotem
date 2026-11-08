@@ -12,6 +12,7 @@ Host-side tooling that creates and signs releases (A/B slot streams, manifest, k
 | `tools/release/backup-keys.sh` | Encrypted backup, verify, restore of the signing keys |
 | `tools/release/fake-github.py` | Offline stand-in for GitHub Releases URLs (tests) |
 | `tools/release/test_rpi_backend.py` | End-to-end: `build-ab` on a synthetic arm64 image served by fake-github |
+| `tools/release/test_release_build.py` | `build` and `build-ab` on synthetic images, throwaway keys, manifest/signature/hash/restore checks |
 | `unitotem/files/update-root.pub` | Root public key; installed as `/usr/share/unitotem/update-keys/root.pub` |
 
 ## How it works
@@ -36,6 +37,12 @@ Keys:
 
 Output `<out>/v<version>/`; it is published as GitHub release tag `v<version>`.
 
+`build` (layout 1, from a parts set such as `deploy/parts-lib.sh` writes):
+
+- Every file of `--parts DIR` is copied as a part, sorted by name, except `SHA256SUMS`. Parts-set files such as `parts.manifest` are shipped too.
+- Part entries are `{file, size, sha256}` (no `role`). `--arch` is read from `UNITOTEM_ARCH` in `parts.manifest`.
+- Signed and laid out like `build-ab`; `--layout` defaults to 1.
+
 Device side (`fetch_trusted`):
 
 - URL: `UPDATE_BASE_URL` + `/releases/latest/download/` (GitHub resolves "latest" to the newest non-prerelease).
@@ -59,7 +66,7 @@ Exit 0 success; 1 on error or failed subprocess. Host tools: `openssl`, `sgdisk`
 
 Release directory `vX.Y.Z/`: `manifest.json`, `manifest.json.sig` (detached Ed25519 over raw bytes), `root.ext4.pc.xz`, `bootfiles.tar.xz` (arm64), `keys.json`, `keys.json.sig`, `PRERELEASE` (beta).
 
-`manifest.json`: `schema` (1), `version`, `channel`, `arch`, `layout` (2 for `build-ab`, 1 for `build`), `min_updater` (1), `built` (UTC ISO 8601), `parts[]` of `{file, role: root|bootfiles, size, sha256}`.
+`manifest.json`: `schema` (1), `version`, `channel`, `arch`, `layout` (2 for `build-ab`, 1 for `build`), `min_updater` (1), `built` (UTC ISO 8601), `parts[]` of `{file, role: root|bootfiles, size, sha256}` (`build` omits `role`).
 
 `keys.json`: `schema` (1), `seq`, `keys[]` of `{id, pub}` (`pub` = PEM text; only `pub` is read by the device).
 
@@ -82,7 +89,7 @@ Release directory `vX.Y.Z/`: `manifest.json`, `manifest.json.sig` (detached Ed25
 - Sign on the operator workstation; the root key stays offline. The release key never lives on a build host.
 - Devices make no GitHub API calls (unauthenticated limit 60 requests per hour); `releases/latest/download/` URLs redirect with 302 to another host.
 - Release images must not contain secrets (passwords, certificates, tokens).
-- GitHub asset limit is 2 GiB: `build-ab` does not split, and the device reads only the first `role=root` part.
+- GitHub asset limit is 2 GiB. `build-ab` writes one `role=root` part and does not split. The device reads only the first one: `unitotem-update` `do_fetch` picks it (line 687), streams that asset (717) and checks one sha256 (739). Multi-part roots are not implemented. Needed: every `role=root` part in order (an order field, or list order), one sha256 each, all streamed into one `xz -dc` in order, and `min_updater: 2` so older updaters refuse with `updater-too-old` (`fetch_trusted`, line 177) instead of failing mid-write. That changes the manifest format: a product decision.
 - `build` (layout 1) skips a file named `SHA256SUMS`; nothing produces it.
 - Keep three independent encrypted backups; the passphrase is never stored. Run `verify` after each backup.
 - Losing the root key is unrecoverable: devices trust only the root chain. Keep its backups in three places independent of the workstation, with the passphrase stored apart. CI secrets are write-only, so they are not a backup.
@@ -90,5 +97,8 @@ Release directory `vX.Y.Z/`: `manifest.json`, `manifest.json.sig` (detached Ed25
 ## Tests
 
 - `python3 tools/release/test_rpi_backend.py`: keygen, sign-keys, `build-ab` (arm64) on a synthetic image, then the Raspberry backend of `unitotem-update` against fake-github. Needs mtools and e2fsprogs; no root. Does not prove firmware `os_prefix`/`tryboot.txt` behaviour.
+- `python3 tools/release/test_release_build.py`: keygen (refuses overwrite, 0600), sign-keys, `build-ab` amd64/arm64/beta and refusals (version mismatch, partition not ROOT_A), `build` layout 1. Checks manifest fields, sizes and sha256, signatures (release key verifies, root key does not, tampered manifest fails), and that the root part restores with its release-version, label `ROOT_NEW` and a fresh UUID. Throwaway keys in a temp dir; no root.
 - `tools/release/backup-keys.sh verify IN.enc`: restore check.
-- Not covered: `build` (layout 1), multi-part roots, upload.
+- Not covered: multi-part roots (not implemented), upload, the layout 1 device side (no updater consumer).
+
+Partclone findings (tests and tools): without root, `partclone.restore` and `partclone.extfs` need `-L /dev/null` (default log is `/var/log/partclone.log`). A regular-file target needs `partclone.restore -O FILE` (`-o` refuses an existing file).
