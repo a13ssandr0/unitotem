@@ -10,7 +10,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 |---|---|
 | `P` `system/screens/control.py` | Facade: `screens()`, `probe()`, `set_power()`, `power_state()`, `set_input()`, `set_volume()`, `set_mute()`, `configure()`, `wake_all()` |
 | `P` `system/screens/mechanism.py` | Pure mechanism priority (`candidates`, `resolve_mechanism`) |
-| `P` `system/screens/wayland.py` | Compositor side: `wlr-randr --json` outputs, `wlopm` power, transform, blank watch |
+| `P` `system/screens/wayland.py` | Compositor side: `wlr-randr --json` outputs, `wlopm` power, transform, modes (`set_mode`, `reset_mode`), blank watch |
 | `P` `system/screens/identity.py` | EDID decoder (`MFG:Model:Serial`), output-name join |
 | `P` `system/screens/ddc.py`, `ddc_ctl.py` | ddcutil parsers, DDC/CI calls (VCP `60` input, `62` volume, `8D` mute, `D6` power) |
 | `P` `system/screens/cec.py` | `cec-ctl` adapters, standby/on, power state |
@@ -20,6 +20,8 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 | `P` `system/screens/_exec.py` | Subprocess helper off the event loop (`ToolMissing`, `ToolTimeout`) |
 | `P` `models/screen_control.py` | `OutputConfig`, `ScreenControl` store (`screen_control.json`) |
 | `P` `api/display_screens.py` | `Settings/Display/Screens/*` |
+| `P` `api/display_identify.py` | `Settings/Display/Screens/identify`, a base of `Screens` |
+| `P` `api/display_outputs.py` | `Settings/Display/Outputs/*`: resolution and refresh rate with timed confirmation, reset |
 | `P` `api/display_touch.py` | `Settings/Display/Touch/*` |
 | `P` `api/display.py` | `Settings/Display/*`: displays, orientation, flip, GPU stats, insecure certificates |
 | `P` `system/touch.py` | Touch device discovery (`/proc/bus/input/devices`), identity keys, compositor fragment |
@@ -61,6 +63,8 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - Touch orientation: `turn` (quarter turns clockwise) and `flip` (0 none, 1 horizontal, 2 vertical) per device, for a panel not glued to its screen. A built-in panel follows its output rotation by itself.
 - Guided setup (`touch_setup`): reads raw taps from the event node (no compositor in between), draws targets in the viewer window of the panel's output, mirrors state to the web page (`Settings/Display/Touch/setup`). Methods: `corners` (four corners, quadrants decide one of eight turn/mirror transforms) and `points` (five targets, least-squares affine matrix, refused when a tap is off by more than 8 % of the picture). Step timeout 60 s. Nothing is saved before `confirm_setup`; cancel, timeout, panel unplugged or restart restore the stored configuration.
 - Window rotation: the compositor transform replaces content rotation. `wayland.CONTENT_TO_TRANSFORM` maps (turn, flip) to the `wlr-randr` transform, pixel-identical to the page turn: (0,0) normal, (0,1) flipped, (0,2) flipped-180, (1,0) 270, (1,1) flipped-270, (1,2) flipped-90, (2,0) 180, (2,1) flipped-180, (2,2) flipped, (3,0) 90, (3,1) flipped-90, (3,2) flipped-270 (turn = quarter turns clockwise, flip 1 horizontal, 2 vertical). Why the compositor: `wayvnc` captures the scanned-out picture, so a page turn shows the VNC window lying on its side and a click lands mirrored, while a compositor turn is upright and exact. Cost is the same either way (fps, dropped frames, CPU, GPU equal on three boards). The compositor owns window geometry: a window goes to its output through `SetFullscreenOnDisplay(display id)`. Boot splash: `boot_orientation.set_turn` runs the image helper `unitotem-boot-orientation set <connector> <name>` (`normal|right|inverted|left`, effective next boot), only when the value differs; quarter turns only.
+- Modes: `wlr-randr` changes resolution and refresh rate over wlr-output-management, a compositor independent protocol. Checked against the wlr-randr 0.4.1 source (`--mode` parsed to mHz, `--preferred`, `--transform`, JSON `refresh` in Hz as a float); the CLI is the same on labwc 0.8.3 (measured) and 0.20 (not measured on a device). A saved mode is replayed at boot by `unitotem_viewer/output_transform.py`, only when the compositor still lists it.
+- Identify: the local viewer draws the output name and `Screen N` for 5 s (see [viewer.md](viewer.md)).
 
 ## Interfaces
 
@@ -73,6 +77,13 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - `gpio_lines()`: admin. Chips and lines with their users.
 - `configure(name, on_mechanism?, off_mechanism?, power_on_at_start?, wol?, serial?, gpio?, cec_device?, clear_wol, clear_serial, clear_gpio, clear_cec)`: admin. `clear_cec` goes back to the adapter wired to the output.
 - Errors: `WSResponse(error=text)` with an operator-readable message.
+- `identify(name?)`: power. Shows the output name and `Screen N` on its window for 5 s; no name = every screen. An unknown or malformed name is an error. No reply.
+
+`Settings/Display/Outputs/` (admin; `outputs` pushed on every change):
+- `outputs()`: every output with `name`, `enabled`, `transform`, `current`, `modes[{width, height, refresh_mhz, preferred, current}]`, `saved`, `orientation`, `flip`, `pending {width, height, refresh_mhz, revert_at}` (Unix seconds; null when nothing waits).
+- `set_mode(name, width, height, refresh_mhz)`: the mode must be one the output lists, else an error. Applied at once (`wlr-randr --output X --mode WxH@R.RRRHz`); reverted after 15 s unless `confirm_mode`. A second change before that reverts to the mode from before the first.
+- `confirm_mode(name)`: keeps the waiting mode and saves it (`viewer_settings.json` `modes`). Error when no change waits.
+- `reset_output(name)`: preferred mode and normal transform (`wlr-randr --preferred --transform normal`); clears the saved mode, turn and mirror of the output and resets the windows on it.
 
 `Settings/Display/Touch/` (admin; `devices`, `setup` pushed): `devices()`, `set_output(key, output?)` (None = whole screen), `forget(key)`, `set_orientation(key, turn=0, flip=0)`, `setup()`, `start_setup(key, method)`, `confirm_setup()`, `cancel_setup()`, `reset(key)`.
 
@@ -81,6 +92,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 Files (directory of `--assets_file`, default `/etc/unitotem/`):
 - `screen_control.json`: per output `{on_mechanism, off_mechanism, power_on_at_start, wol, serial, gpio, cec_device, identity, ddc_bus, ddc_capabilities, ddc_features}`. Atomic writes. Legacy mechanism name `x` reads as `output`.
 - `touch_map.json`: `{mapping: {key: output}, orientation: {key: {turn 0-3, flip 0-2}}, calibration: {key: [6 floats]}}`.
+- `viewer_settings.json` (same directory): key `modes`, `local-webview|<output>` = `{width, height, refresh_mhz}`, written by `confirm_mode`, replayed by the viewer's `output_transform.py`.
 - `/var/lib/unitotem/screen_state.json`: `{commanded_off: {output: {mechanism, at}}}`.
 
 Config models:
@@ -98,6 +110,7 @@ Backup: only `touch` (the mapping, not orientation or calibration) is a backup p
 - Touch methods, in this order: automatic (libinput calibration matrix follows the output transform), four-quadrant mapping, exact-point calibration. The UI is a guided step view in plain words. Test against a real panel, never only a virtual device.
 
 - No `shell=True`: names, ports, MACs, chips are validated before use; paths are never built from input.
+- Turn and mirror of a window: `Settings/Display/orientation`, `flip` (read) and `set_orientation`, `set_flip` reply to the requesting client only, with `viewer_id`, `window_id` and the value. The controller then publishes `Viewers/list` to every page (`utils/remote/viewers.publish`).
 - ddcutil 2.2 prints connector-resolution diagnostics on stdout before the real result when it cannot resolve a DRM connector: parsers match each line by prefix (`Display N`, `Invalid display`, `VCP`, `DRM connector`), never by position.
 - `cec-ctl` exit codes are reliable (a missing device returns 1); an empty `--list-devices` with exit 0 means no adapter, not an error.
 - The proprietary NVIDIA driver has no per-connector directories in `/sys/class/drm`: the EDID is unreadable and the join uses the connector name ddcutil reports. `edid_identity` returns `None` for a disconnected output, a monitor without EDID or garbage: identity is unknown, not an error.
@@ -116,6 +129,7 @@ Backup: only `touch` (the mapping, not orientation or calibration) is a backup p
 - WOL has no off; it is never offered for switching off.
 - Touch identity never uses `eventN`; a two-interface USB panel is named with its USB suffix by libinput, so the kernel name matches nothing in labwc.
 - Plymouth cannot mirror: only quarter turns go to the kernel command line; the boot partition is written only when the value changes.
+- A mode nobody confirms within 15 s is reverted by the manager's in-memory timer. After a manager restart a waiting change stays on the output and is not saved.
 
 ## Tests
 

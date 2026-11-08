@@ -77,7 +77,9 @@ Paths: relative to `unitotem-manager/`
 - Plugin modules load under two names, `unitotem_node.*` (via `manager/plugins`) and `plugins.unitotem_node.*` (via `manager/`): two module objects. Patch the name the code under test uses.
 - Test modules import each other (`test_remote_filecache` from `test_remote_transfer`; `test_viewer_lockdown` from `test_layout_controller`). Keep shared helpers in the source module.
 - Never run two UI tools at once: fixed ports, garbage results.
-- Tests that import `utils.backup` or `utils.remote.bundle` need a writable `/var/lib/unitotem` (the upload manager builds there): on a dev host they skip (`pytest.skip` on `OSError`) and run in autopkgtest as root. `tools/gen-api-types.py` patches the mkdir for the same reason.
+- `ui-terminal.py` runs its checks in `env -i ... bash --norc --noprofile` (exec): the administrator's PS1 or PROMPT_COMMAND can rewrite the window title and break the title and minimise checks.
+- `ui-touch-setup.py` reaches the board as root through `sshpass -e`; the board password is `UI_SSH_PASSWORD` (default `unitotem`), never on the command line.
+- Tests that import `utils.backup` or `utils.remote.bundle` need a writable `/var/lib/unitotem` (the upload manager builds there): on a dev host they skip (`pytest.skip` on `OSError`) and run in autopkgtest as root. `tools/gen-api-types.py` patches `Path.mkdir` and `shutil.disk_usage` only during its import of the API and restores both.
 - Never measure performance on a board while it builds or compresses an image (an `xz` at 350 % CPU made imports take minutes and 1080p VP8 lose half its frames). Then check behaviour (Show counts, element identity, `currentTime`), not speed.
 - Ticker CPU or frame measurements need a quiet page: the first-boot welcome page repaints every frame (about 85 % of a core on a Pi 4, caps at 40 fps). `tools/ticker/board-static-page.py HOST FEEDS_URL on|off` puts a static page on the first window and removes it.
 - A volatile deploy that fails to restart the unit leaves the OLD manager holding 80/443/4443; the new one dies with `Address already in use` and systemd restarts it in a loop, each death running `stop_hotspot`. Check `NRestarts` and `ss -ltnp | grep :443` after every deploy.
@@ -92,6 +94,7 @@ Unit (`manager/tests/`), `.venv/bin/python -m pytest`:
 - Remote: `test_remote_*`.
 - Screens, touch, identity: `test_screens_*`, `test_touch*`, `test_ddc_parsers`, `test_gpu_profiles`, `test_output_transform`, `test_mechanism_resolution`, `test_identity`.
 - System: `test_suspend`, `test_timers`, `test_hotspot_stop`, `test_network_details`, `test_hosts_file`, `test_machine`, `test_updater`, `test_update_progress`, `test_plugins`, `test_datetime` (time zone and NTP through a fake timedate1, never the real bus).
+- Backup and uploads: `test_backup_users`, `test_backup_node_parts`, `test_upload_manager`, `test_plugins` (legacy archives).
 - Users and security: `test_osusers`, `test_password_policy`, `test_security_api`, `test_security_model`, `test_first_admin_script`, `test_setup_first_access`, `test_backup_users`, `test_login_hardening`, `test_templates_escape`, `test_webui_entries`.
 - Password policy (one policy, PAM and manager; see [security.md](security.md)):
   - `test_password_policy.py`: every vector of `password_vectors.json` (first failed rule, messages empty iff accepted; vectors above 128 characters are expected `max_length`, the one known difference from PAM), control characters, non-text, lone surrogates, username and reverse, `rules_spec()`.

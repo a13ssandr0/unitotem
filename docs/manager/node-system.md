@@ -20,7 +20,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 | `Psystem/network/networkmanager.py` | NetworkManager over D-Bus: devices, connections, activation, Wi-Fi profiles |
 | `Psystem/network/hotspot.py` | first-boot / fallback hotspot profile, Wi-Fi QR |
 | `Psystem/network/wifi.py` | radio switch, scan, access points |
-| `Psystem/network/netplan.py` | `/etc/netplan` files, backup part only |
+| `Psystem/network/netplan.py` | `/etc/netplan` files: no caller (no backup part, NetworkManager is the network) |
 | `Psystem/dbus_system.py` | logind (power, suspend), hostnamed (hostname, `/etc/hosts`), timedated (time zone, NTP) |
 | `Psystem/audio.py` | PulseAudio sinks (pulsectl) |
 | `Psystem/updater.py` | client of `unitotem-update --json`, availability, notifications |
@@ -43,12 +43,13 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 
 - Start-up: stale VNC sessions swept; tasks for screens (wake, probe), touch mapping, timers loop, sleep watch, hostname watch, date and time watch (`datetime_watch`), update progress watch, daily update check (first after 180 s, then every 24 h), desktop notifications.
 - First boot: with no default IPv4 route the hotspot starts. `first_boot_context` returns SSID, password and QR while it is active.
-- Hotspot: NM profile id `UniTotem first boot hotspot`, mode `ap`, IPv4 `shared`. Its UUID is `hotspot_uuid` in `/etc/unitotem/unitotem.env` (generated once). Default SSID = hostname; default password = last 8 hex digits of the Wi-Fi MAC, uppercase. Recreated when the requested SSID/password differ from the stored ones.
+- Hotspot: NM profile id `UniTotem first boot hotspot`, mode `ap`, IPv4 `shared`. Its UUID is `hotspot_uuid` in `/etc/unitotem/unitotem.env` (generated once). Default SSID = hostname cut to 32 bytes; default password = last 8 hex digits of the Wi-Fi MAC, uppercase. Recreated when the requested SSID/password differ from the stored ones. SSID 1-32 bytes, passphrase 8-63 characters; an out-of-range value raises `ValueError` before anything is read or written.
 - Hotspot stop: after a successful `activate_connection` or `connect_wifi` when the hotspot is active and IPv4 is up, and at manager shutdown. The Wi-Fi device is disconnected only if the hotspot is its active connection; then the profile is deleted.
 - Network changes go through NM D-Bus only (no nmcli, no netplan writes). A Wi-Fi profile is identified by UUID; `connect_wifi` updates it if the UUID exists.
-- Wi-Fi list: one row per network name, the strongest shown with the access-point count. `connect_wifi` sends a `bssid` only when the visitor switches on "Only use this access point". A profile tied to a BSSID never roams to a stronger AP (symptom: packet loss growing with packet size); `edit_connection(unlock_bssid=true)` drops the tie, and the editor shows it as a switch.
+- Wi-Fi list: one row per network name, the strongest shown with the access-point count. `connect_wifi` sends a `bssid` only when the visitor switches on "Only use this access point". A profile tied to a BSSID never roams to a stronger AP (symptom: packet loss growing with packet size); `edit_connection(unlock_bssid=true)` drops the tie, and the editor shows it as a switch. An SSID that is not UTF-8 is listed with replacement characters; it does not fail the list.
+- `connect_wifi` and `edit_connection` check the SSID (1-32 bytes) and passphrase (8-63 characters, or 64 hex digits as a raw key; an empty passphrase means open) and the BSSID (six hex octets). Any invalid value answers `{error: 'Invalid Wi-Fi settings', extra}` and nothing is written to NetworkManager.
 - Every mutating call answers with broadcasts of the state it changed (devices, active connections, connections, hostname).
-- Audio: a missing sound server gives `available: false` and an empty list, not an error.
+- Audio: a missing sound server gives `available: false` and an empty list, not an error. Volume is a 0.0-1.0 level: values outside are clamped; NaN, infinity and non-numbers are refused (`ValueError`) and nothing is sent to Pulse.
 - Updates: the manager never downloads or writes images. It runs `unitotem-update --json <cmd>` (timeout 180 s). `fetch`, `apply`, `repair` detach and return at once; `Settings/Update/status` is pushed every 2 s while `status.op` is set.
 - Update progress: inotify on `/run` for `unitotem-update.progress` (trailing throttle 1 s). Whether an operation runs is decided by `status.op`, not by the file: it stays after the end and a killed updater leaves a "running" one. Slot names in every text are capitals (A, B).
 - Availability: a successful check stores `{available, version, checked_at}` and raises or resolves `update.available`. A failed check keeps the previous value.
@@ -56,19 +57,19 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - Suspend is refused when the clock has no wake-up alarm (`wakealarm` absent): a machine without RTC, such as the Raspberry Pi 4, cannot suspend with wake.
 - Suspend: every refusal is checked before anything changes (logind CanSuspend, RTC usable, wake time sane). Alarm written via sysfs, then logind `Suspend`. A failed suspend clears the alarm. On `PrepareForSleep(false)`: alarm cleared, `resumed` event set, screens woken.
 - `Power/reboot` with `status.staged` runs `unitotem-update reboot` instead of logind reboot.
-- VNC: `POST /vnc/token`, then `WS /vnc`. `wayvnc` starts on a UNIX socket in `/run/unitotem-vnc/<token>/` and stops on socket close, server exit, shutdown or idle timeout.
+- VNC: `POST /vnc/token`, then `WS /vnc`. `wayvnc` starts on a UNIX socket in `/run/unitotem-vnc/<token>/` and stops on socket close, server exit, shutdown or idle timeout. Its directory is removed even when the stop itself is cancelled (`stop()` cleans up in a `finally`).
 - Terminal: `POST /terminal/token`, then `WS /terminal`. Starts `setsid -c /bin/login -f <account>` on a pty.
-- Backup parts of the plugin: `hostname`, `audio`, `netplan`, `timers`, `touch`. Core parts are in [backend.md](backend.md).
+- Backup parts of the plugin: `hostname`, `audio`, `timers`, `touch` (mapping, orientation, calibration), `screens` (output configuration, not the probe results). Core parts are in [backend.md](backend.md).
 
 ## Interfaces
 
 ### Websocket API (`Class/function`)
 
 - `Settings/Network/` (admin unless noted): `hostname()` (any user); `set_hostname(hostname)`; `default_wlan_device()`; `has_wireless()`; `wireless_enabled()`; `set_wireless_enabled(enabled)`; `wireless_networks()` (scans, enables radio if off); `devices()`; `connections()`; `active_connections()`; `connection_details(path)`; `activate_connection(conn_path, dev_path)`; `deactivate_connection(active_path)`; `connect_wifi(ssid, device, password?, bssid?, ip_method='auto', ip_address?, prefix_len=24, gateway?, dns?)` returns `connected_uuid`; `edit_connection(conn_path, conn_id?, autoconnect?, ip_method, ip_address?, prefix_len, gateway?, dns?, ssid?, password?, unlock_bssid=false)`; `delete_connection(conn_path)`.
-- `ip_method`: `auto` (DHCP) or `manual` (needs `ip_address`). `dns`: list of dotted IPv4.
+- `ip_method`: `auto` (DHCP), `manual` (static, needs `ip_address`), `link-local`, `disabled`. `prefix_len` 1-32, `ip_address`/`gateway`/each `dns` entry dotted IPv4. Any invalid value answers `{error: 'Invalid IP settings', extra}` and nothing is written to NetworkManager.
 - `Settings/Audio/` (audio or admin): `devices()` returns `devices[{name, description, muted, volume}]`, `default`, `available`; `set_default_device(device)`; `set_volume(volume, device?)`; `set_mute(mute, device?)`. No `device` = default sink.
 - `Settings/DateTime/` (admin): `status()` returns `timezone`, `timezones`, `ntp`, `can_ntp`, `synchronized`, `local_time` (ISO 8601 with offset), `utc_offset` (seconds); `set_timezone(timezone)`; `set_ntp(enabled)`. Both answer with the status. The status is also broadcast to all pages (`Settings/DateTime/status`) when timedated emits `PropertiesChanged`.
-- `Settings/Timers/` (admin): `jobs()` returns `jobs`, `actions`; `add_job(command, minute, hour, day_of_month, month, day_of_week, output?, mechanism='auto', wake?)`; `edit_job(uuid, ...)`; `set_job_enabled(uuid, state)`; `delete_job(uuid)`.
+- `Settings/Timers/` (admin): `jobs()` returns `jobs`, `actions`; `add_job(command, minute, hour, day_of_month, month, day_of_week, output?, mechanism='auto', wake?)`; `edit_job(uuid, ...)`; `set_job_enabled(uuid, state)`; `delete_job(uuid)` (malformed id: `Invalid job`; unknown: `Not found`). `edit_job`: an omitted `output`/`wake` is kept, an empty string clears it (the manager then validates the result, e.g. a screen timer keeps its output).
 - Job fields: `uuid, command, minute, hour, day_of_month, month, day_of_week, enabled, output, mechanism, wake`; for `sus` also `next_suspend, next_wake, wake_problem`. Commands: `pwr`, `reb`, `sus`, `scr_on`, `scr_off`.
 - `Power/`: `reboot()` (power or admin); `poweroff()`; `suspend_support()` returns `available, reason, rtc, rtc_local, min_sleep, max_sleep, last_refusal`; `suspend(wake_at)` with `YYYY-MM-DDTHH:MM` in node local time.
 - `Settings/Update/` (admin; `availability` any user): `status()`, `check()`, `fetch(force=False)`, `apply(reboot=True)`, `confirm()`, `rollback(reboot=True)`, `cancel()`, `copy_to_other()`, `set_policy(mode, time='04:00')` (mode: `off`, `download`, `stage`, `reboot`, `scheduled`), `availability()`. Events: `Settings/Update/status`, `Settings/Update/availability`.
@@ -85,7 +86,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 
 ### HTTP and websocket
 
-- `POST /vnc/token`, `POST /terminal/token` (409 if the account has no shell), `POST /devtools/open {window_id}` returns `{path}` (404 no page, 503 viewer not running), `GET /devtools/<file>`.
+- `POST /vnc/token`, `POST /terminal/token` (409 if the account has no shell), `POST /devtools/open {window_id}` returns `{path}` (404 no page, 503 viewer not running), `GET /devtools/<file>` (relative plain path: no leading or empty or `.` segment, no `..`; `page`, `browser`, `ws`, `json` are never files).
 - `WS /vnc?output=NAME&control=1`: first text frame `{"token"}`; binary frames RFB; text `{"activity": 1}` keeps the session alive.
 - `WS /terminal`: first frame `{"token"}`; binary frames pty data; text `{"resize": [cols, rows]}`.
 - `WS /devtools/ws/<token>/<page>`: token in the path.
@@ -121,9 +122,9 @@ Default admin. `Power/*`: power or admin. `Settings/Audio/*`: audio or admin. No
 - Desktop notifications: `expire_timeout` -1 = level default, 0 = until clicked, >0 = that long; critical never expires. `NotificationClosed` reason 1 expired (the id is invalid, the bell keeps the entry), 2 dismissed or action on a non-resident notification, 3 `CloseNotification`; `ActionInvoked` `default` is a click; `CloseNotification` of an unknown id is a D-Bus error. Test a negative timeout with `busctl -- -1`.
 - `except ImportError` around a name that does not exist fails silently (`NetworkManager*` fallback `None` shows no address on any device): check real names with `dir(module)` on the target (sdbus-networkmanager: `ActiveConnection`, `IPv4Config`) and log the fallback as an error.
 - `Power/reboot` with a staged update uses the updater restart: on a Raspberry Pi only that restart starts an armed update.
-- Backup: `timers` restore replaces all timers; `audio` restore only for archives from 3.0.0 or later; `netplan` restore runs `netplan apply`. Reset empties each part.
+- Backup: `timers` restore replaces all timers; `audio` restore only for archives from 3.0.0 or later. `touch` and `screens` restore replace their section after every entry passed the model's validators (nothing stored on a refused entry), written atomically; `touch` restore applies the mapping at once. `screens` keeps this machine's probe results (DDC bus, identity, inputs) per output name. Archives with netplan files: the key is ignored. Reset: `touch` clears the three sections, `screens` keeps the probe results and the default configuration.
 - VNC: no TCP listener, no VNC password (the 0700 root-owned directory under `/run` is the guard). View-only is enforced by the server (`--disable-input`). `--disable-resizing`, 20 fps, max 2 sessions, one output per session. `sweep_stale` signals only a pid whose command line names its own socket.
-- Terminal: never `fork` (multi-threaded process): `setsid -c` through the subprocess machinery. `login -f`: the web account is already authenticated. Administrators (members of `sudo`) have `/bin/bash`; `sudo` asks their own password. Accounts with shell `nologin` or `false` (non-admin accounts) are refused. Environment limited to `TERM` and `PATH`. Max 4 terminals; closed after 15 min without input. Account names are validated (`osusers.valid_name`) before `login`.
+- Terminal: never `fork` (multi-threaded process): `setsid -c` through the subprocess machinery. `login -f`: the web account is already authenticated. Administrators (members of `sudo`) have `/bin/bash`; `sudo` asks their own password. Accounts with shell `nologin` or `false` (non-admin accounts) are refused. Environment limited to `TERM` and `PATH`. Max 4 terminals; closed after 15 min without input.. The limit is checked and its slot reserved after the token read, in one step, so concurrent sockets cannot exceed it. Account names are validated (`osusers.valid_name`) before `login`.
 - Tokens: 30 s, single use, bound to account and session id (and page for devtools). The socket must be same-origin (Origin = Host).
 - Desktop notifications: markup stripped from the body; `body-markup` not advertised; 20 per application per 60 s; critical never expires; ids never 0.
 - Time zone: validated by `fullmatch` and by membership in timedated's list (fallback: `tzdata.zi`, else `zone1970.tab`) before any bus call. Other values never reach D-Bus.
@@ -136,5 +137,5 @@ Default admin. `Power/*`: power or admin. `Settings/Audio/*`: audio or admin. No
 ## Tests
 
 - `.venv/bin/python -m pytest <files>` from the repository root.
-- `manager/tests/`: `test_network_details.py`, `test_hotspot_stop.py`, `test_timers.py`, `test_suspend.py`, `test_vnc.py`, `test_hosts_file.py`, `test_update_progress.py`, `test_updater.py`, `test_desktop_notifications.py`, `test_datetime.py`.
+- `manager/tests/`: `test_network_details.py` (IP validation, API error), `test_wifi_scan.py` (scan list, SSID/passphrase checks), `test_hotspot_start.py` (hotspot profile, SSID/passphrase checks), `test_audio.py` (volume range, sinks), `test_hotspot_stop.py` (first-boot log), `test_timers.py` (delete/edit API), `test_suspend.py`, `test_vnc.py`, `test_hosts_file.py`, `test_update_progress.py`, `test_updater.py`, `test_desktop_notifications.py`, `test_datetime.py`.
 - Live checks: `tools/ui-terminal.py`, `tools/ui-vnc.py`.

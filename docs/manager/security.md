@@ -134,6 +134,8 @@ Files (directory `/etc/unitotem/`, overridable by CLI flags):
 | `/run/unitotem/first-admin.lock` | flock of the first-administrator creation (web and script) |
 | `/etc/group`, `/etc/gshadow` | Watched with inotify: membership of `users`, `sudo` and `unitotem-first-admin` |
 
+Not migrated: password hashes of earlier formats (werkzeug hashes under `users.json` `password`, from the pre-release manager) are ignored and dropped on the next save. An account logs in with its system password only; no migration code exists.
+
 CLI: `--port` (80), `--port_secure` (443), `--bind`, `--bind_secure`, `--users_file`, `--envfile`, `--certfile`, `--keyfile`.
 
 HTTP:
@@ -184,7 +186,7 @@ Errors: `User already exists`, `Password refused` (`extra` list), `User <name> d
 
 ## Tests
 
-- `pytest` from the repository root. `test_osusers.py` needs the module `pam`: pip `python-pam`, Debian `python3-pampy` (the package the deb depends on); `utils/osusers.py` imports `pam` lazily.
+- `pytest` from the repository root. `test_osusers.py` needs the module `pam`: pip `python-pam`, Debian `python3-pam` (the package the deb depends on); `utils/osusers.py` imports `pam` lazily.
 - `manager/tests/test_osusers.py`: membership checks (`users`, `sudo`), root refused by `may_login` and `authenticate`, empty password refused, PAM not called for non-members, adduser/gpasswd/usermod/chpasswd argument lists, newline injection, deletion of UniTotem accounts only, backup hash read, revoked sessions (fake passwd/group, mocked PAM).
 - `manager/tests/test_password_policy.py`: every vector of `password_vectors.json` (first failed rule, messages empty iff accepted), control characters, non-text, lone surrogates, username and reverse, `rules_spec()` JSON, the removed opt-in gone, username rule.
 - `manager/tests/test_security_model.py`: `security.json` with the removed key loads and drops it on save; missing file shows the users.

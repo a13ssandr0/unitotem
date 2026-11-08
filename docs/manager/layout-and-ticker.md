@@ -25,8 +25,8 @@ Paths: relative to `unitotem-manager/`
 | `manager/plugins/unitotem_viewer/static/boot-screen.html` | `#area`, `#ticker-host`, `setTickerPlacement()`, `applyTicker()` |
 | `webui/src/ticker-core.js` | Pure logic: template parser and renderer, time formats, selection, geometry |
 | `webui/src/ticker.js` | Page module (Vite entry), exposes `window.utTicker` |
-| `webui/src/components/WindowLayout.vue`, `PaneTree.vue` | Layout card on the Viewers page |
-| `webui/src/components/TickerSettings.vue`, `TickerSources.vue` | Bar settings with preview and template presets; feed sources |
+| `webui/src/components/WindowLayout.vue`, `PaneTree.vue` | Layout and panes section of the window dialog (`ViewerDetail.vue`, opened from a window name on the Viewers page) |
+| `webui/src/components/TickerSettings.vue`, `TickerSources.vue` | Bar settings with preview and template presets (window dialog, administrators); feed sources (Viewers page, administrators) |
 | `tools/ticker/` | Test page, feed server, board scripts (test helpers, not shipped) |
 
 ## How it works
@@ -42,12 +42,14 @@ Layout:
 - Page contract for panes: flat, absolutely positioned percent children of `#panes`; never nest them or move one to another parent (the iframe or video would reload). A surviving pane keeps playing through splits, closes and splitter drags; stages of closed panes are destroyed.
 - The page sanitises what the manager sends (areas clamped, invalid tree ignored and the old one kept). A `Show` for a pane the layout has not created yet is kept, latest per pane, until the next layout. A new pane starts blank and the manager parks it on the idle page.
 - Sound output is per window for all panes; a video's volume is per asset.
+- Access: the area, split and close controls and the ticker settings are for administrators and hidden for the others. Pane playlists are changed with `assign_playlist` (scheduler permission).
 - Editor hint above 4 panes: on a Pi 4 videos are decoded by the CPU (about four 720p videos at once); still pictures and static web pages cost about 1 % of a core per pane. The editor cannot detect video.
 
 Ticker:
 - `TickerService.run()` sleeps until the earliest `next_due` or until poked (safety wake-up 3600 s). Due sources are fetched, 4 at a time.
 - Success: items replaced, ETag and Last-Modified kept, `next_due = now + interval`. HTTP 304: timestamps only.
 - Failure: retry after 60 s, doubling per consecutive failure, capped at the source interval.
+- A source deleted or re-addressed while its fetch is in flight: the answer is dropped, nothing is recorded or notified for it.
 - Admin notification `ticker.source.<id>` after 2 consecutive failures (link `/viewers`). Resolved on success, disable or delete.
 - Merge: enabled sources, dedup by link (else `source.id:item.id`), newest first, cap 500. Items without a date get the first-seen time. On equal time the first listed source wins.
 - `on_items` fires only when the merged list changes. `on_status` fires on source state changes (administrators only).
@@ -91,7 +93,7 @@ Pushes `Ticker/sources` and `Ticker/settings` go to administrator sessions only.
 
 Manager to page (`send_webview_command`), layout-aware viewers only (`layout: true` in `WebviewInfo`):
 - `SetWindowLayout {window_id, area, tree}`
-- `SetTicker {window_id, ...TickerSettings}`
+- `SetTicker {window_id, ...TickerSettings}` (also on a settings change from the web UI: `Ticker.set_settings` checks `_supports_layout` first)
 - `TickerItems {window_id, items: [{time, source, title, summary, link}]}`; `summary` empty unless the template contains `{summary`
 - `Show {pane}`, `SetAssetAudio {pane}`
 
@@ -160,6 +162,6 @@ Template language:
 
 ## Tests
 - `.venv/bin/python -m pytest manager/tests/test_layout.py manager/tests/test_layout_controller.py manager/tests/test_ticker_models.py manager/tests/test_ticker_feeds.py manager/tests/test_ticker_service.py` (feed tests use local HTTP servers, service tests a fake clock).
-- `cd webui && npm test` (`webui/tests/ticker-core.test.mjs`).
+- `cd webui && npm test` (`webui/tests/ticker-core.test.mjs`; `webui/tests/viewer-core.test.mjs` for the window list of `ViewerCore.js`).
 - `.venv/bin/python tools/ui-ticker.py [--shots DIR]`: headless Chrome against `tools/ticker/testpage.html` (needs `google-chrome`, `websockets`).
 - `python3 tools/ticker/feedserver.py [port]`: dated, large, hostile and slow feeds for manual trials.

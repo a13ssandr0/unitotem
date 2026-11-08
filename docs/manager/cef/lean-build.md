@@ -124,7 +124,8 @@ is 1.7 MiB and a shorter `Depends` of python3-cefpython3 (the kiosk image keeps 
 
 ## Tools
 
-* `tools/cef-server/probe-gn-args.sh <results> < sets` : one `gn gen` and a step count per set (`name|arg arg ...` per line); it needs
-  `chrome_pgo_phase=0` because the PGO profile of the build tree is owned by another user.
+* `tools/cef-server/probe-gn-args.sh <results> < sets` : one `gn gen` and a step count per set (`name|arg arg ...` per line); the base
+  args are `out/Release_GN_x64/args.gn` of the tree (`BASE_ARGS` overrides); it needs `chrome_pgo_phase=0` because the PGO profile of the
+  build tree is owned by another user (the probe strips and re-appends it).
 * `tools/cef-server/nm-areas.py`: `python3 nm-areas.py <llvm-nm> libcef.so` prints the table of section 3 (leading namespace of every defined symbol, summed).
 * `tools/cef-server/cef-lean-x64.sh`: the measured build (run it with `systemd-run` as root; the PGO profile of the tree belongs to another user, so a probe uses `chrome_pgo_phase=0`).

@@ -50,6 +50,7 @@ Paths: relative to unitotem-manager/
 - Transfer: `transfer-begin {id, manifest}` -> `transfer-want {files}` (files missing by name and SHA-256) -> per file `file-begin`, binary chunks (512 KiB), `file-end` -> `transfer-commit` -> receiver applies all or nothing -> `transfer-done` or `transfer-error`. Sender removes nothing before `transfer-done`.
 - Transfer id = hash of scope and content. A retry resumes staged files; applied ids are remembered (last 100) and skipped.
 - Apply (`bundle.apply_bundle`): files (name clash gets a new name), playlists (id clash gets a new id, `file:` URLs remapped), assignments, window settings and layouts. Any failure undoes the call.
+- Window settings that travel (`bundle.WINDOW_FIELDS`, keyed `<viewer>|<screen>`): `audio_outputs`, `keyboards`, `orientations`, `flips`, `screensavers`, `refreshes`, `languages`, `modes`. `modes` (confirmed output mode) is validated as `OutputMode` on arrival. A viewer that leaves takes the same fields with it (`WebviewManager.drop_viewer_settings`).
 - File cache: the server computes per client viewer the files of its assigned playlists (panes included) and sends `kind: cache` transfers with a `keep` list. The client sends `cache-have` ({name: sha256}) on connect and after each transfer. Server debounce 1.5 s. Files live beside uploads, served by `UploadedFiles`.
 - Viewers: remote viewers are registered in `WebviewManager` with ip, port, hostname. The local viewer id is `local-webview`. A paired client's local viewer is detached from its scheduler (`viewer_gone`).
 - UI: `service.state()` is pushed to admins (`Settings/Remote/mode`) on every `changed()`. Notifications: `remote.start`, `remote.pair-requests`, `remote.client-offline.<id>`, `remote.server`.
@@ -98,8 +99,8 @@ Discovery needs `python3-zeroconf`; without it `AVAILABLE` is false and only man
 - `/remote` websocket on the web port accepts loopback only; paired clients reach the node through the link.
 - A paired client's windows belong to its server; its local scheduler does not drive them.
 - A role or peer-set change takes effect through `apply_role()`, the only restart path for link, announcer and browser.
-- Link listener bind failure is logged; the node runs without a listener until the next `reload`.
-- Announcer with no IPv4 address warns and does not retry until the next `apply_role()`.
+- Link listener bind failure is logged and retried (delays 5 s doubling to 60 s, 10 attempts); a pending retry is cancelled by `stop()`. After the last attempt the listener waits for the next `apply_role()`.
+- Announcer (no IPv4 address, registration failure) and browser (open failure) are retried the same way, cancelled by `stop()`.
 - mDNS in containers needs host networking.
 - Do not remove zeroconf entries by hand: no "added" event fires on re-announce. Filter in the view.
 
