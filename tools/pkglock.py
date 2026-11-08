@@ -32,7 +32,8 @@ no changelog (Raspberry Pi's) show urgency "n/a": only their pocket is known.
 import argparse, collections, concurrent.futures, datetime, json, os, re, shutil, subprocess, sys, tarfile, tempfile, urllib.request
 
 os.environ["LC_ALL"] = "C"          # apt output is localised: every parser below reads the English words
-LOCAL_RE = re.compile(r"~dev\d+|unitotem|\+rpt\d*-local")
+LOCAL_RE = re.compile(r"unitotem|\+rpt\d*-local")                 # versions built by us
+LOCAL_NAME_RE = re.compile(r"unitotem|^python3-cefpython3$")        # built by us, by name: ~devN alone is no marker
 SECURITY_RE = re.compile(r"-security")
 URGENCY_ORDER = ["low", "medium", "high", "critical", "emergency"]
 WATCH_BACKPORTS = re.compile(r"^(linux-image-(amd64|rpi.*)|linux-headers-amd64|mesa-.*|libgl1-mesa-dri|firmware-.*|labwc|"
@@ -84,7 +85,7 @@ def apt_history_start(src):
 
 
 def is_local(name, info):
-    return bool(LOCAL_RE.search(info["version"]) or "unitotem" in info["maintainer"].lower())
+    return bool(LOCAL_NAME_RE.search(name) or LOCAL_RE.search(info["version"]) or "unitotem" in info["maintainer"].lower())
 
 
 def read_lock(path):

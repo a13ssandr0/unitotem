@@ -83,7 +83,7 @@ Boot:
 - local-bottom (`local-bottom-verify`): `/sbin/init` must exist, else OTA fallback.
 - init-bottom (`overlayfs-hook.sh`):
   0. `layout_complete` (see Images above).
-  1. Find DATA by label (10 tries, `udevadm settle`). Not found: warning, boot continues without overlays.
+  1. Find DATA by label (10 tries, `udevadm settle`). Not found: status `no-data`, boot continues without overlays (`/run/unitotem-overlay.status`, see `boot.md`).
   2. Add a journal if absent; `e2fsck -p` (exit 0/1 ok; others logged, never fatal).
   3. `grow_data`; mount DATA `noatime,nodiratime` at `/mnt/data`.
   4. Stash ROOT's `/var/lib/dpkg`.
@@ -104,7 +104,8 @@ Update into slot X from running slot C:
 Fallback OTA (`ota-engine.sh`):
 
 - `data-op preserve|mkfs`: `mkfs` runs `mkfs.ext4 -L DATA`.
-- `migrate-etc-overlay --slot S`: removes the other slot's upper and work; moves `etc` and `var` uppers to `history/<ts>/`; restores whitelisted `etc` paths; removes `pending.json`, `slots.json`, `last-result.json`. `root.<slot>` is left as is.
+- `migrate-etc-overlay --slot S`: removes the other slot's upper and work; moves `etc` and `var` uppers to `history/<ts>/`; restores whitelisted `etc` paths; removes `pending.json`, `slots.json`, `last-result.json`. `root.<slot>` is left as is. Then keeps the newest 10 `history/` entries (`HISTORY_KEEP`, `prune_history`) and deletes the rest; only `YYYYMMDDTHHMMSSZ` names are candidates.
+- `/root` is carried across every update: `unitotem-update` copies `root.<old>` to `root.<new>` at fetch, and the fallback keeps `root.<slot>` in place (its administrator keys are read from there). Both paths keep the same `/root` content.
 - DATA is kept only if a read-only `e2fsck -fn` passes.
 
 ## Interfaces
@@ -119,7 +120,7 @@ State in `DATA/unitotem/update/`: `slots.json` (`{slot: {version, valid, prepare
 
 `unitotem-ota-changes`: `baseline --root DIR --out DIR` (build), `check [--json]` (device). Exit 0 clean, 1 not clean, 2 error. Verdicts `clean`, `packages-only`, `mixed`. JSON: `verdict`, `digest`, `packages{added,removed,changed}`, `files{unexplained,package_files_modified,unowned_added,unowned_removed,unowned_modified}`.
 
-`.unitotem-overlay-status` keys: `boot-marker`, `overlay-slot-suffix`, `initramfs-{etc,root,var}` (`overlay-mounted|NOT-MOUNTED`), `initramfs-{etc,root,var}-writable` (`yes|no`), `initramfs-dpkg-pinned-to-root` (`skip|stashed|yes|FAILED`).
+`.unitotem-overlay-status` keys: `boot-marker`, `overlay-slot-suffix`, `overlay-status` (`ok|failed:<reason>`, see `boot.md`), `initramfs-{etc,root,var}` (`overlay-mounted|NOT-MOUNTED`), `initramfs-{etc,root,var}-writable` (`yes|no`), `initramfs-dpkg-pinned-to-root` (`skip|stashed|yes|FAILED`).
 
 ## Rules and gotchas
 

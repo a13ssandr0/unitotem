@@ -25,7 +25,6 @@
 - [system] No UniTotem 3.0.0 device is deployed yet: account/identity changes need no migration of older devices.
 - [system] unitotem-update-auto.service has Documentation=file:///usr/share/doc/unitotem/ab-updates.md, which the image does not install.
 - [system] Regenerate the preboot SD image after the latest build.
-- [system] Remove `/etc/chromium.d/50-unitotem-accel` (stage2-configure.sh:291; browser not installed) and the unshipped wifi-roam.conf mention or ship a default file.
 - [system] Remove single-root code branches (AB_LAYOUT=0) in stage2/3, remote-deploy, verify-image, unitotem-boot-ok.
 - [manager] docs/ apt repository stops at 2.3.0, README.md describes the old single-package install (no unitotem-node/-viewer, unitotem, python3-cefpython3, plymouth-theme-unitotem); docs/update-pkgs.sh uses `dpkg-buildpackage -A` and copies the core deb only.
 - [manager] Pin versions in manager/requirements.txt (fastapi, jinja2, psutil... unpinned); frozen_requirements.txt is referenced by nothing.

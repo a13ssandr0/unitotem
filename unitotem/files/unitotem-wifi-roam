@@ -6,7 +6,8 @@ firmware roaming engine is off, so the supplicant never leaves the access point 
 weaker than GOOD_DBM, scan, and if another access point of the same SSID is at least MARGIN_DB stronger, ask the supplicant to roam to it
 (`wpa_cli roam`, the supplicant's own re-association). Access points that failed to take the client are left alone for IGNORE_S.
 
-Settings in /etc/unitotem/wifi-roam.conf (KEY=VALUE): ENABLED=1, GOOD_DBM=-55, MARGIN_DB=10, MIN_INTERVAL_S=300, IGNORE_S=900.
+Optional settings in /etc/unitotem/wifi-roam.conf (KEY=VALUE, not shipped): ENABLED=1, GOOD_DBM=-55, MARGIN_DB=10, MIN_INTERVAL_S=300, IGNORE_S=900.
+Without the file the defaults apply.
 Exit code is always 0 (a timer job).
 """
 import json, os, re, subprocess, sys, syslog, time

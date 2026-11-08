@@ -19,3 +19,4 @@ __pycache__/
 backups/
 
 CLAUDE.local.md
+unitotem/locks/*.lock.prev

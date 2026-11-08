@@ -292,22 +292,6 @@ install -m 644 /unitotem/files/iptables-firewall.service \
 install -m 750 /unitotem/files/iptables-firewall.sh \
     "${ROOTFS}/sbin/iptables-firewall.sh"
 
-# ---------- Chromium: hardware video decode ----------
-# Debian's chromium wrapper sources /etc/chromium.d/*; the manager launches the browser over
-# DevTools and passes no acceleration flags. The VAAPI feature is amd64-only: a Pi has no VAAPI
-# driver, and a decoder that cannot initialise may make Chromium give up on the working V4L2 path.
-if [ "$ARCH" = "amd64" ]; then
-    ACCEL_FEATURES="AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,VaapiVideoDecoder"
-else
-    ACCEL_FEATURES="AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL"
-fi
-mkdir -p "${ROOTFS}/etc/chromium.d"
-sed "s/@UNITOTEM_ACCEL_FEATURES@/${ACCEL_FEATURES}/" /unitotem/files/chromium-accel \
-    > "${ROOTFS}/etc/chromium.d/50-unitotem-accel"
-chmod 644 "${ROOTFS}/etc/chromium.d/50-unitotem-accel"
-grep -q '@UNITOTEM_ACCEL_FEATURES@' "${ROOTFS}/etc/chromium.d/50-unitotem-accel" \
-    && { echo "ERROR: Chromium features placeholder not substituted" >&2; exit 1; }
-
 install -m 644 /unitotem/files/unitotem-maintenance-mode.service \
     "${ROOTFS}/etc/systemd/system/unitotem-maintenance-mode.service"
 

@@ -42,7 +42,7 @@ for bin in \
     sgdisk parted sfdisk partx blockdev blkid mountpoint \
     e2fsck tune2fs resize2fs dumpe2fs mke2fs e2label mkfs.fat fsck.fat fatlabel mkfs.ext4 \
     xz unxz pv whiptail \
-    dropbear dropbearkey dbclient scp \
+    dropbear dropbearkey scp \
     wpa_supplicant wpa_passphrase \
     sha256sum base64 awk cut paste readlink mkfifo cp grep head tail stty \
     tr cmp od sed lsblk partprobe \

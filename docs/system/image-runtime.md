@@ -27,7 +27,6 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 | `unitotem/files/scheduler.rules` | udev: `mq-deadline` on non-rotational disks |
 | `unitotem/files/emergency-dropin.conf` | emergency/rescue shells time out after 120 s, then reboot |
 | `unitotem/files/plymouthd.conf` | `Theme=unitotem`, `ShowDelay=0`, `DeviceTimeout=8` |
-| `unitotem/files/chromium-accel` | `/etc/chromium.d/50-unitotem-accel` (decode flags) |
 | `unitotem/files/unitotem-nouveau-fallback.sh` | `/usr/lib/unitotem/nouveau-fallback` (amd64): loads nouveau for an NVIDIA display device with no driver ([NVIDIA](#nvidia-amd64)) |
 | `unitotem/files/unitotem-nouveau-fallback.service` | `/usr/lib/systemd/system/unitotem-nouveau-fallback.service`, enabled by a `multi-user.target.wants` symlink |
 | `unitotem/files/ota-preserve.list` | `/etc` paths kept across OTA |
@@ -121,7 +120,6 @@ Logs: syslog tags `unitotem-net-watchdog`, `unitotem-wifi-roam`; journald keeps 
 - SSH host keys live on DATA: they survive OTA and reset only with `--wipe-data`.
 - `nvidia-persistenced` and `systemd-modules-load` are patched so non-NVIDIA PCs are not "degraded".
 - `nvidia-kernel-support` blacklists nouveau and nova-core unconditionally. On an NVIDIA GPU the open modules do not drive, only the fallback loads nouveau ([NVIDIA](#nvidia-amd64)).
-- VAAPI decode flags are amd64 only. Chromium is purged on arm64 images, where `chromium-accel` is inert.
 - The compositor unit, labwc config and Wayland environment come from the `unitotem-viewer`/`unitotem-node` packages ([viewer](../manager/viewer.md), [packaging](../manager/packaging.md)).
 
 ## Locale of sessions
