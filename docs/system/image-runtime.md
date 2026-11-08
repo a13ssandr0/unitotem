@@ -68,7 +68,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 
 ## NVIDIA (amd64)
 
-- Driver: NVIDIA 620.70.06 with the open kernel modules, for Turing and newer GPUs. Maxwell, Pascal and Volta run on nouveau (NVK, Mesa 26); NVIDIA's legacy branch for them is 580. Build and package set: [build](build.md#stages).
+- Driver: NVIDIA 620.70.06 with the open kernel modules, for Turing and newer GPUs. Maxwell, Pascal and Volta run on nouveau (NVK, Mesa 26) with `firmware-nvidia-graphics` from stable (63 MiB installed; without it labwc dies at `nvc0_screen_create` and the kiosk never starts); NVIDIA's legacy branch for them is 580 and does not build on kernel 7.2. Build and package set: [build](build.md#stages).
 - `nvidia-kernel-support` 620 ships `/etc/modprobe.d/nvidia.conf` with `blacklist nouveau` and `blacklist nova-core`, unconditionally. It ships no `modules-load.d` file and no `nvidia-drm` options, so the image adds:
   - `/etc/modules-load.d/unitotem-nvidia.conf`: `nvidia-drm`;
   - `/etc/modprobe.d/unitotem-nvidia-drm.conf`: `options nvidia-drm modeset=1 fbdev=1`.
@@ -207,7 +207,7 @@ On an A/B update the new image's PAM files replace the old ones; no `ota-preserv
 
 - `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: Wi-Fi NM conf, roam, CPU governor, labwc, PipeWire root units, manager drop-in, firewall 4443, no certificate, no blanking in labwc config, root first-access state (empty shadow field, login shell, marker group), sshd root policy and `Match` block, persist `home` entry, password policy (see [Password policy](#password-policy)).
 - `python3 tools/release/test_wifi_roam.py`.
-- Not verified: the nouveau fallback on a real Pascal or older GPU. The script's logic was tested with stubs (2026-11-08).
+- Verified on a GTX 1060 (Pascal) passed through to a VM, image 2026.11.53: nvidia.ko fails at GSP init, the fallback loads nouveau, KMS works, and the kiosk runs only with `firmware-nvidia-graphics` installed (1080p60: canvas 60 fps, WebGL2 59.9 fps, H.264/VP9 1080p30 in software, 30 min soak without drops or restarts; 4K60: canvas 42 fps, heavy WebGL2 15.8 fps, no reclocking). Not verified: Secure Boot with the DKMS module, GPU clocks on nouveau, other NVIDIA generations, real hardware outside passthrough.
 
 ### Locale and tools
 

@@ -33,7 +33,7 @@ require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip b
 
 # The sudo askpass helper holds the target password, so it must not outlive the run (including failure or
 # Ctrl-C). No-op when logged in as root or when sudo is passwordless.
-trap clear_target_privilege EXIT
+trap 'clear_target_privilege; [ -z "${RECOVERY_TMP:-}" ] || rm -rf -- "${RECOVERY_TMP}"' EXIT
 
 # ---------------------------------------------------------------------------
 SUBCMD="${1:-}"; shift || true
@@ -339,10 +339,76 @@ select_disk() {
 }
 
 # ---------------------------------------------------------------------------
+# Member of the tar listing $1 whose name without a leading ./ is $2; prints the name as stored (or nothing).
+recovery_member() {
+    printf '%s\n' "$1" | awk -v w="$2" '{m=$0; sub(/^\.\//,"",m); if (m==w) {print $0; exit}}'
+}
+
+# Extracts the member $2 of the xz tarball $1 to the file $3.
+recovery_extract() {
+    tar -xJOf "$1" "$2" > "$3" 2>/dev/null
+}
+
+# Source of the fallback kernel, initrd and level marker written to the boot partition (write-bootfile).
+# The parts set's boot tarball is the source (same build as the image); the host copies in deploy/<arch>/ are
+# used only when the tarball lacks a member. Usage: recovery_from_parts PARTS_DIR ARCH OUT_DIR.
+# Writes OUT_DIR/<FAT name> for the kernel, the initrd and recovery.sha256 and prints one word on stdout:
+# parts | host (fallback, warned on stderr) | refused (tarball checksum mismatch) | missing (no host copy).
+# Returns 1 for refused and missing.
+recovery_from_parts() {
+    local parts="$1" arch="$2" out="$3"
+    local kname=recovery-vmlinuz prefix=unitotem/
+    [ "$arch" = arm64 ] && { kname=recovery8.img; prefix=""; }
+    local iname=recovery-initrd.img
+    local tb_rel tb list m_k m_i m_s name exp act hk hi
+    tb_rel=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' \
+        "${parts}/parts.manifest" 2>/dev/null) || tb_rel=""
+    tb="${parts}/${tb_rel}"
+    list=""
+    if [ -n "$tb_rel" ] && [ -f "$tb" ]; then list=$(tar -tJf "$tb" 2>/dev/null) || list=""; fi
+    m_k=$(recovery_member "$list" "${prefix}${kname}")
+    m_i=$(recovery_member "$list" "${prefix}${iname}")
+    m_s=$(recovery_member "$list" "${prefix}recovery.sha256")
+
+    if [ -z "$m_k" ] || [ -z "$m_i" ] || [ -z "$m_s" ]; then
+        warn "the parts set's boot tarball has no recovery kernel/initrd/recovery.sha256: using the host copies in deploy/${arch}"
+        cp -- "${DIR}/deploy/${arch}/recovery-vmlinuz-${arch}" "${out}/${kname}" 2>/dev/null \
+            && cp -- "${DIR}/deploy/${arch}/recovery-initrd-${arch}.img" "${out}/${iname}" 2>/dev/null \
+            || { echo missing; return 1; }
+        # The host copies carry no level: the sums describe the files written, level 0 (next confirmed boot refreshes).
+        hk=$(sha256sum "${out}/${kname}" | awk '{print $1}')
+        hi=$(sha256sum "${out}/${iname}" | awk '{print $1}')
+        printf '%s  %s\n' "$hk" "$kname" > "${out}/recovery.sha256"
+        printf '%s  %s\n' "$hi" "$iname" >> "${out}/recovery.sha256"
+        echo host
+        return 0
+    fi
+
+    if ! recovery_extract "$tb" "$m_s" "${out}/recovery.sha256" \
+        || ! recovery_extract "$tb" "$m_k" "${out}/${kname}" \
+        || ! recovery_extract "$tb" "$m_i" "${out}/${iname}"; then
+        warn "reading the recovery files from the parts set's boot tarball failed"
+        echo refused
+        return 1
+    fi
+    for name in "$kname" "$iname"; do
+        exp=$(awk -v n="$name" '{m=$2; sub(/^\.\//,"",m); if (m==n) {print $1; exit}}' "${out}/recovery.sha256")
+        act=$(sha256sum "${out}/${name}" | awk '{print $1}')
+        if [ -z "$exp" ] || [ "$exp" != "$act" ]; then
+            warn "${name} does not match the checksum in the parts set's recovery.sha256: refusing it"
+            echo refused
+            return 1
+        fi
+    done
+    echo parts
+}
+
+# ---------------------------------------------------------------------------
 # Arming of a non-UniTotem target: push the resident recovery kernel+initrd and boot it via a one-shot
 # entry (GRUB) or a config.txt swap (Pi).
 # ---------------------------------------------------------------------------
 push_recovery_kernel() {
+    # No parts set is in hand before the target is armed, so the host copies are the only source here.
     local vmlinuz="${DIR}/deploy/${ARCH}/recovery-vmlinuz-${ARCH}"
     local initrd="${DIR}/deploy/${ARCH}/recovery-initrd-${ARCH}.img"
     [ -f "$vmlinuz" ] && [ -f "$initrd" ] \
@@ -531,6 +597,13 @@ run_ota_sequence() {
     local bootfs_part="${P_BOOTFS_PART:-1}" data_part="${P_DATA_PART}"
     local firmware_grub="${FIRMWARE}"
 
+    # The fallback files are judged before anything on the target is changed.
+    RECOVERY_TMP=$(mktemp -d)
+    local rsrc
+    rsrc=$(recovery_from_parts "$OPT_PARTS" "$ARCH" "$RECOVERY_TMP") \
+        || die "the recovery files of the parts set cannot be used (${rsrc:-error}): the target was not changed"
+    [ "$rsrc" = parts ] || log "Fallback files taken from the host copies (deploy/${ARCH}): the parts set has none."
+
     log "=== Stage 1: installing the fallback ==="
     if [ "$recreate_table" = 1 ]; then
         log "Restoring the partition table..."
@@ -567,10 +640,16 @@ run_ota_sequence() {
     local subdir=""; [ "$ARCH" = amd64 ] && subdir="--subdir unitotem"
     # shellcheck disable=SC2086
     ota_ssh_send "$host" "unitotem-ota-engine write-bootfile --disk '${disk}' --bootfs-part '${bootfs_part}' --name ${recovery_name_vmlinuz} ${subdir}" \
-        < "${DIR}/deploy/${ARCH}/recovery-vmlinuz-${ARCH}"
+        < "${RECOVERY_TMP}/${recovery_name_vmlinuz}"
     # shellcheck disable=SC2086
     ota_ssh_send "$host" "unitotem-ota-engine write-bootfile --disk '${disk}' --bootfs-part '${bootfs_part}' --name ${recovery_name_initrd} ${subdir}" \
-        < "${DIR}/deploy/${ARCH}/recovery-initrd-${ARCH}.img"
+        < "${RECOVERY_TMP}/${recovery_name_initrd}"
+    # Last: the level marker on the target (the complete marker, written after the pair).
+    # shellcheck disable=SC2086
+    ota_ssh_send "$host" "unitotem-ota-engine write-bootfile --disk '${disk}' --bootfs-part '${bootfs_part}' --name recovery.sha256 ${subdir}" \
+        < "${RECOVERY_TMP}/recovery.sha256"
+    rm -rf -- "$RECOVERY_TMP"
+    RECOVERY_TMP=""
 
     # A/B: the boot partition's file-level content carries GRUB itself and the grub.cfg whose 'ota-recovery'
     # entry set-default-recovery selects, so it must be there BEFORE the default is switched, and is not

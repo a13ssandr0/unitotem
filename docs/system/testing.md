@@ -10,7 +10,9 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 |---|---|
 | `tools/release/test_auto.py` | `unitotem-update` automatic policy |
 | `tools/release/test_boot_orientation.py` | `unitotem-boot-orientation`: Pi and GRUB backends |
+| `tools/release/test_boot_recovery.py` | Boot recovery set sync (`sync_boot_recovery`, `unitotem-update`): [Recovery set refresh](ab-updates.md#recovery-set-refresh) |
 | `tools/release/test_deploy_backup.py` | `backup_stream` (`deploy/lib.sh`), `backup_running_system` (`deploy/remote-deploy.sh`) |
+| `tools/release/test_deploy_recovery_source.py` | `recovery_from_parts` (`deploy/remote-deploy.sh`): resident fallback source of a deploy, 29 checks |
 | `tools/release/test_identity_merge.py` | `unitotem_identity.py` account merge |
 | `tools/release/test_pkglock.py` | `tools/pkglock.py` freeze/verify/prefs/snapshot/classification, offline |
 | `tools/release/test_repair.py` | Self-repair without block devices: boot-file clone, failover guard, repair decision |
@@ -95,3 +97,14 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 | Power cut | qemu-system-x86_64 with KVM, qemu-img, OVMF, sgdisk, sshpass, `deploy/lib.sh` |
 | Low-resolution OTA | qemu-system-x86_64, OVMF, mtools, sfdisk, xz |
 | Frame layout | python3, PIL optional |
+
+## Recovery set sync on the test Pi
+`work/agents/agent-M/pi-recovery-sync-test.sh before|after|recovery-entry` (host side, `deploy/lib.sh` helpers only).
+- `before`: read-only snapshot of the FIRMWARE FAT (sha of recovery files, `config.txt`, slot `cmdline.txt`, `start4.elf`, `fixup4.dat`, dtbs), level, `boot_recovery`, SD write counter.
+- Ship a release whose root carries a newer recovery set (`unitotem-update fetch`, `apply --reboot`; about 3 GB of SD writes: ask first), then `NEW_VERSION=<v> ... after`: files equal the image manifest, level raised, `sha256sum -c recovery.sha256` passes, no `*.new`, firmware blobs and top-level `cmdline.txt` unchanged, `config.txt` equal except `os_prefix`.
+- `recovery-entry`: `unitotem-ota.request` (no data wipe), reboot, dropbear on 2222 answers (key or administrator login), return to the normal slot.
+- The SD counter includes the whole update; the sync's own writes are a few MB.
+
+## Recovery set sync in a VM (UEFI and SeaBIOS)
+Installed full image whose ESP holds an older recovery set (level 0), ROOT_A without `/usr/share/unitotem/recovery` (debugfs); a signed test release (`unitotem-release build-ab`) whose root carries the new updater and a newer set (level `20261108000000`, initrd with a marker file), served by `tools/release/fake-github.py` (`UPDATE_BASE_URL=http://10.0.2.2:PORT/<owner>/<repo>`). `fetch`, `apply --reboot`, confirmed boot: `boot_recovery` is `ok 0 -> level`, ESP `recovery-initrd.img` equals the new file, `sha256sum -c recovery.sha256` passes, no `*.new`, `grub.cfg` unchanged, a further boot is `noop` and writes nothing; `next_entry=ota-recovery` boots the new initrd (marker present, dropbear 2222). Measured: passes on both firmwares.
+
