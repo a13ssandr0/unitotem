@@ -22,9 +22,9 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 | `unitotem/files/overlayfs-hook.sh` | init-bottom `setup-overlays` (`storage-and-persistence.md`) |
 | `unitotem/files/unitotem-boot-ok` | Boot confirmation (`ab-updates.md`) |
 | `unitotem/files/unitotem-ota-arm` | Writes `unitotem-ota.request` on the boot FAT and reboots into OTA |
-| `unitotem/files/unitotem-update` | Slot switching, backends (grub/rpi), trial, confirm, rollback, ESP `grub.cfg` sync |
+| `unitotem/files/unitotem-update` | Slot switching, backends (grub/rpi), trial, confirm, rollback, ESP `grub.cfg` sync, boot recovery set sync (`sync_boot_recovery`, [Recovery set](#recovery-set)) |
 | `deploy/ota-engine.sh` | All boot-partition writes, init-premount, serve-fallback, `ab_failover` |
-| `unitotem/stage3-image.sh` | A/B boot layout: `slota/`, `os_prefix`, `grub-install`, `saved_entry=slot-a`, Secure Boot staging, `esp-grub.cfg` |
+| `unitotem/stage3-image.sh` | A/B boot layout: `slota/`, `os_prefix`, `grub-install`, `saved_entry=slot-a`, Secure Boot staging, `esp-grub.cfg`, recovery set and its manifest |
 | `unitotem/slim-initramfs.py` | Pi initramfs reduction |
 | `unitotem/verify-image.sh` | Boot-file assertions |
 
@@ -32,7 +32,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 ### Raspberry Pi (arm64, `backend=rpi`)
 
-- FIRMWARE (FAT): `config.txt`, shared firmware, `slota/` and `slotb/` (`kernel8.img`, `initramfs8`, `cmdline.txt`, dtbs, overlays), `recovery8.img`, `recovery-initrd.img`, `unitotem-ota.*`.
+- FIRMWARE (FAT): `config.txt`, shared firmware, `slota/` and `slotb/` (`kernel8.img`, `initramfs8`, `cmdline.txt`, dtbs, overlays), resident fallback `recovery8.img`, `recovery-initrd.img`, top-level `*.dtb`, `recovery.sha256`, `unitotem-ota.*`.
 - Default: `config.txt` `os_prefix=slota/` (or `slotb/`).
 - Trial: `tryboot.txt` holds the other slot's `os_prefix`; read by the firmware only on a reboot with `systemctl reboot --reboot-argument="0 tryboot"`. A plain reboot or power cut returns to the `config.txt` slot.
 - Promotion: `config.txt` rewritten from `tryboot.txt` with the new `os_prefix`; `tryboot.txt` removed.
@@ -43,7 +43,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 - BIOS: the MBR boot code loads `core.img` from the `BIOS` partition (ef02, p5), which reads `unitotem-grub/` on the EFI partition as under UEFI. Run time: `/boot/efi` is mounted read-only; remount read-write for `grub-editenv`.
 
-- ESP: `unitotem-grub/grub/grub.cfg`, `unitotem-grub/grub/grubenv`, `EFI/BOOT/BOOTX64.EFI` (plain GRUB), `EFI/unitotem-sb/` (staged Secure Boot chain), `unitotem/` (fallback kernel and initrd).
+- ESP: `unitotem-grub/grub/grub.cfg`, `unitotem-grub/grub/grubenv`, `EFI/BOOT/BOOTX64.EFI` (plain GRUB), `EFI/unitotem-sb/` (staged Secure Boot chain), `unitotem/` (fallback kernel, initrd and `recovery.sha256`).
 - Slot kernel and initrd: `/vmlinuz`, `/initrd.img` in each ROOT slot, found by `search --label ROOT_A|ROOT_B`.
 - grubenv keys: `saved_entry`, `next_entry` (one-shot, cleared by GRUB), `unitotem_video`.
 - Entries: 0 `slot-a`, 1 `slot-b`, 2 `slot-a-recover`, 3 `slot-b-recover`, 4 `ota-recovery`.
@@ -79,6 +79,49 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 | GRUB | `saved_entry` | `next_entry` | `saved_entry=X`, unset `next_entry` | `saved_entry` = other slot |
 | Pi | `config.txt` `os_prefix` | `tryboot.txt`, tryboot reboot only | `config.txt` <- trial file, delete `tryboot.txt` | `config.txt` `os_prefix` |
 
+### Recovery set
+
+The resident fallback on the boot partition (`recovery-vmlinuz` or `recovery8.img`, `recovery-initrd.img`, `recovery.sha256`, arm64 top-level `*.dtb`) is refreshed from the running image after a confirmed boot. Sync steps, power-cut analysis and the downgrade rule: [ab-updates](ab-updates.md#recovery-set-refresh).
+
+Image root, `/usr/share/unitotem/recovery/` (written by `stage3-image.sh`):
+
+| File | Content |
+|---|---|
+| `vmlinuz` | Fallback kernel of the build |
+| `initrd.img` | Fallback initramfs of the build |
+| `dtb/NAME.dtb` | arm64 only: the top-level FIRMWARE dtbs |
+| `manifest` | Level and sha256 of every file above |
+
+Manifest format (exact):
+
+```
+# unitotem-recovery-level: 20261019055632
+<sha256>  vmlinuz
+<sha256>  initrd.img
+<sha256>  dtb/bcm2711-rpi-4-b.dtb
+```
+
+- Level: the 14 digits of `UNITOTEM_RECOVERY_BUILD_DATE` (UTC, `deploy/<arch>/recovery.manifest`): `2026-10-19T05:56:32Z` -> `20261019055632`. The level changes when the recovery initrd is rebuilt (`stage1-recovery-initrd.sh`); images that carry the same set have the same level.
+- Parsed only when the level line, `vmlinuz` and `initrd.img` are present, every set path is `vmlinuz`, `initrd.img` or `dtb/NAME.dtb` (fullmatch), and no path repeats. Otherwise the image has no recovery set and the sync does nothing.
+- Boot partition `recovery.sha256`: the same level line, then `<sha256>  <name>` per file, names relative to the boot directory (amd64 `unitotem/`, arm64 FIRMWARE). A missing file or level line is level 0. GNU `sha256sum -c` accepts the level line as a comment.
+
+Ownership of boot partition files:
+
+| File | Owner | Handling |
+|---|---|---|
+| amd64 `unitotem/recovery-vmlinuz`, `unitotem/recovery-initrd.img`, `unitotem/recovery.sha256`; arm64 `recovery8.img`, `recovery-initrd.img`, `recovery.sha256`, top-level `*.dtb` | image | Synced after a confirmed boot when the image level is higher; `recovery.sha256` last |
+| `config.txt` | device | Never synced (see below) |
+| `cmdline.txt`, `tryboot.txt`, `slota/`, `slotb/` | device | Never synced. Slot directories are written by fetch, repair and apply |
+| `unitotem-ota.*`, `os_prefix` (`config.txt` key) | device | Never synced |
+| arm64 `start*.elf`, `fixup*.dat`, `bootcode.bin`, `overlays/` | image, via deploy | Never synced (see below) |
+| amd64 `EFI/`, ESP `unitotem-grub/` | image, via deploy | Not written by the recovery sync. ESP `grub.cfg` has its own sync (`ab-updates.md`) |
+
+Not synced, arm64 firmware: `start*.elf`, `fixup*.dat`, `bootcode.bin` and `overlays/` are read by every boot, including the normal slot, and `start4.elf` and `fixup4.dat` must match each other. A FAT cannot swap two files atomically, so a power cut between the renames could leave a Pi that does not start at all. Firmware reaches a device only through deploy. The Pi EEPROM is a separate update path and is not touched.
+
+Not synced, `config.txt`: the runtime rewrites it whole (`set-default-recovery`, `set-trial-boot`, `promote-default`: `os_prefix`, trial state). A marked section edited by the sync would race those rewrites. Image changes to `config.txt` reach only the built `.img` and fresh deploys; device options go in `config-extra.txt` (`dtoverlay`, `dtparam`).
+
+Readers: GRUB reads the recovery kernel and initrd only for the `ota-recovery` entry. The Pi firmware reads `recovery8.img` and the top-level dtbs only when `config.txt` has no `os_prefix`. The normal slot never opens them, so an incomplete or mixed set cannot block the normal boot.
+
 ### Plymouth and orientation
 
 - Splash: plymouthd in the initramfs, `Theme=unitotem` (package `plymouth-theme-unitotem`, see [packaging](../manager/packaging.md)). Without `Theme=` plymouth uses `text`.
@@ -104,7 +147,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 Kernel command line: `root=LABEL=ROOT_A|ROOT_B` (A/B) or `ROOT`, `rootfstype=ext4 rootwait ro`, `unitotem.slot=a|b`, `unitotem.ota=1|recover`, `video=...`, `plymouth.ignore-serial-consoles`.
 
-Boot-partition files: `unitotem-ota.request` (`UNITOTEM_OTA_WIPE_DATA=0|1`, self-clearing), `unitotem-ota.authorized_keys` (one `ssh-ed25519` line, fallback login key written by `unitotem-ota-arm --authkey-file`; kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, whitelisted `UNITOTEM_*`/`OTA_*`), `unitotem-ota.failover` (guard), `tryboot.txt`, `cmdline.txt`, `config.txt`, `slota/`, `slotb/`. `grubenv` is a 1024-byte block written by `grubenv_write`. ESP `esp-grub.cfg` carries `# unitotem-grub-level: N`.
+Boot-partition files: `unitotem-ota.request` (`UNITOTEM_OTA_WIPE_DATA=0|1`, self-clearing), `unitotem-ota.authorized_keys` (one `ssh-ed25519` line, fallback login key written by `unitotem-ota-arm --authkey-file`; kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, whitelisted `UNITOTEM_*`/`OTA_*`), `unitotem-ota.failover` (guard), `tryboot.txt`, `cmdline.txt`, `config.txt`, `slota/`, `slotb/`, recovery set (`recovery-vmlinuz`/`recovery8.img`, `recovery-initrd.img`, `recovery.sha256`, Pi `*.dtb`; see [Recovery set](#recovery-set)). `grubenv` is a 1024-byte block written by `grubenv_write`. ESP `esp-grub.cfg` carries `# unitotem-grub-level: N`.
 
 Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point-of-no-return`; dropbear on 2222.
 
@@ -113,6 +156,7 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 - GRUB `fallback` accepts entry numbers only; names are dropped. Keep entry order in step with `set fallback`; `verify-image.sh` checks `ota-recovery` is last.
 - `ota-recovery` stays last: a torn grubenv makes GRUB boot entry 0.
 - ESP `grub.cfg` is synced only after a confirmed boot and only when the shipped level is higher.
+- Boot partition recovery files follow the same rule (level compared before any read or write). Firmware and `config.txt` are never written by the sync.
 - Pi tryboot needs the `0 tryboot` reboot argument; a staged Pi update starts only with `unitotem-update reboot`.
 - Pi dtb and overlays are copied into `slota/`, not moved: the fallback `config.txt` loads `bcm2711-rpi-4-b.dtb` from the top level.
 - Pi console `ttyS0` (mini-UART) with `enable_uart=1`: Raspberry Pi DTBs alias `serial0=&uart1`. Never `serial0` (PL011, Bluetooth pins).
@@ -135,8 +179,9 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 
 ## Tests
 
-- `python3 tools/release/test_boot_orientation.py`, `test_rpi_backend.py`, `test_repair.py`, `test_secure_boot_gate.py`.
+- `python3 tools/release/test_boot_orientation.py`, `test_rpi_backend.py`, `test_repair.py`, `test_secure_boot_gate.py`, `test_boot_recovery.py`.
 - `dash tools/release/test_overlay_status.sh`: overlay hook under dash with mocked mount, blkid, e2fsck (status states, log prefix, one-line file).
 - `bash unitotem/check-recovery-commands.sh ROOTFS INITRD deploy/ota-engine.sh`.
 - `unitotem/verify-image.sh`: GRUB entries, fallback numbering, Secure Boot staging, Pi slot dirs, initramfs contents.
 - Firmware behaviour (`os_prefix`, tryboot) is verified on hardware only.
+- In the OTA fallback shell `reboot` is a link to `systemctl` that does not exist there: use `reboot -f`.

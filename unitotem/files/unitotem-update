@@ -24,6 +24,7 @@ CONF_DEFAULTS = {
     "UPDATE_GRUBENV": "/boot/efi/unitotem-grub/grub/grubenv",
     "UPDATE_ESP_MOUNT": "/boot/efi",                         # amd64: where the ESP (grubenv) is mounted
     "UPDATE_BOOTFS": "/boot/firmware",                       # Raspberry Pi: the FAT partition the firmware reads
+    "UPDATE_RECOVERY_DIR": "/usr/share/unitotem/recovery",   # the image's recovery set: manifest, vmlinuz, initrd.img, dtb/*
     "UPDATE_BACKEND": "",                                    # "grub" | "rpi"; empty = detect
     "UPDATE_DT_BOOTLOADER": "/proc/device-tree/chosen/bootloader",  # exists on boards with the EEPROM bootloader (tryboot)
     "UPDATE_CRASHPOINT": "",                                 # test hook: freeze at the named point (power-cut tests)
@@ -572,7 +573,8 @@ def cmd_status(a, conf):
     out = {"layout": 2 if cur else 1, "ab": bool(cur), "current_version": current_version(conf),
            "slot": cur, "other_slot": other_slot(cur) if cur else None, "trial": False,
            "pending_confirm": False, "rollback_available": False, "op": None,
-           "last_result": read_state(conf, "last-result.json"), "base_url": conf["UPDATE_BASE_URL"]}
+           "last_result": read_state(conf, "last-result.json"), "base_url": conf["UPDATE_BASE_URL"],
+           "boot_recovery": read_state(conf, "recovery-sync.json")}
     pid = op_running(conf)
     if pid:
         out["op"] = {"pid": pid, "progress": read_progress(conf)}
@@ -865,6 +867,8 @@ def cmd_confirm(a, conf):
     res = confirm_now(conf)
     try: sync_esp_grubcfg(conf)
     except Exception as e: event(conf, f"ESP grub.cfg sync failed: {e}")
+    try: sync_boot_recovery(conf)
+    except Exception as e: event(conf, f"boot recovery sync failed: {e}")
     return 0, res
 
 
@@ -908,6 +912,8 @@ def cmd_boot_ok(a, conf):
         note_failover(conf)
         try: sync_esp_grubcfg(conf)
         except Exception as e: event(conf, f"ESP grub.cfg sync failed: {e}")
+        try: sync_boot_recovery(conf)
+        except Exception as e: event(conf, f"boot recovery sync failed: {e}")
         # Self-healing: if the other slot held a system and no longer passes its check, rebuild it from this one (detached, idle priority).
         if conf.get("UPDATE_AUTOREPAIR", "1") == "1":
             try: cmd_repair(argparse.Namespace(foreground=False, auto=True, force=False), conf)
@@ -936,6 +942,8 @@ def cmd_boot_ok(a, conf):
             res = confirm_now(conf)
             try: sync_esp_grubcfg(conf)          # a confirmed system is the only one allowed to touch the bootloader config
             except Exception as e: event(conf, f"ESP grub.cfg sync failed: {e}")
+            try: sync_boot_recovery(conf)
+            except Exception as e: event(conf, f"boot recovery sync failed: {e}")
             return 0, res
         time.sleep(3)
     set_last_result(conf, op="trial", result="rolled-back", reason="health-timeout", version=pend.get("version"))
@@ -1156,6 +1164,192 @@ def sync_esp_grubcfg(conf):
         os.replace(tmp, dst)
     event(conf, f"ESP grub.cfg updated: level {_grub_level(old)} -> {_grub_level(new)}")
     return {"from": _grub_level(old), "to": _grub_level(new)}
+
+
+RECOVERY_CHUNK = 1 << 20
+RECOVERY_SPACE_MARGIN = 1 << 20                  # kept free on the boot partition beyond the copied files
+
+
+def recovery_set_path_ok(p):
+    """Set paths of the recovery set: vmlinuz, initrd.img, dtb/NAME.dtb."""
+    if p in ("vmlinuz", "initrd.img"):
+        return True
+    return p.startswith("dtb/") and ".." not in p and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.dtb", p[4:]) is not None
+
+
+def parse_recovery_manifest(text):
+    """(level, [(set path, sha256)]) of the image manifest, or None when the level line, the kernel or the initrd
+    entry is missing, an entry is duplicated, or a line does not parse."""
+    level = None; entries = []
+    for line in text.splitlines():
+        line = line.rstrip()
+        if not line:
+            continue
+        m = re.fullmatch(r"# unitotem-recovery-level: (\d+)", line)
+        if m:
+            level = int(m.group(1)); continue
+        m = re.fullmatch(r"([0-9a-f]{64})  (\S+)", line)
+        if not m or not recovery_set_path_ok(m.group(2)):
+            return None
+        entries.append((m.group(2), m.group(1)))
+    paths = [p for p, _ in entries]
+    if level is None or "vmlinuz" not in paths or "initrd.img" not in paths or len(set(paths)) != len(paths):
+        return None
+    return level, entries
+
+
+def recovery_level(text):
+    """Level of the boot partition's recovery.sha256; 0 when the file or its level line is absent."""
+    m = re.search(r"(?m)^# unitotem-recovery-level: (\d+)$", text or "")
+    return int(m.group(1)) if m else 0
+
+
+def recovery_fat_name(be, set_path):
+    """Boot partition file name of a set path, or None when the backend does not use that file."""
+    if set_path == "vmlinuz":
+        return "recovery-vmlinuz" if be == "grub" else "recovery8.img"
+    if set_path == "initrd.img":
+        return "recovery-initrd.img"
+    if be == "rpi" and set_path.startswith("dtb/"):
+        return set_path[4:]
+    return None
+
+
+def recovery_order(set_path):
+    """Rename order: kernel, initrd, then the dtbs."""
+    return (0 if set_path == "vmlinuz" else 1 if set_path == "initrd.img" else 2, set_path)
+
+
+def recovery_plan(entries, be, cur):
+    """[(set path, FAT name, sha256, replace)] in rename order. replace is False when the FAT file already holds the
+    image's bytes. cur: {FAT name: sha256 or None}. Names must already be valid for BE (see recovery_fat_name)."""
+    rows = []
+    for set_path, sha in sorted(entries, key=lambda e: recovery_order(e[0])):
+        name = recovery_fat_name(be, set_path)
+        rows.append((set_path, name, sha, cur.get(name) != sha))
+    return rows
+
+
+def recovery_sha_text(level, rows):
+    """recovery.sha256 content: the level line, then `<sha256>  <FAT name>` for every file of the set."""
+    return f"# unitotem-recovery-level: {level}\n" + "".join(f"{sha}  {name}\n" for _, name, sha, _ in rows)
+
+
+def sha256_file(path):
+    """Hex sha256 of a file, None when it cannot be read."""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(RECOVERY_CHUNK), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def _read_text(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _unlink_quiet(path):
+    try: os.unlink(path)
+    except OSError: pass
+
+
+def _copy_verified(src, dst, sha):
+    """Copy SRC to DST, fsync, and check the bytes on disk against SHA."""
+    h = hashlib.sha256()
+    with open(src, "rb") as s, open(dst, "wb") as d:
+        for chunk in iter(lambda: s.read(RECOVERY_CHUNK), b""):
+            h.update(chunk); d.write(chunk)
+        d.flush(); os.fsync(d.fileno())
+    if h.hexdigest() != sha or sha256_file(dst) != sha:
+        raise OSError(f"{os.path.basename(dst)} does not verify")
+
+
+def _write_verified(path, text):
+    with open(path, "w") as f:
+        f.write(text); f.flush(); os.fsync(f.fileno())
+    if _read_text(path) != text:
+        raise OSError(f"{os.path.basename(path)} does not verify")
+
+
+def _sync_recovery_set(conf, be, rec):
+    """Fills REC (result, from, to, detail). Raises on I/O errors; the caller records them."""
+    rdir = conf["UPDATE_RECOVERY_DIR"]
+    parsed = parse_recovery_manifest(_read_text(os.path.join(rdir, "manifest")) or "")
+    if parsed is None:
+        rec.update(result="noop", detail="no recovery set in the image"); return
+    lvl_img, entries = parsed
+    if be == "grub":
+        mount = conf["UPDATE_ESP_MOUNT"]; fdir = os.path.join(mount, "unitotem")
+    else:
+        mount = fdir = conf["UPDATE_BOOTFS"]
+    lvl_fat = recovery_level(_read_text(os.path.join(fdir, "recovery.sha256")))
+    rec.update({"from": lvl_fat, "to": lvl_img})
+    if lvl_img <= lvl_fat:
+        rec.update(result="noop", detail="boot partition already holds this level"); return
+    if not os.path.isdir(fdir):
+        rec.update(result="refused", detail="no unitotem directory on the boot partition"); return
+    names = [recovery_fat_name(be, sp) for sp, _ in entries]
+    if None in names:
+        rec.update(result="refused", detail="image set has a file this backend does not use"); return
+    for sp, sha in entries:
+        if sha256_file(os.path.join(rdir, sp)) != sha:
+            rec.update(result="refused", detail=f"image file {sp} does not match the manifest"); return
+    cur = {n: sha256_file(os.path.join(fdir, n)) for n in names}
+    rows = recovery_plan(entries, be, cur)
+    todo = [r for r in rows if r[3]]
+    need = sum(os.path.getsize(os.path.join(rdir, r[0])) for r in todo) + RECOVERY_SPACE_MARGIN
+    st = os.statvfs(fdir)
+    if st.f_bavail * st.f_frsize < need:
+        rec.update(result="refused", detail=f"boot partition needs {need} bytes free"); return
+    new_names = [n + ".new" for n in names] + ["recovery.sha256.new"]
+    with bootfs_rw(mount):
+        for n in new_names:
+            _unlink_quiet(os.path.join(fdir, n))
+        try:
+            for sp, name, sha, _ in todo:
+                _copy_verified(os.path.join(rdir, sp), os.path.join(fdir, name + ".new"), sha)
+            for _, name, _, _ in todo:
+                os.replace(os.path.join(fdir, name + ".new"), os.path.join(fdir, name))
+            os.sync()
+            _write_verified(os.path.join(fdir, "recovery.sha256.new"), recovery_sha_text(lvl_img, rows))
+            os.replace(os.path.join(fdir, "recovery.sha256.new"), os.path.join(fdir, "recovery.sha256"))
+        except Exception:
+            for n in new_names:
+                _unlink_quiet(os.path.join(fdir, n))
+            raise
+    rec.update(result="ok", detail=f"{len(todo)} file(s) replaced")
+
+
+def sync_boot_recovery(conf):
+    """Refresh the boot partition's resident recovery set from the image's set (UPDATE_RECOVERY_DIR). Called after a
+    confirmed boot only, never on a trial. The level is compared first: nothing is hashed or written unless the image's
+    level is higher. Each file is written beside its name, fsynced and verified, then renamed (kernel, initrd, dtbs);
+    recovery.sha256 is written last, so a run cut short is finished by the next confirmed boot. Never raises.
+    Returns the record stored in recovery-sync.json: {result: ok|noop|refused|failed, from, to, detail, time}."""
+    rec = {"result": "failed", "from": None, "to": None, "detail": "", "time": int(time.time())}
+    try:
+        be = backend(conf)
+        if be not in ("grub", "rpi"):
+            rec.update(result="noop", detail="no boot backend")
+        else:
+            _sync_recovery_set(conf, be, rec)
+    except Exception as e:
+        rec.update(result="failed", detail=f"{type(e).__name__}: {e}")
+    prev = read_state(conf, "recovery-sync.json") or {}
+    if rec["result"] in ("noop", "refused") and prev.get("result") == rec["result"] and prev.get("detail") == rec["detail"] \
+            and prev.get("from") == rec["from"] and prev.get("to") == rec["to"]:
+        return rec                      # steady state: no write per boot (SD wear)
+    try: write_state(conf, "recovery-sync.json", rec)
+    except Exception as e: event(conf, f"recovery-sync.json not written: {e}")
+    event(conf, f"boot recovery {rec['result']} {rec['from']}->{rec['to']}: {rec['detail']}")
+    return rec
 
 
 def note_failover(conf):

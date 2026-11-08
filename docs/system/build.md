@@ -58,7 +58,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
     - Key: from `cuda-keyring_1.1-1_all.deb` (sha256 `d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f`, key file `usr/share/keyrings/cuda-archive-keyring.gpg`). The primary key fingerprint must be `02182E60104FCDC26EAE1B8597A5D4CB8793F200` (pinned in `stage1-packages.sh`); any other fingerprint stops the build. NVIDIA publishes no fingerprint page: the key ID `8793F200` is confirmed only by a forum thread. Trust on first fetch, pinned by fingerprint afterwards. Used through `signed-by` only (no `apt-key`, nothing in `trusted.gpg.d`).
     - Installed with `--no-install-recommends`, at `620.70.06-1` (`libnvidia-egl-gbm1` at its own version `1.1.4-2`): `nvidia-kernel-open-dkms`, `nvidia-kernel-support`, `firmware-nvidia-gsp`, `libnvidia-allocator1`, `libnvidia-egl-gbm1`, `libgles-nvidia1`, `libgles-nvidia2`, `libegl-nvidia0`, `libglx-nvidia0`, `nvidia-egl-icd`. Debian's `nvidia-driver`, `nvidia-kernel-dkms` and `firmware-nvidia-gsp` 550 are not installed.
     - Pins, `/etc/apt/preferences.d/96-unitotem-nvidia` (stage 1 only): NVIDIA-origin packages `nvidia-*`, `libnvidia-*`, `libgles-nvidia*`, `libegl-nvidia*`, `libglx-nvidia*`, `firmware-nvidia-gsp`, `xserver-xorg-video-nvidia`, `glx-alternative-nvidia` at priority 995 (above the backports 990, so NVIDIA's `firmware-nvidia-gsp` wins over Debian's `firmware-*` from backports). Every other package of that origin at -1, so NVIDIA's `dkms` 3.4.4 and `libegl1` never replace Debian's (`dkms` 3.2.2 is kept).
-    - Supported GPUs: Turing and newer (the open kernel modules). Maxwell, Pascal and Volta run on nouveau with NVK and Mesa 26; NVIDIA's legacy branch for them is 580.
+    - Supported GPUs: Turing and newer (the open kernel modules). Maxwell, Pascal and Volta run on nouveau with NVK and Mesa 26 and need `firmware-nvidia-graphics` (stable `/trixie`, installed before the compiler purge); NVIDIA's legacy branch for them is 580.
     - DKMS module: `nvidia/620.70.06` builds `nvidia`, `nvidia-modeset`, `nvidia-drm`, `nvidia-uvm` and `nvidia-peermem` into `/lib/modules/<kver>/updates/dkms/` as uncompressed `.ko` (measured). Vermagic `7.2.12+deb13-amd64`. Signed by the DKMS key generated in the build (signer `DKMS module signing key`); `/var/lib/dkms/mok.key` is removed, `mok.pub` kept. The build fails unless `nvidia.ko*` exists for the single kernel.
     - Replay measurements (`apt-get -s` of the stage-1 install order, Installed-Size sums before the purges; not image sizes):
 
@@ -81,7 +81,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Purge: arm64 Chromium (apt); compilers (`dpkg --force-depends`, keeps DKMS modules: `build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 gcc-14-for-host cpp-14-for-host` and the `x86-64-linux-gnu` cross variants; the 7.2 headers depend on `gcc-14-for-host`/`cpp-14-for-host`); `mesa-vulkan-drivers` (apt; the viewer renders through ANGLE-GL, llvmpipe/radeonsi stay in `mesa-libgallium` + `libllvm19`); `libclang1-19` (`dpkg --force-depends`: `libshiboken6` declares it, no shared object loads it); amd64 X server packages. No NVIDIA library is purged: the NVIDIA set is installed with `--no-install-recommends` and pulls no CUDA, NVDEC or Vulkan library.
   - Asserts labwc, wlr-randr, wlopm, wayvnc, mesa-libgallium, libllvm19, libneatvnc and libavcodec61 survive and the NVIDIA module `nvidia.ko*` exists in the single kernel directory (amd64, after each purge). Removes `/var/lib/dkms/mok.key`.
   - Lock: verify (exact match) or freeze to `work/<arch>/<arch>.lock.new`.
-- Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values.
+- Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values. `UNITOTEM_RECOVERY_BUILD_DATE` is the set's level (14 digits, `boot.md#recovery-set`).
 - Stage 2:
   - Hostname, root first-access state (`passwd -d`, login shell, marker group), sshd_config, packages `sudo` and `adduser`.
   - Locale (`UNITOTEM_LOCALE`): `<locale> UTF-8` is uncommented in `/etc/locale.gen` and `locale-gen` runs (`C.UTF-8` is built into libc-bin, always available). `LANG=<locale>` is written to `/etc/default/locale` and `/etc/locale.conf`. `unitotem/files/unitotem-locale.sh` is installed as `/etc/profile.d/unitotem-locale.sh` (mode 644).
@@ -95,7 +95,8 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Removes the build-time TLS certificate (each device generates its own).
 - Stage 3:
   - `truncate` to `IMAGE_SIZE`; partition (sgdisk amd64, parted arm64); `losetup --partscan`; `mkfs`; rsync rootfs into ROOT_A.
-  - Recovery kernel and initrd copied to the boot FAT.
+  - Recovery kernel and initrd copied to the boot FAT under the names of `boot.md#recovery-set`, with `recovery.sha256` (level line, then sha256 per file). The level must be 14 digits or the build stops.
+  - The same set goes to `usr/share/unitotem/recovery/` in the root (`vmlinuz`, `initrd.img`, `manifest`; arm64 also `dtb/*.dtb` copied from the top-level FIRMWARE dtbs). Written into the mounted root after the rootfs rsync and before the partitions are cut, so ROOT_A carries it.
   - arm64 A/B: kernel, initramfs, cmdline move to `slota/`; `config.txt` gets `os_prefix=slota/`; dtbs and overlays copied into `slota/`.
   - amd64: `grub-install` for EFI and BIOS (`--removable --no-uefi-secure-boot`), Secure Boot chain staged in `EFI/unitotem-sb/`, `grub-mkconfig` (A/B: `grub.cfg` and `grubenv` in `unitotem-grub/` on the ESP).
   - Boot assertions (kernel magic, dtb parse, initramfs `/init`, `config.txt` references), release-version, change baseline, `verify-image.sh`, fsck of all partitions.
@@ -141,7 +142,7 @@ Outputs:
 
 - `deploy/<arch>/unitotem-<date>-<arch>.img.xz` (build date, not `RELEASE_VERSION`): full image.
 - `deploy/<arch>/unitotem-<date>-<arch>-flash.img.xz` (A/B): flash image, `storage-and-persistence.md#layout`.
-- `deploy/<arch>/recovery-vmlinuz-<arch>`, `recovery-initrd-<arch>.img`, `recovery.manifest` (keys `UNITOTEM_RECOVERY_{ARCH,KERNEL_VERSION,VMLINUZ_SHA256,INITRD_SHA256,PARTCLONE_VERSION,BUILD_DATE}`).
+- `deploy/<arch>/recovery-vmlinuz-<arch>`, `recovery-initrd-<arch>.img`, `recovery.manifest` (keys `UNITOTEM_RECOVERY_{ARCH,KERNEL_VERSION,VMLINUZ_SHA256,INITRD_SHA256,PARTCLONE_VERSION,BUILD_DATE}`). Deploys read the set from the parts set; these host files are the fallback only (`deploy-and-recovery.md`).
 - Optional `deploy/<arch>/unitotem-<date>-<arch>.parts`.
 - `work/<arch>/`: `stage{0,1,2}.tar.gz`, `stage2.layout`, `<arch>.lock.new`.
 

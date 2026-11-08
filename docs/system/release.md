@@ -80,6 +80,7 @@ Release directory `vX.Y.Z/`: `manifest.json`, `manifest.json.sig` (detached Ed25
 
 ## Rules and gotchas
 
+- `bootfiles.tar.xz` holds only `slota/` (arm64). The resident fallback set does not travel in the bootfiles part: it is `usr/share/unitotem/recovery/` in the root, and the device writes it to the boot partition after a confirmed boot (`ab-updates.md#recovery-set-refresh`).
 - `seq` must increase on every key list; devices refuse a lower value even if the keys are unchanged.
 - Key rotation takes effect only through a non-prerelease release: devices read `keys.json` from "latest".
 - Only `stable` is installable; `beta` has no device consumer.

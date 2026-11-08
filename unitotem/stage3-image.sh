@@ -153,22 +153,59 @@ for f in "$RECOVERY_VMLINUZ" "$RECOVERY_INITRD" "$RECOVERY_MANIFEST"; do
     [ -f "$f" ] || { echo "Missing $f - run unitotem/stage1-recovery-initrd.sh first" >&2; exit 1; }
 done
 
-if [ "$ARCH" = "amd64" ]; then
-    mkdir -p ${IMG_MNT}/boot/efi/unitotem
-    cp "$RECOVERY_VMLINUZ" ${IMG_MNT}/boot/efi/unitotem/recovery-vmlinuz
-    cp "$RECOVERY_INITRD"  ${IMG_MNT}/boot/efi/unitotem/recovery-initrd.img
-    {
-        echo "$(sha256sum "$RECOVERY_VMLINUZ" | cut -d' ' -f1)  recovery-vmlinuz"
-        echo "$(sha256sum "$RECOVERY_INITRD"  | cut -d' ' -f1)  recovery-initrd.img"
-    } > ${IMG_MNT}/boot/efi/unitotem/recovery.sha256
-elif [ "$ARCH" = "arm64" ]; then
-    cp "$RECOVERY_VMLINUZ" ${IMG_MNT}/boot/firmware/recovery8.img
-    cp "$RECOVERY_INITRD"  ${IMG_MNT}/boot/firmware/recovery-initrd.img
-    {
-        echo "$(sha256sum "$RECOVERY_VMLINUZ" | cut -d' ' -f1)  recovery8.img"
-        echo "$(sha256sum "$RECOVERY_INITRD"  | cut -d' ' -f1)  recovery-initrd.img"
-    } > ${IMG_MNT}/boot/firmware/recovery.sha256
+# Level of the set: the build date as 14 digits (2026-10-19T05:56:32Z -> 20261019055632).
+RECOVERY_BUILD_DATE=$(sed -n 's/^UNITOTEM_RECOVERY_BUILD_DATE=//p' "$RECOVERY_MANIFEST")
+RECOVERY_LEVEL=$(printf '%s' "$RECOVERY_BUILD_DATE" | tr -cd '0-9')
+[[ "$RECOVERY_LEVEL" =~ ^[0-9]{14}$ ]] \
+    || { echo "$RECOVERY_MANIFEST: UNITOTEM_RECOVERY_BUILD_DATE missing or not 14 digits ('$RECOVERY_BUILD_DATE')" >&2; exit 1; }
+
+# Top-level dtbs (arm64): the fallback's device tree. The A/B block below copies them into the
+# slot directories; the top-level originals stay for the fallback.
+DTBS=()
+if [ "$ARCH" = "arm64" ]; then
+    mapfile -t DTBS < <(find "${IMG_MNT}/boot/firmware" -maxdepth 1 -type f -name '*.dtb' -printf '%f\n' | LC_ALL=C sort)
 fi
+
+# Boot FAT copy under unchanged names. recovery.sha256 starts with the level line.
+if [ "$ARCH" = "amd64" ]; then
+    FAT_DIR=${IMG_MNT}/boot/efi/unitotem
+    FAT_VMLINUZ=recovery-vmlinuz
+else
+    FAT_DIR=${IMG_MNT}/boot/firmware
+    FAT_VMLINUZ=recovery8.img
+fi
+mkdir -p "$FAT_DIR"
+cp "$RECOVERY_VMLINUZ" "$FAT_DIR/$FAT_VMLINUZ"
+cp "$RECOVERY_INITRD"  "$FAT_DIR/recovery-initrd.img"
+VMLINUZ_SHA=$(sha256sum "$RECOVERY_VMLINUZ" | cut -d' ' -f1)
+INITRD_SHA=$(sha256sum "$RECOVERY_INITRD"  | cut -d' ' -f1)
+FAT_SUMS=("$VMLINUZ_SHA  $FAT_VMLINUZ" "$INITRD_SHA  recovery-initrd.img")
+SET_SUMS=("$VMLINUZ_SHA  vmlinuz" "$INITRD_SHA  initrd.img")
+
+# Image-owned set read by unitotem-update: vmlinuz, initrd.img, dtb/NAME (see docs/system/boot.md).
+RECOVERY_SET=${IMG_MNT}/usr/share/unitotem/recovery
+install -d -m 755 "$RECOVERY_SET"
+install -m 644 "$RECOVERY_VMLINUZ" "$RECOVERY_SET/vmlinuz"
+install -m 644 "$RECOVERY_INITRD"  "$RECOVERY_SET/initrd.img"
+if [ "${#DTBS[@]}" -gt 0 ]; then
+    install -d -m 755 "$RECOVERY_SET/dtb"
+fi
+for name in "${DTBS[@]}"; do
+    install -m 644 "${IMG_MNT}/boot/firmware/$name" "$RECOVERY_SET/dtb/$name"
+    sum=$(sha256sum "$RECOVERY_SET/dtb/$name" | cut -d' ' -f1)
+    SET_SUMS+=("$sum  dtb/$name")
+    FAT_SUMS+=("$sum  $name")
+done
+
+{
+    echo "# unitotem-recovery-level: $RECOVERY_LEVEL"
+    printf '%s\n' "${FAT_SUMS[@]}"
+} > "$FAT_DIR/recovery.sha256"
+{
+    echo "# unitotem-recovery-level: $RECOVERY_LEVEL"
+    printf '%s\n' "${SET_SUMS[@]}"
+} > "$RECOVERY_SET/manifest"
+chmod 644 "$RECOVERY_SET/manifest"
 
 # ---------- A/B on arm64: kernel, initramfs, dtbs and cmdline go in a per-slot directory ----------
 # `os_prefix=slota/` in config.txt makes the firmware read kernel, initramfs, dtbs, overlays and

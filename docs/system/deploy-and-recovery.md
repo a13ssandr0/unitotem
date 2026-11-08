@@ -43,7 +43,7 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
 Stage 1 (fallback installed; a power loss boots the fallback):
 
 - `restore-table` (skipped when DATA and table are kept); marks the point of no return.
-- `prepare-bootfs --fresh 1` (`--volid` from the image); `write-bootfile` for recovery kernel and initrd.
+- `prepare-bootfs --fresh 1` (`--volid` from the image); `write-bootfile` for recovery kernel, initrd and `recovery.sha256` (source: the parts set, see Rules).
 - `populate-bootfs --layout ab`, then `set-default-recovery --layout ab`.
 
 Stage 2 (system image):
@@ -162,7 +162,8 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 - Layout 2 installs leave ROOT_B formatted and empty.
 - Legacy BIOS (amd64): `restore-table` writes `bootcode.bin` into the MBR area, the `BIOS` partition (ef02) is restored raw. Proven in a SeaBIOS q35 VM: empty disk -> `recover` -> reboot -> slot A trial -> automatic confirm; fetch + apply of a newer release; trial rollback to the other slot; power cuts after arming, in the trial boot and during the write of the other slot; `repair`; `ota-recovery` entry with key, administrator password and open mode.
 - `make-parts.sh` input is the FULL image (`unitotem-*-<arch>.img.xz`: EFI, ROOT_A, ROOT_B, DATA, BIOS), never the flash image (its table lacks ROOT_B and DATA). `--out DIR` is honoured (the container writes below `/out`). Generation takes about 20 min on 20 cores, mostly the single-threaded `xz -d` of a 14 GiB sparse image (about 20 MB/s) and the xz compression of ROOT_A. The BIOS stream is the raw partition (1 MiB) as `xz` of `dd`: `partclone.dd -c` writes nothing and `partclone.restore` crashes on a raw stream; `restore-part` restores it with `dd of=PART conv=fsync`. `sfdisk --part-type` prints the GPT GUID `21686148-6449-6E6F-744E-656564454649`, not `ef02`.
-- `write-bootfile` copies the host's `deploy/<arch>/recovery-vmlinuz-<arch>` and `recovery-initrd-<arch>.img` onto the target ESP: they are the resident fallback of that device. Rebuild them with every release (`unitotem/stage1-recovery-initrd.sh`); an older initrd ships an older engine (an initrd from before open mode refused the empty password on a first-access device). `remote-deploy.sh recover` also runs the engine of the initrd it is connected to.
+- Resident fallback source of a deploy: `recovery_from_parts` takes the kernel, initrd and `recovery.sha256` from the boot tarball of the parts set (`UNITOTEM_PART_STREAM_FILE` of the EFI or FIRMWARE block; members `unitotem/recovery-vmlinuz`, `unitotem/recovery-initrd.img`, `unitotem/recovery.sha256` on amd64, `recovery8.img`, `recovery-initrd.img`, `recovery.sha256` on arm64, `./` prefix allowed). They are extracted to a temp dir before stage 1 touches the target. Kernel and initrd are checked against the tarball's `recovery.sha256`; a mismatch or unreadable tarball refuses the deploy with the target unchanged. `recovery.sha256` is sent to the target after the pair, so the target's boot partition carries the level of the set it was given.
+- The host copies `deploy/<arch>/recovery-*` are a fallback only: used when the tarball lacks a member (warning on stderr, level 0 until the next confirmed boot). `push_recovery_kernel` (arming a non-UniTotem target, before any parts set is used) still reads them. Rebuild them with every release (`unitotem/stage1-recovery-initrd.sh`); an older initrd ships an older engine (an initrd from before open mode refused the empty password on a first-access device). `remote-deploy.sh recover` also runs the engine of the initrd it is connected to.
 - `/boot/efi` is mounted read-only on the running system: remount it read-write before `grub-editenv ... next_entry=ota-recovery` and the like, and read-only again afterwards.
 - Measured in a SeaBIOS q35 KVM VM (4 vCPU, 4 GiB): `recover` of a 3.7 GB system about 3 min; the restarted VM reaches `/setup` about 1 min after the reboot.
 - `unitotem-update repair` on GRUB treats a slot as sound only with `vmlinuz` and `initrd.img` present (relative symlinks into `boot/`): the entries `slot-a`/`slot-b` load those paths.
@@ -179,5 +180,6 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 - `python3 tools/release/test_deploy_bios.py`: BIOS parts set through `load_parts`, the manifest loop and the `restore-part` dd branch (no partclone).
 - `tools/release/test_parts_bios.sh`: `make_parts` on a loop image with an ef02 partition (Docker, privileged): raw `dd` stream, sha256, byte identity.
 - `python3 tools/release/test_fallback_auth_slot.py`: the slot the fallback reads for its logins.
+- `python3 tools/release/test_deploy_recovery_source.py`: `recovery_from_parts` (tarball source, checksum refusal, host fallback, `./` members; 29 checks).
 - `unitotem/check-recovery-commands.sh ROOTFS INITRD ENGINE.sh`.
 - Loopback and QEMU harnesses: `testing.md`.
