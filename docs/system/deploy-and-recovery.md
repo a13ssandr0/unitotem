@@ -103,6 +103,8 @@ Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.authk
 
 ## Fallback authentication
 
+Entered on a failed boot (root checks, or the boot counter: three boots without a healthy manager, see [Boot counter](boot.md#boot-counter)), or on an update request.
+
 The fallback dropbear (port 2222) has no fixed password. `fallback_auth_setup` (`deploy/ota-engine.sh`) writes `/etc/passwd`, `/etc/shadow` and `/root/.ssh/authorized_keys` into the initramfs tmpfs before dropbear starts. Sources, in order:
 
 1. Armed public key:

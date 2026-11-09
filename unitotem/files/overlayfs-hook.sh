@@ -79,7 +79,7 @@ grow_data() {
 }
 # layout_complete: a minimal image carries only the boot partition(s) and ROOT_A. On the first boot create ROOT_B (same
 # size as stage3's slots) and DATA (rest of the disk) in the free space after ROOT_A. State is derived from the disk
-# on every boot, no flag file:
+# on every boot, no flag file. GPT disks:
 #   - neither ROOT_B nor DATA in the GPT, ROOT_A the last partition, >= 5 GiB + 256 MiB free after it:
 #       sgdisk -e (valid backup GPT at the disk end), zero the first MiB of both new areas (stale signatures of a
 #       reused card), then ONE sgdisk write adds both entries, each flagged "pending" (GPT attribute bit 48);
@@ -89,6 +89,10 @@ grow_data() {
 # A cut before the table write changes nothing; a cut after it leaves flagged partitions that the next boot formats
 # (only flagged partitions are ever formatted: a damaged filesystem is never reformatted). Never touches ROOT_A or the
 # boot partition. Any failure logs one line and returns 0.
+# DOS (MBR) disks: layout_mbr, the same steps with primaries only; the pending flag is the MBR type (da ROOT_B,
+# db DATA). Power cuts, per step: before the table write nothing changes; after it, the next boot finds the da/db
+# partitions and formats them, DATA first; a cut after mke2fs and before the type change leaves the still-flagged
+# fresh (empty) filesystem, which the next boot formats again; after the type change the partition is done.
 LAYOUT_SLOT_SECTORS=10485760        # ROOT_SLOT_SIZE 5G, as stage3
 LAYOUT_MIN_FREE=11010048            # slot + 256 MiB for DATA
 LAYOUT_LINUX_FS=8300
@@ -103,7 +107,12 @@ layout_complete() {
     lc_par=${lc_real%/*}
     lc_disk=${lc_par##*/}
     lc_ddev=/dev/$lc_disk
-    [ "$(blkid -p -s PTTYPE -o value "$lc_ddev" 2>/dev/null)" = gpt ] || return 0
+    lc_pt=$(blkid -p -s PTTYPE -o value "$lc_ddev" 2>/dev/null)
+    if [ "$lc_pt" = dos ]; then
+        layout_mbr "$lc_ddev" "$lc_sys" "$lc_par"
+        return 0
+    fi
+    [ "$lc_pt" = gpt ] || return 0
     lc_dump=$(sfdisk -d "$lc_ddev" 2>/dev/null) || return 0
 
     lc_hasb=no; lc_hasd=no
@@ -151,8 +160,81 @@ layout_complete() {
     [ -z "$lc_did" ] || log_success_msg "layout: created${lc_did}"
     return 0
 }
-# overlay_status STATE: writes the one-line overlay outcome to $OVERLAY_STATUS_FILE (ok, no-data, failed:<reason>)
-# and logs it with the "overlay:" prefix. The initramfs moves /run to the root; the record on DATA carries the same state.
+# layout_mbr DISK SYSDIR PARDIR: the DOS (MBR) variant of layout_complete, primaries only. Creation needs ROOT_A the
+# last partition, partitions 1..ROOT_A exactly, no extended partition and a free primary slot. ROOT_B (size of ROOT_A)
+# and DATA are written in one sfdisk --append when the space allows, else DATA alone (it becomes the next primary).
+# The table is never rewritten: --append keeps the disk label-id, --no-reread keeps the kernel away from a mounted root.
+LAYOUT_MBR_MIN_FREE=524288          # 256 MiB, sectors
+LAYOUT_MBR_MAX_SECTORS=4294967295   # MBR addresses 2 TiB
+layout_mbr() {
+    lc_ddev=$1; lc_sys=$2; lc_par=$3
+    lc_dump=$(sfdisk -d "$lc_ddev" 2>/dev/null) || return 0
+    if ! echo "$lc_dump" | grep -Eq 'type=(da|db)(,|$)'; then
+        lc_start=$(cat "$lc_sys/start"); lc_size=$(cat "$lc_sys/size"); lc_num=$(cat "$lc_sys/partition")
+        for lc_p in "$lc_par"/*/start; do
+            [ -r "$lc_p" ] || continue
+            [ "$(cat "$lc_p")" -gt "$lc_start" ] && return 0     # ROOT_A is not the last partition
+        done
+        for lc_p in "$lc_par"/*/partition; do
+            [ -r "$lc_p" ] || continue
+            [ "$(cat "$lc_p")" -le "$lc_num" ] || return 0       # a partition numbered after ROOT_A
+        done
+        echo "$lc_dump" | grep -Eq 'type=(5|f|85)(,|$)' && { log_warning_msg "layout: extended partition present, skipping"; return 0; }
+        lc_cnt=$(echo "$lc_dump" | grep -c '^/dev/')
+        [ "$lc_cnt" = "$lc_num" ] || return 0                    # partitions 1..ROOT_A must all exist
+        [ "$lc_num" -le 3 ] || { log_warning_msg "layout: no free primary partition, skipping"; return 0; }
+        lc_dsz=$(cat "/sys/block/${lc_ddev##*/}/size")
+        [ "$lc_dsz" -le "$LAYOUT_MBR_MAX_SECTORS" ] || { log_warning_msg "layout: disk over 2 TiB, MBR cannot address it, skipping"; return 0; }
+        lc_bs=$(( (lc_start + lc_size + 2047) / 2048 * 2048 ))   # 1 MiB aligned
+        lc_free=$((lc_dsz - lc_bs))
+        if [ "$lc_num" -le 2 ] && [ "$lc_free" -ge $((lc_size + LAYOUT_MBR_MIN_FREE)) ]; then
+            lc_ds=$(( (lc_bs + lc_size + 2047) / 2048 * 2048 ))
+            lc_new="start=${lc_bs}, size=${lc_size}, type=da
+start=${lc_ds}, size=$((lc_dsz - lc_ds)), type=db"
+            lc_areas="$lc_bs $lc_ds"; lc_want=2
+        elif [ "$lc_free" -ge "$LAYOUT_MBR_MIN_FREE" ]; then
+            lc_new="start=${lc_bs}, size=$((lc_dsz - lc_bs)), type=db"
+            lc_areas="$lc_bs"; lc_want=1
+        else
+            log_warning_msg "layout: not enough free space for DATA, skipping"; return 0
+        fi
+        for lc_z in $lc_areas; do
+            dd if=/dev/zero of="$lc_ddev" bs=512 seek="$lc_z" count=2048 conv=notrunc >/dev/null 2>&1 \
+                || { log_warning_msg "layout: cannot clear the new areas, skipping"; return 0; }
+        done
+        printf '%s\n' "$lc_new" | sfdisk --append --no-reread -q "$lc_ddev" >/dev/null 2>&1 \
+            || { log_warning_msg "layout: partition table write failed, skipping"; return 0; }
+        [ "$(sfdisk -d "$lc_ddev" 2>/dev/null | grep -c '^/dev/')" = $((lc_cnt + lc_want)) ] \
+            || { log_warning_msg "layout: partition table check failed after the write, skipping"; return 0; }
+        partx -a --nr $((lc_num + 1)) "$lc_ddev" >/dev/null 2>&1
+        [ "$lc_want" = 1 ] || partx -a --nr $((lc_num + 2)) "$lc_ddev" >/dev/null 2>&1
+        udevadm settle --timeout=2 2>/dev/null || true
+    fi
+
+    # Pending partitions (type db DATA, da ROOT_B), DATA first: format, then set the type to 83. Only these types
+    # are formatted; a cut between the two steps leaves the fresh filesystem flagged, the next boot formats it again.
+    lc_did=""
+    for lc_t in db da; do
+        lc_line=$(sfdisk -d "$lc_ddev" 2>/dev/null | grep -E "type=${lc_t}(,|\$)" | head -n 1)
+        [ -n "$lc_line" ] || continue
+        lc_dev=${lc_line%% :*}
+        lc_num=$(echo "$lc_dev" | sed 's/.*[^0-9]//')
+        if [ "$lc_t" = db ]; then lc_name=DATA; else lc_name=ROOT_B; fi
+        [ -b "$lc_dev" ] || { partx -a --nr "$lc_num" "$lc_ddev" >/dev/null 2>&1; udevadm settle --timeout=2 2>/dev/null || true; }
+        [ -b "$lc_dev" ] || { log_warning_msg "layout: kernel did not take $lc_name, skipping"; return 0; }
+        mke2fs -t ext4 -b 4096 -F -q -L "$lc_name" "$lc_dev" >/dev/null 2>&1 \
+            || { log_warning_msg "layout: mke2fs $lc_name failed"; return 0; }
+        sfdisk --part-type --no-reread --no-tell-kernel --wipe never --wipe-partitions never "$lc_ddev" "$lc_num" 83 >/dev/null 2>&1 \
+            || { log_warning_msg "layout: cannot set the type of $lc_name"; return 0; }
+        lc_did="$lc_did $lc_name"
+    done
+    [ -z "$lc_did" ] || log_success_msg "layout: created${lc_did}"
+    return 0
+}
+# overlay_status STATE: writes the one-line overlay outcome to $OVERLAY_STATUS_FILE and logs it with the "overlay:"
+# prefix. States: ok (overlays on DATA); volatile:no-data, volatile:data-mount (overlays on a tmpfs, no DATA);
+# failed:overlay-<dir>, failed:dpkg-pin (DATA overlays); failed:volatile (tmpfs overlays failed, root as is).
+# The initramfs moves /run to the root; the record on DATA carries the same state.
 OVERLAY_STATUS_FILE=${UNITOTEM_OVERLAY_STATUS:-/run/unitotem-overlay.status}
 overlay_status() {
     mkdir -p "${OVERLAY_STATUS_FILE%/*}" 2>/dev/null
@@ -161,6 +243,88 @@ overlay_status() {
         ok) log_success_msg "overlay: status ok" ;;
         *) log_warning_msg "overlay: status $1" ;;
     esac
+}
+# mount_overlays BASE: the overlays of etc, root and var on ROOT, with upper/ and work/ under BASE, and the dpkg
+# pin. Reads $slot_sfx and $rootmnt. Sets dpkg_pin (skip, stashed, yes, FAILED) and ov_fail (the first failure of
+# this call: overlay-<dir> or dpkg-pin, empty when none).
+mount_overlays() {
+    mo_base=$1
+    ov_fail=""
+    # /var/lib/dpkg must NOT follow the overlay: it inventories the files on ROOT and an OTA replaces the whole
+    # partition, so they must stay one consistent pair. It is bind-mounted to a stash first and bound back over the
+    # overlay afterwards; drift in the DATA upper is discarded, ROOT is authoritative.
+    DPKG_STASH="${mo_base}/.dpkg-lower"
+    dpkg_pin=skip
+    if [ -d "${rootmnt}/var/lib/dpkg" ]; then
+        mkdir -p "$DPKG_STASH"
+        mount --bind "${rootmnt}/var/lib/dpkg" "$DPKG_STASH" 2>/dev/null \
+            && dpkg_pin=stashed
+    fi
+
+    # The real util-linux mount/umount/losetup/mkfifo are force-copied in by ota-hook (the klibc stubs do not work); the
+    # overlay module is listed in conf/modules. --make-rshared/--make-shared below are required by the mount arrangement.
+    # /var is overlaid like /etc: with a read-only root, everything outside fstab's tmpfs allowlist would stay read-only
+    # (journald, logrotate, wtmp...). An overlay keeps the lower layer visible (dpkg database, /var/unitotem-venv); a
+    # tmpfs over /var/lib would hide it.
+    for d in etc root var; do
+        mkdir -p "${mo_base}/upper/${d}${slot_sfx}" \
+                 "${mo_base}/work/${d}${slot_sfx}"
+        mount --make-rshared "${rootmnt}" 2>/dev/null || true
+        mount -t overlay overlay \
+            -o lowerdir="${rootmnt}/${d}",upperdir="${mo_base}/upper/${d}${slot_sfx}",workdir="${mo_base}/work/${d}${slot_sfx}" \
+            "${rootmnt}/${d}" \
+            || { log_warning_msg "overlay: /${d} failed"; [ -n "$ov_fail" ] || ov_fail=overlay-$d; }
+        mount --make-shared "${rootmnt}/${d}" 2>/dev/null || true
+    done
+
+    # Now that /var carries the overlay, put ROOT's dpkg database back on top of
+    # it. The stash is unmounted straight after (the two binds share the same superblock), so no
+    # orphaned mount is left over switch_root (see the /boot-ota note in deploy/ota-engine.sh).
+    if [ "$dpkg_pin" = stashed ]; then
+        if mount --bind "$DPKG_STASH" "${rootmnt}/var/lib/dpkg" 2>/dev/null; then
+            dpkg_pin=yes
+        else
+            dpkg_pin=FAILED
+            [ -n "$ov_fail" ] || ov_fail=dpkg-pin
+            log_warning_msg "overlay: /var/lib/dpkg not pinned to ROOT"
+        fi
+        umount "$DPKG_STASH" 2>/dev/null || true
+        rmdir "$DPKG_STASH" 2>/dev/null || true
+    fi
+}
+
+# Tmpfs holding the volatile overlays. Overridable for tests; the initramfs uses /volatile.
+VOLATILE_DIR=${UNITOTEM_VOLATILE_DIR:-/volatile}
+# volatile_size: tmpfs size in MiB, MemTotal / 8 clamped to 32..128; 64 when /proc/meminfo is unreadable.
+volatile_size() {
+    vs_kb=$(sed -n 's/^MemTotal: *\([0-9][0-9]*\) kB$/\1/p' /proc/meminfo 2>/dev/null)
+    case "$vs_kb" in ''|*[!0-9]*) echo 64; return 0 ;; esac
+    vs_n=$((vs_kb / 8192))
+    [ "$vs_n" -ge 32 ] || vs_n=32
+    [ "$vs_n" -le 128 ] || vs_n=128
+    echo "$vs_n"
+}
+# volatile_overlays REASON: no usable DATA (REASON no-data, or data-mount). The overlays of etc, root and var use
+# a tmpfs as upper and work layer: ROOT is writable for this boot only, and no DATA record is written. The tmpfs
+# mount point is released once the overlays hold it; a failure leaves ROOT as is (failed:volatile).
+volatile_overlays() {
+    vo_reason=$1
+    vo_size=$(volatile_size)
+    mkdir -p "$VOLATILE_DIR" 2>/dev/null
+    if ! mount -t tmpfs -o "size=${vo_size}m,mode=0755" tmpfs "$VOLATILE_DIR"; then
+        overlay_status failed:volatile
+        return 0
+    fi
+    slot_sfx=""
+    mount_overlays "$VOLATILE_DIR"
+    umount "$VOLATILE_DIR" 2>/dev/null || true
+    rmdir "$VOLATILE_DIR" 2>/dev/null || true
+    if [ -n "$ov_fail" ]; then
+        overlay_status failed:volatile
+    else
+        overlay_status "volatile:${vo_reason}"
+    fi
+    return 0
 }
 # Sourced by tools/release/test_grow_data_inside.sh: only the function is wanted.
 [ -z "${UNITOTEM_SOURCE_ONLY:-}" ] || return 0 2>/dev/null || exit 0
@@ -184,7 +348,7 @@ while [ -z "$DATA_DEV" ] && [ "$tries" -lt 10 ]; do
     tries=$((tries + 1))
 done
 if [ -z "$DATA_DEV" ]; then
-    overlay_status no-data
+    volatile_overlays no-data
     exit 0
 fi
 
@@ -207,26 +371,8 @@ grow_data "$DATA_DEV" || true
 
 mkdir -p "${rootmnt}/mnt/data"
 if ! mount -t ext4 -o noatime,nodiratime "$DATA_DEV" "${rootmnt}/mnt/data"; then
-    overlay_status failed:data-mount
+    volatile_overlays data-mount
     exit 0
-fi
-
-# The overlay status is recorded after the mounts (.unitotem-overlay-status on DATA) so the early-boot state can be
-# read back after boot. Keep that marker.
-# The real util-linux mount/umount/losetup/mkfifo are force-copied in by ota-hook (the klibc stubs do not work); the
-# overlay module is listed in conf/modules. --make-rshared/--make-shared below are required by the mount arrangement.
-# /var is overlaid like /etc: with a read-only root, everything outside fstab's tmpfs allowlist would stay read-only
-# (journald, logrotate, wtmp...). An overlay keeps the lower layer visible (dpkg database, /var/unitotem-venv); a
-# tmpfs over /var/lib would hide it.
-# /var/lib/dpkg must NOT follow the overlay: it inventories the files on ROOT and an OTA replaces the whole partition,
-# so they must stay one consistent pair. It is bind-mounted to a stash first and bound back over the overlay
-# afterwards; drift in the DATA upper is discarded, ROOT is authoritative.
-DPKG_STASH="${rootmnt}/mnt/data/.dpkg-lower"
-dpkg_pin=skip
-if [ -d "${rootmnt}/var/lib/dpkg" ]; then
-    mkdir -p "$DPKG_STASH"
-    mount --bind "${rootmnt}/var/lib/dpkg" "$DPKG_STASH" 2>/dev/null \
-        && dpkg_pin=stashed
 fi
 
 # A/B layout: each ROOT slot keeps its own overlay state on DATA (upper/etc.a, upper/etc.b, ...),
@@ -237,33 +383,9 @@ for tok in $(cat /proc/cmdline); do
     case "$tok" in unitotem.slot=a|unitotem.slot=b) slot_sfx=".${tok#unitotem.slot=}" ;; esac
 done
 
-# ov_fail: the first failure of this boot (overlay-<dir> or dpkg-pin), empty when none.
-ov_fail=""
-for d in etc root var; do
-    mkdir -p "${rootmnt}/mnt/data/upper/${d}${slot_sfx}" \
-             "${rootmnt}/mnt/data/work/${d}${slot_sfx}"
-    mount --make-rshared "${rootmnt}" 2>/dev/null || true
-    mount -t overlay overlay \
-        -o lowerdir="${rootmnt}/${d}",upperdir="${rootmnt}/mnt/data/upper/${d}${slot_sfx}",workdir="${rootmnt}/mnt/data/work/${d}${slot_sfx}" \
-        "${rootmnt}/${d}" \
-        || { log_warning_msg "overlay: /${d} failed"; [ -n "$ov_fail" ] || ov_fail=overlay-$d; }
-    mount --make-shared "${rootmnt}/${d}" 2>/dev/null || true
-done
-
-# Now that /var carries the overlay, put ROOT's dpkg database back on top of
-# it. The stash is unmounted straight after (the two binds share the same superblock), so no
-# orphaned mount is left over switch_root (see the /boot-ota note in deploy/ota-engine.sh).
-if [ "$dpkg_pin" = stashed ]; then
-    if mount --bind "$DPKG_STASH" "${rootmnt}/var/lib/dpkg" 2>/dev/null; then
-        dpkg_pin=yes
-    else
-        dpkg_pin=FAILED
-        [ -n "$ov_fail" ] || ov_fail=dpkg-pin
-        log_warning_msg "overlay: /var/lib/dpkg not pinned to ROOT"
-    fi
-    umount "$DPKG_STASH" 2>/dev/null || true
-    rmdir "$DPKG_STASH" 2>/dev/null || true
-fi
+# The overlay status is recorded after the mounts (.unitotem-overlay-status on DATA) so the early-boot state can be
+# read back after boot. Keep that marker.
+mount_overlays "${rootmnt}/mnt/data"
 
 # Record the outcome on DATA (visible at /mnt/data/.unitotem-overlay-status after boot): what this
 # script observed in the initramfs, and a write probe proving each overlay is writable, not just

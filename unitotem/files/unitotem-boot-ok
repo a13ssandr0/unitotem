@@ -1,10 +1,11 @@
 #!/bin/bash
-# Runs once per boot, After=multi-user.target: reaching it means the whole system came up. Confirms the A/B slot.
+# Runs once per boot, After=multi-user.target: reaching it means the whole system came up. Health-gates the boot,
+# clears the boot counter and confirms the A/B slot.
 set -euo pipefail
 
-# A/B layout (unitotem.slot= on the cmdline): confirmation is gated on the manager answering its
-# health check, and a trial slot that does not come up healthy reboots into the previous slot.
+# Every boot: unitotem-update runs the health gate (a failing boot reboots while the boot counter is set, so
+# the initramfs fallback is reached without physical access) and, on A/B, confirms a trial slot.
 # Runs last and does not abort the unit: a failure here is recorded in unitotem-update's own state.
-if grep -q 'unitotem.slot=' /proc/cmdline && [ -x /usr/sbin/unitotem-update ]; then
+if [ -x /usr/sbin/unitotem-update ]; then
     /usr/sbin/unitotem-update --json boot-ok || true
 fi

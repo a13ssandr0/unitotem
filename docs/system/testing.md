@@ -11,6 +11,11 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_auto.py` | `unitotem-update` automatic policy |
 | `tools/release/test_boot_orientation.py` | `unitotem-boot-orientation`: Pi and GRUB backends |
 | `tools/release/test_boot_recovery.py` | Boot recovery set sync (`sync_boot_recovery`, `unitotem-update`): [Recovery set refresh](ab-updates.md#recovery-set-refresh) |
+| `tools/release/test_boot_guard.py` | `unitotem-update` boot health gate, boot counter, status fields, `slot_dev`: 42 checks |
+| `tools/release/test_bootcount.sh` | Initramfs boot counter gate and fallback credentials without DATA (`ota-engine.sh`): 55 checks |
+| `tools/release/test_first_boot_layout_dos.sh` | First-boot layout on DOS (MBR) disks (`layout_mbr`, power cuts, GPT unchanged), Docker `--privileged`: 46 checks |
+| `tools/release/test_overlay_status.sh` | Overlay hook under dash, mocked tools: 38 checks |
+| `tools/release/test_overlay_volatile.sh` | Volatile overlays without DATA (`volatile_overlays`), Docker `--privileged`: 47 checks |
 | `tools/release/test_deploy_backup.py` | `backup_stream` (`deploy/lib.sh`), `backup_running_system` (`deploy/remote-deploy.sh`) |
 | `tools/release/test_deploy_recovery_source.py` | `recovery_from_parts` (`deploy/remote-deploy.sh`): resident fallback source of a deploy, 29 checks |
 | `tools/release/test_identity_merge.py` | `unitotem_identity.py` account merge |
@@ -93,6 +98,7 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 |---|---|
 | Python tests | python3 stdlib; `test_rpi_backend.py`: mtools, `mkfs.fat`, `mke2fs`, `sgdisk`, `dd`, `truncate`; deploy/secure-boot tests: bash, awk |
 | Loopback, A/B, arm64, bootcount | docker, root-capable host, `debian:bookworm` |
+| Volatile overlays, DOS layout | docker, `--privileged`, local `debian:trixie` image (`--pull never`) |
 | Real SD card | docker, the card attached to the host |
 | Power cut | qemu-system-x86_64 with KVM, qemu-img, OVMF, sgdisk, sshpass, `deploy/lib.sh` |
 | Low-resolution OTA | qemu-system-x86_64, OVMF, mtools, sfdisk, xz |

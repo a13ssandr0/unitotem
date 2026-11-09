@@ -15,7 +15,7 @@ Immutable Debian root on two A/B slots (ROOT_A, ROOT_B). Mutable state lives on 
 | `tools/release/test_first_boot_layout.sh` | QEMU test of a built flash image (UEFI and BIOS) |
 | `unitotem/stage2-configure.sh` | fstab; A/B drops `LABEL=ROOT /` and `LABEL=BOOT`; installs overlay hook; cmdline `ro` |
 | `unitotem/files/fstab-arm64`, `fstab-amd64` | Boot FAT `ro,nofail`; tmpfs `/tmp`, `/run`, `/var/cache`, `/var/tmp` |
-| `unitotem/files/overlayfs-hook.sh` | initramfs init-bottom: `layout_complete`, DATA lookup, fsck, `grow_data`, mount, per-slot overlays, dpkg pin |
+| `unitotem/files/overlayfs-hook.sh` | initramfs init-bottom: `layout_complete` (GPT and DOS), DATA lookup, fsck, `grow_data`, mount, per-slot overlays, dpkg pin, volatile overlays without DATA |
 | `unitotem/files/ota-preserve.list` | `/etc` whitelist carried across an update |
 | `unitotem/files/unitotem_identity.py` | Local account merge (passwd, shadow, group, gshadow) |
 | `unitotem/files/unitotem-update` | `prepare_overlays`, whitelist import, identity merge, state files |
@@ -53,6 +53,14 @@ First boot of a flash image and of any image on a larger disk (initramfs init-bo
    - `partx -a --nr 3` and `--nr 4` tell the kernel about the two new partitions only; the mounted ROOT_A is not touched.
    - Every partition flagged pending is formatted (`mke2fs -t ext4 -L ROOT_B|DATA`, same defaults as stage3's `mkfs.ext4 -L`) and its flag cleared. ROOT_B is left as an empty labelled slot: `unitotem-update` `slot_sound` reports it `empty` and the auto-repair (`UPDATE_AUTOREPAIR=1`, started after the first confirmed boot) copies the running slot into it.
    - Crash safety: before the table write nothing changed; after it the pending flags are the state, and the next boot formats what is still flagged. Only flagged partitions are ever formatted, so a damaged filesystem is never reformatted. ROOT_A and the boot partition are never written.
+   - DOS (MBR) disks (`layout_mbr`, primaries only, same first-boot rule):
+     - Needs ROOT_A the last partition, partitions 1 to ROOT_A all present, no extended partition, ROOT_A in partition 1-3 and a disk of 2 TiB or less. ROOT_A in partition 4: one warning, no change. An extended partition: one warning, no change.
+     - ROOT_B (size of ROOT_A) and DATA (to the disk end) are added in one `sfdisk --append` write when ROOT_A is partition 1 or 2 and at least ROOT_A + 256 MiB is free. DATA alone, as the next primary, when ROOT_A is partition 1-3 and at least 256 MiB is free. Less free space: one warning, no change.
+     - Pending flags are the MBR types `da` (ROOT_B) and `db` (DATA). `--append` and `--no-reread` keep the disk label-id and the kernel away from the mounted root.
+     - Formatting: DATA first, then ROOT_B (`mke2fs -t ext4 -L <label>`), each followed by its type change to `83`.
+     - Power cuts: before the table write nothing changed. After it, the next boot finds `da`/`db` and formats them. A cut after `mke2fs` and before the type change leaves a flagged, empty filesystem that the next boot formats again. Known residual: if the type change fails after DATA was formatted and used, the next boot formats DATA again.
+     - Slot devices on MBR are found by filesystem label (`slot_dev` in `unitotem-update`: PARTLABEL first, then label).
+     - Still GPT-only: `grow_data` (logs one line and skips DOS), `tools/release/unitotem-release` (`sgdisk -i`), GRUB `part_gpt` in `grub-ab-entries` and `grub-ota-entry`. Full A/B on a DOS disk (Pi 3) also needs a one-shot trial without tryboot, a release build for MBR, and DATA growth on DOS.
 2. `grow_data` (DATA found, `e2fsck -p` done, not mounted): acts when the disk is GPT, DATA is ext4 and the last partition by start sector, and at least 64 MiB are free after it.
    - `sgdisk -e`; `sfdisk -N 4` (`--wipe never --wipe-partitions never`: sfdisk otherwise wipes the filesystem signature of the resized partition) rewrites only the DATA entry (type, GUID, name, attributes kept) in one table write; `sgdisk -v` must be clean; `partx -u --nr 4` updates the kernel size of DATA only.
    - Then, if the filesystem is at least 32 MiB smaller than the partition: (a) `e2fsck -fp`. Exit 0 or 1: go to (b). Exit >1 (a cut inside `resize2fs` can leave "Resize inode not valid": reproduced by SIGKILL between 0.085 and 0.105 s of the ~0.18 s offline `resize2fs` on a 400 GB disk, hit in 38 of 55 runs in that window; exit 4 "UNEXPECTED INCONSISTENCY", dumpe2fs state "clean with errors") while the filesystem is smaller than its partition (a growth is pending; never when it already fills the partition): ONE `e2fsck -fy` runs, logs "grow: repaired DATA after an interrupted resize", and must return <=1 (measured: exit 1, then `-fn` clean, second `-fy` exit 0, file checksums unchanged, `resize2fs` completes, 12 of 12 copies); then (b). Any other case: one warning, the boot continues with the filesystem unchanged. (b) Offline `resize2fs`. A cut after the table write is finished by the next boot (the filesystem is smaller than its partition).
@@ -79,17 +87,22 @@ unitotem/update/               unitotem-update state
 Boot:
 
 - Bootloader passes `root=LABEL=ROOT_A|ROOT_B`, `unitotem.slot=a|b`, `ro`.
-- init-premount (`ota-engine.sh init-premount`): validates the slot with a read-only fsck; on failure uses the other slot, else the OTA fallback. A/B images skip the boot counter.
+- init-premount (`ota-engine.sh init-premount`): validates the slot with a read-only fsck; on failure uses the other slot, else the OTA fallback. Then the boot counter gate, every layout ([Boot counter](boot.md#boot-counter)).
 - local-bottom (`local-bottom-verify`): `/sbin/init` must exist, else OTA fallback.
 - init-bottom (`overlayfs-hook.sh`):
   0. `layout_complete` (see Images above).
-  1. Find DATA by label (10 tries, `udevadm settle`). Not found: status `no-data`, boot continues without overlays (`/run/unitotem-overlay.status`, see `boot.md`).
+  1. Find DATA by label (10 tries, `udevadm settle`). Not found: volatile overlays (below), status in `/run/unitotem-overlay.status` (see `boot.md`).
   2. Add a journal if absent; `e2fsck -p` (exit 0/1 ok; others logged, never fatal).
-  3. `grow_data`; mount DATA `noatime,nodiratime` at `/mnt/data`.
+  3. `grow_data`; mount DATA `noatime,nodiratime` at `/mnt/data`. A failed mount: volatile overlays (below).
   4. Stash ROOT's `/var/lib/dpkg`.
   5. Overlay `etc`, `root`, `var`: lower `ROOT/<d>`, upper `DATA/upper/<d><sfx>`, work `DATA/work/<d><sfx>`.
   6. Rebind dpkg over the `/var` overlay; drop the stash.
-  7. Write `.unitotem-overlay-status`.
+  7. Write `.unitotem-overlay-status` on DATA (not in volatile mode).
+- Volatile overlays (`volatile_overlays`, no usable DATA: status `volatile:no-data` or `volatile:data-mount`):
+  - A tmpfs at `/volatile` is the upper and work layer of `etc`, `root` and `var`. Size MemTotal / 8, clamped to 32..128 MiB; 64 MiB when `/proc/meminfo` is unreadable. dpkg is pinned to ROOT as on DATA. The tmpfs mount point is released once the overlays hold it.
+  - Everything written in this boot is lost at reboot. No DATA record is written.
+  - The tmpfs or an overlay fails: `failed:volatile`, the boot continues.
+  - `unitotem-first-admin` reports the volatile state (see [Root and first access](image-runtime.md#root-and-first-access)).
 - systemd: `unitotem-ssh-hostkey`, `unitotem-persist-paths`, `unitotem-boot-ok`.
 
 Persist paths (`name -> target (mode group)`): `uploaded -> /var/lib/unitotem/uploaded` (755 root); `crontabs -> /var/spool/cron/crontabs` (1730 crontab); `browser -> /var/lib/unitotem/browser` (700 root); `home -> /home` (755 root, administrators' home directories; ROOT is read-only, so `/home` cannot live there). Absent DATA dir: created and seeded from the target. Owner and mode always set. Bound if not already a mountpoint.
@@ -120,11 +133,12 @@ State in `DATA/unitotem/update/`: `slots.json` (`{slot: {version, valid, prepare
 
 `unitotem-ota-changes`: `baseline --root DIR --out DIR` (build), `check [--json]` (device). Exit 0 clean, 1 not clean, 2 error. Verdicts `clean`, `packages-only`, `mixed`. JSON: `verdict`, `digest`, `packages{added,removed,changed}`, `files{unexplained,package_files_modified,unowned_added,unowned_removed,unowned_modified}`.
 
-`.unitotem-overlay-status` keys: `boot-marker`, `overlay-slot-suffix`, `overlay-status` (`ok|failed:<reason>`, see `boot.md`), `initramfs-{etc,root,var}` (`overlay-mounted|NOT-MOUNTED`), `initramfs-{etc,root,var}-writable` (`yes|no`), `initramfs-dpkg-pinned-to-root` (`skip|stashed|yes|FAILED`).
+`.unitotem-overlay-status` keys: `boot-marker`, `overlay-slot-suffix`, `overlay-status` (`ok|failed:<reason>`, see `boot.md`; not written in volatile mode), `initramfs-{etc,root,var}` (`overlay-mounted|NOT-MOUNTED`), `initramfs-{etc,root,var}-writable` (`yes|no`), `initramfs-dpkg-pinned-to-root` (`skip|stashed|yes|FAILED`).
 
 ## Rules and gotchas
 
 - Uppers are per slot; never delete the other slot's upper (rollback depends on it).
+- DOS first boot changes the table with `sfdisk --append` only: no rewrite, label-id kept.
 - An upper file shadows the image file at the same path: a whitelisted file overrides the new image's version.
 - `**` is not recursive (Python `glob` without `recursive`, bash without globstar).
 - Never whitelist structural files (fstab, units, initramfs-tools config, PAM).

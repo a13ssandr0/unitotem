@@ -1,11 +1,13 @@
 [Unit]
-Description=UniTotem OTA - confirm successful boot
+Description=UniTotem OTA - health gate and confirm successful boot
 After=multi-user.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/unitotem-boot-ok
 RemainAfterExit=yes
+# The health gate waits up to UPDATE_HEALTH_TIMEOUT (default 180 s), longer than the 90 s default start timeout.
+TimeoutStartSec=infinity
 
 [Install]
 WantedBy=multi-user.target
