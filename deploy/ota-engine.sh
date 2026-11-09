@@ -1709,11 +1709,64 @@ check_flag_file() {
     return 1
 }
 
-check_bootcount() {
-    local mnt=/boot-ota count
-    [ -f "$mnt/unitotem-ota.bootcount" ] || return 1
-    count=$(cat "$mnt/unitotem-ota.bootcount" 2>/dev/null || echo 0)
-    [ "${count:-0}" -ge 3 ]
+# Boot counter, every layout (A/B, single root, Raspberry without tryboot, amd64 UEFI and BIOS). The file
+# unitotem-ota.bootcount on the boot FAT holds "N\n" (N 0..9); anything else counts as 0. Each boot that reaches
+# bootcount_gate adds 1, and the userspace health gate writes 0 once the manager is healthy. At 3 or more the boot
+# is served by the OTA fallback instead of the root: the count is set to 2, so the first normal boot after the
+# recovery session counts 3, and a boot that fails again returns to recovery. The file is rewritten in place
+# (same size), so no FAT allocation changes on every boot.
+OTA_BOOTFS_MNT=${OTA_BOOTFS_MNT:-/boot-ota}
+BOOTCOUNT_RECOVERY=0
+
+# bootcount_read: prints the count (0 when the file is absent or not exactly "N\n").
+bootcount_read() {
+    local LC_ALL=C f="$OTA_BOOTFS_MNT/unitotem-ota.bootcount" raw=""
+    [ -f "$f" ] && read -r -N 3 raw < "$f" || true
+    case "$raw" in
+        [0-9]$'\n') printf '%s\n' "${raw%?}" ;;
+        *) printf '0\n' ;;
+    esac
+}
+
+# bootcount_write N: stores N (0..9). Remount rw, one write, sync, remount ro; never retried. Returns 1 when the
+# boot FAT is not mounted or not writable.
+bootcount_write() {
+    local LC_ALL=C n="$1" f="$OTA_BOOTFS_MNT/unitotem-ota.bootcount" raw="" rc=0
+    case "$n" in [0-9]) ;; *) return 1 ;; esac
+    mountpoint -q "$OTA_BOOTFS_MNT" 2>/dev/null || return 1
+    mount -o remount,rw "$OTA_BOOTFS_MNT" 2>/dev/null || return 1
+    # Two bytes exactly: rewritten in place. Absent or any other size: created anew (once).
+    if [ -f "$f" ]; then read -r -N 3 raw < "$f" || true; fi
+    if [ "${#raw}" = 2 ]; then
+        printf '%s\n' "$n" | dd of="$f" conv=notrunc bs=2 count=1 2>/dev/null || rc=1
+    else
+        printf '%s\n' "$n" > "$f" 2>/dev/null || rc=1
+    fi
+    sync
+    mount -o remount,ro "$OTA_BOOTFS_MNT" 2>/dev/null || true
+    return "$rc"
+}
+
+# bootcount_gate: the counter decision for this boot. Sets BOOTCOUNT_RECOVERY=1 when the OTA fallback was entered
+# (serve-fallback blocks; it returns only in tests). The legacy trial token unitotem.ota.bootcount on the command
+# line starts the count fresh. Never aborts the boot on a write failure.
+bootcount_gate() {
+    local n
+    BOOTCOUNT_RECOVERY=0
+    if cmdline_get unitotem.ota.bootcount >/dev/null 2>&1; then
+        n=0
+    else
+        n=$(bootcount_read)
+    fi
+    if [ "$n" -ge 3 ]; then
+        bootcount_write 2 || warn "cannot update the boot counter before recovery (non-fatal)"
+        sync
+        BOOTCOUNT_RECOVERY=1
+        cmd_serve_fallback --reason "three consecutive boots without a healthy manager" --kind recovery --idle-timeout 21600
+        return 0
+    fi
+    bootcount_write $((n + 1)) || warn "cannot update the boot counter (non-fatal)"
+    return 0
 }
 
 # Self-healing boot, initramfs half. The slot GRUB/the Pi firmware chose has a root that is missing or fails the read-only
@@ -1804,42 +1857,18 @@ cmd_init_premount() {
         return
     fi
 
-    mkdir -p /boot-ota
-    # set-trial-boot seeds the new kernel's cmdline with unitotem.ota.bootcount=1: a trial boot starts counting fresh
-    # instead of being judged against a count accumulated by an unrelated earlier failure streak.
-    local trial_reset=""
-    cmdline_get unitotem.ota.bootcount >/dev/null 2>&1 && trial_reset=1
-    # A/B images (unitotem.slot= on the command line) do not use the boot counter. Their safety net is the one-shot
-    # trial plus the health gate, which need no FAT write; the counter cannot tell a broken system from a brown-out,
-    # and every boot would also write the FAT that holds the bootloader.
-    if cmdline_get unitotem.slot >/dev/null 2>&1; then
-        umount /boot-ota 2>/dev/null || true
+    mkdir -p "$OTA_BOOTFS_MNT"
+    # Boot counter (every layout). /boot-ota is still mounted read-only by check_flag_file and is reused: a second
+    # mount of the same device would get the existing read-only superblock. Three failed boots enter the fallback
+    # from the gate; it blocks in serve-fallback with the boot FAT still mounted (its boot keys are read from there).
+    bootcount_gate
+    if [ "$BOOTCOUNT_RECOVERY" = 1 ]; then
         return 0
-    fi
-    if [ -z "$trial_reset" ] && check_bootcount; then
-        cmd_serve_fallback --reason "three consecutive boots without confirmation (unitotem-boot-ok)" --kind recovery --idle-timeout 21600
-        return
-    fi
-
-    # All checks passed: let mountroot proceed, incrementing the boot counter (unitotem-boot-ok.service clears it); this
-    # is the only layer that catches "boots fine, then userspace dies". Best-effort: a write failure must not abort
-    # a healthy boot. /boot-ota is still mounted read-only by check_flag_file and is reused: a second mount of the
-    # same device would get the existing read-only superblock.
-    if mountpoint -q /boot-ota; then
-        if mount -o remount,rw /boot-ota 2>/dev/null; then
-            local n=0
-            [ -n "$trial_reset" ] || n=$(cat /boot-ota/unitotem-ota.bootcount 2>/dev/null || echo 0)
-            { echo $((n + 1)) > /boot-ota/unitotem-ota.bootcount && sync; } \
-                || warn "cannot update the boot counter (non-fatal)"
-            mount -o remount,ro /boot-ota 2>/dev/null || true
-        else
-            warn "cannot remount /boot-ota read-write for the boot counter (non-fatal)"
-        fi
     fi
     # /boot-ota must never be left mounted across switch_root: it is a block-device mount inside the initramfs tmpfs,
     # which switch_root does not move or clean up. Left mounted, the system's boot-firmware.mount fails with EBUSY on
     # every boot (the device stays referenced by the orphaned mount) and boot ends in emergency mode.
-    umount /boot-ota 2>/dev/null || true
+    umount "$OTA_BOOTFS_MNT" 2>/dev/null || true
     return 0
 }
 

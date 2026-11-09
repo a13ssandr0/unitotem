@@ -27,6 +27,7 @@ cat > "$T/bin/mount" <<'EOF'
 echo "mount $*" >> "$MOCK_LOG"
 case "$*" in
     *"-t ext4"*) [ "${MOCK_FAIL:-}" = data ] && exit 1 ;;
+    *"-t tmpfs"*) [ "${MOCK_FAIL:-}" = tmpfs ] && exit 1 ;;
     *"lowerdir=$MOCK_ROOT/etc,"*) [ "${MOCK_FAIL:-}" = etc ] && exit 1 ;;
     *" $MOCK_ROOT/var/lib/dpkg") [ "${MOCK_FAIL:-}" = dpkg ] && exit 1 ;;
 esac
@@ -40,6 +41,11 @@ EOF
 for t in udevadm sleep e2fsck tune2fs; do
     printf '#!/bin/sh\nexit 0\n' > "$T/bin/$t"
 done
+cat > "$T/bin/umount" <<'EOF'
+#!/bin/sh
+echo "umount $*" >> "$MOCK_LOG"
+exit 0
+EOF
 chmod +x "$T/bin/"*
 
 # The hook reads its helpers from /scripts/functions (initramfs): a copy points that at a mock.
@@ -58,7 +64,7 @@ run_case() {
     C="$T/$1"
     mkdir -p "$C/root/etc" "$C/root/var/lib/dpkg" "$C/root/root" "$C/root/var" "$C/root/mnt/data" "$C/run"
     env PATH="$T/bin:$PATH" MOCK_LOG="$C/log" MOCK_ROOT="$C/root" MOCK_DATA="$2" MOCK_FAIL="$3" \
-        UNITOTEM_OVERLAY_STATUS="$C/run/unitotem-overlay.status" rootmnt="$C/root" \
+        UNITOTEM_OVERLAY_STATUS="$C/run/unitotem-overlay.status" UNITOTEM_VOLATILE_DIR="$C/volatile" rootmnt="$C/root" \
         dash "$T/hook.sh" > "$C/stdout" 2>&1
     RC=$?
 }
@@ -76,18 +82,48 @@ logged "^I: overlay: status ok$" && ok "ok: log line with overlay: prefix" || ba
 grep -qx "overlay-status=ok" "$C/root/mnt/data/.unitotem-overlay-status" \
     && ok "ok: DATA record carries overlay-status=ok" || bad "ok: DATA record without overlay-status=ok"
 
-# 2. No DATA partition: boot continues with no overlays, status no-data.
+# volatile_checks NAME: the no-DATA and data-mount cases share the volatile path: tmpfs of 32..128 MiB, overlays of
+# etc, root and var on it, no DATA record, the tmpfs released, one status line.
+volatile_checks() {
+    vsz=$(sed -n 's/^mount -t tmpfs -o size=\([0-9][0-9]*\)m,.*/\1/p' "$C/log" | head -n 1)
+    [ -n "$vsz" ] && [ "$vsz" -ge 32 ] && [ "$vsz" -le 128 ] \
+        && ok "$1: tmpfs size ${vsz} MiB (32..128)" || bad "$1: tmpfs size '$vsz' not in 32..128"
+    grep -q "^mount -t tmpfs -o size=[0-9]*m,mode=0755 tmpfs $C/volatile\$" "$C/log" \
+        && ok "$1: tmpfs mounted on the volatile dir" || bad "$1: no tmpfs mount on the volatile dir"
+    for d in etc root var; do
+        grep -q "lowerdir=$C/root/$d,upperdir=$C/volatile/upper/$d,workdir=$C/volatile/work/$d $C/root/$d\$" "$C/log" \
+            && ok "$1: overlay of /$d on the tmpfs" || bad "$1: no overlay of /$d on the tmpfs"
+    done
+    grep -q "^umount $C/volatile\$" "$C/log" && ok "$1: volatile dir released" || bad "$1: volatile dir not released"
+    ! grep -q "$C/root/mnt/data/\(upper\|work\|\.dpkg-lower\)" "$C/log" && ! [ -e "$C/root/mnt/data/.unitotem-overlay-status" ] \
+        && ok "$1: no DATA record, no DATA overlay" || bad "$1: DATA touched"
+    one_line && ok "$1: status file has one line" || bad "$1: status file is not one line"
+}
+
+# 2. No DATA partition: volatile overlays (tmpfs), status volatile:no-data.
 run_case nodata "" none
 [ "$RC" -eq 0 ] && ok "no-data: exit 0" || bad "no-data: exit $RC"
-status_is no-data && ok "no-data: status file is no-data" || bad "no-data: status file is '$(cat "$C/run/unitotem-overlay.status" 2>/dev/null)'"
-logged "^W: overlay: status no-data$" && ok "no-data: log line with overlay: prefix" || bad "no-data: no log line"
-! logged "lowerdir=" && ok "no-data: no overlay mounted" || bad "no-data: overlay mount attempted"
+status_is volatile:no-data && ok "no-data: status file is volatile:no-data" || bad "no-data: status file is '$(cat "$C/run/unitotem-overlay.status" 2>/dev/null)'"
+logged "^W: overlay: status volatile:no-data$" && ok "no-data: log line with overlay: prefix" || bad "no-data: no log line"
+volatile_checks no-data
 
-# 3. DATA found but not mountable: status failed:data-mount, no overlays.
+# 3. DATA found but not mountable: volatile overlays, status volatile:data-mount.
 run_case datafail /dev/mockdata data
 [ "$RC" -eq 0 ] && ok "data-mount: exit 0" || bad "data-mount: exit $RC"
-status_is failed:data-mount && ok "data-mount: status file is failed:data-mount" || bad "data-mount: status file is '$(cat "$C/run/unitotem-overlay.status" 2>/dev/null)'"
-one_line && ok "data-mount: status file has one line" || bad "data-mount: status file is not one line"
+status_is volatile:data-mount && ok "data-mount: status file is volatile:data-mount" || bad "data-mount: status file is '$(cat "$C/run/unitotem-overlay.status" 2>/dev/null)'"
+logged "^W: overlay: status volatile:data-mount$" && ok "data-mount: log line with overlay: prefix" || bad "data-mount: no log line"
+volatile_checks data-mount
+
+# 3b. No DATA and the tmpfs cannot be mounted: failed:volatile, no overlay, exit 0.
+run_case tmpfsfail "" tmpfs
+[ "$RC" -eq 0 ] && ok "tmpfs-fail: exit 0" || bad "tmpfs-fail: exit $RC"
+status_is failed:volatile && ok "tmpfs-fail: status file is failed:volatile" || bad "tmpfs-fail: status file is '$(cat "$C/run/unitotem-overlay.status" 2>/dev/null)'"
+! logged "lowerdir=" && ok "tmpfs-fail: no overlay attempted" || bad "tmpfs-fail: overlay mount attempted"
+
+# 3c. No DATA and one volatile overlay fails: failed:volatile, the tmpfs is still released.
+run_case volfail "" etc
+status_is failed:volatile && ok "volatile-overlay-fail: status file is failed:volatile" || bad "volatile-overlay-fail: status file is '$(cat "$C/run/unitotem-overlay.status" 2>/dev/null)'"
+grep -q "^umount $C/volatile\$" "$C/log" && ok "volatile-overlay-fail: volatile dir released" || bad "volatile-overlay-fail: volatile dir not released"
 
 # 4. One overlay fails: status names it, the other overlays are still mounted.
 run_case etcfail /dev/mockdata etc

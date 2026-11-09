@@ -57,15 +57,16 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
    - `unitotem-ota.request` on FIRMWARE (Pi) or EFI (PC): read, deleted, serve-fallback (update, idle 1800 s).
    - Root from `root=LABEL=` found by blkid (5 retries), checked by `check_root_readonly` (`e2fsck -fn`, `-fp` only if it fails).
    - Check fails or root missing: `ab_failover` (A/B), else serve-fallback (recovery, idle 21600 s).
-   - Single-root only: `unitotem-ota.bootcount` incremented; 3 or more gives recovery.
+   - Boot counter (every layout, see [Boot counter](#boot-counter)): `unitotem-ota.bootcount` incremented once the root checks pass; 3 or more gives the OTA fallback.
 2. `ab_failover`: the other slot must pass `e2fsck -fn` and contain `/etc/unitotem/ota-preserve.list`. Writes guard `unitotem-ota.failover` (`cur->other`), switches the default (Pi: `os_prefix`, removes `tryboot.txt`; PC: `saved_entry`), `reboot -f`. Refused when the guard exists.
 3. mountroot, then local-bottom verify: `/sbin/init` and `/etc/unitotem/ota-preserve.list` must exist, else serve-fallback.
 4. init-bottom: `layout_complete` (flash image: ROOT_B and DATA created), DATA `e2fsck -p`, `grow_data` (DATA grown to the disk end), overlays on `/etc`, `/root`, `/var`, dpkg pinned to ROOT. Details: `storage-and-persistence.md`.
-   - Overlay outcome: `/run/unitotem-overlay.status` (initramfs, one line): `ok`, `no-data` (no DATA: boot with no overlays, intended on an 8 GB card), `failed:data-mount`, `failed:overlay-etc|overlay-root|overlay-var`, `failed:dpkg-pin`. Log lines carry the prefix `overlay: status <state>`. The same state is the `overlay-status=` key of `/mnt/data/.unitotem-overlay-status`.
+   - Overlay outcome: `/run/unitotem-overlay.status` (initramfs, one line): `ok`; `volatile:no-data` (no DATA partition) or `volatile:data-mount` (DATA present, mount failed): `/etc`, `/root`, `/var` overlay a tmpfs, state lost at reboot, no DATA record written (see [Volatile overlays](storage-and-persistence.md#how-it-works)); `failed:overlay-etc|overlay-root|overlay-var`, `failed:dpkg-pin`, `failed:volatile` (the tmpfs or one of its overlays failed). Log lines carry the prefix `overlay: status <state>`. The DATA record is the `overlay-status=` key of `/mnt/data/.unitotem-overlay-status`, written only when DATA is used. An 8 GB card has no DATA: it runs volatile by design.
    - Not verified on hardware: fstab mounts a tmpfs on `/run` after switch_root (`fstab-amd64`, `fstab-arm64`), which may hide the initramfs file. Consumers must not rely on `/run/unitotem-overlay.status` after boot until checked; the DATA record is the post-boot source.
-5. multi-user: `unitotem-boot-ok`.
+5. multi-user: `unitotem-boot-ok` (every boot, `TimeoutStartSec=infinity`).
+   - Health gate first, on every boot except the trial of the pending slot: waits up to `UPDATE_HEALTH_TIMEOUT` (180 s) for `UPDATE_HEALTH_URL`. Healthy: boot counter cleared. Unhealthy with a counter of 1 or more, not `unitotem.maintenance=1`: reboot. Unhealthy with counter 0 or no counter file: no reboot, exit 2.
    - Plain A/B boot: slot confirmed, guard removed, ESP `grub.cfg` synced, auto-repair started.
-   - Trial boot: waits for `UPDATE_HEALTH_URL` (180 s), then `confirm_now`. Timeout: `rolled-back`, plain reboot.
+   - Trial boot: waits for `UPDATE_HEALTH_URL` (180 s), then `confirm_now` and the counter is cleared. Timeout: `rolled-back`, plain reboot.
    - Slot mismatch: `rolled-back`, `pending.json` removed.
 
 ### OTA fallback entry
@@ -137,6 +138,18 @@ Readers: GRUB reads the recovery kernel and initrd only for the `ota-recovery` e
 - Activation: `ota-engine populate-bootfs --secure-boot shim` copies signed GRUB, MokManager and `grub.cfg` into `EFI/BOOT` (and `EFI/debian/grub.cfg`), renames shim over `BOOTX64.EFI` last, writes `EFI/unitotem-sb/active`, prints `UNITOTEM_SECURE_BOOT=shim`.
 - The choice `shim|noshim|abort` is made in `deploy/remote-deploy.sh` (`secure_boot_gate`).
 
+## Boot counter
+
+File `unitotem-ota.bootcount` on the boot FAT (FIRMWARE on Pi, EFI on amd64), content `N\n`, N 0-9; any other content counts as 0. Rewritten in place (2 bytes, no allocation change). Every layout, Pi 3 included: no tryboot, GRUB or `config.txt` is involved.
+
+- Initramfs gate (`bootcount_gate` in `ota-engine.sh`, `init-premount`, after the root checks): adds 1 per boot. At 3 or more it writes 2 and enters `serve-fallback --kind recovery --idle-timeout 21600` with reason `three consecutive boots without a healthy manager`. The legacy cmdline token `unitotem.ota.bootcount=N` starts the count from 0 on that boot.
+- Health gate (`unitotem-boot-ok`, step 5 above): a healthy boot clears the counter.
+- Recovery session: the fallback reboots after 6 h without a login. The count is set to 2 on entry, so exactly one normal attempt follows: if it fails, the count reaches 3 and the fallback returns.
+- Login in the fallback: see [Fallback authentication](deploy-and-recovery.md#fallback-authentication).
+- Power cut during the counter write: the file holds the old value, the new value or garbage. Garbage counts as 0, so recovery is delayed by at most three boots.
+- Power cut during a boot counts as an unhealthy boot: three consecutive cuts before a healthy manager start the fallback.
+- Not measured on hardware: `/run` (tmpfs after switch_root) may hide the overlay status file; the in-place write on a real vfat; `dd` in the initramfs.
+
 ## Interfaces
 
 `unitotem-update` boot commands: `status`, `apply [--reboot] [--stage]`, `confirm`, `boot-ok`, `rollback [--reboot]`, `reboot`, `repair`, `cancel`. Exit and error codes: `ab-updates.md`.
@@ -147,7 +160,7 @@ Readers: GRUB reads the recovery kernel and initrd only for the `ota-recovery` e
 
 Kernel command line: `root=LABEL=ROOT_A|ROOT_B` (A/B) or `ROOT`, `rootfstype=ext4 rootwait ro`, `unitotem.slot=a|b`, `unitotem.ota=1|recover`, `video=...`, `plymouth.ignore-serial-consoles`.
 
-Boot-partition files: `unitotem-ota.request` (`UNITOTEM_OTA_WIPE_DATA=0|1`, self-clearing), `unitotem-ota.authorized_keys` (one `ssh-ed25519` line, fallback login key written by `unitotem-ota-arm --authkey-file`; kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, whitelisted `UNITOTEM_*`/`OTA_*`), `unitotem-ota.failover` (guard), `tryboot.txt`, `cmdline.txt`, `config.txt`, `slota/`, `slotb/`, recovery set (`recovery-vmlinuz`/`recovery8.img`, `recovery-initrd.img`, `recovery.sha256`, Pi `*.dtb`; see [Recovery set](#recovery-set)). `grubenv` is a 1024-byte block written by `grubenv_write`. ESP `esp-grub.cfg` carries `# unitotem-grub-level: N`.
+Boot-partition files: `unitotem-ota.request` (`UNITOTEM_OTA_WIPE_DATA=0|1`, self-clearing), `unitotem-ota.authorized_keys` (one `ssh-ed25519` line, fallback login key written by `unitotem-ota-arm --authkey-file`; kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, whitelisted `UNITOTEM_*`/`OTA_*`), `unitotem-ota.failover` (guard), `unitotem-ota.bootcount` (`N\n`, see [Boot counter](#boot-counter)), `tryboot.txt`, `cmdline.txt`, `config.txt`, `slota/`, `slotb/`, recovery set (`recovery-vmlinuz`/`recovery8.img`, `recovery-initrd.img`, `recovery.sha256`, Pi `*.dtb`; see [Recovery set](#recovery-set)). `grubenv` is a 1024-byte block written by `grubenv_write`. ESP `esp-grub.cfg` carries `# unitotem-grub-level: N`.
 
 Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point-of-no-return`; dropbear on 2222.
 
@@ -160,7 +173,7 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 - Pi tryboot needs the `0 tryboot` reboot argument; a staged Pi update starts only with `unitotem-update reboot`.
 - Pi dtb and overlays are copied into `slota/`, not moved: the fallback `config.txt` loads `bcm2711-rpi-4-b.dtb` from the top level.
 - Pi console `ttyS0` (mini-UART) with `enable_uart=1`: Raspberry Pi DTBs alias `serial0=&uart1`. Never `serial0` (PL011, Bluetooth pins).
-- A/B images do not use the boot counter; safety net is one-shot trial plus health gate.
+- Boot counter and health gate run on every layout; on A/B the one-shot trial also guards a new slot.
 - `/boot-ota` must be unmounted before `switch_root`, else `boot-firmware.mount` fails with EBUSY.
 - After the partition table is written `fail()` never reboots: it enters serve-fallback.
 - Initramfs carries: `bcm2835_wdt`, `nls_ascii`, `brcmfmac` plus the vendor modules `brcmfmac_cyw|wcc|bca` when present (from kernel 6.18 brcmfmac is split by chip vendor; the Pi 3B+/4/400/5 chip needs `cyw`, else no `wlan0`), systemd `reboot` (BusyBox cannot pass `0 tryboot`), real `dd`, `mke2fs`, `mount`, `umount`, `losetup`, `mkfifo` (`ota-hook`, `check-recovery-commands.sh`).
@@ -181,6 +194,7 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 
 - `python3 tools/release/test_boot_orientation.py`, `test_rpi_backend.py`, `test_repair.py`, `test_secure_boot_gate.py`, `test_boot_recovery.py`.
 - `dash tools/release/test_overlay_status.sh`: overlay hook under dash with mocked mount, blkid, e2fsck (status states, log prefix, one-line file).
+- `python3 tools/release/test_boot_guard.py`, `bash tools/release/test_bootcount.sh`: boot health gate and boot counter (fixtures in tmp, no device).
 - `bash unitotem/check-recovery-commands.sh ROOTFS INITRD deploy/ota-engine.sh`.
 - `unitotem/verify-image.sh`: GRUB entries, fallback numbering, Secure Boot staging, Pi slot dirs, initramfs contents.
 - Firmware behaviour (`os_prefix`, tryboot) is verified on hardware only.

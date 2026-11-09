@@ -33,6 +33,7 @@ CONF_DEFAULTS = {
     "UPDATE_ETC_CURRENT": "/etc",                 # the running system's /etc (source of the local accounts to carry over)
     "UPDATE_CMDLINE": "/proc/cmdline",
     "UPDATE_RUN_DIR": "/run",
+    "UPDATE_OVERLAY_STATUS": "/run/unitotem-overlay.status",  # one line written by the initramfs overlay hook
     "UPDATE_SYS_DIR": "/sys",                     # sysfs and procfs roots: where the I/O settings of an image write are applied
     "UPDATE_VM_DIR": "/proc/sys/vm",
     "UPDATE_HEALTH_URL": "https://localhost/health",   # empty = no health gate
@@ -205,6 +206,16 @@ def other_slot(s):
 
 def label(slot):
     return "ROOT_" + slot.upper()
+
+
+def slot_dev(slot):
+    """Block device of slot A or B, or "". GPT partition name first; MBR disks have no partition names, so the
+    filesystem label (the one root=LABEL= uses) is the fallback. A slot that lost power mid-write has a neutral
+    label: it is found by its GPT name only, so on MBR such a slot is not found."""
+    dev = run_out("blkid", "-t", f"PARTLABEL={label(slot)}", "-o", "device", check=False).splitlines()
+    if dev:
+        return dev[0]
+    return run_out("blkid", "-L", label(slot), check=False)
 
 
 def run_out(*cmd, check=True):
@@ -568,13 +579,26 @@ def import_whitelist(conf, new_slot, old_slot, plist):
 # ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
+def overlay_status(conf):
+    """First line of the initramfs overlay status, or None."""
+    try:
+        with open(conf["UPDATE_OVERLAY_STATUS"]) as f:
+            line = f.readline().strip()
+    except OSError:
+        return None
+    return line or None
+
+
 def cmd_status(a, conf):
     cur = cur_slot(conf)
+    ov = overlay_status(conf)
     out = {"layout": 2 if cur else 1, "ab": bool(cur), "current_version": current_version(conf),
            "slot": cur, "other_slot": other_slot(cur) if cur else None, "trial": False,
            "pending_confirm": False, "rollback_available": False, "op": None,
            "last_result": read_state(conf, "last-result.json"), "base_url": conf["UPDATE_BASE_URL"],
-           "boot_recovery": read_state(conf, "recovery-sync.json")}
+           "boot_recovery": read_state(conf, "recovery-sync.json"),
+           "overlay": ov, "volatile": bool(ov and ov.startswith("volatile:")),
+           "boot_attempts": bootcount_read(conf) if bootcount_path(conf) else None}
     pid = op_running(conf)
     if pid:
         out["op"] = {"pid": pid, "progress": read_progress(conf)}
@@ -693,10 +717,7 @@ def do_fetch(a, conf):
             part = next((p for p in m["parts"] if p.get("role") == "root"), None)
             if not part:
                 raise Fail("no-root-part", "the manifest has no part with role=root")
-            # By GPT partition name, not filesystem label: a slot that lost power mid-write has a neutral or
-            # stale label, and must still be findable to be rewritten.
-            dev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
-            dev = dev[0] if dev else run_out("blkid", "-L", label(new), check=False)
+            dev = slot_dev(new)
             if not dev:
                 raise Fail("no-slot-device", f"partition {label(new)} not found")
             if subprocess.run(["findmnt", "-S", dev], capture_output=True).returncode == 0:
@@ -801,8 +822,7 @@ def slot_check(conf, new, st):
     # Do not trust the flag alone: an interruption can leave it set over data that is not what it says. A
     # read-only fsck and the label are cheap next to booting a half-written slot, and a failure here just
     # means "fetch again" - the operation is repeated, never assumed done.
-    dev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
-    dev = dev[0] if dev else ""
+    dev = slot_dev(new)
     if (not dev or run_out("blkid", "-s", "LABEL", "-o", "value", dev, check=False) != label(new)
             or subprocess.run(["e2fsck", "-fn", dev], capture_output=True).returncode != 0):
         st[new] = {"version": None, "valid": False}
@@ -889,14 +909,101 @@ def health_ok(conf):
         return False
 
 
+BOOTCOUNT = "unitotem-ota.bootcount"     # boot FAT, "N\n": boots since the last healthy one (written by the initramfs)
+
+
+def bootcount_path(conf):
+    for d in (conf["UPDATE_BOOTFS"], conf["UPDATE_ESP_MOUNT"]):
+        p = os.path.join(d, BOOTCOUNT)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def bootcount_read(conf):
+    """The boot counter as an int; no file, unreadable or not a digit 0-9 counts as 0."""
+    p = bootcount_path(conf)
+    if not p:
+        return 0
+    try:
+        with open(p) as f:
+            s = f.read().strip()
+    except OSError:
+        return 0
+    return int(s) if re.fullmatch(r"[0-9]", s) else 0
+
+
+def bootcount_clear(conf):
+    """Reset the counter after a healthy boot. Overwritten in place (same inode, same size); a counter already
+    at 0 is not written at all. Never raises: a failure is only recorded in the event log."""
+    p = bootcount_path(conf)
+    if not p:
+        return
+    try:
+        with open(p) as f:
+            raw = f.read().strip()
+        if raw == "0":
+            return
+        with bootfs_rw(os.path.dirname(p)):
+            with open(p, "r+b") as f:
+                f.write(b"0\n"); f.truncate(2)
+                f.flush(); os.fsync(f.fileno())
+        event(conf, f"boot counter cleared (was {raw!r})")
+    except (OSError, Fail) as e:
+        event(conf, f"boot counter clear failed: {e}")
+
+
+def maintenance_on(conf):
+    """unitotem.maintenance=1 on the kernel command line: the SSH-only maintenance boot (unitotem-maintenance-mode.service)."""
+    try:
+        with open(conf["UPDATE_CMDLINE"]) as f:
+            return "unitotem.maintenance=1" in f.read().split()
+    except OSError:
+        return False
+
+
+def wait_healthy(conf):
+    """Poll the health check every 3 s for UPDATE_HEALTH_TIMEOUT seconds. Monotonic clock: a Raspberry has no RTC,
+    so its clock jumps forward by years when NTP answers, which would expire the deadline early."""
+    if health_ok(conf):
+        return True
+    deadline = time.monotonic() + int(conf["UPDATE_HEALTH_TIMEOUT"])
+    while time.monotonic() < deadline:
+        time.sleep(3)
+        if health_ok(conf):
+            return True
+    return False
+
+
+def boot_guard(conf):
+    """Health gate for every boot that is not the trial of the pending slot. Healthy: the counter is cleared (the
+    initramfs gives the fallback at 3 unhealthy boots). Unhealthy: reboot while a counter is set, so the next boot
+    counts up without anyone at the device. No counter (old initramfs, no boot FAT) means nothing would count: no
+    reboot. Maintenance boots are not gated. Returns None to go on, else the boot-ok result."""
+    if maintenance_on(conf):
+        return None
+    if wait_healthy(conf):
+        bootcount_clear(conf)
+        return None
+    attempts = bootcount_read(conf)
+    event(conf, f"health check failed, boot counter {attempts}")
+    if attempts >= 1:
+        be_reboot(conf, delay=0)
+    return 2, {"error": "the system did not answer the health check", "error_code": "health-timeout"}
+
+
 def cmd_boot_ok(a, conf):
-    """Called by unitotem-boot-ok on every boot. On the first boot of a trial slot: wait for the
-    health endpoint, then confirm; if it never answers, record that and reboot - next_entry was
-    one-shot, so the reboot lands on the previous (still default) slot."""
+    """Called by unitotem-boot-ok on every boot. Every boot but the trial of the pending slot passes the health gate
+    (boot_guard) first. On the first boot of a trial slot: wait for the health endpoint, then confirm; if it never
+    answers, record that and reboot - next_entry was one-shot, so the reboot lands on the previous (still default) slot."""
     cur = cur_slot(conf)
+    pend = read_state(conf, "pending.json")
+    if not (cur and pend and pend.get("slot") == cur):
+        gate = boot_guard(conf)
+        if gate is not None:
+            return gate
     if cur is None:
         return 0, {"ab": False}
-    pend = read_state(conf, "pending.json")
     if not pend:
         # Plain boot: remember that this slot holds a system that has actually come up, which is what
         # makes it a legitimate rollback target later (a freshly fetched slot is valid but never ran).
@@ -934,18 +1041,14 @@ def cmd_boot_ok(a, conf):
                         version=pend.get("version"))
         return 0, {"trial": False, "rolled_back": True}
     crashpoint(conf, "bootok_health_wait")
-    # monotonic, not wall clock: a Raspberry has no RTC, so its clock jumps forward by years when NTP answers,
-    # which would expire the health deadline early.
-    deadline = time.monotonic() + int(conf["UPDATE_HEALTH_TIMEOUT"])
-    while time.monotonic() < deadline:
-        if health_ok(conf):
-            res = confirm_now(conf)
-            try: sync_esp_grubcfg(conf)          # a confirmed system is the only one allowed to touch the bootloader config
-            except Exception as e: event(conf, f"ESP grub.cfg sync failed: {e}")
-            try: sync_boot_recovery(conf)
-            except Exception as e: event(conf, f"boot recovery sync failed: {e}")
-            return 0, res
-        time.sleep(3)
+    if wait_healthy(conf):
+        res = confirm_now(conf)
+        bootcount_clear(conf)
+        try: sync_esp_grubcfg(conf)          # a confirmed system is the only one allowed to touch the bootloader config
+        except Exception as e: event(conf, f"ESP grub.cfg sync failed: {e}")
+        try: sync_boot_recovery(conf)
+        except Exception as e: event(conf, f"boot recovery sync failed: {e}")
+        return 0, res
     set_last_result(conf, op="trial", result="rolled-back", reason="health-timeout", version=pend.get("version"))
     try: os.unlink(state_path(conf, "pending.json"))
     except OSError: pass
@@ -985,8 +1088,7 @@ def bootfs_dir(conf):
 def slot_sound(conf, slot):
     """Is SLOT bootable as it stands? Same bar as slot_check plus, on a Raspberry, the boot files the firmware reads from the FAT.
     Read-only: never repairs, never writes."""
-    dev = run_out("blkid", "-t", f"PARTLABEL={label(slot)}", "-o", "device", check=False).splitlines()
-    dev = dev[0] if dev else ""
+    dev = slot_dev(slot)
     if not dev or run_out("blkid", "-s", "LABEL", "-o", "value", dev, check=False) != label(slot):
         return False, "label"
     if subprocess.run(["e2fsck", "-fn", dev], capture_output=True).returncode != 0:
@@ -1057,11 +1159,9 @@ def do_repair(a, conf):
             if okc and not a.force:
                 return 0, {"repaired": False, "reason": "other slot is sound"}
             ver = current_version(conf)
-            cdev = run_out("blkid", "-t", f"PARTLABEL={label(cur)}", "-o", "device", check=False).splitlines()
-            ndev = run_out("blkid", "-t", f"PARTLABEL={label(new)}", "-o", "device", check=False).splitlines()
+            cdev, ndev = slot_dev(cur), slot_dev(new)
             if not cdev or not ndev:
                 raise Fail("no-slot-device", "slot partitions not found")
-            cdev, ndev = cdev[0], ndev[0]
             if subprocess.run(["findmnt", "-S", ndev], capture_output=True).returncode == 0:
                 raise Fail("slot-mounted", f"{ndev} is mounted: refusing to write to it")
             event(conf, f"repair: slot {new} ({whyc}) <- copy of slot {cur} ({ver})")

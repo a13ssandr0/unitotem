@@ -317,7 +317,8 @@ if [ "$AB" = 1 ]; then
 echo "== A/B layout"
     chk "release version is a plain version string" bash -c "grep -qE '^[0-9]+(\\.[0-9]+)+$' $R/usr/share/unitotem/release-version"
     chk "root= uses the slot label, fstab has no / line" bash -c "! grep -qE '^LABEL=ROOT[[:space:]]+/[[:space:]]' $R/etc/fstab"
-    chk "A/B images keep no boot counter service on the FAT (boot-ok skips it)" file_has "$R/usr/sbin/unitotem-boot-ok" 'unitotem.slot='
+    chk "boot-ok runs the health gate on every boot (clears the FAT boot counter)" file_has "$R/usr/sbin/unitotem-boot-ok" 'boot-ok'
+    chk "the initramfs engine carries the boot counter gate" bash -c "grep -rqs bootcount_gate '$R/usr/lib/unitotem/ota-engine.sh' '$R/etc/initramfs-tools/hooks/' '$R/usr/share/initramfs-tools/'"
     chk "overlay hook is slot-aware" file_has "$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays" 'unitotem.slot'
 fi
 
