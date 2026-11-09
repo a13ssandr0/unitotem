@@ -19,17 +19,13 @@
 - [system] Test Pi has an account `ale` (uid 1001, nologin, entry in users.json, not created by these tests): keep or remove?
 
 ## To build
+- [system] Pi 3 on the rig (192.168.1.102, UPS `apc900`): rewrite the card remotely through the OTA fallback with the new image (`work/pi3-mbr/rewrite-sd-via-fallback.sh`, `mk-mbr-image.sh`); proven first on the test Pi 4.
+- [system] Pi 3 A/B: ROOT_B and DATA are created on MBR, but the one-shot trial boot without tryboot is open (design in the first item of Waiting for the user); `grow_data` and `unitotem-release` still use GPT tools; GRUB entries need `part_msdos` for an MBR PC.
+- [system] build-unitotem.sh: priority save/restore, lib.sh ssh helpers, MAKE_PARTS/EFI_SIZE/ROOT_SIZE forwarding and lock-gate exit codes are done in `work/agents/agent-C/build-unitotem.sh`; install it between builds.
+- [system] Decisions from agent reports: recovery-session policy after the counter (one normal attempt, then recovery again), 180 s health window, N=3, manager UI showing the volatile state, bounded retry for the DOS type change, `>2 GiB` root part split (manifest change), `unitotem-ab.xml` keep or delete, `wayland-views` published for cefpython (done 2026-11-08), apt repository signing key, publishing `python3-fastapi-login`/`python3-sdbus-networkmanager`, old 2.x debs in docs/.
+- [system] ESLint of the web UI fails with 8678 problems (formatting rules); the package script runs `--fix` which would rewrite 54 files.
+- [system] `unitotem-maintenance exit` runs `update-grub` and `grub-common.service` then fails on a read-only grubenv (seen in VMs); the nouveau fallback does not warn when the firmware is missing.
 - [system+manager] Always-on password policy (PAM pam_pwquality: min 8, 2 classes, max 3 repeats, no dictionary; `passwd`, `sudo passwd`, `chpasswd`; switch removed) with a live checklist in the web UI and the first-admin script. Plan: ~/.claude/plans/la-creazione-dell-account-al-reflective-stonebraker.md.
-- [system] OTA fallback without a fixed password: key sent by the deploy tool when armed from a running system; admin account + password and root keys read from DATA in automatic recovery; a never-configured device stays open like first access (everything must work remotely). Deploy tool: per-target key, `OTA_FALLBACK_USER`/`OTA_FALLBACK_KEY`/`OTA_FALLBACK_PASSWORD`.
-- [system] Fallback idle watchdog stands down on any TCP connection, even unauthenticated; dead reverse tunnel code (`OTA_HOST`, `dbclient -R`); the ephemeral fallback host key cannot be pinned by the tool.
-- [system] No UniTotem 3.0.0 device is deployed yet: account/identity changes need no migration of older devices.
-- [system] unitotem-update-auto.service has Documentation=file:///usr/share/doc/unitotem/ab-updates.md, which the image does not install.
-- [system] Regenerate the preboot SD image after the latest build.
-- [system] Remove single-root code branches (AB_LAYOUT=0) in stage2/3, remote-deploy, verify-image, unitotem-boot-ok.
-- [manager] docs/ apt repository stops at 2.3.0, README.md describes the old single-package install (no unitotem-node/-viewer, unitotem, python3-cefpython3, plymouth-theme-unitotem); docs/update-pkgs.sh uses `dpkg-buildpackage -A` and copies the core deb only.
-- [manager] Pin versions in manager/requirements.txt (fastapi, jinja2, psutil... unpinned); frozen_requirements.txt is referenced by nothing.
-- [manager] plymouth/generate-assets.py:11,32 font path `manager/webview/static/NotoSans.ttf` is stale (now plugins/unitotem_viewer/static/).
-- [manager] Delete unreferenced tools/ticker/control/ticker-raf.js (older bar implementation); tools/unitotem-ab.xml is referenced by no procedure; tools/cef-server/probe-gn-args.sh:9 reads /tmp/args.base.gn, created by no script; 0007 CEF patch has a placeholder `From` line.
 - [manager] CEF vendor: .gitmodules `branch = cefpython147-qt` is 19 commits behind the pinned commit (on `wayland-views`); wheels in vendor/cefpython-wheels are cp313 only while build-cef-wheels.sh builds 3.10-3.14 and debian/rules/python3-cefpython3 pin 3.13.
 - [system] Local tools `work/pi-test/{reflash-clean,resume-ab,redeploy-ab}.sh` call `ota_ssh`: they need `OTA_FALLBACK_KEY`/`OTA_FALLBACK_USER` in the environment, and `reflash-clean.sh` runs `unitotem-ota-arm --port 2222 --wipe-data` without `--authkey-file`.
 
@@ -71,46 +67,20 @@
 - [manager/viewer] ticker.py:160 `set_settings` calls `push.tell_window` with no `_supports_layout` check (controller.py:428): effect on a viewer without layout support unverified.
 
 ## Defects found in review
-- [manager] utils/models/assets.py:80,88 `__enable`/`__disable` call `self.enable()`/`self.disable()`, defined nowhere: scheduled enable/disable dates never take effect.
 - [manager] debian/control:89 depends on python3-pampy but osusers.py imports `pam` (python-pam); also in unitotem/locks/*.lock.
-- [manager] main.py:353-361 bind failure leaves exit status 0, systemd does not restart; main.py:208 argparse never parsed (`--version` dead).
-- [manager] api/scheduler.py:53,59 media probe with `verify=False`; :246 `edit_asset` probes on the event loop (up to ~10 s).
-- [manager] utils/storage/uploadmanager.py:123 FileNotFoundError retry re-reads a half-consumed stream.
-- [manager] utils/ticker/service.py:144,148-151 source deleted/replaced during an in-flight fetch: `record_success`/`record_failure` raise KeyError, `_failed` raises again and escapes run(); ticker scheduler dies until restart. Skip ids no longer in the store.
-- [manager] utils/remote/link.py:113 and discovery.py:119 listener/announcer failure not retried until apply_role; service.py:503 ImportError escapes after cache sent.
-- [manager] plugins/unitotem_node/api/network.py:136,170 ip method/address/gateway/dns not validated; networkmanager.py:300 invalid DNS silently dropped.
-- [manager] plugins/unitotem_node/api/timers.py:67 delete_job does not check uuid; :91 edit_job cannot clear output/wake.
-- [manager] plugins/unitotem_node/__init__.py:122 logs "started fallback hotspot" when start_hotspot() returned nothing.
-- [manager] plugins/unitotem_viewer/__init__.py:37 + app.py:154 missing cefpython3 raises ImportError out of run_gui instead of the fallback.
-- [manager] plugins/unitotem_viewer/cdp.py:287 and :365 `_window_of` defined twice; the second wins, the first is dead.
-- [manager] webui network.vue:733 editor never closes / pendingAddr never runs, :632 wifiConnecting spinner stuck on error; updates.vue:314 spinner stuck; base.vue:291 swallows errors so `data.error` branches (network.vue:576,601, remote.vue:311) are dead.
 - [manager] webui scheduler.vue:557 upload errors only logged, :535 Reload button only animates; users.vue:36 deletes account without confirmation, :164 hard-coded permission list (keep in step with `UserPerms`); display.vue:9 label promises a missing click action, orientation/flip always send `window_id: 0`.
 - [manager] webui polish: native `confirm()` (scheduler.vue:528,603, timers.vue:277); viewers.vue:340-349 `pending` set and cleared in one tick, `assignments`/`connected` never read; base.vue:103,115 Vuetify 2 colour names (`red darken-1`); info.vue:59-60 temperatures above 300 greyed, purpose unclear.
-- [manager] Crowded UI: viewers.vue matrix (move keyboard, screensaver, refresh, language to a per-window dialog), Add URL dialog (~12 fields, needs Advanced), settings/display.vue (7 blocks).
-- [manager] Backup gaps: screen_control.json and touch orientation/calibration not in any backup part; netplan part still exported though never written.
-- [system] build-unitotem.sh: no nice/CPUWeight save-restore with EXIT trap (docs/system/build.md); own ssh helpers instead of deploy/lib.sh (no BatchMode, host key check off).
 - [system] build-unitotem.sh: MAKE_PARTS/EFI_SIZE/ROOT_SIZE not forwarded.
 - [system] build-unitotem.sh:166 lock gate handles exit 20 and 2 only, any other failure continues with locked versions; rsync failure silenced with `|| true`.
 - [system] deploy/ota-engine.sh promote-default rpi branch (~724) writes config.txt/cmdline.txt without os_prefix/slot: breaks A/B if run; :846 DATA/history never pruned.
-- [system] /root handling differs: unitotem-update:418 copies root.<old>, ota-engine migrate-etc-overlay leaves it.
 - [system] deploy/remote-deploy.sh: `--debug` unread, `--host` not passed (OTA_HOST dead), cmd_serve has no tunnel, changes check failure (2/127) exits 1 like "changes found", recover strips :PORT.
 - [system] unitotem-update:378 Lock unlinks before close; :782 health_ok disables TLS verification; unitotem-maintenance ignores update-grub failure and reboots anyway.
-- [system] overlayfs-hook.sh: DATA not found warns and continues with no overlays and no failure status.
 - [system] tools/pkglock.py: LOCAL_RE treats any `~devN` archive version as local; `.lock.prev` left untracked; tests missing for check/snapcheck/upgrade.
 - [system] tools/release/unitotem-release: `build` has no caller/test, build-ab has no split for roots over 2 GiB, no publish script or workflow.
 - [system] Stale files: flash-*/flash.manifest, `.gitignore:3` deploy/flasher/, tools/assets/ unreferenced, docker-compose.yml unreferenced.
 - [system] Product text names developer items: stage1-packages.sh:143 "the Pi 4 test unit", manager rtc.py:151 "the test VM", gpu.py:213 and screens/identity.py/mechanism.py name test machines.
-- [manager] tools/ui-touch-setup.py raw sshpass/ssh (violates helper-only SSH rule); tools/vm-deploy has no lock; tools/gen-api-types.py monkeypatches `pathlib.Path.mkdir` and `shutil.disk_usage` globally (fragile); tools/ui-vnc.py docstring cites a runner script not in the repository, its token checks not re-run since the X11 era.
-- [manager] tools/cef-server build-all.sh/cef-rebuild.sh skip apply-patches.sh.
-- [manager] Test warnings: `Asset.__del__` (assets.py:181) reads `self.uuid` on a partly built object (7 PytestUnraisableExceptionWarning in test_asset_zoom.py); user.py:89 pydantic serializer warning (permissions as list); never-awaited `Timer._job` coroutine (test_playlists.py copy/move test, touch_calibration.py:103).
-- [manager] No unit tests for terminal.py, ws_token.py, devtools.py, /vnc path, node backup parts, audio.py, Wi-Fi scan, hotspot start, scheduled enable/disable firing.
-- [manager] Legacy users.json (werkzeug hashes) cannot migrate: first access asked again after upgrade, rollback cannot log in.
 
 ## To build (Viewers and Display pages)
-- [manager/webui] Viewers: compact playlist x window matrix (checkboxes only) plus a per-window detail panel with sections (Audio, Interaction: keyboard, interactive screen, page language; Maintenance: refresh, developer tools; Layout and panes); RSS sources in their own section. Drop dead state (viewers.vue:340-349).
-- [manager/webui] Display redesigned after KDE's display settings: screen selector (real `window_id`), per screen: identify, resolution, refresh rate, orientation/flip, power and inputs (ScreenControl), touch (TouchMapping). Certificates move to Security, GPU status to Info. No scale control.
-- [manager/screens] Backend: `Settings/Display/outputs` (modes as width, height, refresh_mhz), `set_mode` with 15 s revert and `confirm_mode`, `reset_output`, viewer `identify`; mode persisted in `viewer_settings.json` and replayed by `output_transform.py`. Works on labwc 0.20 (arm64) and 0.8.3 (amd64).
-- [manager/viewer] Screen id under the IP on the no-assets and welcome pages, only when more than one screen is connected (welcome page look otherwise unchanged).
 - [manager/webui] Settings > Users: new "show user list on login page" switch and the login error display never run in a browser.
 
 ## Best effort, at the very end (only after everything else is finished)
