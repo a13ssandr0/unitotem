@@ -24,6 +24,9 @@
 - Minimal flash image (`unitotem-<date>-<arch>-flash.img.xz`, boot 512 MiB + slot A, ~5.6 GiB): the first boot creates slot B and DATA to the end of the disk and the existing auto-repair fills slot B; DATA grows to the disk end on raw-written images. Full image, parts and releases are unchanged. Slots 5 GiB, boot partition 512 MiB; fits 16 GB cards.
 - Smaller root: GStreamer, `tigervnc-scraping-server`, `nvidia-vaapi-driver`, Mesa Vulkan drivers, `libclang1-19`, NVIDIA CUDA/NVDEC/Vulkan libraries and (arm64) the `firmware-linux*` packages are no longer installed (root asset 639 -> 499 MB arm64, 1059 -> 913 MB amd64); verify-image checks them.
 - A power cut inside the first-boot resize of DATA resumes by itself: one `e2fsck -fy`, only while the growth is pending, then the resize continues (reproduced and tested in containers: 163 checks).
+- Kernel 7.2, firmware 2026, Mesa 26, PipeWire 1.6 and WirePlumber 0.5.12 from trixie-backports (pinned by file); NVIDIA 620 with the open kernel modules from NVIDIA's repository (Turing and newer); kernel module built by DKMS and signed; `nouveau` fallback unit for older GPUs, with `firmware-nvidia-graphics` shipped (Pascal verified on a GTX 1060 in a passthrough VM).
+- amd64 firmware set widened (Intel, Realtek, Atheros, MediaTek, Broadcom Wi-Fi/Bluetooth, microcode); `initramfs-tools` installed before the kernel; unused Chromium flags removed.
+- Image root carries the recovery set (`/usr/share/unitotem/recovery`, with a level); verify-image checks it, the NVIDIA stack and the firmware blobs.
 
 #### A/B updates
 - A/B root layout is the only layout: ROOT_A/ROOT_B slots, 6 GiB each, 16 GiB image.
@@ -40,6 +43,8 @@
 - Persistent on DATA: SSH host key, uploads, TLS key, browser profile, crontabs.
 - Update root public key embedded in image; release tooling for keys, assembly, encrypted backup.
 - An update leaves the manager and SSH responsive on an SD card: `bfq` and capped dirty pages while the image is written, `xz` on one thread, everything restored afterwards (no web timeouts in 127 probes on a Pi 4).
+- After a confirmed boot the boot partition (ESP or Raspberry FIRMWARE) is refreshed with the image's recovery kernel, initrd and dtbs when its level is higher (never on a trial boot); deploy takes the recovery set from the parts set.
+- `slot_sound` requires a kernel and initrd on GRUB; update lock no longer unlinked on release; health check verifies TLS against a CA file; `unitotem-maintenance` stops when `update-grub` fails.
 
 #### Deploy and recovery
 - Remote deploy over SSH reflashes existing devices without physical access.
@@ -55,6 +60,12 @@
 - Fallback: DHCP on every wired interface, low-resolution GRUB entries, brcmfmac Wi-Fi modules.
 - Deploy post-check probes the web interface instead of logging in as root; `OTA_AUTH=key` mode in `deploy/lib.sh` for hosts with an installed key (the fallback no longer has a fixed password, see below).
 - `deploy/lib.sh`: `OTA_FALLBACK_USER`, `OTA_FALLBACK_KEY`, `OTA_FALLBACK_PASSWORD` (environment only), `OTA_FALLBACK_OPEN`; per-target keys under `~/.local/state/unitotem-deploy/`; `recover --fallback-user`; `unitotem-ota-arm --authkey-file`.
+- Legacy BIOS amd64 PCs are deployed and recovered like UEFI ones (BIOS-boot partition captured and restored raw); proven in a SeaBIOS VM: deploy, first boot, update with trial, fallback, power cuts, repair, recovery entry.
+- Single-root deploy branches removed (A/B only); fallback watchdog stands down only on an authenticated session; `remote-deploy.sh` `changes` exits 0/1/2/3; `make-parts.sh --out` honoured.
+- No DATA partition: `/etc`, `/root` and `/var` are tmpfs overlays (state lost on reboot) instead of a read-only root; the status shows `volatile:*`.
+- First boot on an MBR disk creates ROOT_B and DATA (pending types 0xda/0xdb); the Raspberry 3 boots a DOS table (`work/pi3-mbr` scripts convert a GPT card in place).
+- Boot counter on the boot FAT: after 3 boots without a healthy manager the initramfs enters the OTA fallback (SSH on 2222: boot-FAT key, admin password from DATA, or open mode on a never-configured device); `unitotem-boot-ok` clears it once `/health` answers.
+- First-admin script stops with one line when `/etc` is read-only and prints one line when settings are volatile.
 
 #### Boot and display
 - Plymouth UniTotem theme starts before the OTA check; held until the compositor starts.
@@ -87,6 +98,9 @@
 - Loopback /health readiness probe; per-component subscriptions.
 - Uploads in /var/lib/unitotem; manager starts on a read-only root.
 - Names, times, codes and file names validated before reaching commands or files.
+- Review defects fixed: scheduled enable/disable, upload retries, ticker source removal, remote retries with backoff, network/Wi-Fi/hotspot input validation, timers, backup parts for screens and touch, terminal session limit, devtools paths, VNC cleanup on cancel, audio range, `--version`, bind failure exit status.
+- Display outputs API (`Settings/Display/Outputs`: modes, set_mode with 15 s revert, confirm, reset) and screen identify.
+- Test isolation: `conftest.py` redirects every import-time path; tests run on a test machine, never on the dev PC.
 
 #### Web UI
 - Vuetify interface with dark theme, remember-me login and permission-based menus.
