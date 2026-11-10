@@ -8,6 +8,7 @@ import ipaddress
 import json
 import math
 import os
+import random
 import re
 import secrets
 import shutil
@@ -36,7 +37,28 @@ PLACEHOLDERS = ('SERVER', 'SHA256', 'BYTES', 'TIMEOUT', 'POLL', 'ENGINE')
 PLACEHOLDER_RE = re.compile(r'@(SERVER|SHA256|BYTES|TIMEOUT|POLL|ENGINE)@')
 MACHINE_RE = re.compile(r'[A-Za-z0-9-]{8,64}')
 HOST_RE = re.compile(r'[A-Za-z0-9-]{1,15}')
-WORD_RE = re.compile(r'WIPE-[A-Z0-9-]{1,40}-DISK[0-9]{1,4}-[A-Z0-9]{1,8}')
+# Characters of a log line printed whole (steps, error ids, statements, messages).
+LOG_LIMIT = 4000
+
+# Operator answer that approves: exactly this word, asked twice.
+YES = 'yes'
+
+# Partition types as reported by Get-Partition (.Type) and Win32_DiskPartition (.Type), shown with a clearer label.
+TYPE_LABELS = {
+    'IFS': 'NTFS/exFAT (IFS)',
+    'Installable File System': 'NTFS/exFAT (IFS)',
+    'Basic': 'Basic data',
+    'System': 'EFI System',
+    'Reserved': 'Microsoft reserved',
+    'Recovery': 'Recovery',
+    'Unknown': 'Unknown',
+}
+
+# Host-name colours (256-colour codes): readable on dark and light terminals; no black, white, green or yellow.
+PALETTE = (33, 69, 99, 135, 141, 167, 171, 177, 203, 208)
+GREEN = '\x1b[32m'
+YELLOW = '\x1b[1;33m'  # the questions
+RESET = '\x1b[0m'
 KEY_RE = re.compile(r'ssh-ed25519 [A-Za-z0-9+/]{68}( [ -~]{0,128})?')
 DRIVE_RE = re.compile(r'[A-Za-z]')
 LETTER_RE = re.compile(r'[A-Za-z]?')
@@ -51,10 +73,11 @@ SOCKET_TIMEOUT = 30
 POLL_SECONDS = 5
 RATE_LIMIT = 50
 INV_KEYS = ('machine', 'hostname', 'ips', 'firmware', 'secureboot', 'bitlocker',
-            'boot_free_mb', 'system_disk', 'os', 'disks', 'ui_culture', 'services')
+            'boot_free_mb', 'system_disk', 'os', 'disks', 'ui_culture', 'services',
+            'model', 'cpu', 'ram', 'plan', 'notes')
 DISK_KEYS = ('number', 'model', 'size_gb', 'style', 'serial', 'unique_id', 'bus',
              'system', 'partitions')
-PART_KEYS = ('number', 'letter', 'size_mb', 'type')
+PART_KEYS = ('number', 'letter', 'size_mb', 'type', 'free_mb')
 STATUS_KEYS = ('machine', 'level', 'text')
 
 
@@ -62,19 +85,39 @@ class Invalid(ValueError):
     pass
 
 
+# Control characters (C0, DEL, C1: includes ESC) and bidirectional overrides: never reach the terminal.
+_UNSAFE = re.compile('[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]')
+
+
 def clean(value, limit=80):
-    # Keep printable ASCII only: no terminal escape sequences from the network.
-    text = str(value)
-    return ''.join(ch for ch in text if ' ' <= ch <= '~')[:limit]
+    # Unicode text is kept; control characters are removed; a cut is never silent.
+    text = _UNSAFE.sub('', str(value))
+    if len(text) > limit:
+        return '%s\u2026[truncated %d]' % (text[:limit], len(text) - limit)
+    return text
 
 
-def confirm_word(hostname, number, serial):
-    # Must match Get-ConfirmWord in Install-UniTotem.ps1 (same steps, same order).
-    host = re.sub(r'[^A-Z0-9-]', '', str(hostname).upper())[:15]
-    tag = re.sub(r'[^A-Za-z0-9]', '', str(serial)).upper()[:8]
-    if not tag:
-        tag = 'NOSERIAL'
-    return 'WIPE-' + host + '-DISK' + str(int(number)) + '-' + tag
+MBR_TYPES = {
+    0x05: 'Extended', 0x07: 'NTFS/exFAT (IFS)', 0x0B: 'FAT32', 0x0C: 'FAT32 LBA', 0x0E: 'FAT16 LBA',
+    0x0F: 'Extended LBA', 0x27: 'Recovery', 0x82: 'Linux swap', 0x83: 'Linux', 0xEE: 'GPT protective',
+    0xEF: 'EFI System',
+}
+MBR_RE = re.compile(r'MBR 0x([0-9A-F]{2})( active)?')
+
+
+def type_label(raw):
+    raw = clean(raw, 64)
+    m = MBR_RE.fullmatch(raw)
+    if m is not None:
+        code = int(m.group(1), 16)
+        label = MBR_TYPES.get(code, 'MBR type')
+        return '%s (0x%02X)%s' % (label, code, ', active' if m.group(2) else '')
+    label = TYPE_LABELS.get(raw)
+    return raw if label is None else '%s (%s)' % (label, raw)
+
+
+def use_color():
+    return sys.stdout.isatty() and not os.environ.get('NO_COLOR')
 
 
 def _req(cond, what):
@@ -88,7 +131,8 @@ def _obj(value, keys, what):
 
 
 def _str(value, maxlen, pattern=None, what='string'):
-    _req(isinstance(value, str) and len(value) <= maxlen, what)
+    # Room for the truncation marker the client appends when it cuts a field.
+    _req(isinstance(value, str) and len(value) <= maxlen + (32 if pattern is None else 0), what)
     if pattern is not None:
         _req(pattern.fullmatch(value) is not None, what)
     return value
@@ -134,7 +178,7 @@ def parse_inventory(data):
     hostname = _str(data['hostname'], 15, HOST_RE, 'hostname')
     ips = [_ip(x) for x in _list(data['ips'], 64, 'ips')]
     firmware = _enum(data['firmware'], ('uefi', 'bios'), 'firmware')
-    secureboot = _enum(data['secureboot'], ('on', 'off', 'unknown'), 'secureboot')
+    secureboot = _enum(data['secureboot'], ('on', 'off', 'unknown', 'na'), 'secureboot')
     bitlocker = []
     for item in _list(data['bitlocker'], 26, 'bitlocker'):
         _obj(item, ('drive', 'status'), 'bitlocker entry')
@@ -148,6 +192,13 @@ def parse_inventory(data):
     system_disk = _int(data['system_disk'], 0, 9999, 'system_disk')
     os_name = _str(data['os'], 200, None, 'os')
     ui_culture = _str(data['ui_culture'], 20, None, 'ui_culture')
+    model = _str(data['model'], 120, None, 'model')
+    cpu = _str(data['cpu'], 120, None, 'cpu')
+    ram = _str(data['ram'], 120, None, 'ram')
+    _obj(data['plan'], ('where', 'reason'), 'plan')
+    plan = {'where': _enum(data['plan']['where'], ('boot', 'cdrive', 'new', 'none'), 'plan where'),
+            'reason': _str(data['plan']['reason'], 400, None, 'plan reason')}
+    notes = [_str(x, 400, None, 'note') for x in _list(data['notes'], 8, 'notes')]
     services = []
     for item in _list(data['services'], 16, 'services'):
         _obj(item, ('name', 'status'), 'service entry')
@@ -168,13 +219,14 @@ def parse_inventory(data):
                 'letter': _str(p['letter'], 1, LETTER_RE, 'letter'),
                 'size_mb': _num(p['size_mb'], 0, 1e9, 'size_mb'),
                 'type': _str(p['type'], 64, None, 'partition type'),
+                'free_mb': None if p['free_mb'] is None else _int(p['free_mb'], 0, 10 ** 9, 'free_mb'),
             })
         disks.append({
             'number': number,
             'model': _str(d['model'], 200, None, 'model'),
             'size_gb': _num(d['size_gb'], 0, 1e7, 'size_gb'),
             'style': _str(d['style'], 32, None, 'style'),
-            'serial': _str(d['serial'], 128, None, 'serial'),
+            'serial': _str(d['serial'], 128, None, 'serial').strip(),
             'unique_id': _str(d['unique_id'], 256, None, 'unique_id'),
             'bus': _str(d['bus'], 32, None, 'bus'),
             'system': _bool(d['system'], 'system'),
@@ -194,9 +246,13 @@ def parse_inventory(data):
         'system_disk': system_disk,
         'os': os_name,
         'ui_culture': ui_culture,
+        'model': model,
+        'cpu': cpu,
+        'ram': ram,
+        'plan': plan,
+        'notes': notes,
         'services': services,
         'disks': disks,
-        'word': confirm_word(hostname, sysd['number'], sysd['serial']),
     }
 
 
@@ -205,7 +261,7 @@ def parse_status(data):
     return {
         'machine': _str(data['machine'], 64, MACHINE_RE, 'machine'),
         'level': _enum(data['level'], ('info', 'ok', 'error'), 'level'),
-        'text': _str(data['text'], 1500, None, 'text'),
+        'text': _str(data['text'], 20000, None, 'text'),
     }
 
 
@@ -219,10 +275,13 @@ def render_block(rec):
         'Client IP:   ' + clean(rec['client_ip'], 45),
         'Addresses:   ' + (clean(', '.join(rec['ips'])) or 'none'),
         'OS:          ' + clean(rec['os']),
+        'Model:       ' + clean(rec['model'], 120),
+        'CPU:         ' + clean(rec['cpu'], 120),
+        'RAM:         ' + clean(rec['ram'], 120),
         'UI language: ' + clean(rec['ui_culture'], 20),
         'Storage svc: ' + (', '.join(clean(x['name'], 32) + '=' + clean(x['status'], 20) for x in rec['services']) or 'none'),
         'Firmware:    ' + clean(rec['firmware'], 10),
-        'Secure Boot: ' + clean(rec['secureboot'], 10),
+        'Secure Boot: ' + ('n/a (legacy BIOS)' if rec['secureboot'] == 'na' else clean(rec['secureboot'], 10)),
         'BitLocker:   ' + (', '.join(clean(b['drive'], 1) + ': ' + clean(b['status'])
                                      for b in rec['bitlocker']) or 'none'),
         'Boot free:   ' + (str(rec['boot_free_mb']) + ' MB' if rec['boot_free_mb'] is not None
@@ -235,11 +294,19 @@ def render_block(rec):
             d['number'], mark, clean(d['model']), d['size_gb'], clean(d['style'], 32),
             clean(d['serial']), clean(d['bus'], 32)))
         for p in d['partitions']:
-            lines.append('    part %d  letter %s  %.0f MB  %s' % (
-                p['number'], clean(p['letter'] or '-', 1), p['size_mb'], clean(p['type'], 64)))
-    lines.append('Confirmation word for system disk %d: %s' % (sysd['number'], clean(rec['word'], 60)))
-    lines.append('Type that word here, or run: win-install-server.py --approve WORD')
+            free = '' if p['free_mb'] is None else ', %d MB free' % p['free_mb']
+            lines.append('    part %d  letter %s  %.0f MB%s  %s' % (
+                p['number'], clean(p['letter'] or '-', 1), p['size_mb'], free, type_label(p['type'])))
+    lines.append('Plan:        ' + clean(rec['plan']['where']) + ' - ' + clean(rec['plan']['reason'], 400))
+    for note in rec['notes']:
+        lines.append('Note:        ' + clean(note, 400))
     return '\n'.join(lines)
+
+
+def disk_question(rec, text):
+    sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
+    return '%s: disk %d, %s, %.1f GB, serial %s. %s' % (
+        clean(rec['hostname'], 15), sysd['number'], clean(sysd['model']), sysd['size_gb'], clean(sysd['serial']), text)
 
 
 def check_payload(path):
@@ -401,6 +468,10 @@ class Context:
         self.key_path = key_path
         self.explicit_key = read_key(key_path) if key_path else None
         self.keys = {}
+        self.colors = {}
+        self.color = use_color()
+        self.stage = 0
+        self.last_machine = None
         self.served_path = payload
         self.size, self.sha = file_digest(self.served_path)
         clean_approvals(self.approvals_dir)
@@ -458,8 +529,14 @@ class Context:
         with self.lock:
             self.inventories[rec['machine']] = rec
             self.keys[rec['machine']] = {'priv': priv, 'line': line}
+            self.approved.pop(rec['machine'], None)
+            self.last_machine = rec['machine'] if rec['plan']['where'] != 'none' else None
+            self.stage = 0
         self.emit(render_block(rec))
-        self.emit('OTA key for this PC: ' + (priv or '<private key of %s>' % self.key_path))
+        if rec['plan']['where'] == 'none':
+            self.emit(self.ask('Cannot install on this PC: ' + clean(rec['plan']['reason'], 400)))
+        else:
+            self.emit(self.ask(disk_question(rec, 'Erase this disk and install UniTotem? Type yes')))
         return rec
 
     def get_key(self, machine):
@@ -484,44 +561,67 @@ class Context:
             rec = self.inventories.get(st['machine'])
         name = rec['hostname'] if rec else st['machine']
         # Errors are printed whole: the step, the failing statement and the error id are needed remotely.
-        limit = 1500 if st['level'] == 'error' else 80
-        self.emit('[' + clean(name, 15) + '] ' + clean(st['text'], limit))
+        limit = LOG_LIMIT
+        self.emit(self.host_tag(name) + ' ' + clean(st['text'], limit))
 
     def get_approval_locked(self, machine):
         rec = self.inventories.get(machine)
         ap = self.approved.get(machine)
-        return bool(rec and ap and ap['word'] == rec['word'])
+        return bool(rec and ap and ap['disk'] == rec['system_disk'] and ap['serial'] == self.system_serial(rec))
+
+    @staticmethod
+    def system_serial(rec):
+        return [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]['serial']
 
     def get_approval(self, machine):
         with self.lock:
             if self.get_approval_locked(machine):
-                rec = self.inventories[machine]
-                sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
-                return {'state': 'approved', 'disk': sysd['number'], 'word': rec['word']}
+                ap = self.approved[machine]
+                return {'state': 'approved', 'machine': machine, 'disk': ap['disk'], 'serial': ap['serial']}
         return {'state': 'wait'}
 
-    def apply_word(self, word, source):
-        word = word.strip()
-        approved_machine = None
+    def ask(self, text):
+        # Questions to the operator in yellow (same rules as the host colours).
+        return YELLOW + text + RESET if self.color else text
+
+    def host_tag(self, name):
+        # "(host)" with a stable random colour per host name (in memory only); plain without a terminal.
+        name = clean(name, 15)
+        tag = '(' + name + ')'
+        if not self.color:
+            return tag
         with self.lock:
-            matches = [(m, rec) for m, rec in self.inventories.items()
-                       if WORD_RE.fullmatch(word) and rec['word'] == word]
-            if not matches:
-                msg = 'no pending PC has that confirmation word'
-            elif len(matches) > 1:
-                msg = 'more than one PC has that confirmation word: nothing approved'
+            code = self.colors.get(name)
+            if code is None:
+                free = [c for c in PALETTE if c not in self.colors.values()] or list(PALETTE)
+                code = random.choice(free)
+                self.colors[name] = code
+        return '\x1b[38;5;%dm%s%s' % (code, tag, RESET)
+
+    def apply_answer(self, text, source):
+        # The operator answers `yes` twice for the PC that reported last; anything else cancels.
+        text = text.strip()
+        approved = None
+        with self.lock:
+            machine = self.last_machine
+            rec = self.inventories.get(machine) if machine else None
+            if rec is None:
+                msg = 'no PC is waiting'
+            elif text != YES:
+                self.stage = 0
+                msg = 'cancelled: nothing was changed'
+            elif self.stage == 0:
+                self.stage = 1
+                msg = self.ask(disk_question(rec, 'Last chance: erase this disk? Type yes'))
             else:
-                machine, rec = matches[0]
+                self.stage = 0
                 sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
-                prev = self.approved.get(machine)
-                already = prev is not None and prev['word'] == rec['word']
-                self.approved[machine] = {'disk': sysd['number'], 'word': rec['word']}
-                msg = ('already approved: ' if already else 'approved: ') + \
-                      clean(rec['hostname'], 15) + ' disk ' + str(sysd['number'])
-                approved_machine = machine
+                self.approved[machine] = {'disk': sysd['number'], 'serial': sysd['serial']}
+                msg = 'approved: ' + self.host_tag(rec['hostname']) + ' disk ' + str(sysd['number'])
+                approved = machine
         self.emit(msg)
-        if approved_machine is not None:
-            self.emit('When the PC shows its address in the OTA environment, run: ' + self.next_command(approved_machine))
+        if approved is not None:
+            self.emit('When the PC shows its address in the OTA environment, run: ' + self.next_command(approved))
 
     def poll_approvals_once(self):
         for name in sorted(os.listdir(self.approvals_dir)):
@@ -534,7 +634,7 @@ class Context:
             except OSError:
                 pass
             if word is not None:
-                self.apply_word(word, 'file')
+                self.apply_answer(word, 'file')
 
     def _poll_loop(self):
         while not self.stop.wait(self.poll_interval):
@@ -548,7 +648,7 @@ class Context:
             if self.stop.is_set():
                 break
             if line.strip():
-                self.apply_word(line, 'stdin')
+                self.apply_answer(line, 'stdin')
 
     def start_background(self, stdin_stream=None):
         threading.Thread(target=self._poll_loop, daemon=True).start()
@@ -643,7 +743,7 @@ class Handler(BaseHTTPRequestHandler):
             self.fail(400, 'short body')
             return None
         try:
-            return json.loads(body.decode('utf-8'), object_pairs_hook=_no_dupes,
+            return json.loads(body.decode('utf-8', 'replace'), object_pairs_hook=_no_dupes,
                               parse_constant=_reject_const)
         except (ValueError, RecursionError):
             self.fail(400, 'invalid json')
@@ -787,18 +887,23 @@ def parse_args(argv):
     p.add_argument('--authorized-key', default=None, metavar='FILE')
     p.add_argument('--timeout-minutes', type=int_arg(1, 1440), default=60)
     p.add_argument('--state-dir', default=default_state_dir())
-    p.add_argument('--approve', metavar='WORD', default=None)
+    p.add_argument('--approve', metavar='yes', action='append', default=None,
+                   help='answer for the PC that reported last; give it twice: --approve yes --approve yes')
     return p.parse_args(argv)
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='replace')
     args = parse_args(argv)
     if args.approve is not None:
-        if WORD_RE.fullmatch(args.approve) is None:
-            print('invalid confirmation word', file=sys.stderr)
+        if args.approve != [YES, YES]:
+            print('use exactly: --approve yes --approve yes', file=sys.stderr)
             return 2
         approvals = prepare_dir(os.path.join(prepare_dir(os.path.abspath(args.state_dir)), 'approvals'))
-        write_approval(approvals, args.approve)
+        for _ in range(2):
+            write_approval(approvals, YES)
         print('approval queued: the running server takes it within one second')
         return 0
 
@@ -809,21 +914,12 @@ def main(argv=None):
         return 2
 
     addrs = [args.advertise] if args.advertise else local_ipv4s()
-    print('Paste one of these on the Windows PC (PowerShell):')
     for a in addrs:
-        print('  irm http://%s:%d|iex' % (a, args.port))
-    print('Or in Win+R, confirmed with Ctrl+Shift+Enter (administrator):')
-    for a in addrs:
-        run = 'powershell -NoProfile -Command "irm http://%s:%d|iex"' % (a, args.port)
-        if len(run) <= 250:  # the Run field takes 259 characters
-            print('  ' + run)
+        print('irm http://%s:%d|iex' % (a, args.port))
     if not addrs:
-        print('  no IPv4 address found: use --advertise IP')
-    print('payload: sha256 %s, %d bytes' % (ctx.sha, ctx.size))
-    if ctx.explicit_key is None:
-        print('OTA key: one per PC in %s' % os.path.join(os.path.dirname(os.path.dirname(deploy_key_path('x'))), '<ip>'))
-    else:
-        print('OTA key: ' + args.authorized_key + ' (same for every PC)')
+        print('no IPv4 address found: use --advertise IP')
+    print('Win+R -> powershell -> Ctrl+Shift+Enter')
+    print('then paste the irm line')
 
     try:
         server = make_server(args.bind, args.port, ctx)
@@ -833,7 +929,8 @@ def main(argv=None):
         return 2
     stdin_stream = sys.stdin if (sys.stdin is not None and sys.stdin.isatty()) else None
     ctx.start_background(stdin_stream)
-    print('listening on %s:%d' % (args.bind, server.server_port), flush=True)
+    line = 'listening on %s:%d' % (args.bind, server.server_port)
+    print(GREEN + line + RESET if use_color() else line, flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

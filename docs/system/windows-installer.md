@@ -1,6 +1,6 @@
 # Windows installer (UniTotem from a running Windows PC)
 
-Paste in an elevated PowerShell on the Windows PC (the host prints the right address when `tools/win-install-server.py` starts): `irm http://<host-ip>:8000|iex`. Win+R form, confirmed with Ctrl+Shift+Enter: `powershell -NoProfile -Command "irm http://<host-ip>:8000|iex"` (the pipe is inside the quotes and passed to PowerShell as part of its argument; Run hands the line to ShellExecute, not to cmd: inference, not tested; the Run field takes 259 characters, the line is about 70).
+Paste in an elevated PowerShell on the Windows PC: `irm http://<host-ip>:8000|iex` (the server prints the line with the right address). Open the elevated PowerShell with Win+R, `powershell`, Ctrl+Shift+Enter (administrator rights), then paste the line.
 
 Paths: relative to the repository root. Lab findings behind the UEFI method: [windows-install-research.md](windows-install-research.md).
 
@@ -8,11 +8,15 @@ Paths: relative to the repository root. Lab findings behind the UEFI method: [wi
 
 1. Host: `tools/build-windows-installer.sh` (once per image), then `tools/win-install-server.py [--authorized-key FILE] [--advertise IP] [--port 8000] [--timeout-minutes 60]`. Python 3 stdlib, no root. The OTA login key is **per PC**, never a personal key: at the PC's first inventory the server creates an ed25519 pair (`ssh-keygen -t ed25519 -N ''`, comment `unitotem-deploy`) at `${XDG_STATE_HOME:-~/.local/state}/unitotem-deploy/<client-ip>/id_ed25519` (directory 0700, key 0600), the same layout as `ota_key_path` in `deploy/lib.sh`; `remote-deploy.sh recover <ip>` finds it by that address (the OTA environment gets the PC's Windows address from the same DHCP lease) and `OTA_FALLBACK_KEY` names it explicitly for any other address. Only the public line leaves the host, through `GET /key?machine=ID` after the approval (it is not in the payload zip, whose hash is fixed). `--authorized-key FILE` is an explicit public key shared by all PCs; nothing is read from `~/.ssh`. Open mode exists only for the local script without `-AuthorizedKey`.
 2. Windows: paste the line. The bootstrap is text run in memory (`irm`, not `iwr`: `iwr` in PowerShell 5.1 needs the IE engine); no script file is written and the execution policy is not changed. It checks it is elevated (otherwise prints `Run as administrator`, exit code 3, changes nothing, no relaunch), then makes a **read-only inventory** and POSTs it: disks (model, size, serial, UniqueId, number, partitions), UEFI/BIOS, Secure Boot, free space of the ESP / active partition (the ESP is mounted on a free letter for a moment), BitLocker per volume, computer name, IPs, machine id (`MachineGuid`).
-3. Host terminal shows the PC and its disks and the confirmation word of the system disk: `WIPE-<HOST>-DISK<N>-<SERIAL8>`. The operator types it at the server prompt, or runs `tools/win-install-server.py --approve WORD` from another terminal (file in `~/.local/state/unitotem-winserver/approvals/`, taken by the running server within 1 s). Approvals come only from the server's stdin and that directory, never from HTTP; an approval is bound to machine id + disk, and the PC recomputes the word itself and refuses a mismatch.
+3. Host terminal shows the PC and its disks, then asks `Erase this disk and install UniTotem? Type yes`. The operator types `yes` (exactly, lower case); the server shows the disk again and asks `Last chance: erase this disk? Type yes`; a second `yes` approves. Any other answer cancels without changing anything. The answers apply to the PC that reported last. From another terminal: `tools/win-install-server.py --approve yes --approve yes` (two files in `~/.local/state/unitotem-winserver/approvals/`, taken by the running server within 1 s). Answers come only from the server's stdin and that directory, never from HTTP. The approval is bound to machine id + disk number + disk serial; the PC checks all three against itself and refuses a mismatch. A new inventory from the PC revokes an earlier approval.
 4. The PC polls every 5 s (`-TimeoutMinutes`, default 60). Without approval it exits with code 8 having changed nothing. After approval it downloads `/payload.zip`, verifies size and SHA-256 (both embedded in the bootstrap), extracts it to `%ProgramData%\UniTotem-install`, prepares the boot files and the one-shot boot entry (sections below), and restarts (`shutdown /r /t 10`). Every step is posted to the server and printed live as `[HOSTNAME] text`.
 5. Host: the server prints the full command after the approval: `OTA_FALLBACK_KEY=<per-PC key> deploy/remote-deploy.sh recover <ip> --parts DIR --yes`; run it once the environment answers (see After the restart).
 
 Authenticity: HTTP on the local network, no TLS. The bootstrap carries the payload hash, but the bootstrap itself is not authenticated: anyone able to spoof the host's address on the LAN could serve a different script. Run the server on a trusted network. Inventories from other machines are only shown; nothing runs without the operator's word.
+
+Inventory: UEFI/BIOS, Secure Boot (`n/a (legacy BIOS)` on BIOS), machine model, CPU (name, cores, threads) and RAM (GB, modules) from the classic CIM classes (`unknown` per field when unavailable), drive letters from `Win32_LogicalDiskToPartition` (the Storage module shows none in Safe Mode), free space per lettered volume and of the boot partition (`Win32_Volume` `SystemVolume` when it has no letter), MBR partition types read from the first sector of the disk (`MBR 0x07`, `0x27` = Recovery, active flag), the planned destination with its reason, and a Safe Mode note. Safe Mode is detected with `SAFEBOOT_OPTION` / `SystemInformation.BootMode` (unverified on Windows). Nothing starts a service or edits the SafeBoot keys.
+
+Text transport is UTF-8 (client sends UTF-8 bytes with `charset=utf-8`; the server decodes UTF-8 and prints UTF-8). Log text keeps Unicode, loses control characters (C0, DEL, C1, bidirectional overrides) and is cut only beyond 4000 characters, always with a visible `…[truncated N]` marker. The local log file is UTF-8 with BOM.
 
 Failures name the step, the error id and the failing statement and reach the server whole (language independent: `FullyQualifiedErrorId`, never a localized text comparison). The inventory also carries the UI language and the state of the `vds`, `StorSvc` and `smphost` services.
 
@@ -37,6 +41,19 @@ WinRE (the recovery command prompt) has no PowerShell, no `curl` and normally no
 | `tools/win-install-server.py`, `tools/release/test_win_install_server.py` | Host server and its tests |
 | `tools/build-windows-installer.sh` | Builds `work/windows-installer/unitotem-windows-installer.zip` + `SHA256SUMS` from the newest amd64 flash image (`--image`, `--initrd`, `--out`) |
 
+Server output: the start prints the `irm` line(s) and the two lines `Win+R -> powershell -> Ctrl+Shift+Enter` / `then paste the irm line`, then `listening on ...` in green. The two `yes` questions are bold yellow. Log lines show `(hostname)` in a colour picked at random from a 10-colour 256-colour palette (blues, purples, reds, orange; no black, white, green or yellow) and kept per host name in memory only; no colour when stdout is not a terminal or `NO_COLOR` is set. Partition types are shown as `label (raw)`:
+
+| Raw | Label |
+|---|---|
+| `IFS`, `Installable File System` | NTFS/exFAT (IFS): MBR type 0x07, the file systems Windows installs through its IFS drivers, in practice NTFS |
+| `Basic` | Basic data |
+| `System` | EFI System |
+| `Reserved` | Microsoft reserved |
+| `Recovery` | Recovery |
+| `Unknown` | Unknown |
+
+Other values are shown unchanged.
+
 Both build scripts (`build-windows-installer.sh`, `build-installer-iso.sh`) fail when a text file of the payload holds an SSH public key line (`ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp* <base64>`; no exceptions).
 
 Zip content: `Install-UniTotem.ps1`, `README.txt`, `payload/` (`vmlinuz`, `initrd.img`, `shimx64.efi`, `mmx64.efi`, `grubx64.efi` taken from the image's ESP `unitotem/recovery-*` and `EFI/unitotem-sb/`; `g2.img`; the templates; `SHA256SUMS`). The script verifies every payload file against `payload/SHA256SUMS` before use and again after copying.
@@ -52,7 +69,7 @@ Zip content: `Install-UniTotem.ps1`, `README.txt`, `payload/` (`vmlinuz`, `initr
 
 1. Checks Administrator, firmware type (`winload.efi` vs `winload.exe` in `bcdedit /enum {current}`, locale independent), Secure Boot state, system disk (the disk holding the system drive).
 2. Verifies the payload and the key file (`-AuthorizedKey FILE`: exactly one `ssh-ed25519` line; the OTA login is then that key, passed as `unitotem.ota.authkey=<base64>` on the kernel command line. Without a key the environment is in open mode: empty root password, see [fallback authentication](deploy-and-recovery.md#fallback-authentication)).
-3. Shows disk model, size, serial and every partition, then the plan. Confirmation: type `WIPE-<HOST>-DISK<N>-<first 8 alphanumerics of the disk serial>` (computer name, disk number and serial are in the word, so a pasted command cannot hit another disk or PC).
+3. Shows disk model, size, serial and every partition, then the plan. Confirmation: type `WIPE-<HOST>-DISK<N>-<first 8 alphanumerics of the disk serial>` (local script only; computer name, disk number and serial are in the word, so a pasted command cannot hit another disk or PC).
 4. Places the boot files (below), creates the boot entry, sets the one-shot boot (`BootNext` / `bootsequence`), offers a restart.
 5. Writes `Install-UniTotem.log`, `Install-UniTotem.state.json` (what `-Undo` needs) and `Install-UniTotem.status.json` next to the script.
 
@@ -82,7 +99,9 @@ bcdedit /displayorder {id} /addlast
 bcdedit /bootsequence {id}
 ```
 
-`g2.img` sits on the active (boot) partition; its embedded configuration searches `/unitotem/recovery-vmlinuz` and runs `/unitotem/grub.cfg` (written by the script, carries the key token). No Secure Boot. GRUB reads NTFS and FAT32, so kernel and initrd go to `<boot partition>\unitotem\` when they fit, else to the new FAT32 partition. The Windows boot sector and MBR are not modified. Needs a free primary slot when a new partition is required.
+`g2.img` is the file `unitotem-g2.img` on the partition named in the BCD entry; its embedded configuration searches `/unitotem/recovery-vmlinuz` on any partition and runs `/unitotem/grub.cfg` (written by the script, carries the key token). No Secure Boot. GRUB reads NTFS and FAT32. Destination, in order: (1) the active partition (System Reserved) when it has a drive letter and room; (2) `C:` when it is NTFS, not BitLocker-encrypted and has room: files in `C:\unitotem\`, loader `C:\unitotem-g2.img`, BCD `device partition=C:`, no Storage module involved (works in Safe Mode where `vds`/`StorSvc`/`smphost` are stopped); (3) a new FAT32 partition from a shrunk `C:`, only in normal mode and with a free primary slot. If none applies the inventory says why (`Cannot install on this PC: ...`) and the host is not asked. The Windows boot sector and MBR are not modified. Undo removes the BCD entry, `unitotem\` and `unitotem-g2.img`.
+
+Measured on a Windows 10 Pro laptop (legacy BIOS, MBR, Samsung SSD 860 EVO 250 GB, System Reserved 50 MB active, `C:` 232 GB NTFS, BitLocker off, Safe Mode with networking): the 50 MB System Reserved cannot hold the 240 MB payload, the Storage services were stopped, so the plan is destination (2).
 
 Proof (emulated, not on Windows): a Debian `grub-mkimage` core image with a two-line embedded configuration (`search --file /unitotem/recovery-vmlinuz`, `configfile /unitotem/grub.cfg`) prefixed with `lnxboot.img` (2.06-13+deb12u2: 1 KiB + 147 KB), placed in raw sectors and started by a 446-byte test loader that copies the whole file to `0000:7C00` and jumps (emulating the behaviour reported in the thread), booted the recovery kernel and initrd from an NTFS partition in QEMU (TCG): `Command line: BOOT_IMAGE=/unitotem/recovery-vmlinuz ... unitotem.ota=1 ... unitotem.ota.authkey=QUJD`, initrd unpacked, `Run /init`. Whether bootmgr loads the image like the test loader is not proven; the OTA splash was not observed on the serial console.
 

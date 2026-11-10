@@ -267,3 +267,74 @@ Describe 'Format-FailureDetail' {
         $d | Should -Match 'at: .*Get-Item'
     }
 }
+
+Describe 'Unicode log transport' {
+    BeforeAll {
+        $script:msg = 'Nessun oggetto MSFT_Partition trovato con la propriet' + [char]0x00E0 + ' "DriveLetter". ' + [char]0x00C8 + ' gi' + [char]0x00E0 + ' cos' + [char]0x00EC + ' ' + [char]0x20AC
+        function global:Invoke-RestMethod { param($Uri, $Method, $Body, $ContentType, $TimeoutSec) }
+    }
+    It 'Get-Printable keeps Unicode and removes control characters' {
+        $e = [char]27
+        Get-Printable ('a' + $e + '[31mb' + [char]0x9B + 'c' + [char]7 + $script:msg) 4000 | Should -Be ('a[31mbc' + $script:msg)
+    }
+    It 'does not cut 3000 characters and marks a cut' {
+        (Get-Printable ('x' * 3000) 4000).Length | Should -Be 3000
+        Get-Printable ('x' * 5000) 4000 | Should -Be (('x' * 4000) + '...[truncated 1000]')
+    }
+    It 'Send-Json sends UTF-8 bytes with a charset' {
+        $script:Opt.Server = 'http://127.0.0.1:8000'
+        Mock Invoke-RestMethod { }
+        Send-Json '/status' @{ text = $script:msg } | Out-Null
+        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+            ($Body -is [byte[]]) -and ($ContentType -eq 'application/json; charset=utf-8') -and
+            ([Text.Encoding]::UTF8.GetString($Body) -like ('*' + [char]0x00E0 + '*')) -and
+            ([Text.Encoding]::UTF8.GetString($Body) -like ('*' + [char]0x20AC + '*'))
+        }
+    }
+    It 'the log file is written as UTF-8' {
+        Get-Content (Join-Path $PSScriptRoot 'Install-UniTotem.ps1') -Raw | Should -Match 'Add-Content -LiteralPath .Script:LogFile -Value .line -Encoding UTF8'
+    }
+}
+
+Describe 'Select-BiosWhere' {
+    BeforeAll {
+        $script:need = 241MB
+        function F($o) { $f = @{ ActiveLetter = ''; ActiveFs = ''; ActiveFree = 0L; CFs = 'NTFS'; CFree = 100GB; CEncrypted = $false; BootMode = 'safe'; PartCount = 3; HasOta = $false }; foreach ($k in $o.Keys) { $f[$k] = $o[$k] }; return $f }
+    }
+    It 'prefers the active partition when it has room' {
+        (Select-BiosWhere (F @{ ActiveLetter = 'S'; ActiveFs = 'NTFS'; ActiveFree = 500MB }) $need).Where | Should -Be 'boot'
+    }
+    It 'uses C: when System Reserved is too small (the real laptop in Safe Mode)' {
+        (Select-BiosWhere (F @{ ActiveLetter = ''; ActiveFree = 0 }) $need).Where | Should -Be 'cdrive'
+        (Select-BiosWhere (F @{ ActiveLetter = 'S'; ActiveFs = 'NTFS'; ActiveFree = 20MB }) $need).Where | Should -Be 'cdrive'
+    }
+    It 'refuses a new partition in Safe Mode' {
+        $r = Select-BiosWhere (F @{ CEncrypted = $true }) $need
+        $r.Where | Should -Be 'none'
+        $r.Reason | Should -Match 'Safe Mode'
+    }
+    It 'new partition only in normal mode and with a free slot' {
+        (Select-BiosWhere (F @{ CFree = 1MB; BootMode = 'normal' }) $need).Where | Should -Be 'new'
+        (Select-BiosWhere (F @{ CFree = 1MB; BootMode = 'normal'; PartCount = 4 }) $need).Where | Should -Be 'none'
+        (Select-BiosWhere (F @{ CFree = 1MB; BootMode = 'normal'; PartCount = 4; HasOta = $true }) $need).Where | Should -Be 'new'
+    }
+    It 'needs C: to be NTFS' {
+        (Select-BiosWhere (F @{ CFs = 'FAT32' }) $need).Where | Should -Be 'none'
+    }
+    It 'plan text for C:' {
+        ((Build-Plan @{ Undo = $false; Mode = 'bios'; Where = 'cdrive'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null }) -join "`n") | Should -Match 'no partition change'
+    }
+}
+Describe 'MBR and CIM letters' {
+    It 'Get-PartLetter uses the CIM map before the Storage letter' {
+        $m = @{ '0:1048576' = 'D' }
+        Get-PartLetter 0 ([pscustomobject]@{ Offset = 1048576; DriveLetter = '' }) $m | Should -Be 'D'
+        Get-PartLetter 0 ([pscustomobject]@{ Offset = 5; DriveLetter = 'E' }) $m | Should -Be 'E'
+        Get-PartLetter 0 ([pscustomobject]@{ Offset = 5; DriveLetter = '' }) $m | Should -Be ''
+    }
+    It 'machine info fields fall back to unknown' {
+        Get-CimField { throw 'no CIM' } | Should -Be 'unknown'
+        Get-CimField { '  ' } | Should -Be 'unknown'
+        Get-CimField { 'LENOVO 20XW' } | Should -Be 'LENOVO 20XW'
+    }
+}
