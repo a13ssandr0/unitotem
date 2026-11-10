@@ -40,8 +40,12 @@ HOST_RE = re.compile(r'[A-Za-z0-9-]{1,15}')
 # Characters of a log line printed whole (steps, error ids, statements, messages).
 LOG_LIMIT = 4000
 
-# Operator answer that approves: exactly this word, asked twice.
-YES = 'yes'
+# Operator answers: y approves (asked twice), n cancels; nothing else is accepted.
+YES = 'y'
+NO = 'n'
+INVALID_ANSWER = 'Invalid answer, type y or n'
+Q_FIRST = 'Erase this disk and install UniTotem? (y/n)'
+Q_LAST = 'Last chance: erase this disk? (y/n)'
 
 # Partition types as reported by Get-Partition (.Type) and Win32_DiskPartition (.Type), shown with a clearer label.
 TYPE_LABELS = {
@@ -445,6 +449,67 @@ def _reject_const(name):
     raise ValueError('constant ' + name)
 
 
+class Terminal:
+    # One print lock for every thread. While a question is pending on a terminal, a log line is printed above the
+    # prompt and the prompt with what the operator already typed is drawn again below it.
+    ERASE = '\r\x1b[2K'
+
+    def __init__(self, stream=None, interactive=False):
+        self.stream = stream or sys.stdout
+        self.interactive = interactive
+        self.lock = threading.Lock()
+        self.prompt = None
+        self.buf = ''
+
+    def _write(self, text):
+        self.stream.write(text)
+        self.stream.flush()
+
+    def log(self, text):
+        with self.lock:
+            if self.interactive and self.prompt is not None:
+                self._write(self.ERASE + text + '\n' + self.prompt + self.buf)
+            else:
+                self._write(text + '\n')
+
+    def set_prompt(self, prompt):
+        with self.lock:
+            if not self.interactive:
+                if prompt is not None:
+                    self._write(prompt + '\n')
+                return
+            if prompt is None:
+                if self.prompt is not None:
+                    self._write(self.ERASE)
+                self.buf = ''
+            else:
+                self._write(self.ERASE + prompt + self.buf)
+            self.prompt = prompt
+
+    def key(self, ch):
+        # One typed character; returns the finished line on Enter, else None. Without a prompt, input is ignored.
+        with self.lock:
+            if self.prompt is None:
+                return None
+            if ch in ('\r', '\n'):
+                line = self.buf
+                self._write(self.ERASE + self.prompt + line + '\n')
+                self.buf = ''
+                self.prompt = None
+                return line
+            if ch in ('\x7f', '\x08'):
+                if self.buf:
+                    self.buf = self.buf[:-1]
+                    self._write(self.ERASE + self.prompt + self.buf)
+            elif ch == '\x15':
+                self.buf = ''
+                self._write(self.ERASE + self.prompt)
+            elif ' ' <= ch <= '~' and len(self.buf) < 32:
+                self.buf += ch
+                self._write(ch)
+        return None
+
+
 class Context:
     def __init__(self, payload, state_dir, key_path, timeout_minutes, template=TEMPLATE,
                  out=None, clock=time.monotonic, poll_interval=1.0, keep_approvals=False):
@@ -454,7 +519,8 @@ class Context:
         self.raw = {}
         self.approvals_dir = prepare_dir(os.path.join(self.state_dir, 'approvals'))
         self.lock = threading.Lock()
-        self.out_lock = threading.Lock()
+        self.term = Terminal(sys.stdout, sys.stdout.isatty() and sys.stdin is not None and sys.stdin.isatty())
+        self.current_question = None
         self.out_fn = out
         self.clock = clock
         self.poll_interval = poll_interval
@@ -481,11 +547,19 @@ class Context:
         self.load_state()
 
     def emit(self, text):
-        with self.out_lock:
-            if self.out_fn is not None:
-                self.out_fn(text)
-            else:
-                print(text, flush=True)
+        if self.out_fn is not None:
+            self.out_fn(text)
+        else:
+            self.term.log(text)
+
+    def question(self, text):
+        # The pending question: the prompt on a terminal, a log line otherwise (and in the tests).
+        self.current_question = text
+        if self.out_fn is not None:
+            if text is not None:
+                self.out_fn(self.ask(text))
+        else:
+            self.term.set_prompt(None if text is None else self.ask(text) + ' ')
 
     def close(self):
         self.stop.set()
@@ -577,7 +651,7 @@ class Context:
                       '' if self.keep_approvals else '; approvals must be given again'))
             rec = self.inventories.get(newest[1]) if newest[1] else None
             if rec is not None and newest[1] not in self.approved:
-                self.emit(self.ask(disk_question(rec, 'Erase this disk and install UniTotem? Type yes')))
+                self.question(disk_question(rec, Q_FIRST))
 
     def add_inventory(self, data, client_ip):
         rec = parse_inventory(data)
@@ -602,9 +676,10 @@ class Context:
         self.save_machine(rec['machine'])
         self.emit(render_block(rec))
         if rec['plan']['where'] == 'none':
+            self.question(None)
             self.emit(self.ask('Cannot install on this PC: ' + clean(rec['plan']['reason'], 400)))
         else:
-            self.emit(self.ask(disk_question(rec, 'Erase this disk and install UniTotem? Type yes')))
+            self.question(disk_question(rec, Q_FIRST))
         return rec
 
     def get_key(self, machine):
@@ -669,29 +744,41 @@ class Context:
         return '\x1b[38;5;%dm%s%s' % (code, tag, RESET)
 
     def apply_answer(self, text, source):
-        # The operator answers `yes` twice for the PC that reported last; anything else cancels.
-        text = text.strip()
+        # The operator answers y twice for the PC that reported last; n cancels; anything else is asked again.
+        text = text.strip().lower()
         approved = None
+        again = None
         with self.lock:
             machine = self.last_machine
             rec = self.inventories.get(machine) if machine else None
             if rec is None:
                 msg = 'no PC is waiting'
-            elif text != YES:
+            elif text not in (YES, NO):
+                msg = INVALID_ANSWER
+                again = self.current_question
+            elif text == NO:
                 self.stage = 0
                 msg = 'cancelled: nothing was changed'
+                again = False
             elif self.stage == 0:
                 self.stage = 1
-                msg = self.ask(disk_question(rec, 'Last chance: erase this disk? Type yes'))
+                msg = None
+                again = disk_question(rec, Q_LAST)
             else:
                 self.stage = 0
                 sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
                 self.approved[machine] = {'disk': sysd['number'], 'serial': sysd['serial']}
                 msg = 'approved: ' + self.host_tag(rec['hostname']) + ' disk ' + str(sysd['number'])
                 approved = machine
+                again = False
         if approved is not None and self.keep_approvals:
             self.save_machine(approved)
-        self.emit(msg)
+        if again is False:
+            self.question(None)
+        if msg is not None:
+            self.emit(msg)
+        if again:
+            self.question(again)
         if approved is not None:
             self.emit('When the PC shows its address in the OTA environment, run: ' + self.next_command(approved))
 
@@ -715,6 +802,28 @@ class Context:
             except OSError as e:
                 self.emit('approvals directory error: ' + clean(e.strerror or 'error'))
 
+    def _tty_loop(self, stream):
+        # Raw character input (no echo, ISIG kept) so the typed text can be drawn again under the log lines.
+        import select
+        import termios
+        import tty
+        fd = stream.fileno()
+        old = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+        try:
+            while not self.stop.is_set():
+                if not select.select([fd], [], [], 0.2)[0]:
+                    continue
+                data = os.read(fd, 64)
+                if not data:
+                    break
+                for ch in data.decode('ascii', 'ignore'):
+                    line = self.term.key(ch)
+                    if line is not None and line.strip():
+                        self.apply_answer(line, 'stdin')
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
     def _stdin_loop(self, stream):
         for line in stream:
             if self.stop.is_set():
@@ -725,7 +834,8 @@ class Context:
     def start_background(self, stdin_stream=None):
         threading.Thread(target=self._poll_loop, daemon=True).start()
         if stdin_stream is not None:
-            threading.Thread(target=self._stdin_loop, args=(stdin_stream,), daemon=True).start()
+            target = self._tty_loop if self.term.interactive else self._stdin_loop
+            threading.Thread(target=target, args=(stdin_stream,), daemon=True).start()
 
     def render_bootstrap_for(self, ip, port):
         host = '[' + ip + ']' if ':' in ip else ip
@@ -961,8 +1071,8 @@ def parse_args(argv):
                    help='restore approvals after a restart (default: they must be given again)')
     p.add_argument('--timeout-minutes', type=int_arg(1, 1440), default=60)
     p.add_argument('--state-dir', default=default_state_dir())
-    p.add_argument('--approve', metavar='yes', action='append', default=None,
-                   help='answer for the PC that reported last; give it twice: --approve yes --approve yes')
+    p.add_argument('--approve', metavar='y', action='append', default=None,
+                   help='answer for the PC that reported last; give it twice: --approve y --approve y')
     return p.parse_args(argv)
 
 
@@ -972,8 +1082,8 @@ def main(argv=None):
             stream.reconfigure(encoding='utf-8', errors='replace')
     args = parse_args(argv)
     if args.approve is not None:
-        if args.approve != [YES, YES]:
-            print('use exactly: --approve yes --approve yes', file=sys.stderr)
+        if [a.lower() for a in args.approve] != [YES, YES]:
+            print('use exactly: --approve y --approve y', file=sys.stderr)
             return 2
         approvals = prepare_dir(os.path.join(prepare_dir(os.path.abspath(args.state_dir)), 'approvals'))
         for _ in range(2):

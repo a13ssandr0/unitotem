@@ -1099,7 +1099,7 @@ function Wait-Approval {
         Invoke-StatusFlush
         $left = ($Deadline - (Get-Date)).TotalSeconds
         if ($left -le 0) { break }
-        if (((Get-Date) - $lastCount).TotalSeconds -ge 60) {
+        if (((Get-Date) - $lastCount).TotalSeconds -ge 300) {
             Write-Host ('Waiting for approval, ' + [int][math]::Ceiling($left / 60) + ' min left')
             $lastCount = Get-Date
         }
