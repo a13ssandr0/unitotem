@@ -66,6 +66,8 @@
 - First boot on an MBR disk creates ROOT_B and DATA (pending types 0xda/0xdb); the Raspberry 3 boots a DOS table (`work/pi3-mbr` scripts convert a GPT card in place).
 - Boot counter on the boot FAT: after 3 boots without a healthy manager the initramfs enters the OTA fallback (SSH on 2222: boot-FAT key, admin password from DATA, or open mode on a never-configured device); `unitotem-boot-ok` clears it once `/health` answers.
 - First-admin script stops with one line when `/etc` is read-only and prints one line when settings are volatile.
+- The fallback waits up to 30 s for a USB Ethernet adapter, gives the links 12 s and keeps retrying the network for ~35 min when it has no address (Raspberry Pi 3); `work/pi3-mbr/rewrite-sd-via-fallback.sh` rewrites a whole card remotely through the fallback (proven on a Pi 4: image, read-back hash, first boot creates ROOT_B and DATA on an MBR disk).
+- `/home` is a size-capped tmpfs when there is no DATA, so the first administrator can be created.
 
 #### Boot and display
 - Plymouth UniTotem theme starts before the OTA check; held until the compositor starts.
