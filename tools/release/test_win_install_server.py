@@ -468,6 +468,112 @@ class PlanTests(ServerCase):
         self.assertEqual(srv.type_label('MBR 0x99'), 'MBR type (0x99)')
 
 
+class RestartTests(ServerCase):
+    def new_ctx(self, keep=False):
+        lines = []
+        ctx = srv.Context(self.payload, self.state, None, 60, template=self.template, out=lines.append,
+                          keep_approvals=keep)
+        return ctx, lines
+
+    def test_unknown_machine_then_known(self):
+        self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'unknown'})
+        self.post_json('/inventory', inventory())
+        self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
+
+    def test_state_persisted_atomically_without_secrets(self):
+        self.post_json('/inventory', inventory())
+        d = os.path.join(self.state, 'machines')
+        self.assertEqual(os.stat(d).st_mode & 0o777, 0o700)
+        names = os.listdir(d)
+        self.assertEqual(names, ['MACHINE-AAAA.json'])
+        path = os.path.join(d, names[0])
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        with open(path, encoding='utf-8') as f:
+            text = f.read()
+        for secret in ('PRIVATE', 'BEGIN OPENSSH', 'ssh-ed25519'):
+            self.assertNotIn(secret, text)
+
+    def test_restart_restores_inventory_not_approvals(self):
+        self.post_json('/inventory', inventory())
+        self.ctx.apply_answer('yes', 'stdin')
+        self.ctx.apply_answer('yes', 'stdin')
+        self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
+        ctx, lines = self.new_ctx()
+        self.assertIn('MACHINE-AAAA', ctx.inventories)
+        self.assertEqual(ctx.get_approval('MACHINE-AAAA'), {'state': 'wait'})
+        text = '\n'.join(lines)
+        self.assertIn('approvals must be given again', text)
+        self.assertIn('Erase this disk and install UniTotem? Type yes', text)
+        ctx.apply_answer('yes', 'stdin')
+        ctx.apply_answer('yes', 'stdin')
+        self.assertEqual(ctx.get_approval('MACHINE-AAAA')['state'], 'approved')
+        ctx.close()
+
+    def test_keep_approvals_restores_them(self):
+        ctx, _ = self.new_ctx(keep=True)
+        ctx.add_inventory(inventory(), '127.0.0.1')
+        ctx.apply_answer('yes', 'stdin')
+        ctx.apply_answer('yes', 'stdin')
+        ctx.close()
+        ctx2, lines = self.new_ctx(keep=True)
+        self.assertEqual(ctx2.get_approval('MACHINE-AAAA')['state'], 'approved')
+        self.assertNotIn('Type yes', '\n'.join(lines))
+        ctx2.close()
+
+    def test_changed_disk_invalidates_a_kept_approval(self):
+        ctx, _ = self.new_ctx(keep=True)
+        ctx.add_inventory(inventory(), '127.0.0.1')
+        ctx.apply_answer('yes', 'stdin')
+        ctx.apply_answer('yes', 'stdin')
+        path = os.path.join(self.state, 'machines', 'MACHINE-AAAA.json')
+        with open(path, encoding='utf-8') as f:
+            doc = json.load(f)
+        doc['approved']['serial'] = 'OTHER'
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(doc, f)
+        ctx.close()
+        ctx2, _ = self.new_ctx(keep=True)
+        self.assertEqual(ctx2.get_approval('MACHINE-AAAA'), {'state': 'wait'})
+        ctx2.close()
+
+    def test_unreadable_state_file_ignored(self):
+        with open(os.path.join(self.state, 'machines', 'BAD-MACHINE-1.json'), 'w') as f:
+            f.write('{not json')
+        ctx, lines = self.new_ctx()
+        self.assertIn('ignored an unreadable state file', '\n'.join(lines))
+        ctx.close()
+
+    def test_same_inventory_again_is_idempotent(self):
+        self.post_json('/inventory', inventory())
+        self.ctx.apply_answer('yes', 'stdin')
+        self.ctx.apply_answer('yes', 'stdin')
+        before = len(self.lines)
+        self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
+        self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
+        self.assertEqual(len(self.lines), before)
+
+    def test_http_server_restart_keeps_the_machine(self):
+        self.post_json('/inventory', inventory())
+        self.server.shutdown()
+        self.server.server_close()
+        ctx, _ = self.new_ctx()
+        server = srv.make_server('127.0.0.1', 0, ctx)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            import http.client as hc
+            c = hc.HTTPConnection('127.0.0.1', server.server_port, timeout=10)
+            c.request('GET', '/approval?machine=MACHINE-AAAA')
+            self.assertEqual(json.loads(c.getresponse().read()), {'state': 'wait'})
+            c.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            ctx.close()
+            # tearDown shuts the first server down once more
+            self.server = srv.make_server('127.0.0.1', 0, self.ctx)
+            threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+
 class DisplayTests(ServerCase):
     def test_type_labels(self):
         self.assertEqual(srv.type_label('IFS'), 'NTFS/exFAT (IFS) (IFS)')

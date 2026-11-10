@@ -32,7 +32,8 @@ param(
     [string]$PayloadSha256,
     [long]$PayloadBytes = 0,
     [ValidateRange(1, 60)][int]$PollSeconds = 5,
-    [ValidateRange(1, 1440)][int]$TimeoutMinutes = 60
+    [ValidateRange(1, 1440)][int]$TimeoutMinutes = 60,
+    [ValidateRange(1, 120)][int]$DownloadTimeoutMinutes = 10
 )
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -62,7 +63,7 @@ $Script:StatusFile = Join-Path $Script:Here 'Install-UniTotem.status.json'
 $Script:Exit = @{ Ok = 0; Failed = 1; Usage = 2; NotAdmin = 3; Unsupported = 4; NotConfirmed = 5; Payload = 6; DecryptTimeout = 7; NoApproval = 8; Server = 9 }
 $Script:Status = [ordered]@{ Result = 'running'; Code = -1; Message = ''; Step = ''; Mode = ''; DiskNumber = $null; DiskSerial = ''; DiskModel = ''; Where = ''; Partition = ''; BootEntry = ''; ExpectedToken = ''; DryRun = [bool]$WhatIf; Time = '' }
 # Parameters as script state, so functions never depend on the caller's scope.
-$Script:Opt = @{ WhatIf = [bool]$WhatIf; Undo = [bool]$Undo; Unattended = [bool]$Unattended; Reboot = [bool]$Reboot; Disk = $Disk; ConfirmToken = $ConfirmToken; AuthorizedKey = $AuthorizedKey; PayloadDir = $PayloadDir; DecryptTimeoutMinutes = $DecryptTimeoutMinutes; Remote = [bool]$Remote; Server = $Server; PayloadSha256 = $PayloadSha256; PayloadBytes = $PayloadBytes; PollSeconds = $PollSeconds; TimeoutMinutes = $TimeoutMinutes; MachineId = '' }
+$Script:Opt = @{ WhatIf = [bool]$WhatIf; Undo = [bool]$Undo; Unattended = [bool]$Unattended; Reboot = [bool]$Reboot; Disk = $Disk; ConfirmToken = $ConfirmToken; AuthorizedKey = $AuthorizedKey; PayloadDir = $PayloadDir; DecryptTimeoutMinutes = $DecryptTimeoutMinutes; Remote = [bool]$Remote; Server = $Server; PayloadSha256 = $PayloadSha256; PayloadBytes = $PayloadBytes; PollSeconds = $PollSeconds; TimeoutMinutes = $TimeoutMinutes; DownloadTimeoutMinutes = $DownloadTimeoutMinutes; MachineId = '' }
 $Script:Re = @{
     Server  = 'http://[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{2,5}'
     MachineId = '[A-Za-z0-9-]{8,64}'
@@ -623,6 +624,7 @@ function Show-Result {
     Say 'After the restart the screen shows the address. Then run on the host: deploy/remote-deploy.sh recover ADDRESS --parts DIR'
     Say 'To cancel before the install: run this script with -Undo.'
     Write-Status 'prepared' 0 'boot entry created'
+    if ($Script:Opt.Remote) { Invoke-StatusFlushFinal }
     $go = $false
     if ($Script:Opt.Unattended) { $go = [bool]$Script:Opt.Reboot } else { $go = Read-Word 'Type RESTART to restart now' 'RESTART' }
     if ($go) { Invoke-Native 'shutdown.exe' @('/r', '/t', '10', '/c', 'UniTotem OTA') | Out-Null }
@@ -869,17 +871,56 @@ function Get-Printable {
 }
 
 function Send-Json {
-    param([string]$Path, $Body)
+    param([string]$Path, $Body, [int]$TimeoutSec = 15)
     $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $Body -Depth 6 -Compress))
-    return (Invoke-RestMethod -Uri ($Script:Opt.Server + $Path) -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 15)
+    return (Invoke-RestMethod -Uri ($Script:Opt.Server + $Path) -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec $TimeoutSec)
 }
 
-# Progress line to the server; never fails the run.
+# Seconds to wait after the Nth consecutive failure: 5, 10, 20, 30, 30, ...
+function Get-Backoff {
+    param([int]$Attempt)
+    $v = 5 * [math]::Pow(2, [math]::Max(0, $Attempt - 1))
+    if ($v -gt 30) { $v = 30 }
+    return [int]$v
+}
+
+# Progress lines for the server: a bounded local queue, sent when the host answers, never blocking or fatal.
+$Script:StatusQueue = New-Object System.Collections.Generic.Queue[object]
+$Script:StatusFails = 0
+$Script:StatusNext = [datetime]::MinValue
+$Script:StatusDropped = 0
+$Script:StatusQueueMax = 200
+
+function Invoke-StatusFlush {
+    param([switch]$Force)
+    while ($Script:StatusQueue.Count -gt 0) {
+        if (-not $Force -and (Get-Date) -lt $Script:StatusNext) { return }
+        try { Send-Json '/status' $Script:StatusQueue.Peek() 5 | Out-Null } catch {
+            $Script:StatusFails++
+            $wait = Get-Backoff $Script:StatusFails
+            $Script:StatusNext = (Get-Date).AddSeconds($wait)
+            Write-Log ('status post failed (' + $Script:StatusQueue.Count + ' queued, retry in ' + $wait + ' s): ' + $_.Exception.Message)
+            return
+        }
+        [void]$Script:StatusQueue.Dequeue()
+        $Script:StatusFails = 0
+    }
+}
+
 function Send-Remote {
     param([string]$Text)
     $level = 'info'
     if ($Text -like 'Stopped:*' -or $Text -like 'Failed:*') { $level = 'error' } elseif ($Text -like 'Ready*') { $level = 'ok' }
-    try { Send-Json '/status' @{ machine = $Script:Opt.MachineId; level = $level; text = (Get-Printable $Text 4000) } | Out-Null } catch { Write-Log ('status post: ' + $_.Exception.Message) }
+    try {
+        $Script:StatusQueue.Enqueue(@{ machine = $Script:Opt.MachineId; level = $level; text = (Get-Printable $Text 4000) })
+        while ($Script:StatusQueue.Count -gt $Script:StatusQueueMax) { [void]$Script:StatusQueue.Dequeue(); $Script:StatusDropped++; Write-Log 'status queue full: oldest line dropped' }
+        Invoke-StatusFlush
+    } catch { Write-Log ('status: ' + $_.Exception.Message) }
+}
+
+# Last attempts before the restart; the local steps never depend on the host.
+function Invoke-StatusFlushFinal {
+    for ($i = 0; $i -lt 3 -and $Script:StatusQueue.Count -gt 0; $i++) { Invoke-StatusFlush -Force; if ($Script:StatusQueue.Count -gt 0) { Start-Sleep -Seconds 2 } }
 }
 
 function Get-MachineId {
@@ -1009,38 +1050,142 @@ function Get-Inventory {
     }
 }
 
-# Polls the host until it approves; $null on timeout.
+# Sends the inventory, retrying with backoff until the deadline; $true when the host took it.
+function Send-InventoryUntil {
+    param($Inv, [datetime]$Deadline)
+    $n = 0
+    while ((Get-Date) -lt $Deadline) {
+        try {
+            Send-Json '/inventory' $Inv | Out-Null
+            if ($n -gt 0) { Write-Host 'Server reachable again, inventory sent' }
+            return $true
+        } catch {
+            $n++
+            if ($n -eq 1) { Write-Host ('Server not reachable, retrying (' + (Get-Date -Format 'HH:mm:ss') + ')') }
+            Write-Log ('inventory post: ' + $_.Exception.Message)
+            Start-Sleep -Seconds (Get-Backoff $n)
+        }
+    }
+    return $false
+}
+
+# Polls the host until it approves; $null at the deadline. A host that restarted and forgot this PC ("unknown")
+# gets the inventory again; connection errors never end the wait.
 function Wait-Approval {
-    $end = (Get-Date).AddMinutes($Script:Opt.TimeoutMinutes)
-    while ((Get-Date) -lt $end) {
+    param($Inv, [datetime]$Deadline)
+    $errs = 0
+    $lost = $false
+    $lastCount = [datetime]::MinValue
+    while ((Get-Date) -lt $Deadline) {
+        $pause = $Script:Opt.PollSeconds
         try {
             $r = Invoke-RestMethod -Uri ($Script:Opt.Server + '/approval?machine=' + $Script:Opt.MachineId) -TimeoutSec 15
+            $errs = 0
+            if ($lost) { $lost = $false; Write-Host 'Server reachable again' }
             if ($r.state -ceq 'approved') { return $r }
-        } catch { Write-Log ('approval poll: ' + $_.Exception.Message) }
-        Start-Sleep -Seconds $Script:Opt.PollSeconds
+            if ($r.state -ceq 'unknown' -and $null -ne $Inv) {
+                try {
+                    Send-Json '/inventory' $Inv | Out-Null
+                    Write-Host 'Server did not know this PC, inventory sent again'
+                    Write-Log 'inventory sent again (host did not know this PC)'
+                } catch { Write-Log ('inventory again: ' + $_.Exception.Message) }
+            }
+        } catch {
+            $errs++
+            $pause = Get-Backoff $errs
+            Write-Log ('approval poll: ' + $_.Exception.Message)
+            if (-not $lost) { $lost = $true; Write-Host ('Server not reachable, retrying (' + (Get-Date -Format 'HH:mm:ss') + ')') }
+        }
+        Invoke-StatusFlush
+        $left = ($Deadline - (Get-Date)).TotalSeconds
+        if ($left -le 0) { break }
+        if (((Get-Date) - $lastCount).TotalSeconds -ge 60) {
+            Write-Host ('Waiting for approval, ' + [int][math]::Ceiling($left / 60) + ' min left')
+            $lastCount = Get-Date
+        }
+        Start-Sleep -Seconds ([math]::Max(1, [math]::Min($pause, [math]::Ceiling($left))))
     }
     return $null
 }
 
-# Downloads and verifies the payload; returns the folder holding payload\.
+# One HTTP GET stream starting at byte From (Range). Replaced by a mock in the tests.
+function Open-HttpStream {
+    param([string]$Url, [long]$From)
+    $req = [Net.HttpWebRequest]::Create($Url)
+    $req.Proxy = $null
+    $req.Timeout = 30000
+    $req.ReadWriteTimeout = 30000
+    if ($From -gt 0) { $req.AddRange($From) }
+    $resp = $req.GetResponse()
+    return @{ Stream = $resp.GetResponseStream(); Response = $resp; Resumed = ([int]$resp.StatusCode -eq 206) }
+}
+
+# Downloads Url to Path (Total bytes) with Range resume and backoff until the deadline; $true when complete.
+function Receive-File {
+    param([string]$Url, [string]$Path, [long]$Total, [datetime]$Deadline)
+    $attempt = 0
+    while ($true) {
+        $have = 0L
+        if (Test-Path -LiteralPath $Path) { $have = (Get-Item -LiteralPath $Path).Length }
+        if ($have -eq $Total) { return $true }
+        if ($have -gt $Total) { Remove-Item -LiteralPath $Path -Force; $have = 0 }
+        if ((Get-Date) -ge $Deadline) { return $false }
+        try {
+            $h = Open-HttpStream $Url $have
+            $mode = [IO.FileMode]::Append
+            if ($have -gt 0 -and -not $h.Resumed) { $mode = [IO.FileMode]::Create }
+            $fs = New-Object IO.FileStream($Path, $mode, [IO.FileAccess]::Write)
+            try {
+                $buf = New-Object byte[] 1048576
+                while (($n = $h.Stream.Read($buf, 0, $buf.Length)) -gt 0) { $fs.Write($buf, 0, $n) }
+            } finally {
+                $fs.Dispose()
+                $h.Stream.Dispose()
+                if ($h.Response) { $h.Response.Close() }
+            }
+            $attempt = 0
+        } catch {
+            $attempt++
+            Write-Log ('download: ' + $_.Exception.Message)
+            Start-Sleep -Seconds (Get-Backoff $attempt)
+        }
+        Invoke-StatusFlush
+    }
+}
+
+# Downloads and verifies the payload; returns the folder holding payload\. The host may come and go meanwhile.
 function Get-RemotePayload {
     $zip = Join-Path $Script:Here 'payload.zip'
     $dir = Join-Path $Script:Here 'payload-files'
     if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+    $deadline = (Get-Date).AddMinutes($Script:Opt.DownloadTimeoutMinutes)
     $ok = $false
-    for ($try = 1; $try -le 3 -and -not $ok; $try++) {
-        if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-        $wc = New-Object Net.WebClient
-        $wc.Proxy = $null
-        try { $wc.DownloadFile(($Script:Opt.Server + '/payload.zip'), $zip) } catch { Write-Log ('download: ' + $_.Exception.Message); continue } finally { $wc.Dispose() }
+    while (-not $ok) {
+        if (-not (Receive-File ($Script:Opt.Server + '/payload.zip') $zip $Script:Opt.PayloadBytes $deadline)) { Stop-Script 'the payload download did not finish in time; nothing was changed' $Script:Exit.Payload }
         $h = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($h -ceq $Script:Opt.PayloadSha256 -and (Get-Item -LiteralPath $zip).Length -eq $Script:Opt.PayloadBytes) { $ok = $true }
+        if ($h -ceq $Script:Opt.PayloadSha256) { $ok = $true } else {
+            Write-Log 'payload checksum mismatch: downloading again'
+            Remove-Item -LiteralPath $zip -Force
+        }
     }
-    if (-not $ok) { Stop-Script 'the payload download failed its checksum' $Script:Exit.Payload }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::ExtractToDirectory($zip, $dir)
     Remove-Item -LiteralPath $zip -Force
     return (Join-Path $dir 'unitotem-windows-installer\payload')
+}
+
+# The PC's public key from the host (retried; nothing is changed on the PC before it arrives).
+function Get-RemoteKey {
+    $deadline = (Get-Date).AddMinutes($Script:Opt.DownloadTimeoutMinutes)
+    $n = 0
+    while ((Get-Date) -lt $deadline) {
+        try { return ([string](Invoke-RestMethod -Uri ($Script:Opt.Server + '/key?machine=' + $Script:Opt.MachineId) -TimeoutSec 15)).Trim() } catch {
+            $n++
+            Write-Log ('key fetch: ' + $_.Exception.Message)
+            Start-Sleep -Seconds (Get-Backoff $n)
+        }
+    }
+    Stop-Script 'cannot fetch the OTA key from the host; nothing was changed' $Script:Exit.Server
 }
 
 function Invoke-Remote {
@@ -1054,13 +1199,13 @@ function Invoke-Remote {
     $Script:Opt.MachineId = Get-MachineId
     Set-Step 'inventory'
     $inv = Get-Inventory $fw
+    $deadline = (Get-Date).AddMinutes($Script:Opt.TimeoutMinutes)
     Set-Step 'send the inventory'
-    $planNone = ($inv.plan.where -eq 'none')
-    try { Send-Json '/inventory' $inv | Out-Null } catch { Stop-Script ('cannot reach the host: ' + $_.Exception.Message) $Script:Exit.Server }
-    if ($planNone) { Stop-Script ('cannot install: ' + $inv.plan.reason) $Script:Exit.Unsupported }
+    if (-not (Send-InventoryUntil $inv $deadline)) { Stop-Script 'no approval from the host (it did not answer); nothing was changed' $Script:Exit.NoApproval }
+    if ($inv.plan.where -eq 'none') { Stop-Script ('cannot install: ' + $inv.plan.reason) $Script:Exit.Unsupported }
     Set-Step 'wait for approval'
     Say ('Inventory sent. Waiting for approval on the host (up to ' + $Script:Opt.TimeoutMinutes + ' min). Nothing has been changed.')
-    $ap = Wait-Approval
+    $ap = Wait-Approval $inv $deadline
     if ($null -eq $ap) { Stop-Script 'no approval from the host; nothing was changed' $Script:Exit.NoApproval }
     $sd = Get-SystemDisk
     # The host's approval names machine, disk number and serial; this PC checks all three against itself.
@@ -1071,16 +1216,17 @@ function Invoke-Remote {
     Set-Step 'download the payload'
     $pd = Get-RemotePayload
     Set-Step 'fetch the OTA key'
-    $Script:Opt.PayloadDir = $pd
     # The public key of this PC comes from the host after the approval; it is not part of the payload.
     $key = Join-Path $pd 'authorized_key.pub'
-    try { $line = [string](Invoke-RestMethod -Uri ($Script:Opt.Server + '/key?machine=' + $Script:Opt.MachineId) -TimeoutSec 15) } catch { Stop-Script 'cannot fetch the OTA key from the host' $Script:Exit.Server }
+    $line = Get-RemoteKey
     [IO.File]::WriteAllText($key, ($line.Trim() + "`n"), (New-Object Text.UTF8Encoding($false)))
+    $Script:Opt.PayloadDir = $pd
     $Script:Opt.AuthorizedKey = $key
     $Script:Opt.Unattended = $true
     $Script:Opt.Reboot = $true
     $Script:Opt.Disk = [int]$sd.Disk.Number
     $Script:Opt.ConfirmToken = $word
+    # From here on the host is not needed: file copies, bcdedit and the restart run from what is already local.
     Set-Step 'prepare the boot files'
     if ($fw -eq 'bios') { Invoke-InstallBios } else { Invoke-Install }
 }

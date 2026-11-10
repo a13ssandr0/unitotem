@@ -447,8 +447,11 @@ def _reject_const(name):
 
 class Context:
     def __init__(self, payload, state_dir, key_path, timeout_minutes, template=TEMPLATE,
-                 out=None, clock=time.monotonic, poll_interval=1.0):
+                 out=None, clock=time.monotonic, poll_interval=1.0, keep_approvals=False):
         self.state_dir = prepare_dir(os.path.abspath(state_dir))
+        self.machines_dir = prepare_dir(os.path.join(self.state_dir, 'machines'))
+        self.keep_approvals = keep_approvals
+        self.raw = {}
         self.approvals_dir = prepare_dir(os.path.join(self.state_dir, 'approvals'))
         self.lock = threading.Lock()
         self.out_lock = threading.Lock()
@@ -475,6 +478,7 @@ class Context:
         self.served_path = payload
         self.size, self.sha = file_digest(self.served_path)
         clean_approvals(self.approvals_dir)
+        self.load_state()
 
     def emit(self, text):
         with self.out_lock:
@@ -518,9 +522,71 @@ class Context:
             q.append(now)
             return True
 
+    # State files (no private keys, no payload): one JSON per machine, written atomically, mode 0600. Approvals are
+    # not restored after a restart unless --keep-approvals.
+    def save_machine(self, machine):
+        with self.lock:
+            doc = {'inventory': self.raw[machine], 'client_ip': self.inventories[machine]['client_ip'],
+                   'approved': self.approved.get(machine) if self.keep_approvals else None}
+        path = os.path.join(self.machines_dir, machine + '.json')
+        tmp = os.path.join(self.machines_dir, '.tmp-' + secrets.token_hex(6))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(doc, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+    def load_state(self):
+        newest = (0.0, None)
+        restored = 0
+        for name in sorted(os.listdir(self.machines_dir)):
+            if name.startswith('.') or not name.endswith('.json'):
+                continue
+            path = os.path.join(self.machines_dir, name)
+            try:
+                with open(path, encoding='utf-8') as f:
+                    doc = json.load(f)
+                rec = parse_inventory(doc['inventory'])
+                ip = str(doc['client_ip'])
+                ipaddress.ip_address(ip)
+                rec['client_ip'] = ip
+                if self.explicit_key is not None:
+                    priv = self.key_path[:-4] if self.key_path.endswith('.pub') else None
+                    line = self.explicit_key
+                else:
+                    priv, line = ensure_machine_key(ip)
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                self.emit('ignored an unreadable state file: ' + clean(name, 80))
+                continue
+            m = rec['machine']
+            self.inventories[m] = rec
+            self.raw[m] = doc['inventory']
+            self.keys[m] = {'priv': priv, 'line': line}
+            ap = doc.get('approved')
+            if self.keep_approvals and isinstance(ap, dict) and ap.get('disk') == rec['system_disk'] \
+                    and ap.get('serial') == self.system_serial(rec):
+                self.approved[m] = {'disk': ap['disk'], 'serial': ap['serial']}
+            mtime = os.stat(path).st_mtime
+            if rec['plan']['where'] != 'none' and mtime >= newest[0]:
+                newest = (mtime, m)
+            restored += 1
+        self.last_machine = newest[1]
+        if restored:
+            self.emit('restored %d PC(s) from %s%s' % (restored, clean(self.machines_dir, 200),
+                      '' if self.keep_approvals else '; approvals must be given again'))
+            rec = self.inventories.get(newest[1]) if newest[1] else None
+            if rec is not None and newest[1] not in self.approved:
+                self.emit(self.ask(disk_question(rec, 'Erase this disk and install UniTotem? Type yes')))
+
     def add_inventory(self, data, client_ip):
         rec = parse_inventory(data)
         rec['client_ip'] = client_ip
+        with self.lock:
+            same = self.raw.get(rec['machine']) == data and \
+                self.inventories[rec['machine']]['client_ip'] == client_ip
+        if same:
+            return self.inventories[rec['machine']]  # idempotent: nothing changes, no new question
         if self.explicit_key is not None:
             priv = self.key_path[:-4] if self.key_path.endswith('.pub') else None
             line = self.explicit_key
@@ -529,9 +595,11 @@ class Context:
         with self.lock:
             self.inventories[rec['machine']] = rec
             self.keys[rec['machine']] = {'priv': priv, 'line': line}
+            self.raw[rec['machine']] = data
             self.approved.pop(rec['machine'], None)
             self.last_machine = rec['machine'] if rec['plan']['where'] != 'none' else None
             self.stage = 0
+        self.save_machine(rec['machine'])
         self.emit(render_block(rec))
         if rec['plan']['where'] == 'none':
             self.emit(self.ask('Cannot install on this PC: ' + clean(rec['plan']['reason'], 400)))
@@ -578,6 +646,8 @@ class Context:
             if self.get_approval_locked(machine):
                 ap = self.approved[machine]
                 return {'state': 'approved', 'machine': machine, 'disk': ap['disk'], 'serial': ap['serial']}
+            if machine not in self.inventories:
+                return {'state': 'unknown'}  # the client sends its inventory again
         return {'state': 'wait'}
 
     def ask(self, text):
@@ -619,6 +689,8 @@ class Context:
                 self.approved[machine] = {'disk': sysd['number'], 'serial': sysd['serial']}
                 msg = 'approved: ' + self.host_tag(rec['hostname']) + ' disk ' + str(sysd['number'])
                 approved = machine
+        if approved is not None and self.keep_approvals:
+            self.save_machine(approved)
         self.emit(msg)
         if approved is not None:
             self.emit('When the PC shows its address in the OTA environment, run: ' + self.next_command(approved))
@@ -885,6 +957,8 @@ def parse_args(argv):
     p.add_argument('--advertise', type=ip_arg, default=None)
     p.add_argument('--payload', default=DEFAULT_PAYLOAD)
     p.add_argument('--authorized-key', default=None, metavar='FILE')
+    p.add_argument('--keep-approvals', action='store_true',
+                   help='restore approvals after a restart (default: they must be given again)')
     p.add_argument('--timeout-minutes', type=int_arg(1, 1440), default=60)
     p.add_argument('--state-dir', default=default_state_dir())
     p.add_argument('--approve', metavar='yes', action='append', default=None,
@@ -908,7 +982,8 @@ def main(argv=None):
         return 0
 
     try:
-        ctx = Context(args.payload, args.state_dir, args.authorized_key, args.timeout_minutes)
+        ctx = Context(args.payload, args.state_dir, args.authorized_key, args.timeout_minutes,
+                      keep_approvals=args.keep_approvals)
     except (OSError, ValueError) as e:
         print('error: ' + str(e), file=sys.stderr)
         return 2
