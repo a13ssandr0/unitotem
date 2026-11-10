@@ -201,6 +201,8 @@ function Build-Plan {
     $need = [math]::Round($Ctx.NeededBytes / 1MB)
     if ($Ctx.Where -eq 'boot') {
         $p.Add('Put the boot files (' + $need + ' MiB) on the boot partition: C: and BitLocker are not touched')
+    } elseif ($Ctx.Where -eq 'cdrive') {
+        $p.Add('Put the boot files (' + $need + ' MiB) in C:\' + $Script:BiosDir + ': no partition change, only file copies and bcdedit')
     } else {
         $p.Add('Shrink C: by ' + $mb + ' MiB (the boot partition has too little space)')
         $p.Add('Create a FAT32 partition labelled ' + $Script:Label + ' (' + $mb + ' MiB) and turn BitLocker off on it only')
@@ -221,7 +223,7 @@ function Build-Plan {
 function Write-Log {
     param([string]$Text)
     $line = '{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Text
-    try { Add-Content -LiteralPath $Script:LogFile -Value $line -Encoding ASCII } catch { }
+    try { Add-Content -LiteralPath $Script:LogFile -Value $line -Encoding UTF8 } catch { }
 }
 function Say {
     param([string]$Text)
@@ -236,7 +238,7 @@ function Write-Status {
     $Script:Status.Code = $Code
     $Script:Status.Message = $Message
     $Script:Status.Time = (Get-Date -Format 's')
-    try { ($Script:Status | ConvertTo-Json) | Set-Content -LiteralPath $Script:StatusFile -Encoding ASCII } catch { Write-Log ('status: ' + $_.Exception.Message) }
+    try { ($Script:Status | ConvertTo-Json) | Set-Content -LiteralPath $Script:StatusFile -Encoding UTF8 } catch { Write-Log ('status: ' + $_.Exception.Message) }
 }
 $Script:Step = ''
 function Set-Step { param([string]$Name) $Script:Step = $Name; $Script:Status.Step = $Name }
@@ -442,6 +444,73 @@ function Get-SystemDisk {
 }
 
 # Volume facts of a letter from Win32_LogicalDisk: @{ FileSystem; SizeRemaining; Size; Label } or $null.
+# normal | safe. SAFEBOOT_OPTION is set by Windows in Safe Mode; SystemInformation.BootMode is the .NET view of it.
+function Get-BootMode {
+    if ($env:SAFEBOOT_OPTION) { return 'safe' }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        if ([string][Windows.Forms.SystemInformation]::BootMode -ne 'Normal') { return 'safe' }
+    } catch { }
+    return 'normal'
+}
+
+# "disk:offset" -> drive letter, from Win32_LogicalDiskToPartition (the Storage module shows no letters in Safe Mode).
+function Get-CimLetterMap {
+    $map = @{}
+    try {
+        foreach ($ld in (Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3')) {
+            foreach ($dp in @(Get-CimAssociatedInstance -InputObject $ld -ResultClassName Win32_DiskPartition)) {
+                $map[([string]$dp.DiskIndex + ':' + [string][long]$dp.StartingOffset)] = ([string]$ld.DeviceID).Substring(0, 1)
+            }
+        }
+    } catch { Write-Log ('letter map: ' + $_.Exception.Message) }
+    return $map
+}
+function Get-PartLetter {
+    param([int]$DiskNumber, $Part, $Map)
+    $k = [string]$DiskNumber + ':' + [string][long]$Part.Offset
+    if ($Map.ContainsKey($k)) { return [string]$Map[$k] }
+    if ($Part.DriveLetter) { return [string]$Part.DriveLetter }
+    return ''
+}
+
+# Primary entries of the MBR of a physical disk: @{ Type; Active; Offset }. Empty when it cannot be read.
+function Get-MbrEntries {
+    param([int]$DiskIndex)
+    $b = New-Object byte[] 512
+    try {
+        $fs = New-Object IO.FileStream(('\\.\PHYSICALDRIVE' + $DiskIndex), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try { [void]$fs.Read($b, 0, 512) } finally { $fs.Dispose() }
+    } catch { Write-Log ('MBR read: ' + $_.Exception.Message); return @() }
+    if ($b[510] -ne 0x55 -or $b[511] -ne 0xAA) { return @() }
+    $out = @()
+    for ($i = 0; $i -lt 4; $i++) {
+        $o = 446 + 16 * $i
+        if ($b[$o + 4] -ne 0) { $out += @{ Type = [int]$b[$o + 4]; Active = ($b[$o] -eq 0x80); Offset = [long][BitConverter]::ToUInt32($b, $o + 8) * 512 } }
+    }
+    return $out
+}
+
+# Where the boot files of a legacy-BIOS install go. In order: the active partition (when it has the room), C: (NTFS,
+# not encrypted), a new FAT32 partition (needs the Storage services, which Safe Mode does not run). Pure.
+#   Facts: ActiveLetter, ActiveFs, ActiveFree, CFs, CFree, CEncrypted, BootMode, PartCount, HasOta
+function Select-BiosWhere {
+    param([hashtable]$F, [long]$Need)
+    if ($F.ActiveLetter -and ($F.ActiveFs -in 'NTFS', 'FAT32') -and (Get-StorageChoice $F.ActiveFree $Need) -eq 'boot') {
+        return @{ Where = 'boot'; Reason = 'the active partition has room' }
+    }
+    if ($F.CFs -eq 'NTFS' -and -not $F.CEncrypted -and (Get-StorageChoice $F.CFree $Need) -eq 'boot') {
+        return @{ Where = 'cdrive'; Reason = 'the active partition is too small or has no drive letter; C: is NTFS, not encrypted, with room' }
+    }
+    if ($F.BootMode -ne 'normal') {
+        return @{ Where = 'none'; Reason = 'Storage services are stopped in Safe Mode and no existing partition can hold the files: restart in normal mode' }
+    }
+    if ($F.PartCount -ge 4 -and -not $F.HasOta) {
+        return @{ Where = 'none'; Reason = 'no existing partition can hold the files and the MBR disk has no free primary slot' }
+    }
+    return @{ Where = 'new'; Reason = 'no existing partition can hold the files; a new FAT32 partition is created' }
+}
+
 function Get-LetterVolume {
     param([string]$Letter)
     if (-not (Test-FullMatch $Letter $Script:Re.Letter)) { throw 'invalid letter' }
@@ -600,8 +669,11 @@ function Invoke-Undo {
     $sysLetter = [string]$st.SystemLetter
     if ($mode -eq 'bios') {
         if (-not (Test-FullMatch $sysLetter $Script:Re.Letter)) { Stop-Script 'state file invalid' }
-        $dir = $sysLetter + ':\' + $Script:BiosDir
-        if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+        foreach ($kl in @($sysLetter, [string]$st.KernelLetter)) {
+            if (-not (Test-FullMatch $kl $Script:Re.Letter)) { continue }
+            $dir = $kl + ':\' + $Script:BiosDir
+            if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+        }
         $img = $sysLetter + ':\' + $Script:BiosImage
         if (Test-Path -LiteralPath $img) { Remove-Item -LiteralPath $img -Force }
     } else {
@@ -692,7 +764,8 @@ function Invoke-Install {
 }
 
 # Legacy BIOS: the Windows boot manager starts GRUB 2 (lnxboot.img + core.img) as a boot-sector entry; GRUB reads
-# kernel and initrd from NTFS or FAT32. They go on the active (boot) partition when they fit, else on a new FAT32.
+# kernel and initrd from NTFS or FAT32. They go on the active (boot) partition when they fit, else on C: (NTFS, not
+# encrypted: only file copies and bcdedit, no Storage module), else on a new FAT32 partition.
 function Invoke-InstallBios {
     $PayloadDir = $Script:Opt.PayloadDir
     if (-not $PayloadDir) { $PayloadDir = Join-Path $Script:Here 'payload' }
@@ -703,46 +776,57 @@ function Invoke-InstallBios {
 
     $sd = Get-SystemDisk
     if ([string]$sd.Disk.PartitionStyle -ne 'MBR') { Stop-Script 'the system disk is not MBR' $Script:Exit.Unsupported }
-    $active = @(Get-PartitionsSafe $sd.Disk.Number | Where-Object { $_.IsActive })
+    Set-Step 'choose the place for the boot files'
+    $map = Get-CimLetterMap
+    $parts = @(Get-PartitionsSafe $sd.Disk.Number)
+    $active = @($parts | Where-Object { $_.IsActive })
     if ($active.Count -ne 1) { Stop-Script 'no single active (boot) partition on the system disk' $Script:Exit.Unsupported }
     $ap = $active[0]
+    $actLetter = Get-PartLetter $sd.Disk.Number $ap $map
+    $actFs = ''; $actFree = 0L
+    if ($actLetter) { $v = Get-LetterVolume $actLetter; if ($v) { $actFs = $v.FileSystem; $actFree = $v.SizeRemaining + (Get-FolderBytes ($actLetter + ':\' + $Script:BiosDir)) } }
+    $cv = Get-LetterVolume $sd.Letter
+    $cFree = 0L; $cFs = ''
+    if ($cv) { $cFs = $cv.FileSystem; $cFree = $cv.SizeRemaining + (Get-FolderBytes ($sd.Letter + ':\' + $Script:BiosDir)) }
+    $facts = @{ ActiveLetter = $actLetter; ActiveFs = $actFs; ActiveFree = $actFree; CFs = $cFs; CFree = $cFree; CEncrypted = (Test-NeedsDecrypt (Get-BitLockerStatus $sd.Letter)); BootMode = (Get-BootMode); PartCount = $parts.Count; HasOta = (@(Find-OtaPartition $sd.Disk.Number).Count -gt 0) }
+    $choice = Select-BiosWhere $facts ($kiBytes + 1MB)
+    $where = $choice.Where
+    $Script:Status.Mode = 'bios'; $Script:Status.Where = $where
+    if ($where -eq 'none') { Stop-Script $choice.Reason $Script:Exit.Unsupported }
+    $partBytes = Get-PartitionBytes $kiBytes
+    if ($where -eq 'new' -and -not $facts.HasOta) {
+        $sup = Get-SupportedSize $sd
+        if (-not (Test-ShrinkFeasible $sd.Part.Size $sup.SizeMin $partBytes)) { Stop-Script 'C: cannot shrink enough; free disk space first' $Script:Exit.Unsupported }
+    }
+    $ctx = @{ Undo = $false; Mode = 'bios'; Where = $where; NeededBytes = $kiBytes; PartBytes = $partBytes; Token = $token }
+    Say 'Secure Boot: not applicable (legacy BIOS)'
+    Say ('Destination: ' + $where + ' (' + $choice.Reason + ')')
+    Show-Disk $sd.Disk
+    Say 'UniTotem will ERASE this whole disk when the host starts the install. Windows will be gone.'
+    Show-Plan $ctx
+    Confirm-Erase $sd.Disk
+    if ($Script:Opt.WhatIf) { Say 'Dry run: nothing changed.'; Write-Status 'dry-run' 0 'plan printed'; return }
+
+    # imgLetter holds the loader image (bootmgr must read it); kletter holds kernel and initrd.
     $assigned = $false
-    if ($ap.DriveLetter) { $sysLetter = [string]$ap.DriveLetter } else {
-        $sysLetter = Get-FreeLetter (Get-UsedLetters)
-        Add-PartitionAccessPath -DiskNumber $sd.Disk.Number -PartitionNumber $ap.PartitionNumber -AccessPath ($sysLetter + ':')
+    $imgLetter = $actLetter
+    if ($where -eq 'cdrive') {
+        $imgLetter = $sd.Letter
+    } elseif (-not $imgLetter) {
+        $imgLetter = Get-FreeLetter (Get-UsedLetters)
+        Add-PartitionAccessPath -DiskNumber $sd.Disk.Number -PartitionNumber $ap.PartitionNumber -AccessPath ($imgLetter + ':')
         $assigned = $true
     }
-    if (-not (Test-FullMatch $sysLetter $Script:Re.Letter)) { throw 'boot partition has no drive letter' }
+    if (-not (Test-FullMatch $imgLetter $Script:Re.Letter)) { throw 'boot partition has no drive letter' }
     $guid = $null
     try {
-        $vol = Get-LetterVolume $sysLetter
-        if ($null -eq $vol) { throw ('volume ' + $sysLetter + ': not found') }
-        $free = [long]$vol.SizeRemaining + (Get-FolderBytes ($sysLetter + ':\' + $Script:BiosDir))
-        $where = Get-StorageChoice $free ($kiBytes + 1MB)
-        if ($vol.FileSystem -notin 'NTFS', 'FAT32') { $where = 'new' }
-        $Script:Status.Mode = 'bios'; $Script:Status.Where = $where
-        $partBytes = Get-PartitionBytes $kiBytes
-        if ($where -eq 'new') {
-            if (@(Get-PartitionsSafe $sd.Disk.Number).Count -ge 4 -and @(Find-OtaPartition $sd.Disk.Number).Count -eq 0) { Stop-Script 'the MBR disk has no free primary partition slot' $Script:Exit.Unsupported }
-            if (@(Find-OtaPartition $sd.Disk.Number).Count -eq 0) {
-                $sup = Get-SupportedSize $sd
-                if (-not (Test-ShrinkFeasible $sd.Part.Size $sup.SizeMin $partBytes)) { Stop-Script 'C: cannot shrink enough; free disk space first' $Script:Exit.Unsupported }
-            }
-        }
-        $bl = Get-BitLockerStatus $sysLetter
-        $ctx = @{ Undo = $false; Mode = 'bios'; Where = $where; NeededBytes = $kiBytes; PartBytes = $partBytes; Token = $token }
-        Say 'Secure Boot: not applicable (legacy BIOS)'
-        Say ('Boot partition {0}: free {1} MiB, {2}' -f $sysLetter, [math]::Round($free / 1MB), $vol.FileSystem)
-        Show-Disk $sd.Disk
-        Say 'UniTotem will ERASE this whole disk when the host starts the install. Windows will be gone.'
-        Show-Plan $ctx
-        Confirm-Erase $sd.Disk
-        if ($Script:Opt.WhatIf) { Say 'Dry run: nothing changed.'; Write-Status 'dry-run' 0 'plan printed'; return }
-
+        Set-Step 'copy the boot files'
         if ($where -eq 'boot') {
             # The boot partition is left unencrypted by design; if it is not, GRUB cannot read it.
-            if (-not (Disable-Volume $sysLetter ($Script:Opt.DecryptTimeoutMinutes * 60))) { Stop-Script ('decryption of the boot partition did not finish in ' + $Script:Opt.DecryptTimeoutMinutes + ' min; run this script again to continue') $Script:Exit.DecryptTimeout }
-            $kletter = $sysLetter
+            if (-not (Disable-Volume $imgLetter ($Script:Opt.DecryptTimeoutMinutes * 60))) { Stop-Script ('decryption of the boot partition did not finish in ' + $Script:Opt.DecryptTimeoutMinutes + ' min; run this script again to continue') $Script:Exit.DecryptTimeout }
+            $kletter = $imgLetter
+        } elseif ($where -eq 'cdrive') {
+            $kletter = $sd.Letter
         } else {
             $kletter = New-OtaPartition $sd $partBytes
         }
@@ -753,21 +837,22 @@ function Invoke-InstallBios {
         Copy-Item -LiteralPath (Join-Path $PayloadDir 'initrd.img') -Destination (Join-Path $dir 'recovery-initrd.img') -Force
         $tpl = Get-Content -LiteralPath (Join-Path $PayloadDir 'grub-bios.cfg.template') -Raw
         [IO.File]::WriteAllText((Join-Path $dir 'grub.cfg'), (New-GrubCfg $tpl $token).Replace("`r`n", "`n"), (New-Object Text.UTF8Encoding($false)))
-        $img = $sysLetter + ':\' + $Script:BiosImage
+        $img = $imgLetter + ':\' + $Script:BiosImage
         Copy-Item -LiteralPath (Join-Path $PayloadDir 'g2.img') -Destination $img -Force
         Test-HashOf (Join-Path $dir 'recovery-vmlinuz') $sums['vmlinuz']
         Test-HashOf (Join-Path $dir 'recovery-initrd.img') $sums['initrd.img']
         Test-HashOf $img $sums['g2.img']
+        Set-Step 'create the boot entry'
         $o = Invoke-Native 'bcdedit.exe' @('/create', '/d', $Script:EntryName, '/application', 'bootsector')
         $guid = Get-BcdGuid $o
         if ($null -eq $guid) { throw 'bcdedit returned no entry id' }
-        Save-State @{ Mode = 'bios'; Guid = $guid; DiskNumber = $sd.Disk.Number; SystemLetter = $sysLetter; Where = $where }
-        Invoke-Native 'bcdedit.exe' @('/set', $guid, 'device', ('partition=' + $sysLetter + ':')) | Out-Null
+        Save-State @{ Mode = 'bios'; Guid = $guid; DiskNumber = $sd.Disk.Number; SystemLetter = $imgLetter; KernelLetter = $kletter; Where = $where }
+        Invoke-Native 'bcdedit.exe' @('/set', $guid, 'device', ('partition=' + $imgLetter + ':')) | Out-Null
         Invoke-Native 'bcdedit.exe' @('/set', $guid, 'path', ('\' + $Script:BiosImage)) | Out-Null
         Invoke-Native 'bcdedit.exe' @('/displayorder', $guid, '/addlast') | Out-Null
         Invoke-Native 'bcdedit.exe' @('/bootsequence', $guid) | Out-Null
     } finally {
-        if ($assigned) { try { Remove-PartitionAccessPath -DiskNumber $sd.Disk.Number -PartitionNumber $ap.PartitionNumber -AccessPath ($sysLetter + ':') } catch { Write-Log ('letter: ' + $_.Exception.Message) } }
+        if ($assigned) { try { Remove-PartitionAccessPath -DiskNumber $sd.Disk.Number -PartitionNumber $ap.PartitionNumber -AccessPath ($imgLetter + ':') } catch { Write-Log ('letter: ' + $_.Exception.Message) } }
     }
     Show-Result $guid $token
 }
@@ -775,12 +860,18 @@ function Invoke-InstallBios {
 # ---- remote mode (irm | iex): inventory, approval from the host, download, then the normal flow ------------
 
 # Short sanitised text for the JSON sent to the server.
-function Get-Printable { param([string]$Text, [int]$Max = 80) $t = [regex]::Replace(("" + $Text), '[^\x20-\x7E]', ''); if ($t.Length -gt $Max) { $t = $t.Substring(0, $Max) }; return $t }
+# Unicode text with control characters (C0, DEL, C1) removed; a cut ends with a marker, never silently.
+function Get-Printable {
+    param([string]$Text, [int]$Max = 200)
+    $t = [regex]::Replace(("" + $Text), '[\x00-\x1F\x7F-\x9F]', '')
+    if ($t.Length -gt $Max) { $t = $t.Substring(0, $Max) + '...[truncated ' + ($t.Length - $Max) + ']' }
+    return $t
+}
 
 function Send-Json {
     param([string]$Path, $Body)
     $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $Body -Depth 6 -Compress))
-    return (Invoke-RestMethod -Uri ($Script:Opt.Server + $Path) -Method Post -Body $bytes -ContentType 'application/json' -TimeoutSec 15)
+    return (Invoke-RestMethod -Uri ($Script:Opt.Server + $Path) -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 15)
 }
 
 # Progress line to the server; never fails the run.
@@ -788,7 +879,7 @@ function Send-Remote {
     param([string]$Text)
     $level = 'info'
     if ($Text -like 'Stopped:*' -or $Text -like 'Failed:*') { $level = 'error' } elseif ($Text -like 'Ready*') { $level = 'ok' }
-    try { Send-Json '/status' @{ machine = $Script:Opt.MachineId; level = $level; text = (Get-Printable $Text 1200) } | Out-Null } catch { Write-Log ('status post: ' + $_.Exception.Message) }
+    try { Send-Json '/status' @{ machine = $Script:Opt.MachineId; level = $level; text = (Get-Printable $Text 4000) } | Out-Null } catch { Write-Log ('status post: ' + $_.Exception.Message) }
 }
 
 function Get-MachineId {
@@ -807,9 +898,64 @@ function Get-BootFreeMb {
             try { return [int]([math]::Floor((Get-FreeBytes $l) / 1MB)) } finally { Dismount-Esp $l }
         }
         $ap = @(Get-PartitionsSafe $Sd.Disk.Number | Where-Object { $_.IsActive })
-        if ($ap.Count -eq 1 -and $ap[0].DriveLetter) { return [int]([math]::Floor((Get-LetterVolume ([string]$ap[0].DriveLetter)).SizeRemaining / 1MB)) }
+        $l = ''
+        if ($ap.Count -eq 1) { $l = Get-PartLetter $Sd.Disk.Number $ap[0] (Get-CimLetterMap) }
+        if ($l) { return [int]([math]::Floor((Get-LetterVolume $l).SizeRemaining / 1MB)) }
+        # No letter (System Reserved): the system volume through Win32_Volume.
+        $sv = @(Get-CimInstance -ClassName Win32_Volume -Filter 'SystemVolume=TRUE') | Select-Object -First 1
+        if ($sv) { return [int]([math]::Floor([long]$sv.FreeSpace / 1MB)) }
     } catch { Write-Log ('boot free space: ' + $_.Exception.Message) }
     return $null
+}
+
+function Get-CimField {
+    param([scriptblock]$Block)
+    try { $v = & $Block; if ($null -ne $v -and "$v".Trim() -ne '') { return (Get-Printable ("" + $v).Trim() 120) } } catch { Write-Log ('field: ' + $_.Exception.Message) }
+    return 'unknown'
+}
+function Get-MachineModel { return (Get-CimField { $c = Get-CimInstance Win32_ComputerSystem; ($c.Manufacturer + ' ' + $c.Model) }) }
+function Get-CpuInfo {
+    return (Get-CimField {
+        $p = @(Get-CimInstance Win32_Processor)
+        $cores = 0; $threads = 0
+        foreach ($x in $p) { $cores += [int]$x.NumberOfCores; $threads += [int]$x.NumberOfLogicalProcessors }
+        ($p[0].Name.Trim() + ', ' + $cores + ' cores, ' + $threads + ' threads')
+    })
+}
+function Get-RamInfo {
+    return (Get-CimField {
+        $gb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+        $mods = 0; try { $mods = @(Get-CimInstance Win32_PhysicalMemory).Count } catch { }
+        if ($mods -gt 0) { ('' + $gb + ' GB, ' + $mods + ' modules') } else { ('' + $gb + ' GB') }
+    })
+}
+
+# Plan hint sent with the inventory: where the boot files would go, and what Safe Mode changes.
+function Get-PlanHint {
+    param([string]$Firmware, $Sd, [string]$BootMode)
+    $notes = @()
+    if ($BootMode -eq 'safe') { $notes += 'Safe Mode: the Storage services are stopped; shrinking C: and creating partitions are unavailable. Copying files and bcdedit work.' }
+    $map = Get-CimLetterMap
+    $kiEstimate = [long]$Script:Opt.PayloadBytes
+    if ($Firmware -eq 'bios') {
+        $parts = @(Get-PartitionsSafe $Sd.Disk.Number)
+        $act = @($parts | Where-Object { $_.IsActive }) | Select-Object -First 1
+        $al = ''; $afs = ''; $afree = 0L
+        if ($act) {
+            $al = Get-PartLetter $Sd.Disk.Number $act $map
+            if ($al) { $v = Get-LetterVolume $al; if ($v) { $afs = $v.FileSystem; $afree = $v.SizeRemaining } }
+        }
+        $cv = Get-LetterVolume $Sd.Letter
+        $enc = Test-NeedsDecrypt (Get-BitLockerStatus $Sd.Letter)
+        $f = @{ ActiveLetter = $al; ActiveFs = $afs; ActiveFree = $afree; CFs = $(if ($cv) { $cv.FileSystem } else { '' }); CFree = $(if ($cv) { $cv.SizeRemaining } else { 0L }); CEncrypted = $enc; BootMode = $BootMode; PartCount = $parts.Count; HasOta = (@(Find-OtaPartition $Sd.Disk.Number).Count -gt 0) }
+        $r = Select-BiosWhere $f $kiEstimate
+    } else {
+        $free = Get-BootFreeMb $Firmware $Sd
+        if ($null -ne $free -and (Get-StorageChoice ([long]$free * 1MB) $kiEstimate) -eq 'boot') { $r = @{ Where = 'boot'; Reason = 'the EFI system partition has room' } }
+        elseif ($BootMode -ne 'normal') { $r = @{ Where = 'none'; Reason = 'the EFI system partition is too small and Storage services are stopped in Safe Mode: restart in normal mode' } }
+        else { $r = @{ Where = 'new'; Reason = 'the EFI system partition is too small; a new FAT32 partition is created' } }
+    }
+    return @{ plan = @{ where = $r.Where; reason = (Get-Printable $r.Reason 200) }; notes = $notes }
 }
 
 # Read-only description of the PC for the host.
@@ -817,10 +963,19 @@ function Get-Inventory {
     param([string]$Firmware)
     $sd = Get-SystemDisk
     $disks = @()
+    $map = Get-CimLetterMap
     foreach ($d in (Get-DisksSafe)) {
         $parts = @()
+        $mbr = @()
+        if ([string]$d.PartitionStyle -eq 'MBR') { $mbr = @(Get-MbrEntries ([int]$d.Number)) }
         foreach ($p in (Get-PartitionsSafe $d.Number | Sort-Object PartitionNumber)) {
-            $parts += @{ number = [int]$p.PartitionNumber; letter = (Get-Printable ([string]$p.DriveLetter) 1); size_mb = [math]::Round($p.Size / 1MB); type = (Get-Printable ([string]$p.Type) 40) }
+            $letter = Get-PartLetter ([int]$d.Number) $p $map
+            $type = [string]$p.Type
+            $e = @($mbr | Where-Object { $_.Offset -eq [long]$p.Offset }) | Select-Object -First 1
+            if ($e) { $type = ('MBR 0x{0:X2}' -f $e.Type); if ($e.Active) { $type += ' active' } }
+            $free = $null
+            if ($letter) { $lv = Get-LetterVolume $letter; if ($lv) { $free = [int]([math]::Floor($lv.SizeRemaining / 1MB)) } }
+            $parts += @{ number = [int]$p.PartitionNumber; letter = (Get-Printable $letter 1); size_mb = [math]::Round($p.Size / 1MB); type = (Get-Printable $type 40); free_mb = $free }
         }
         $disks += @{ number = [int]$d.Number; model = (Get-Printable $d.FriendlyName.Trim()); size_gb = [math]::Round($d.Size / 1GB, 1); style = (Get-Printable ([string]$d.PartitionStyle) 10); serial = (Get-Printable (("" + $d.SerialNumber).Trim()) 40); unique_id = (Get-Printable (("" + $d.UniqueId).Trim()) 80); bus = (Get-Printable ([string]$d.BusType) 20); system = ($d.Number -eq $sd.Disk.Number); partitions = $parts }
     }
@@ -834,6 +989,9 @@ function Get-Inventory {
     }
     $ips = @()
     try { $ips = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | ForEach-Object { [string]$_.IPAddress }) } catch { }
+    $hint = Get-PlanHint $Firmware $sd (Get-BootMode)
+    $plan = $hint.plan
+    $notes = $hint.notes
     $svc = @()
     foreach ($n in 'vds', 'StorSvc', 'smphost') {
         $st = 'missing'
@@ -843,9 +1001,10 @@ function Get-Inventory {
     $hn = ([regex]::Replace(("" + $env:COMPUTERNAME), '[^A-Za-z0-9-]', ''))
     if ($hn.Length -gt 15) { $hn = $hn.Substring(0, 15) }
     return @{
-        machine = $Script:Opt.MachineId; hostname = $hn; ips = $ips; firmware = $Firmware; secureboot = (Get-SecureBootState)
+        machine = $Script:Opt.MachineId; hostname = $hn; ips = $ips; firmware = $Firmware; secureboot = $(if ($Firmware -eq 'bios') { 'na' } else { Get-SecureBootState })
         bitlocker = $bl; boot_free_mb = (Get-BootFreeMb $Firmware $sd); system_disk = [int]$sd.Disk.Number
         os = (Get-Printable ((Get-CimInstance Win32_OperatingSystem).Caption)); disks = $disks
+        model = (Get-MachineModel); cpu = (Get-CpuInfo); ram = (Get-RamInfo); plan = $plan; notes = $notes
         ui_culture = (Get-Printable ((Get-UICulture).Name) 20); services = $svc
     }
 }
@@ -896,14 +1055,18 @@ function Invoke-Remote {
     Set-Step 'inventory'
     $inv = Get-Inventory $fw
     Set-Step 'send the inventory'
+    $planNone = ($inv.plan.where -eq 'none')
     try { Send-Json '/inventory' $inv | Out-Null } catch { Stop-Script ('cannot reach the host: ' + $_.Exception.Message) $Script:Exit.Server }
+    if ($planNone) { Stop-Script ('cannot install: ' + $inv.plan.reason) $Script:Exit.Unsupported }
     Set-Step 'wait for approval'
     Say ('Inventory sent. Waiting for approval on the host (up to ' + $Script:Opt.TimeoutMinutes + ' min). Nothing has been changed.')
     $ap = Wait-Approval
     if ($null -eq $ap) { Stop-Script 'no approval from the host; nothing was changed' $Script:Exit.NoApproval }
     $sd = Get-SystemDisk
-    $word = Get-ConfirmWord $env:COMPUTERNAME $sd.Disk.Number (("" + $sd.Disk.SerialNumber).Trim())
-    if ([int]$ap.disk -ne [int]$sd.Disk.Number -or -not ([string]$ap.word -ceq $word)) { Stop-Script 'the approval does not match this PC and disk' $Script:Exit.NotConfirmed }
+    # The host's approval names machine, disk number and serial; this PC checks all three against itself.
+    $serial = (("" + $sd.Disk.SerialNumber).Trim())
+    if ([string]$ap.machine -cne $Script:Opt.MachineId -or [int]$ap.disk -ne [int]$sd.Disk.Number -or [string]$ap.serial -cne (Get-Printable $serial 40)) { Stop-Script 'the approval does not match this PC and disk' $Script:Exit.NotConfirmed }
+    $word = Get-ConfirmWord $env:COMPUTERNAME $sd.Disk.Number $serial
     Say 'Approved.'
     Set-Step 'download the payload'
     $pd = Get-RemotePayload
