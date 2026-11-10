@@ -168,7 +168,6 @@ Describe 'Dry run, unattended, mocked system' {
             $lines += ((Get-FileHash (Join-Path $script:pd $n) -Algorithm SHA256).Hash.ToLower() + '  ' + $n)
         }
         Set-Content (Join-Path $script:pd 'SHA256SUMS') $lines
-        function global:Get-PartitionSupportedSize { param($DriveLetter) }
         $script:Here = $script:pd
         $script:StatusFile = Join-Path $script:pd 'status.json'
         $script:LogFile = Join-Path $script:pd 'log.txt'
@@ -179,14 +178,14 @@ Describe 'Dry run, unattended, mocked system' {
         $script:Opt.WhatIf = $true
         $script:Opt.Unattended = $true
         $script:Opt.Disk = 0
-        Mock Get-SystemDisk { @{ Letter = 'C'; Part = [pscustomobject]@{ Size = 100GB }; Disk = [pscustomobject]@{ Number = 0; FriendlyName = 'Test disk'; PartitionStyle = 'GPT'; SerialNumber = 'ABCD1234XY'; Size = 100GB } } }
+        Mock Get-SystemDisk { @{ Letter = 'C'; Part = [pscustomobject]@{ Size = 100GB; PartitionNumber = 3 }; Disk = [pscustomobject]@{ Number = 0; FriendlyName = 'Test disk'; PartitionStyle = 'GPT'; SerialNumber = 'ABCD1234XY'; Size = 100GB } } }
         Mock Show-Disk { }
         Mock Mount-Esp { }
         Mock Dismount-Esp { }
         Mock Get-UsedLetters { @('C') }
         Mock Find-OtaPartition { @() }
         Mock Get-SecureBootState { 'on' }
-        Mock Get-PartitionSupportedSize { [pscustomobject]@{ SizeMin = 40GB } }
+        Mock Get-SupportedSize { [pscustomobject]@{ SizeMin = 40GB } }
     }
     It 'plans the boot partition when it has room and records the expected token' {
         Mock Get-FreeBytes { 500MB }
@@ -205,4 +204,66 @@ Describe 'Dry run, unattended, mocked system' {
         { Read-Word 'x' 'y' } | Should -Throw '*unattended*'
     }
     AfterAll { Remove-Item -LiteralPath $script:pd -Recurse -Force }
+}
+
+Describe 'System partition without the Storage drive-letter filter' {
+    BeforeAll {
+        function global:Get-CimInstance { param($ClassName, $Filter, $Namespace) }
+        function global:Get-CimAssociatedInstance { param($InputObject, $ResultClassName) }
+        function global:Get-Partition { param($DriveLetter, $DiskNumber, $PartitionNumber) }
+        function global:Get-Disk { param($Number) }
+    }
+    BeforeEach {
+        $env:SystemDrive = 'C:'
+        Mock Get-Disk { [pscustomobject]@{ Number = 2; PartitionStyle = 'GPT' } }
+        Mock Get-Partition {
+            if ($PSBoundParameters.ContainsKey('DriveLetter')) { throw 'No MSFT_Partition objects found with property DriveLetter equal to C' }
+            @([pscustomobject]@{ PartitionNumber = 1; Offset = 1048576; Size = 100MB; IsBoot = $false },
+              [pscustomobject]@{ PartitionNumber = 3; Offset = 105906176; Size = 90GB; IsBoot = $true; DiskNumber = 2 })
+        }
+    }
+    It 'finds the partition through CIM and the offset, never by -DriveLetter' {
+        Mock Get-LetterPartitionInfo { @{ DiskIndex = 2; Offset = 105906176; Size = 90GB; Index = 2 } }
+        $sd = Get-SystemDisk
+        $sd.Part.PartitionNumber | Should -Be 3
+        $sd.Disk.Number | Should -Be 2
+        Should -Invoke Get-Partition -Times 0 -ParameterFilter { $PSBoundParameters.ContainsKey('DriveLetter') }
+    }
+    It 'falls back to the boot partition when CIM finds nothing' {
+        Mock Get-LetterPartitionInfo { $null }
+        (Get-SystemDisk).Part.PartitionNumber | Should -Be 3
+    }
+    It 'fails with a clear message when nothing matches' {
+        Mock Get-LetterPartitionInfo { $null }
+        Mock Get-Partition { @() }
+        { Get-SystemDisk } | Should -Throw '*no partition found*'
+    }
+    It 'Get-LetterPartitionInfo reads the classic CIM classes' {
+        Mock Get-CimInstance { [pscustomobject]@{ DeviceID = 'C:' } }
+        Mock Get-CimAssociatedInstance { [pscustomobject]@{ DiskIndex = 1; StartingOffset = 1048576; Size = 50GB; Index = 0 } }
+        $i = Get-LetterPartitionInfo 'C'
+        $i.DiskIndex | Should -Be 1
+        $i.Offset | Should -Be 1048576
+    }
+    It 'Get-LetterVolume reads Win32_LogicalDisk' {
+        Mock Get-CimInstance { [pscustomobject]@{ FileSystem = 'FAT32'; FreeSpace = 123456; Size = 999999; VolumeName = 'UNITOTEMOTA' } }
+        $v = Get-LetterVolume 'D'
+        $v.FileSystem | Should -Be 'FAT32'
+        $v.SizeRemaining | Should -Be 123456
+    }
+    It 'rejects a bad letter' { { Get-LetterVolume "C:'" } | Should -Throw }
+    It 'Select-PartitionByOffset' {
+        (Select-PartitionByOffset @([pscustomobject]@{ Offset = 5 }, [pscustomobject]@{ Offset = 9 }) 9).Offset | Should -Be 9
+        Select-PartitionByOffset @([pscustomobject]@{ Offset = 5 }) 7 | Should -BeNullOrEmpty
+    }
+}
+Describe 'Format-FailureDetail' {
+    It 'carries step, error id, message and statement without comparing localized text' {
+        Set-Step 'find the system disk'
+        try { Get-Item -LiteralPath '/nonexistent-unitotem-test' -ErrorAction Stop } catch { $e = $_ }
+        $d = Format-FailureDetail $e
+        $d | Should -Match '^step "find the system disk": '
+        $d | Should -Match '\[[A-Za-z]+,'
+        $d | Should -Match 'at: .*Get-Item'
+    }
 }

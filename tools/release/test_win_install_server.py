@@ -65,6 +65,8 @@ def inventory(machine='MACHINE-AAAA', hostname='DESKTOP-ABC', serial='S4EVNX0N12
         'boot_free_mb': 512,
         'system_disk': number,
         'os': os_name,
+        'ui_culture': 'it-IT',
+        'services': [{'name': 'vds', 'status': 'Stopped'}],
         'disks': [{
             'number': number, 'model': model, 'size_gb': 500.0, 'style': 'GPT',
             'serial': serial, 'unique_id': 'uid-1', 'bus': 'NVMe', 'system': True,
@@ -73,17 +75,41 @@ def inventory(machine='MACHINE-AAAA', hostname='DESKTOP-ABC', serial='S4EVNX0N12
     }
 
 
+FAKE_PERSONAL = 'ssh-ed25519 ' + 'B' * 68 + ' personal@example'
+
+
+def fake_home(case, tmp):
+    # HOME and XDG_STATE_HOME point into tmp; a decoy personal key sits in ~/.ssh and must never be used.
+    home = os.path.join(tmp, 'home')
+    os.makedirs(os.path.join(home, '.ssh'))
+    with open(os.path.join(home, '.ssh', 'id_ed25519.pub'), 'w') as f:
+        f.write(FAKE_PERSONAL + '\n')
+    saved = {k: os.environ.get(k) for k in ('HOME', 'XDG_STATE_HOME')}
+    os.environ['HOME'] = home
+    os.environ.pop('XDG_STATE_HOME', None)
+
+    def restore():
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    case.addCleanup(restore)
+    return home
+
+
 class ServerCase(unittest.TestCase):
-    key_path_name = 'missing.pub'
+    key_file = None
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix='win-srv-test-')
+        self.home = fake_home(self, self.tmp)
         self.payload = make_zip(os.path.join(self.tmp, 'payload.zip'))
         self.template = os.path.join(self.tmp, 'bootstrap.tmpl')
         with open(self.template, 'w', encoding='utf-8') as f:
             f.write(TEST_TEMPLATE)
         self.state = os.path.join(self.tmp, 'state')
-        self.key = os.path.join(self.tmp, self.key_path_name)
+        self.key = self.key_file
         self.lines = []
         self.clock_value = 1000.0
         self.ctx = srv.Context(self.payload, self.state, self.key, 60, template=self.template,
@@ -372,6 +398,7 @@ class ConfirmWordTests(unittest.TestCase):
 class PayloadTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix='win-srv-payload-')
+        self.home = fake_home(self, self.tmp)
         self.state = os.path.join(self.tmp, 'state')
 
     def tearDown(self):
@@ -390,49 +417,45 @@ class PayloadTests(unittest.TestCase):
     def test_missing_entry_rejected(self):
         p = make_zip(os.path.join(self.tmp, 'bad.zip'), drop=(ZIP_DIR + 'payload/SHA256SUMS',))
         with self.assertRaises(ValueError):
-            self.ctx(p, os.path.join(self.tmp, 'none.pub'))
+            self.ctx(p, None)
 
     def test_not_a_zip_rejected(self):
         p = os.path.join(self.tmp, 'bad.zip')
         with open(p, 'wb') as f:
             f.write(b'not a zip')
         with self.assertRaises(ValueError):
-            self.ctx(p, os.path.join(self.tmp, 'none.pub'))
+            self.ctx(p, None)
 
     def test_engine_with_quote_at_line_start_refused(self):
         p = make_zip(os.path.join(self.tmp, 'bad.zip'), engine="x\n'@\n")
         with self.assertRaises(ValueError):
-            self.ctx(p, os.path.join(self.tmp, 'none.pub'))
+            self.ctx(p, None)
 
-    def test_open_mode_serves_original(self):
+    def test_payload_served_unchanged_without_any_key(self):
         p = make_zip(os.path.join(self.tmp, 'ok.zip'))
-        ctx = self.ctx(p, os.path.join(self.tmp, 'none.pub'))
+        ctx = self.ctx(p, None)
         try:
-            self.assertIsNone(ctx.key_line)
+            self.assertIsNone(ctx.explicit_key)
             self.assertEqual(ctx.served_path, p)
             with open(p, 'rb') as f:
                 self.assertEqual(ctx.sha, hashlib.sha256(f.read()).hexdigest())
+            with zipfile.ZipFile(p) as z:
+                for n in z.namelist():
+                    self.assertNotIn(b'ssh-ed25519', z.read(n))
         finally:
             ctx.close()
 
-    def test_key_mode_adds_entry_and_cleans_up(self):
+    def test_explicit_key_does_not_change_the_payload(self):
         p = make_zip(os.path.join(self.tmp, 'ok.zip'))
         key = os.path.join(self.tmp, 'key.pub')
         with open(key, 'w', encoding='ascii') as f:
             f.write(KEY_LINE + '\n')
         ctx = self.ctx(p, key)
-        served = ctx.served_path
-        self.assertNotEqual(served, p)
-        self.assertEqual(os.stat(self.state).st_mode & 0o777, 0o700)
-        with zipfile.ZipFile(served) as z:
-            self.assertEqual(z.read(srv.KEY_ENTRY).decode('ascii'), KEY_LINE + '\n')
-            with zipfile.ZipFile(p) as orig:
-                self.assertEqual(z.read(ZIP_DIR + 'payload/blob.bin'),
-                                 orig.read(ZIP_DIR + 'payload/blob.bin'))
-        with open(served, 'rb') as f:
-            self.assertEqual(ctx.sha, hashlib.sha256(f.read()).hexdigest())
-        ctx.close()
-        self.assertFalse(os.path.exists(served))
+        try:
+            self.assertEqual(ctx.explicit_key, KEY_LINE)
+            self.assertEqual(ctx.served_path, p)
+        finally:
+            ctx.close()
 
     def test_bad_key_refused(self):
         p = make_zip(os.path.join(self.tmp, 'ok.zip'))
@@ -443,6 +466,63 @@ class PayloadTests(unittest.TestCase):
                     f.write(content)
                 with self.assertRaises(ValueError):
                     self.ctx(p, key)
+
+
+class MachineKeyTests(ServerCase):
+    def approve(self, machine='MACHINE-AAAA'):
+        self.post_json('/inventory', inventory(machine=machine))
+        self.ctx.apply_word(WORD_A, 'stdin')
+
+    def key_files(self):
+        base = os.path.join(self.home, '.local', 'state', 'unitotem-deploy', '127.0.0.1')
+        return base, os.path.join(base, 'id_ed25519')
+
+    def test_key_per_machine_in_deploy_layout_with_modes(self):
+        self.post_json('/inventory', inventory())
+        base, key = self.key_files()
+        self.assertEqual(os.stat(base).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(key).st_mode & 0o777, 0o600)
+        with open(key + '.pub') as f:
+            self.assertIn('unitotem-deploy', f.read())
+        self.assertIn('OTA key for this PC: ' + key, self.output())
+
+    def test_key_only_after_approval_and_only_the_public_part(self):
+        self.post_json('/inventory', inventory())
+        self.assertEqual(self.req('GET', '/key?machine=MACHINE-AAAA')[0], 403)
+        self.ctx.apply_word(WORD_A, 'stdin')
+        status, _, body = self.req('GET', '/key?machine=MACHINE-AAAA')
+        self.assertEqual(status, 200)
+        with open(self.key_files()[1] + '.pub') as f:
+            self.assertEqual(body.decode().strip(), f.read().strip())
+        self.assertNotIn(b'PRIVATE', body)
+        self.assertEqual(self.req('GET', '/key?machine=bad')[0], 400)
+        self.assertEqual(self.req('GET', '/key?machine=MACHINE-BBBB')[0], 403)
+
+    def test_personal_key_never_used(self):
+        self.approve()
+        _, _, body = self.req('GET', '/key?machine=MACHINE-AAAA')
+        self.assertNotIn(FAKE_PERSONAL.split()[1].encode(), body)
+        self.assertNotIn(FAKE_PERSONAL.split()[1], self.output())
+
+    def test_next_command_printed_after_approval(self):
+        self.approve()
+        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' deploy/remote-deploy.sh recover 127.0.0.1 --parts DIR --yes',
+                      self.output())
+
+    def test_second_inventory_reuses_the_key(self):
+        self.post_json('/inventory', inventory())
+        with open(self.key_files()[1] + '.pub') as f:
+            first = f.read()
+        self.post_json('/inventory', inventory())
+        with open(self.key_files()[1] + '.pub') as f:
+            self.assertEqual(first, f.read())
+
+    def test_machine_a_approval_does_not_release_b_key(self):
+        self.post_json('/inventory', inventory(machine='MACHINE-AAAA'))
+        self.post_json('/inventory', inventory(machine='MACHINE-BBBB', hostname='OTHERPC'))
+        self.ctx.apply_word(WORD_A, 'stdin')
+        self.assertEqual(self.req('GET', '/key?machine=MACHINE-AAAA')[0], 200)
+        self.assertEqual(self.req('GET', '/key?machine=MACHINE-BBBB')[0], 403)
 
 
 class CliTests(unittest.TestCase):

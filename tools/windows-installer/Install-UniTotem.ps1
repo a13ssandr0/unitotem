@@ -60,7 +60,7 @@ $Script:LogFile = Join-Path $Script:Here 'Install-UniTotem.log'
 $Script:StateFile = Join-Path $Script:Here 'Install-UniTotem.state.json'
 $Script:StatusFile = Join-Path $Script:Here 'Install-UniTotem.status.json'
 $Script:Exit = @{ Ok = 0; Failed = 1; Usage = 2; NotAdmin = 3; Unsupported = 4; NotConfirmed = 5; Payload = 6; DecryptTimeout = 7; NoApproval = 8; Server = 9 }
-$Script:Status = [ordered]@{ Result = 'running'; Code = -1; Message = ''; Mode = ''; DiskNumber = $null; DiskSerial = ''; DiskModel = ''; Where = ''; Partition = ''; BootEntry = ''; ExpectedToken = ''; DryRun = [bool]$WhatIf; Time = '' }
+$Script:Status = [ordered]@{ Result = 'running'; Code = -1; Message = ''; Step = ''; Mode = ''; DiskNumber = $null; DiskSerial = ''; DiskModel = ''; Where = ''; Partition = ''; BootEntry = ''; ExpectedToken = ''; DryRun = [bool]$WhatIf; Time = '' }
 # Parameters as script state, so functions never depend on the caller's scope.
 $Script:Opt = @{ WhatIf = [bool]$WhatIf; Undo = [bool]$Undo; Unattended = [bool]$Unattended; Reboot = [bool]$Reboot; Disk = $Disk; ConfirmToken = $ConfirmToken; AuthorizedKey = $AuthorizedKey; PayloadDir = $PayloadDir; DecryptTimeoutMinutes = $DecryptTimeoutMinutes; Remote = [bool]$Remote; Server = $Server; PayloadSha256 = $PayloadSha256; PayloadBytes = $PayloadBytes; PollSeconds = $PollSeconds; TimeoutMinutes = $TimeoutMinutes; MachineId = '' }
 $Script:Re = @{
@@ -238,6 +238,15 @@ function Write-Status {
     $Script:Status.Time = (Get-Date -Format 's')
     try { ($Script:Status | ConvertTo-Json) | Set-Content -LiteralPath $Script:StatusFile -Encoding ASCII } catch { Write-Log ('status: ' + $_.Exception.Message) }
 }
+$Script:Step = ''
+function Set-Step { param([string]$Name) $Script:Step = $Name; $Script:Status.Step = $Name }
+
+# Step, error id (language independent), message and failing statement of an error record.
+function Format-FailureDetail {
+    param($ErrorRecord)
+    return ('step "' + $Script:Step + '": ' + $ErrorRecord.Exception.Message + ' [' + $ErrorRecord.FullyQualifiedErrorId + '] at: ' + ("" + $ErrorRecord.InvocationInfo.Line).Trim())
+}
+
 function Show-Plan {
     param([hashtable]$Ctx)
     Say 'Plan:'
@@ -282,9 +291,12 @@ function Get-SecureBootState {
 function Get-BitLockerStatus {
     param([string]$Letter)
     if (-not (Test-FullMatch $Letter $Script:Re.Letter)) { throw 'invalid letter' }
-    $v = Get-CimInstance -Namespace 'root/CIMV2/Security/MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -Filter ("DriveLetter='" + $Letter + ":'") -ErrorAction SilentlyContinue
-    if ($null -eq $v) { return $null }
-    $r = Invoke-CimMethod -InputObject $v -MethodName GetConversionStatus
+    # No BitLocker namespace (some editions, Safe Mode) means no BitLocker: $null, never an error.
+    try {
+        $v = Get-CimInstance -Namespace 'root/CIMV2/Security/MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -Filter ("DriveLetter='" + $Letter + ":'") -ErrorAction Stop
+        if ($null -eq $v) { return $null }
+        $r = Invoke-CimMethod -InputObject $v -MethodName GetConversionStatus
+    } catch { Write-Log ('BitLocker query: ' + $_.Exception.Message); return $null }
     if ($r.ReturnValue -ne 0) { return $null }
     return [int]$r.ConversionStatus
 }
@@ -292,9 +304,12 @@ function Get-BitLockerStatus {
 function Get-BitLockerPercent {
     param([string]$Letter)
     if (-not (Test-FullMatch $Letter $Script:Re.Letter)) { throw 'invalid letter' }
-    $v = Get-CimInstance -Namespace 'root/CIMV2/Security/MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -Filter ("DriveLetter='" + $Letter + ":'") -ErrorAction SilentlyContinue
-    if ($null -eq $v) { return $null }
-    $r = Invoke-CimMethod -InputObject $v -MethodName GetConversionStatus
+    # No BitLocker namespace (some editions, Safe Mode) means no BitLocker: $null, never an error.
+    try {
+        $v = Get-CimInstance -Namespace 'root/CIMV2/Security/MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -Filter ("DriveLetter='" + $Letter + ":'") -ErrorAction Stop
+        if ($null -eq $v) { return $null }
+        $r = Invoke-CimMethod -InputObject $v -MethodName GetConversionStatus
+    } catch { Write-Log ('BitLocker query: ' + $_.Exception.Message); return $null }
     if ($r.ReturnValue -ne 0) { return $null }
     return [int]$r.EncryptionPercentage
 }
@@ -354,19 +369,96 @@ function Get-Payload {
     return $sums
 }
 
+# Partition of a drive letter through the classic CIM classes (Win32_LogicalDiskToPartition), which do not depend on
+# the Storage module's drive-letter index. Returns @{ DiskIndex; Offset; Size; Index } or $null.
+function Get-LetterPartitionInfo {
+    param([string]$Letter)
+    if (-not (Test-FullMatch $Letter $Script:Re.Letter)) { throw 'invalid letter' }
+    $ld = Get-CimInstance -ClassName Win32_LogicalDisk -Filter ("DeviceID='" + $Letter + ":'")
+    if ($null -eq $ld) { return $null }
+    $dp = @(Get-CimAssociatedInstance -InputObject $ld -ResultClassName Win32_DiskPartition)
+    if ($dp.Count -ne 1) { return $null }
+    return @{ DiskIndex = [int]$dp[0].DiskIndex; Offset = [long]$dp[0].StartingOffset; Size = [long]$dp[0].Size; Index = [int]$dp[0].Index }
+}
+
+# The Storage partition that starts at Offset (partitions never share a start); $null when none.
+function Select-PartitionByOffset {
+    param($Partitions, [long]$Offset)
+    foreach ($p in @($Partitions)) { if ([long]$p.Offset -eq $Offset) { return $p } }
+    return $null
+}
+
+# Disk and partition objects from Win32_DiskDrive / Win32_DiskPartition, shaped like the Storage ones (Number,
+# FriendlyName, Size, PartitionStyle, SerialNumber, UniqueId, BusType; PartitionNumber, Offset, Size, IsBoot, Type).
+function ConvertFrom-CimDisk {
+    param($DiskDrive, $Partitions)
+    $style = 'RAW'
+    foreach ($p in @($Partitions)) { if ([string]$p.Type -like 'GPT*') { $style = 'GPT'; break } elseif ([string]$p.Type) { $style = 'MBR' } }
+    return [pscustomobject]@{ Number = [int]$DiskDrive.Index; FriendlyName = [string]$DiskDrive.Model; Size = [long]$DiskDrive.Size; PartitionStyle = $style; SerialNumber = ("" + $DiskDrive.SerialNumber).Trim(); UniqueId = [string]$DiskDrive.PNPDeviceID; BusType = [string]$DiskDrive.InterfaceType }
+}
+function ConvertFrom-CimPartition {
+    param($Part)
+    return [pscustomobject]@{ PartitionNumber = [int]$Part.Index + 1; Offset = [long]$Part.StartingOffset; Size = [long]$Part.Size; IsBoot = [bool]$Part.BootPartition; IsActive = [bool]$Part.BootPartition; DriveLetter = ''; Type = [string]$Part.Type; DiskNumber = [int]$Part.DiskIndex }
+}
+function Get-CimPartitions {
+    param([int]$DiskIndex)
+    return @(Get-CimInstance -ClassName Win32_DiskPartition -Filter ('DiskIndex=' + $DiskIndex))
+}
+
+# All disks: the Storage module, else the classic CIM classes (when the Storage provider sees nothing, e.g. Safe Mode).
+function Get-DisksSafe {
+    try { $d = @(Get-Disk); if ($d.Count -gt 0) { return $d } } catch { Write-Log ('Get-Disk: ' + $_.Exception.Message) }
+    $out = @()
+    foreach ($dd in (Get-CimInstance -ClassName Win32_DiskDrive)) { $out += ConvertFrom-CimDisk $dd (Get-CimPartitions ([int]$dd.Index)) }
+    return $out
+}
+function Get-PartitionsSafe {
+    param([int]$DiskNumber)
+    try { $p = @(Get-Partition -DiskNumber $DiskNumber); if ($p.Count -gt 0) { return $p } } catch { Write-Log ('Get-Partition: ' + $_.Exception.Message) }
+    return @(Get-CimPartitions $DiskNumber | ForEach-Object { ConvertFrom-CimPartition $_ })
+}
+
+# System drive -> disk and partition. No -DriveLetter filter on Get-Partition: it finds nothing when the Storage
+# provider has no letter for the partition (seen in Safe Mode). Falls back to the CIM classes when Storage is blind.
 function Get-SystemDisk {
+    Set-Step 'find the system disk'
     $letter = $env:SystemDrive.Substring(0, 1).ToUpperInvariant()
     if (-not (Test-FullMatch $letter $Script:Re.Letter)) { throw 'system drive not recognised' }
-    $part = Get-Partition -DriveLetter $letter
-    $disk = Get-Disk -Number $part.DiskNumber
+    $info = Get-LetterPartitionInfo $letter
+    $part = $null
+    $disk = $null
+    if ($null -ne $info) {
+        $disk = @(Get-DisksSafe | Where-Object { [int]$_.Number -eq $info.DiskIndex }) | Select-Object -First 1
+        $part = Select-PartitionByOffset (Get-PartitionsSafe $info.DiskIndex) $info.Offset
+    }
+    if ($null -eq $part -or $null -eq $disk) {
+        # Last resort: the partition flagged as boot partition by the Storage module.
+        $part = @(Get-Partition | Where-Object { $_.IsBoot }) | Select-Object -First 1
+        if ($null -eq $part) { throw ('no partition found for ' + $letter + ':') }
+        $disk = Get-Disk -Number $part.DiskNumber
+    }
     if (-not (Test-FullMatch ([string]$disk.Number) $Script:Re.Number)) { throw 'invalid disk number' }
     return @{ Letter = $letter; Part = $part; Disk = $disk }
+}
+
+# Volume facts of a letter from Win32_LogicalDisk: @{ FileSystem; SizeRemaining; Size; Label } or $null.
+function Get-LetterVolume {
+    param([string]$Letter)
+    if (-not (Test-FullMatch $Letter $Script:Re.Letter)) { throw 'invalid letter' }
+    $ld = Get-CimInstance -ClassName Win32_LogicalDisk -Filter ("DeviceID='" + $Letter + ":'")
+    if ($null -eq $ld) { return $null }
+    return @{ FileSystem = [string]$ld.FileSystem; SizeRemaining = [long]$ld.FreeSpace; Size = [long]$ld.Size; Label = [string]$ld.VolumeName }
+}
+
+function Get-SupportedSize {
+    param($Sd)
+    return (Get-PartitionSupportedSize -DiskNumber $Sd.Disk.Number -PartitionNumber $Sd.Part.PartitionNumber)
 }
 
 function Show-Disk {
     param($Disk)
     Say ('Disk {0}: {1}, {2} GB, {3}, serial {4}' -f $Disk.Number, $Disk.FriendlyName.Trim(), [math]::Round($Disk.Size / 1GB, 1), $Disk.PartitionStyle, ("" + $Disk.SerialNumber).Trim())
-    foreach ($p in (Get-Partition -DiskNumber $Disk.Number | Sort-Object PartitionNumber)) {
+    foreach ($p in (Get-PartitionsSafe $Disk.Number | Sort-Object PartitionNumber)) {
         $l = ''
         if ($p.DriveLetter) { $l = [string]$p.DriveLetter + ':' }
         Say ('  #{0} {1,-5} {2,9} MB  {3}' -f $p.PartitionNumber, $l, [math]::Round($p.Size / 1MB), $p.Type)
@@ -375,7 +467,7 @@ function Show-Disk {
 
 function Find-OtaPartition {
     param([int]$DiskNumber)
-    return @(Get-Partition -DiskNumber $DiskNumber | Where-Object {
+    return @(Get-PartitionsSafe $DiskNumber | Where-Object {
             $v = $null
             try { $v = $_ | Get-Volume -ErrorAction SilentlyContinue } catch { }
             $null -ne $v -and $v.FileSystemLabel -ceq $Script:Label
@@ -421,25 +513,31 @@ function Test-HashOf {
 # BitLocker is turned off on the new partition only (Windows 11 encrypts it by itself).
 function New-OtaPartition {
     param($Sd, [long]$PartBytes)
+    Set-Step 'create the boot-files partition'
     $existing = @(Find-OtaPartition $Sd.Disk.Number)
     if ($existing.Count -eq 0) {
-        Resize-Partition -DriveLetter $Sd.Letter -Size ($Sd.Part.Size - $PartBytes)
-        $np = New-Partition -DiskNumber $Sd.Disk.Number -Size $PartBytes -AssignDriveLetter
+        Set-Step 'shrink C:'
+        Resize-Partition -DiskNumber $Sd.Disk.Number -PartitionNumber $Sd.Part.PartitionNumber -Size ($Sd.Part.Size - $PartBytes)
+        Set-Step 'create the FAT32 partition'
+        $np = New-Partition -DiskNumber $Sd.Disk.Number -Size $PartBytes
     } else {
         $np = $existing[0]
-        if (-not $np.DriveLetter) {
-            Add-PartitionAccessPath -InputObject $np -AssignDriveLetter
-            $np = Get-Partition -DiskNumber $Sd.Disk.Number -PartitionNumber $np.PartitionNumber
-        }
     }
-    $pl = [string]$np.DriveLetter
+    $num = [int]$np.PartitionNumber
+    $pl = ''
+    if ($np.DriveLetter) { $pl = [string]$np.DriveLetter } else {
+        $pl = Get-FreeLetter (Get-UsedLetters)
+        Add-PartitionAccessPath -DiskNumber $Sd.Disk.Number -PartitionNumber $num -AccessPath ($pl + ':')
+    }
     if (-not (Test-FullMatch $pl $Script:Re.Letter)) { throw 'new partition has no drive letter' }
-    $vol = Get-Volume -DriveLetter $pl
-    if ($vol.FileSystem -ne 'FAT32' -or $vol.FileSystemLabel -cne $Script:Label) {
-        Format-Volume -DriveLetter $pl -FileSystem FAT32 -NewFileSystemLabel $Script:Label -Confirm:$false | Out-Null
+    $vol = Get-LetterVolume $pl
+    if ($null -eq $vol -or $vol.FileSystem -ne 'FAT32' -or $vol.Label -cne $Script:Label) {
+        Set-Step 'format the FAT32 partition'
+        Format-Volume -Partition (Get-Partition -DiskNumber $Sd.Disk.Number -PartitionNumber $num) -FileSystem FAT32 -NewFileSystemLabel $Script:Label -Confirm:$false | Out-Null
     }
+    Set-Step 'turn BitLocker off on the new partition'
     if (-not (Disable-Volume $pl 600)) { throw 'the new partition stays encrypted' }
-    if ((Get-Volume -DriveLetter $pl).FileSystem -ne 'FAT32') { throw 'the new partition is not readable FAT32' }
+    if ((Get-LetterVolume $pl).FileSystem -ne 'FAT32') { throw 'the new partition is not readable FAT32' }
     return $pl
 }
 
@@ -517,8 +615,8 @@ function Invoke-Undo {
     foreach ($p in (Find-OtaPartition ([int]$st.DiskNumber))) { Remove-Partition -InputObject $p -Confirm:$false; $removed = $true }
     if ($removed) {
         try {
-            $c = $env:SystemDrive.Substring(0, 1)
-            Resize-Partition -DriveLetter $c -Size (Get-PartitionSupportedSize -DriveLetter $c).SizeMax
+            $usd = Get-SystemDisk
+            Resize-Partition -DiskNumber $usd.Disk.Number -PartitionNumber $usd.Part.PartitionNumber -Size (Get-SupportedSize $usd).SizeMax
         } catch { Say 'C: not extended; extend it in Disk Management.' }
     }
     Remove-Item -LiteralPath $Script:StateFile -Force
@@ -551,7 +649,7 @@ function Invoke-Install {
     if ($where -eq 'new' -and ($free -lt ($chainBytes * 2 + $Script:EspMarginBytes))) { Stop-Script 'the EFI system partition has too little free space for the boot loader' $Script:Exit.Unsupported }
     $partBytes = Get-PartitionBytes $kiBytes
     if ($where -eq 'new' -and @(Find-OtaPartition $sd.Disk.Number).Count -eq 0) {
-        $sup = Get-PartitionSupportedSize -DriveLetter $sd.Letter
+        $sup = Get-SupportedSize $sd
         if (-not (Test-ShrinkFeasible $sd.Part.Size $sup.SizeMin $partBytes)) { Stop-Script 'C: cannot shrink enough; free disk space first' $Script:Exit.Unsupported }
     }
     $ctx = @{ Undo = $false; Mode = 'uefi'; Where = $where; NeededBytes = ($kiBytes + $chainBytes); PartBytes = $partBytes; Token = $token }
@@ -605,7 +703,7 @@ function Invoke-InstallBios {
 
     $sd = Get-SystemDisk
     if ([string]$sd.Disk.PartitionStyle -ne 'MBR') { Stop-Script 'the system disk is not MBR' $Script:Exit.Unsupported }
-    $active = @(Get-Partition -DiskNumber $sd.Disk.Number | Where-Object { $_.IsActive })
+    $active = @(Get-PartitionsSafe $sd.Disk.Number | Where-Object { $_.IsActive })
     if ($active.Count -ne 1) { Stop-Script 'no single active (boot) partition on the system disk' $Script:Exit.Unsupported }
     $ap = $active[0]
     $assigned = $false
@@ -617,16 +715,17 @@ function Invoke-InstallBios {
     if (-not (Test-FullMatch $sysLetter $Script:Re.Letter)) { throw 'boot partition has no drive letter' }
     $guid = $null
     try {
-        $vol = Get-Volume -DriveLetter $sysLetter
+        $vol = Get-LetterVolume $sysLetter
+        if ($null -eq $vol) { throw ('volume ' + $sysLetter + ': not found') }
         $free = [long]$vol.SizeRemaining + (Get-FolderBytes ($sysLetter + ':\' + $Script:BiosDir))
         $where = Get-StorageChoice $free ($kiBytes + 1MB)
         if ($vol.FileSystem -notin 'NTFS', 'FAT32') { $where = 'new' }
         $Script:Status.Mode = 'bios'; $Script:Status.Where = $where
         $partBytes = Get-PartitionBytes $kiBytes
         if ($where -eq 'new') {
-            if (@(Get-Partition -DiskNumber $sd.Disk.Number).Count -ge 4 -and @(Find-OtaPartition $sd.Disk.Number).Count -eq 0) { Stop-Script 'the MBR disk has no free primary partition slot' $Script:Exit.Unsupported }
+            if (@(Get-PartitionsSafe $sd.Disk.Number).Count -ge 4 -and @(Find-OtaPartition $sd.Disk.Number).Count -eq 0) { Stop-Script 'the MBR disk has no free primary partition slot' $Script:Exit.Unsupported }
             if (@(Find-OtaPartition $sd.Disk.Number).Count -eq 0) {
-                $sup = Get-PartitionSupportedSize -DriveLetter $sd.Letter
+                $sup = Get-SupportedSize $sd
                 if (-not (Test-ShrinkFeasible $sd.Part.Size $sup.SizeMin $partBytes)) { Stop-Script 'C: cannot shrink enough; free disk space first' $Script:Exit.Unsupported }
             }
         }
@@ -689,7 +788,7 @@ function Send-Remote {
     param([string]$Text)
     $level = 'info'
     if ($Text -like 'Stopped:*' -or $Text -like 'Failed:*') { $level = 'error' } elseif ($Text -like 'Ready*') { $level = 'ok' }
-    try { Send-Json '/status' @{ machine = $Script:Opt.MachineId; level = $level; text = (Get-Printable $Text 200) } | Out-Null } catch { Write-Log ('status post: ' + $_.Exception.Message) }
+    try { Send-Json '/status' @{ machine = $Script:Opt.MachineId; level = $level; text = (Get-Printable $Text 1200) } | Out-Null } catch { Write-Log ('status post: ' + $_.Exception.Message) }
 }
 
 function Get-MachineId {
@@ -707,8 +806,8 @@ function Get-BootFreeMb {
             Mount-Esp $l
             try { return [int]([math]::Floor((Get-FreeBytes $l) / 1MB)) } finally { Dismount-Esp $l }
         }
-        $ap = @(Get-Partition -DiskNumber $Sd.Disk.Number | Where-Object { $_.IsActive })
-        if ($ap.Count -eq 1 -and $ap[0].DriveLetter) { return [int]([math]::Floor((Get-Volume -DriveLetter $ap[0].DriveLetter).SizeRemaining / 1MB)) }
+        $ap = @(Get-PartitionsSafe $Sd.Disk.Number | Where-Object { $_.IsActive })
+        if ($ap.Count -eq 1 -and $ap[0].DriveLetter) { return [int]([math]::Floor((Get-LetterVolume ([string]$ap[0].DriveLetter)).SizeRemaining / 1MB)) }
     } catch { Write-Log ('boot free space: ' + $_.Exception.Message) }
     return $null
 }
@@ -718,28 +817,36 @@ function Get-Inventory {
     param([string]$Firmware)
     $sd = Get-SystemDisk
     $disks = @()
-    foreach ($d in (Get-Disk)) {
+    foreach ($d in (Get-DisksSafe)) {
         $parts = @()
-        foreach ($p in (Get-Partition -DiskNumber $d.Number -ErrorAction SilentlyContinue | Sort-Object PartitionNumber)) {
+        foreach ($p in (Get-PartitionsSafe $d.Number | Sort-Object PartitionNumber)) {
             $parts += @{ number = [int]$p.PartitionNumber; letter = (Get-Printable ([string]$p.DriveLetter) 1); size_mb = [math]::Round($p.Size / 1MB); type = (Get-Printable ([string]$p.Type) 40) }
         }
         $disks += @{ number = [int]$d.Number; model = (Get-Printable $d.FriendlyName.Trim()); size_gb = [math]::Round($d.Size / 1GB, 1); style = (Get-Printable ([string]$d.PartitionStyle) 10); serial = (Get-Printable (("" + $d.SerialNumber).Trim()) 40); unique_id = (Get-Printable (("" + $d.UniqueId).Trim()) 80); bus = (Get-Printable ([string]$d.BusType) 20); system = ($d.Number -eq $sd.Disk.Number); partitions = $parts }
     }
     $bl = @()
-    foreach ($v in (Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' })) {
-        $st = Get-BitLockerStatus ([string]$v.DriveLetter)
+    foreach ($v in (Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3')) {
+        $dl = ([string]$v.DeviceID).Substring(0, 1)
+        $st = Get-BitLockerStatus $dl
         $t = 'none'
         if ($null -ne $st) { if ([int]$st -eq 0) { $t = 'off' } elseif ([int]$st -eq 1) { $t = 'on' } else { $t = 'converting' } }
-        $bl += @{ drive = ([string]$v.DriveLetter); status = $t }
+        $bl += @{ drive = $dl; status = $t }
     }
     $ips = @()
     try { $ips = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | ForEach-Object { [string]$_.IPAddress }) } catch { }
+    $svc = @()
+    foreach ($n in 'vds', 'StorSvc', 'smphost') {
+        $st = 'missing'
+        try { $st = [string](Get-Service -Name $n -ErrorAction Stop).Status } catch { }
+        $svc += @{ name = $n; status = (Get-Printable $st 20) }
+    }
     $hn = ([regex]::Replace(("" + $env:COMPUTERNAME), '[^A-Za-z0-9-]', ''))
     if ($hn.Length -gt 15) { $hn = $hn.Substring(0, 15) }
     return @{
         machine = $Script:Opt.MachineId; hostname = $hn; ips = $ips; firmware = $Firmware; secureboot = (Get-SecureBootState)
         bitlocker = $bl; boot_free_mb = (Get-BootFreeMb $Firmware $sd); system_disk = [int]$sd.Disk.Number
         os = (Get-Printable ((Get-CimInstance Win32_OperatingSystem).Caption)); disks = $disks
+        ui_culture = (Get-Printable ((Get-UICulture).Name) 20); services = $svc
     }
 }
 
@@ -784,10 +891,13 @@ function Invoke-Remote {
     [Net.WebRequest]::DefaultWebProxy = $null
     $fw = Get-FirmwareKind
     if ($fw -ne 'uefi' -and $fw -ne 'bios') { Stop-Script 'cannot tell the firmware type' $Script:Exit.Unsupported }
-    try { $null = Get-Disk | Select-Object -First 1 } catch { Stop-Script 'the storage service is unavailable; restart Windows in normal mode' $Script:Exit.Unsupported }
+    Set-Step 'read the machine id'
     $Script:Opt.MachineId = Get-MachineId
+    Set-Step 'inventory'
     $inv = Get-Inventory $fw
+    Set-Step 'send the inventory'
     try { Send-Json '/inventory' $inv | Out-Null } catch { Stop-Script ('cannot reach the host: ' + $_.Exception.Message) $Script:Exit.Server }
+    Set-Step 'wait for approval'
     Say ('Inventory sent. Waiting for approval on the host (up to ' + $Script:Opt.TimeoutMinutes + ' min). Nothing has been changed.')
     $ap = Wait-Approval
     if ($null -eq $ap) { Stop-Script 'no approval from the host; nothing was changed' $Script:Exit.NoApproval }
@@ -795,14 +905,20 @@ function Invoke-Remote {
     $word = Get-ConfirmWord $env:COMPUTERNAME $sd.Disk.Number (("" + $sd.Disk.SerialNumber).Trim())
     if ([int]$ap.disk -ne [int]$sd.Disk.Number -or -not ([string]$ap.word -ceq $word)) { Stop-Script 'the approval does not match this PC and disk' $Script:Exit.NotConfirmed }
     Say 'Approved.'
+    Set-Step 'download the payload'
     $pd = Get-RemotePayload
+    Set-Step 'fetch the OTA key'
     $Script:Opt.PayloadDir = $pd
+    # The public key of this PC comes from the host after the approval; it is not part of the payload.
     $key = Join-Path $pd 'authorized_key.pub'
-    if (Test-Path -LiteralPath $key) { $Script:Opt.AuthorizedKey = $key }
+    try { $line = [string](Invoke-RestMethod -Uri ($Script:Opt.Server + '/key?machine=' + $Script:Opt.MachineId) -TimeoutSec 15) } catch { Stop-Script 'cannot fetch the OTA key from the host' $Script:Exit.Server }
+    [IO.File]::WriteAllText($key, ($line.Trim() + "`n"), (New-Object Text.UTF8Encoding($false)))
+    $Script:Opt.AuthorizedKey = $key
     $Script:Opt.Unattended = $true
     $Script:Opt.Reboot = $true
     $Script:Opt.Disk = [int]$sd.Disk.Number
     $Script:Opt.ConfirmToken = $word
+    Set-Step 'prepare the boot files'
     if ($fw -eq 'bios') { Invoke-InstallBios } else { Invoke-Install }
 }
 
@@ -826,8 +942,9 @@ if ($MyInvocation.InvocationName -ne '.') {
             $global:LASTEXITCODE = [int]$m.Groups[1].Value
             if (-not $Script:Opt.Remote) { exit $global:LASTEXITCODE }
         } else {
-            Say ('Failed: ' + $_.Exception.Message)
-            Write-Status 'failed' $Script:Exit.Failed $_.Exception.Message
+            $detail = Format-FailureDetail $_
+            Say ('Failed: ' + $detail)
+            Write-Status 'failed' $Script:Exit.Failed $detail
             $global:LASTEXITCODE = $Script:Exit.Failed
             if (-not $Script:Opt.Remote) { exit $Script:Exit.Failed }
         }

@@ -27,12 +27,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 DEFAULT_PAYLOAD = os.path.join(REPO, 'work', 'windows-installer', 'unitotem-windows-installer.zip')
 TEMPLATE = os.path.join(HERE, 'windows-installer', 'bootstrap.ps1.tmpl')
-DEFAULT_KEY = os.path.expanduser('~/.ssh/id_ed25519.pub')
 
 ZIP_DIR = 'unitotem-windows-installer/'
 ENGINE_ENTRY = ZIP_DIR + 'Install-UniTotem.ps1'
 SUMS_ENTRY = ZIP_DIR + 'payload/SHA256SUMS'
-KEY_ENTRY = ZIP_DIR + 'payload/authorized_key.pub'
 
 PLACEHOLDERS = ('SERVER', 'SHA256', 'BYTES', 'TIMEOUT', 'POLL', 'ENGINE')
 PLACEHOLDER_RE = re.compile(r'@(SERVER|SHA256|BYTES|TIMEOUT|POLL|ENGINE)@')
@@ -53,7 +51,7 @@ SOCKET_TIMEOUT = 30
 POLL_SECONDS = 5
 RATE_LIMIT = 50
 INV_KEYS = ('machine', 'hostname', 'ips', 'firmware', 'secureboot', 'bitlocker',
-            'boot_free_mb', 'system_disk', 'os', 'disks')
+            'boot_free_mb', 'system_disk', 'os', 'disks', 'ui_culture', 'services')
 DISK_KEYS = ('number', 'model', 'size_gb', 'style', 'serial', 'unique_id', 'bus',
              'system', 'partitions')
 PART_KEYS = ('number', 'letter', 'size_mb', 'type')
@@ -149,6 +147,12 @@ def parse_inventory(data):
         boot_free = _int(boot_free, 0, 10 ** 9, 'boot_free_mb')
     system_disk = _int(data['system_disk'], 0, 9999, 'system_disk')
     os_name = _str(data['os'], 200, None, 'os')
+    ui_culture = _str(data['ui_culture'], 20, None, 'ui_culture')
+    services = []
+    for item in _list(data['services'], 16, 'services'):
+        _obj(item, ('name', 'status'), 'service entry')
+        services.append({'name': _str(item['name'], 32, None, 'service name'),
+                         'status': _str(item['status'], 20, None, 'service status')})
     disks = []
     numbers = set()
     for d in _list(data['disks'], MAX_DISKS, 'disks'):
@@ -189,6 +193,8 @@ def parse_inventory(data):
         'boot_free_mb': boot_free,
         'system_disk': system_disk,
         'os': os_name,
+        'ui_culture': ui_culture,
+        'services': services,
         'disks': disks,
         'word': confirm_word(hostname, sysd['number'], sysd['serial']),
     }
@@ -199,7 +205,7 @@ def parse_status(data):
     return {
         'machine': _str(data['machine'], 64, MACHINE_RE, 'machine'),
         'level': _enum(data['level'], ('info', 'ok', 'error'), 'level'),
-        'text': _str(data['text'], 512, None, 'text'),
+        'text': _str(data['text'], 1500, None, 'text'),
     }
 
 
@@ -213,6 +219,8 @@ def render_block(rec):
         'Client IP:   ' + clean(rec['client_ip'], 45),
         'Addresses:   ' + (clean(', '.join(rec['ips'])) or 'none'),
         'OS:          ' + clean(rec['os']),
+        'UI language: ' + clean(rec['ui_culture'], 20),
+        'Storage svc: ' + (', '.join(clean(x['name'], 32) + '=' + clean(x['status'], 20) for x in rec['services']) or 'none'),
         'Firmware:    ' + clean(rec['firmware'], 10),
         'Secure Boot: ' + clean(rec['secureboot'], 10),
         'BitLocker:   ' + (', '.join(clean(b['drive'], 1) + ': ' + clean(b['status'])
@@ -272,31 +280,44 @@ def read_key(path):
     return lines[0]
 
 
-def make_served_zip(src, key_line, state_dir):
-    # Copies the payload entry by entry (streamed) and adds the key entry.
-    fd, tmp = tempfile.mkstemp(prefix='payload-', suffix='.zip', dir=state_dir)
-    os.close(fd)
-    try:
-        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(tmp, 'w') as zout:
-            for info in zin.infolist():
-                if info.filename == KEY_ENTRY:
-                    raise ValueError('payload already holds authorized_key.pub')
-                zi = zipfile.ZipInfo(info.filename, date_time=info.date_time)
-                zi.compress_type = info.compress_type
-                zi.external_attr = info.external_attr
-                if info.filename.endswith('/'):
-                    zout.writestr(zi, b'')
-                    continue
-                with zin.open(info) as fin, zout.open(zi, 'w') as fout:
-                    shutil.copyfileobj(fin, fout, CHUNK)
-            kz = zipfile.ZipInfo(KEY_ENTRY, date_time=(1980, 1, 1, 0, 0, 0))
-            kz.compress_type = zipfile.ZIP_STORED
-            kz.external_attr = 0o644 << 16
-            zout.writestr(kz, (key_line + '\n').encode('ascii'))
-    except BaseException:
-        os.unlink(tmp)
-        raise
-    return tmp
+HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]*')
+
+
+def deploy_key_path(host):
+    # Same per-target key location as ota_key_path in deploy/lib.sh.
+    if HOST_RE.fullmatch(host) is None:
+        raise ValueError('invalid host for the OTA key')
+    base = os.environ.get('XDG_STATE_HOME') or os.path.join(os.path.expanduser('~'), '.local', 'state')
+    return os.path.join(base, 'unitotem-deploy', host.replace(':', '_'), 'id_ed25519')
+
+
+def ensure_machine_key(host):
+    # Creates the per-target key when missing (like ota_key_ensure); returns (private path, public line).
+    key = deploy_key_path(host)
+    d = os.path.dirname(key)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
+    if not os.path.isfile(key):
+        env = {k: v for k, v in os.environ.items() if k not in ('DISPLAY', 'SSH_ASKPASS')}
+        env['SSH_ASKPASS_REQUIRE'] = 'never'
+        old = os.umask(0o077)
+        try:
+            subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'unitotem-deploy', '-f', key],
+                           stdin=subprocess.DEVNULL, check=True, env=env, timeout=30)
+        finally:
+            os.umask(old)
+    if not os.path.isfile(key + '.pub'):
+        old = os.umask(0o077)
+        try:
+            out = subprocess.run(['ssh-keygen', '-y', '-f', key], stdin=subprocess.DEVNULL, check=True,
+                                 capture_output=True, timeout=30).stdout
+        finally:
+            os.umask(old)
+        with open(key + '.pub', 'wb') as f:
+            f.write(out)
+    os.chmod(key, 0o600)
+    line = read_key(key + '.pub')
+    return key, line
 
 
 def file_digest(path):
@@ -374,22 +395,14 @@ class Context:
         self.seen = set()
         self.rate = {}
         self.stop = threading.Event()
-        self.temp_zip = None
         payload = os.path.abspath(payload)
         self.engine_text = check_payload(payload)
-        key_line = read_key(key_path)
+        # Explicit shared key, or None: then every machine gets its own key (ensure_machine_key).
         self.key_path = key_path
-        self.key_line = key_line
-        try:
-            if key_line is None:
-                self.served_path = payload
-            else:
-                self.temp_zip = make_served_zip(payload, key_line, self.state_dir)
-                self.served_path = self.temp_zip
-            self.size, self.sha = file_digest(self.served_path)
-        except BaseException:
-            self.close()
-            raise
+        self.explicit_key = read_key(key_path) if key_path else None
+        self.keys = {}
+        self.served_path = payload
+        self.size, self.sha = file_digest(self.served_path)
         clean_approvals(self.approvals_dir)
 
     def emit(self, text):
@@ -401,12 +414,6 @@ class Context:
 
     def close(self):
         self.stop.set()
-        if self.temp_zip is not None:
-            try:
-                os.unlink(self.temp_zip)
-            except OSError:
-                pass
-            self.temp_zip = None
 
     def render_bootstrap(self, server_url):
         values = {
@@ -443,29 +450,59 @@ class Context:
     def add_inventory(self, data, client_ip):
         rec = parse_inventory(data)
         rec['client_ip'] = client_ip
+        if self.explicit_key is not None:
+            priv = self.key_path[:-4] if self.key_path.endswith('.pub') else None
+            line = self.explicit_key
+        else:
+            priv, line = ensure_machine_key(client_ip)
         with self.lock:
             self.inventories[rec['machine']] = rec
+            self.keys[rec['machine']] = {'priv': priv, 'line': line}
         self.emit(render_block(rec))
+        self.emit('OTA key for this PC: ' + (priv or '<private key of %s>' % self.key_path))
         return rec
+
+    def get_key(self, machine):
+        # Public key line, only for a machine whose approval is valid.
+        with self.lock:
+            ok = self.get_approval_locked(machine)
+            k = self.keys.get(machine)
+        return k['line'] if (ok and k) else None
+
+    def next_command(self, machine):
+        with self.lock:
+            rec = self.inventories.get(machine)
+            k = self.keys.get(machine)
+        if not rec or not k:
+            return ''
+        return 'OTA_FALLBACK_KEY=%s deploy/remote-deploy.sh recover %s --parts DIR --yes' % (
+            k['priv'] or '<private key>', rec['client_ip'])
 
     def add_status(self, data):
         st = parse_status(data)
         with self.lock:
             rec = self.inventories.get(st['machine'])
         name = rec['hostname'] if rec else st['machine']
-        self.emit('[' + clean(name, 15) + '] ' + clean(st['text'], 80))
+        # Errors are printed whole: the step, the failing statement and the error id are needed remotely.
+        limit = 1500 if st['level'] == 'error' else 80
+        self.emit('[' + clean(name, 15) + '] ' + clean(st['text'], limit))
+
+    def get_approval_locked(self, machine):
+        rec = self.inventories.get(machine)
+        ap = self.approved.get(machine)
+        return bool(rec and ap and ap['word'] == rec['word'])
 
     def get_approval(self, machine):
         with self.lock:
-            rec = self.inventories.get(machine)
-            ap = self.approved.get(machine)
-            if rec and ap and ap['word'] == rec['word']:
+            if self.get_approval_locked(machine):
+                rec = self.inventories[machine]
                 sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
                 return {'state': 'approved', 'disk': sysd['number'], 'word': rec['word']}
         return {'state': 'wait'}
 
     def apply_word(self, word, source):
         word = word.strip()
+        approved_machine = None
         with self.lock:
             matches = [(m, rec) for m, rec in self.inventories.items()
                        if WORD_RE.fullmatch(word) and rec['word'] == word]
@@ -481,7 +518,10 @@ class Context:
                 self.approved[machine] = {'disk': sysd['number'], 'word': rec['word']}
                 msg = ('already approved: ' if already else 'approved: ') + \
                       clean(rec['hostname'], 15) + ' disk ' + str(sysd['number'])
+                approved_machine = machine
         self.emit(msg)
+        if approved_machine is not None:
+            self.emit('When the PC shows its address in the OTA environment, run: ' + self.next_command(approved_machine))
 
     def poll_approvals_once(self):
         for name in sorted(os.listdir(self.approvals_dir)):
@@ -559,6 +599,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_payload()
         elif url.path == '/approval':
             self.send_approval(url.query)
+        elif url.path == '/key':
+            self.send_key(url.query)
         else:
             self.fail(404, 'not found')
 
@@ -649,6 +691,17 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
 
+    def send_key(self, query):
+        values = parse_qs(query, keep_blank_values=True).get('machine', [])
+        if len(values) != 1 or MACHINE_RE.fullmatch(values[0]) is None:
+            self.fail(400, 'bad machine id')
+            return
+        line = self.ctx.get_key(values[0])
+        if line is None:
+            self.fail(403, 'not approved')
+            return
+        self.send_body(200, (line + '\n').encode('ascii'), 'text/plain; charset=us-ascii')
+
     def send_approval(self, query):
         values = parse_qs(query, keep_blank_values=True).get('machine', [])
         if len(values) != 1 or MACHINE_RE.fullmatch(values[0]) is None:
@@ -731,7 +784,7 @@ def parse_args(argv):
     p.add_argument('--port', type=int_arg(1, 65535), default=8000)
     p.add_argument('--advertise', type=ip_arg, default=None)
     p.add_argument('--payload', default=DEFAULT_PAYLOAD)
-    p.add_argument('--authorized-key', default=DEFAULT_KEY)
+    p.add_argument('--authorized-key', default=None, metavar='FILE')
     p.add_argument('--timeout-minutes', type=int_arg(1, 1440), default=60)
     p.add_argument('--state-dir', default=default_state_dir())
     p.add_argument('--approve', metavar='WORD', default=None)
@@ -767,11 +820,10 @@ def main(argv=None):
     if not addrs:
         print('  no IPv4 address found: use --advertise IP')
     print('payload: sha256 %s, %d bytes' % (ctx.sha, ctx.size))
-    if ctx.key_line is None:
-        print('WARNING: OPEN MODE: no key file at %s; the payload is not restricted to a key'
-              % args.authorized_key)
+    if ctx.explicit_key is None:
+        print('OTA key: one per PC in %s' % os.path.join(os.path.dirname(os.path.dirname(deploy_key_path('x'))), '<ip>'))
     else:
-        print('authorized key: ' + args.authorized_key)
+        print('OTA key: ' + args.authorized_key + ' (same for every PC)')
 
     try:
         server = make_server(args.bind, args.port, ctx)
