@@ -223,12 +223,12 @@ class BootstrapTests(ServerCase):
 
 
 class InventoryTests(ServerCase):
-    def test_valid_inventory_asks_yes(self):
+    def test_valid_inventory_asks_y_n(self):
         status, _, body = self.post_json('/inventory', inventory())
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {'ok': True})
         out = self.output()
-        self.assertIn('Erase this disk and install UniTotem? Type yes', out)
+        self.assertIn('Erase this disk and install UniTotem? (y/n)', out)
         self.assertIn('disk 0, Disk model', out)
         self.assertNotIn('WIPE-', out)
         self.assertNotIn('OTA key for this PC', out)
@@ -320,40 +320,52 @@ class ApprovalTests(ServerCase):
         super().setUp()
         self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
 
-    def yes_twice(self):
-        self.ctx.apply_answer('yes', 'stdin')
-        self.ctx.apply_answer('yes', 'stdin')
+    def y_twice(self):
+        self.ctx.apply_answer('y', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
 
-    def test_two_yes_approve_and_bind_machine_disk_serial(self):
+    def test_two_y_approve_and_bind_machine_disk_serial(self):
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
-        self.ctx.apply_answer('yes', 'stdin')
-        self.assertIn('Last chance: erase this disk? Type yes', self.output())
+        self.ctx.apply_answer('y', 'stdin')
+        self.assertIn('Last chance: erase this disk? (y/n)', self.output())
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
-        self.ctx.apply_answer('yes', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-AAAA'),
                          {'state': 'approved', 'machine': 'MACHINE-AAAA', 'disk': 0, 'serial': 'S4EVNX0N123456A'})
         self.assertIn('approved: (DESKTOP-ABC) disk 0', self.output())
 
-    def test_anything_else_cancels(self):
-        for answer in ('Yes', 'YES', 'y', 'no', 'yes please', ''):
-            with self.subTest(answer=answer):
-                self.ctx.apply_answer('yes', 'stdin')
-                self.ctx.apply_answer(answer, 'stdin')
-                self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
-                self.ctx.apply_answer('yes', 'stdin')  # restarts at the first question
-                self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
-                self.ctx.apply_answer('no', 'stdin')
-
-    def test_first_yes_then_other_cancels_and_needs_two_again(self):
-        self.ctx.apply_answer('yes', 'stdin')
-        self.ctx.apply_answer('nope', 'stdin')
+    def test_n_cancels_and_needs_two_again(self):
+        self.ctx.apply_answer('y', 'stdin')
+        self.ctx.apply_answer('n', 'stdin')
         self.assertIn('cancelled: nothing was changed', self.output())
-        self.ctx.apply_answer('yes', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
 
+    def test_upper_case_accepted(self):
+        self.ctx.apply_answer('Y', 'stdin')
+        self.ctx.apply_answer('Y', 'stdin')
+        self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
+
+    def test_other_answers_are_asked_again_without_cancelling(self):
+        self.ctx.apply_answer('y', 'stdin')          # now at the last-chance question
+        for bad in ('yes', 'no', 'maybe', 'yy', '1'):
+            before = len(self.lines)
+            self.ctx.apply_answer(bad, 'stdin')
+            new = self.lines[before:]
+            self.assertEqual(new[0], 'Invalid answer, type y or n')
+            self.assertIn('Last chance: erase this disk? (y/n)', new[1])
+            self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
+        self.ctx.apply_answer('y', 'stdin')          # still at the second question
+        self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
+
+    def test_invalid_first_answer_repeats_the_first_question(self):
+        self.ctx.apply_answer('yes', 'stdin')
+        self.assertIn('Invalid answer, type y or n', self.output())
+        self.assertIn('Erase this disk and install UniTotem? (y/n)', self.lines[-1])
+
     def test_via_approvals_dir(self):
-        srv.write_approval(self.ctx.approvals_dir, 'yes')
-        srv.write_approval(self.ctx.approvals_dir, 'yes')
+        srv.write_approval(self.ctx.approvals_dir, 'y')
+        srv.write_approval(self.ctx.approvals_dir, 'y')
         self.assertTrue(self.wait_for(lambda: 'approved: (DESKTOP-ABC) disk 0' in self.output()))
         self.assertEqual(os.listdir(self.ctx.approvals_dir), [])
         self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
@@ -362,12 +374,12 @@ class ApprovalTests(ServerCase):
         self.assertEqual(self.post_json('/inventory',
                                         inventory(machine='MACHINE-BBBB', hostname='LAPTOP-XYZ',
                                                   serial='OTHER123'))[0], 200)
-        self.yes_twice()
+        self.y_twice()
         self.assertEqual(self.approval('MACHINE-BBBB')['state'], 'approved')
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
 
     def test_new_inventory_revokes_approval(self):
-        self.yes_twice()
+        self.y_twice()
         self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
         self.assertEqual(self.post_json('/inventory', inventory(serial='ZZZZ9999'))[0], 200)
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
@@ -378,10 +390,10 @@ class ApprovalTests(ServerCase):
         self.assertEqual(self.req('GET', '/approval?machine=MACHINE-AAAA&machine=MACHINE-BBBB')[0], 400)
 
     def test_not_approvable_over_http(self):
-        status, _, _ = self.post_json('/approval', {'machine': 'MACHINE-AAAA', 'answer': 'yes'})
+        status, _, _ = self.post_json('/approval', {'machine': 'MACHINE-AAAA', 'answer': 'y'})
         self.assertIn(status, (404, 405))
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
-        status, _, body = self.req('GET', '/approval?machine=MACHINE-AAAA&answer=yes')
+        status, _, body = self.req('GET', '/approval?machine=MACHINE-AAAA&answer=y')
         self.assertEqual(json.loads(body), {'state': 'wait'})
 
     def test_no_pc_waiting(self):
@@ -389,7 +401,7 @@ class ApprovalTests(ServerCase):
                           out=[].append)
         lines = []
         ctx.out_fn = lines.append
-        ctx.apply_answer('yes', 'stdin')
+        ctx.apply_answer('y', 'stdin')
         self.assertEqual(lines, ['no PC is waiting'])
 
 
@@ -453,8 +465,8 @@ class PlanTests(ServerCase):
         inv['plan'] = {'where': 'none', 'reason': 'restart in normal mode'}
         self.post_json('/inventory', inv)
         self.assertIn('Cannot install on this PC: restart in normal mode', self.output())
-        self.assertNotIn('Type yes', self.output())
-        self.ctx.apply_answer('yes', 'stdin')
+        self.assertNotIn('(y/n)', self.output())
+        self.ctx.apply_answer('y', 'stdin')
         self.assertIn('no PC is waiting', self.output())
 
     def test_bad_plan_rejected(self):
@@ -495,36 +507,36 @@ class RestartTests(ServerCase):
 
     def test_restart_restores_inventory_not_approvals(self):
         self.post_json('/inventory', inventory())
-        self.ctx.apply_answer('yes', 'stdin')
-        self.ctx.apply_answer('yes', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
         ctx, lines = self.new_ctx()
         self.assertIn('MACHINE-AAAA', ctx.inventories)
         self.assertEqual(ctx.get_approval('MACHINE-AAAA'), {'state': 'wait'})
         text = '\n'.join(lines)
         self.assertIn('approvals must be given again', text)
-        self.assertIn('Erase this disk and install UniTotem? Type yes', text)
-        ctx.apply_answer('yes', 'stdin')
-        ctx.apply_answer('yes', 'stdin')
+        self.assertIn('Erase this disk and install UniTotem? (y/n)', text)
+        ctx.apply_answer('y', 'stdin')
+        ctx.apply_answer('y', 'stdin')
         self.assertEqual(ctx.get_approval('MACHINE-AAAA')['state'], 'approved')
         ctx.close()
 
     def test_keep_approvals_restores_them(self):
         ctx, _ = self.new_ctx(keep=True)
         ctx.add_inventory(inventory(), '127.0.0.1')
-        ctx.apply_answer('yes', 'stdin')
-        ctx.apply_answer('yes', 'stdin')
+        ctx.apply_answer('y', 'stdin')
+        ctx.apply_answer('y', 'stdin')
         ctx.close()
         ctx2, lines = self.new_ctx(keep=True)
         self.assertEqual(ctx2.get_approval('MACHINE-AAAA')['state'], 'approved')
-        self.assertNotIn('Type yes', '\n'.join(lines))
+        self.assertNotIn('(y/n)', '\n'.join(lines))
         ctx2.close()
 
     def test_changed_disk_invalidates_a_kept_approval(self):
         ctx, _ = self.new_ctx(keep=True)
         ctx.add_inventory(inventory(), '127.0.0.1')
-        ctx.apply_answer('yes', 'stdin')
-        ctx.apply_answer('yes', 'stdin')
+        ctx.apply_answer('y', 'stdin')
+        ctx.apply_answer('y', 'stdin')
         path = os.path.join(self.state, 'machines', 'MACHINE-AAAA.json')
         with open(path, encoding='utf-8') as f:
             doc = json.load(f)
@@ -545,8 +557,8 @@ class RestartTests(ServerCase):
 
     def test_same_inventory_again_is_idempotent(self):
         self.post_json('/inventory', inventory())
-        self.ctx.apply_answer('yes', 'stdin')
-        self.ctx.apply_answer('yes', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
         before = len(self.lines)
         self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
         self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
@@ -602,10 +614,10 @@ class DisplayTests(ServerCase):
 
     def test_questions_yellow_and_not_in_palette(self):
         self.ctx.color = True
-        q = self.ctx.ask('Type yes')
-        self.assertEqual(q, '\x1b[1;33mType yes\x1b[0m')
+        q = self.ctx.ask('Erase? (y/n)')
+        self.assertEqual(q, '\x1b[1;33mErase? (y/n)\x1b[0m')
         self.ctx.color = False
-        self.assertEqual(self.ctx.ask('Type yes'), 'Type yes')
+        self.assertEqual(self.ctx.ask('Erase? (y/n)'), 'Erase? (y/n)')
         for code in (3, 11, 178, 220, 221, 226, 227, 214, 172):
             self.assertNotIn(code, srv.PALETTE)
 
@@ -720,8 +732,8 @@ class PayloadTests(unittest.TestCase):
 class MachineKeyTests(ServerCase):
     def approve(self, machine='MACHINE-AAAA'):
         self.post_json('/inventory', inventory(machine=machine))
-        self.ctx.apply_answer('yes', 'stdin')
-        self.ctx.apply_answer('yes', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
 
     def key_files(self):
         base = os.path.join(self.home, '.local', 'state', 'unitotem-deploy', '127.0.0.1')
@@ -739,8 +751,8 @@ class MachineKeyTests(ServerCase):
     def test_key_only_after_approval_and_only_the_public_part(self):
         self.post_json('/inventory', inventory())
         self.assertEqual(self.req('GET', '/key?machine=MACHINE-AAAA')[0], 403)
-        self.ctx.apply_answer('yes', 'stdin')
-        self.ctx.apply_answer('yes', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
         status, _, body = self.req('GET', '/key?machine=MACHINE-AAAA')
         self.assertEqual(status, 200)
         with open(self.key_files()[1] + '.pub') as f:
@@ -771,10 +783,87 @@ class MachineKeyTests(ServerCase):
     def test_machine_a_approval_does_not_release_b_key(self):
         self.post_json('/inventory', inventory(machine='MACHINE-BBBB', hostname='OTHERPC'))
         self.post_json('/inventory', inventory(machine='MACHINE-AAAA'))
-        self.ctx.apply_answer('yes', 'stdin')
-        self.ctx.apply_answer('yes', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
+        self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.req('GET', '/key?machine=MACHINE-AAAA')[0], 200)
         self.assertEqual(self.req('GET', '/key?machine=MACHINE-BBBB')[0], 403)
+
+
+class PtyTests(unittest.TestCase):
+    # The real server on a pseudo-terminal: a log line arriving while the prompt waits goes above it and the
+    # prompt, with what was typed, is drawn again below.
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='win-srv-pty-')
+        fake_home(self, self.tmp)
+        self.port = free_port()
+        self.zip = make_zip(os.path.join(self.tmp, 'p.zip'))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def read_until(self, fd, needle, timeout=15.0):
+        import select
+        buf = b''
+        end = time.time() + timeout
+        while needle not in buf and time.time() < end:
+            if select.select([fd], [], [], 0.2)[0]:
+                try:
+                    buf += os.read(fd, 65536)
+                except OSError:
+                    break
+        return buf
+
+    def test_log_above_prompt_and_typed_text_redrawn(self):
+        import pty
+        master, slave = pty.openpty()
+        env = dict(os.environ, NO_COLOR='1')
+        proc = subprocess.Popen([sys.executable, '-I', SERVER_PATH, '--state-dir', os.path.join(self.tmp, 'st'),
+                                 '--port', str(self.port), '--advertise', '127.0.0.1', '--payload', self.zip],
+                                stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True)
+        os.close(slave)
+        try:
+            self.assertIn(b'listening', self.read_until(master, b'listening'))
+
+            def post(path, obj):
+                c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+                c.request('POST', path, json.dumps(obj).encode(), {'Content-Type': 'application/json'})
+                r = c.getresponse()
+                r.read()
+                c.close()
+                return r.status
+            self.assertEqual(post('/inventory', inventory()), 200)
+            out = self.read_until(master, b'UniTotem? (y/n) ')
+            self.assertIn(b'UniTotem? (y/n) ', out)
+            os.write(master, b'ab')
+            self.assertIn(b'ab', self.read_until(master, b'ab'))
+            self.assertEqual(post('/status', {'machine': 'MACHINE-AAAA', 'level': 'info', 'text': 'log line A'}), 200)
+            out = self.read_until(master, b'(y/n) ab')
+            self.assertIn(b'\r\x1b[2K(DESKTOP-ABC) log line A\r\n', out)         # above the prompt, erasing it first
+            self.assertTrue(out.rstrip().endswith(b'UniTotem? (y/n) ab'), out[-120:])  # prompt and typed text again
+            os.write(master, b'\x7f')
+            out = self.read_until(master, b'(y/n) a')
+            self.assertIn(b'\r\x1b[2K', out)
+            self.assertTrue(out.endswith(b'(y/n) a'))
+            os.write(master, b'\r')
+            out = self.read_until(master, b'Invalid answer, type y or n')
+            self.assertIn(b'Invalid answer, type y or n', out)
+            os.write(master, b'y\r')
+            self.assertIn(b'Last chance: erase this disk? (y/n)', self.read_until(master, b'Last chance: erase this disk? (y/n) '))
+            os.write(master, b'Y\r')
+            self.assertIn(b'approved: (DESKTOP-ABC) disk 0', self.read_until(master, b'approved: (DESKTOP-ABC) disk 0'))
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            os.close(master)
+
+    def test_without_a_terminal_lines_are_plain(self):
+        t = srv.Terminal(__import__('io').StringIO(), interactive=False)
+        t.set_prompt('Q? (y/n) ')
+        t.log('line')
+        self.assertEqual(t.stream.getvalue(), 'Q? (y/n) \nline\n')
 
 
 class CliTests(unittest.TestCase):
@@ -788,8 +877,8 @@ class CliTests(unittest.TestCase):
         return subprocess.run([sys.executable, '-I', SERVER_PATH, '--state-dir', self.tmp] + list(args),
                               capture_output=True, text=True, timeout=60)
 
-    def test_approve_yes_twice_writes_two_files_0600(self):
-        res = self.run_cli('--approve', 'yes', '--approve', 'yes')
+    def test_approve_y_twice_writes_two_files_0600(self):
+        res = self.run_cli('--approve', 'y', '--approve', 'Y')
         self.assertEqual(res.returncode, 0, res.stderr)
         appr = os.path.join(self.tmp, 'approvals')
         names = sorted(os.listdir(appr))
@@ -798,11 +887,11 @@ class CliTests(unittest.TestCase):
             path = os.path.join(appr, n)
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
             with open(path, encoding='ascii') as f:
-                self.assertEqual(f.read(), 'yes\n')
+                self.assertEqual(f.read(), 'y\n')
 
     def test_approve_anything_else_rejected(self):
-        for args in (('--approve', 'yes'), ('--approve', 'Yes', '--approve', 'Yes'),
-                     ('--approve', 'yes', '--approve', 'yes', '--approve', 'yes'), ('--approve', 'WIPE-x-DISK0-A')):
+        for args in (('--approve', 'y'), ('--approve', 'yes', '--approve', 'yes'), ('--approve', 'n', '--approve', 'n'),
+                     ('--approve', 'y', '--approve', 'y', '--approve', 'y'), ('--approve', 'WIPE-x-DISK0-A')):
             with self.subTest(args=args):
                 res = self.run_cli(*args)
                 self.assertEqual(res.returncode, 2)

@@ -468,6 +468,7 @@ public class FailingStream : MemoryStream {
         @($script:con | Where-Object { $_ -eq 'Server reachable again' }).Count | Should -Be 1
         @($script:con | Where-Object { $_ -eq 'Server did not know this PC, inventory sent again' }).Count | Should -Be 1
         @($script:con | Where-Object { $_ -match '^Waiting for approval, 57 min left$' }).Count | Should -Be 1
+        @($script:con | Where-Object { $_ -like 'Waiting for approval*' }).Count | Should -Be 1   # next one only after 5 minutes
     }
     It 'Send-InventoryUntil says once that the server is lost and when the inventory got through' {
         $script:con = New-Object System.Collections.Generic.List[string]
