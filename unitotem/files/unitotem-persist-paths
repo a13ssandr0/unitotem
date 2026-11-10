@@ -8,7 +8,12 @@ set -euo pipefail
 
 PERSIST=/mnt/data/unitotem/persist
 
-[ -d /mnt/data ] || { echo "unitotem-persist-paths: /mnt/data not mounted, skipping" >&2; exit 0; }
+# Without DATA (volatile system) /home would stay on the read-only root and no administrator could be created: a size-capped tmpfs.
+if ! mountpoint -q /mnt/data 2>/dev/null; then
+    echo "unitotem-persist-paths: /mnt/data not mounted, /home is volatile" >&2
+    mountpoint -q /home || mount -t tmpfs -o size=32m,mode=755 tmpfs /home
+    exit 0
+fi
 
 # name | target | mode | group
 persist() {
