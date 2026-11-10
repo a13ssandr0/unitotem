@@ -74,6 +74,10 @@ cp -- "$SRC/Install-UniTotem.ps1" "$SRC/grub.cfg.template" "$SRC/grub-bios.cfg.t
 mv -- "$STAGE/payload/Install-UniTotem.ps1" "$STAGE/Install-UniTotem.ps1"
 cp -- "$SRC/README.txt" "$STAGE/README.txt"
 ( cd "$STAGE/payload" && sha256sum vmlinuz initrd.img shimx64.efi mmx64.efi grubx64.efi g2.img grub.cfg.template grub-bios.cfg.template > SHA256SUMS )
+# No SSH public key line may ship in the text files of the payload (exceptions: none).
+if grep -rIlE -e '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+) +[A-Za-z0-9+/=]{40,}' -- "$STAGE"; then
+    echo "build refused: an SSH public key line is in the payload (files above)" >&2; exit 1
+fi
 # Windows PowerShell 5.1 reads BOM-less files as ANSI: the script must be pure ASCII.
 if LC_ALL=C grep -q -P '[^\x00-\x7F]' "$STAGE/Install-UniTotem.ps1"; then echo "non-ASCII in Install-UniTotem.ps1" >&2; exit 1; fi
 # CRLF line endings for the text files read on Windows.

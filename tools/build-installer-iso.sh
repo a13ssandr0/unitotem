@@ -149,6 +149,10 @@ mkfs.vfat -F 16 -n UNITOTEMEFI "$W/esp.img" >/dev/null
 (cd "$ESPDIR" && mcopy -s -i "$W/esp.img" EFI ::)
 
 echo "== ISO"
+# No SSH public key line may ship in the text files of the payload (exceptions: none).
+if grep -rIlE -e '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+) +[A-Za-z0-9+/=]{40,}' -- "$TREE"; then
+    echo "build refused: an SSH public key line is in the payload (files above)" >&2; exit 1
+fi
 ISO="$OUT/unitotem-installer-$DATE-amd64.iso"
 rm -f -- "$ISO"
 xorriso -as mkisofs -quiet -iso-level 3 -full-iso9660-filenames -rational-rock -volid UNITOTEM_ISO \
