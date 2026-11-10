@@ -338,3 +338,144 @@ Describe 'MBR and CIM letters' {
         Get-CimField { 'LENOVO 20XW' } | Should -Be 'LENOVO 20XW'
     }
 }
+
+Describe 'Host restarts and outages' {
+    BeforeAll {
+        Add-Type -TypeDefinition @'
+using System; using System.IO;
+public class FailingStream : MemoryStream {
+    private long limit;
+    public FailingStream(byte[] b, long limit) : base(b) { this.limit = limit; }
+    public override int Read(byte[] buffer, int offset, int count) {
+        if (Position >= limit) throw new IOException("connection lost");
+        return base.Read(buffer, offset, (int)Math.Min(count, limit - Position));
+    }
+}
+'@
+        function global:Invoke-RestMethod { param($Uri, $Method, $Body, $ContentType, $TimeoutSec) }
+    }
+    BeforeEach {
+        Mock Start-Sleep { }
+        $script:LogFile = Join-Path ([IO.Path]::GetTempPath()) ('unitotem-test-log-' + [guid]::NewGuid() + '.txt')
+        $script:Opt.Server = 'http://127.0.0.1:8000'
+        $script:Opt.MachineId = '3f2a9c1e-0000-4000-8000-123456789abc'
+        $script:Opt.PollSeconds = 1
+        $script:StatusQueue.Clear(); $script:StatusFails = 0; $script:StatusNext = [datetime]::MinValue
+    }
+    AfterEach { Remove-Item -LiteralPath $script:LogFile -Force -ErrorAction SilentlyContinue }
+
+    It 'Get-Backoff is 5, 10, 20, 30, 30' {
+        (1..6 | ForEach-Object { Get-Backoff $_ }) -join ',' | Should -Be '5,10,20,30,30,30'
+    }
+    It 'status posts never throw, are queued, and are delivered in order when the host is back' {
+        $script:sent = New-Object System.Collections.Generic.List[string]
+        $script:up = $false
+        Mock Send-Json { if (-not $script:up) { throw 'host down' }; $script:sent.Add([string]$Body.text) }
+        { Send-Remote 'one'; Send-Remote 'two'; Send-Remote 'three' } | Should -Not -Throw
+        $script:StatusQueue.Count | Should -Be 3
+        $script:up = $true
+        Invoke-StatusFlush -Force
+        ($script:sent -join ',') | Should -Be 'one,two,three'
+        $script:StatusQueue.Count | Should -Be 0
+    }
+    It 'the status queue is bounded' {
+        Mock Send-Json { throw 'host down' }
+        1..250 | ForEach-Object { Send-Remote ('line ' + $_) }
+        $script:StatusQueue.Count | Should -Be 200
+        $script:StatusQueue.Peek().text | Should -Be 'line 51'
+    }
+    It 'Wait-Approval survives errors, sends the inventory again on "unknown" and returns the approval' {
+        $script:calls = 0
+        $script:resent = 0
+        Mock Invoke-RestMethod {
+            $script:calls++
+            switch ($script:calls) {
+                1 { throw 'connection refused' }
+                2 { throw 'connection refused' }
+                3 { [pscustomobject]@{ state = 'unknown' } }
+                4 { [pscustomobject]@{ state = 'wait' } }
+                default { [pscustomobject]@{ state = 'approved'; machine = $script:Opt.MachineId; disk = 0; serial = 'S' } }
+            }
+        }
+        Mock Send-Json { $script:resent++ }
+        $r = Wait-Approval @{ machine = 'x' } ((Get-Date).AddMinutes(5))
+        $r.state | Should -Be 'approved'
+        $script:resent | Should -Be 1
+    }
+    It 'Wait-Approval returns $null at the deadline and never throws while the host is down' {
+        Mock Invoke-RestMethod { throw 'connection refused' }
+        $r = $null
+        { $r = Wait-Approval @{ machine = 'x' } ((Get-Date).AddSeconds(1)) } | Should -Not -Throw
+        $r | Should -BeNullOrEmpty
+    }
+    It 'Send-InventoryUntil retries and gives up only at the deadline' {
+        $script:n = 0
+        Mock Send-Json { $script:n++; if ($script:n -lt 3) { throw 'down' } }
+        Send-InventoryUntil @{ a = 1 } ((Get-Date).AddMinutes(1)) | Should -BeTrue
+        Mock Send-Json { throw 'down' }
+        Send-InventoryUntil @{ a = 1 } ((Get-Date).AddSeconds(1)) | Should -BeFalse
+    }
+    It 'Receive-File resumes with Range after a lost connection' {
+        $bytes = [byte[]](1..250) * 40   # 10000 bytes
+        $bytes = [byte[]]($bytes[0..9999])
+        $path = Join-Path ([IO.Path]::GetTempPath()) ('unitotem-test-dl-' + [guid]::NewGuid())
+        $script:froms = New-Object System.Collections.Generic.List[long]
+        Mock Open-HttpStream {
+            $script:froms.Add($From)
+            if ($script:froms.Count -eq 1) { return @{ Stream = (New-Object FailingStream($bytes, 6000)); Response = $null; Resumed = $false } }
+            return @{ Stream = (New-Object IO.MemoryStream(, [byte[]]($bytes[[int]$From..9999]))); Response = $null; Resumed = $true }
+        }
+        try {
+            Receive-File 'http://x/payload.zip' $path 10000 ((Get-Date).AddMinutes(1)) | Should -BeTrue
+            $script:froms[0] | Should -Be 0
+            $script:froms[1] | Should -Be 6000
+            [IO.File]::ReadAllBytes($path) | Should -Be $bytes
+        } finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+    }
+    It 'Receive-File restarts when the host ignores Range, and gives up at the deadline' {
+        $bytes = [byte[]]((1..250) * 40)
+        $path = Join-Path ([IO.Path]::GetTempPath()) ('unitotem-test-dl-' + [guid]::NewGuid())
+        $script:calls = 0
+        Mock Open-HttpStream {
+            $script:calls++
+            if ($script:calls -eq 1) { return @{ Stream = (New-Object FailingStream($bytes, 4000)); Response = $null; Resumed = $false } }
+            return @{ Stream = (New-Object IO.MemoryStream(, $bytes)); Response = $null; Resumed = $false }
+        }
+        try {
+            Receive-File 'http://x/payload.zip' $path 10000 ((Get-Date).AddMinutes(1)) | Should -BeTrue
+            (Get-Item $path).Length | Should -Be 10000
+        } finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        Mock Open-HttpStream { throw 'host down' }
+        $p2 = Join-Path ([IO.Path]::GetTempPath()) ('unitotem-test-dl-' + [guid]::NewGuid())
+        Receive-File 'http://x/payload.zip' $p2 10000 ((Get-Date).AddSeconds(1)) | Should -BeFalse
+    }
+
+    It 'shows on the console when the server is lost and found again, once each, and the remaining minutes' {
+        $script:con = New-Object System.Collections.Generic.List[string]
+        Mock Write-Host { $script:con.Add([string]$Object) }
+        $script:calls = 0
+        Mock Invoke-RestMethod {
+            $script:calls++
+            if ($script:calls -le 3) { throw 'connection refused' }
+            if ($script:calls -eq 4) { return [pscustomobject]@{ state = 'unknown' } }
+            if ($script:calls -eq 5) { return [pscustomobject]@{ state = 'wait' } }
+            [pscustomobject]@{ state = 'approved'; machine = $script:Opt.MachineId; disk = 0; serial = 'S' }
+        }
+        Mock Send-Json { }
+        $r = Wait-Approval @{ machine = 'x' } ((Get-Date).AddMinutes(57))
+        $r.state | Should -Be 'approved'
+        @($script:con | Where-Object { $_ -like 'Server not reachable, retrying (*:*:*)' }).Count | Should -Be 1
+        @($script:con | Where-Object { $_ -eq 'Server reachable again' }).Count | Should -Be 1
+        @($script:con | Where-Object { $_ -eq 'Server did not know this PC, inventory sent again' }).Count | Should -Be 1
+        @($script:con | Where-Object { $_ -match '^Waiting for approval, 57 min left$' }).Count | Should -Be 1
+    }
+    It 'Send-InventoryUntil says once that the server is lost and when the inventory got through' {
+        $script:con = New-Object System.Collections.Generic.List[string]
+        Mock Write-Host { $script:con.Add([string]$Object) }
+        $script:n = 0
+        Mock Send-Json { $script:n++; if ($script:n -lt 4) { throw 'down' } }
+        Send-InventoryUntil @{ a = 1 } ((Get-Date).AddMinutes(1)) | Should -BeTrue
+        @($script:con | Where-Object { $_ -like 'Server not reachable, retrying (*' }).Count | Should -Be 1
+        $script:con[-1] | Should -Be 'Server reachable again, inventory sent'
+    }
+}
