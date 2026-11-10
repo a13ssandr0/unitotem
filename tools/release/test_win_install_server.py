@@ -7,6 +7,7 @@ import hashlib
 import http.client
 import importlib.util
 import json
+import logging
 import os
 import random
 import re
@@ -76,8 +77,8 @@ def inventory(machine='MACHINE-AAAA', hostname='DESKTOP-ABC', serial='S4EVNX0N12
         'model': 'LENOVO 20XW',
         'cpu': 'Intel(R) Core(TM) i5, 4 cores, 8 threads',
         'ram': '16.0 GB, 2 modules',
-        'plan': {'where': 'boot', 'reason': 'the active partition has room'},
-        'notes': [],
+        'plan': {'where': 'boot', 'reason': 'active_partition_has_room'},
+        'facts': [],
         'services': [{'name': 'vds', 'status': 'Stopped'}],
         'disks': [{
             'number': number, 'model': model, 'size_gb': 500.0, 'style': 'GPT',
@@ -110,6 +111,18 @@ def fake_home(case, tmp):
     return home
 
 
+class ListHandler(logging.Handler):
+    # Collects formatted server log records in the same list as the raw lines.
+    def __init__(self, lines):
+        super().__init__(logging.DEBUG)
+        self.lines = lines
+        self.setFormatter(srv.make_formatter())
+        self.addFilter(srv.HostFilter(srv.HostColors(), False))
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
+
+
 class ServerCase(unittest.TestCase):
     key_file = None
 
@@ -123,6 +136,10 @@ class ServerCase(unittest.TestCase):
         self.state = os.path.join(self.tmp, 'state')
         self.key = self.key_file
         self.lines = []
+        self.log_handler = ListHandler(self.lines)
+        srv.LOGGER.addHandler(self.log_handler)
+        srv.LOGGER.setLevel(logging.DEBUG)
+        srv.LOGGER.propagate = False
         self.clock_value = 1000.0
         self.ctx = srv.Context(self.payload, self.state, self.key, 60, template=self.template,
                                out=self.lines.append, clock=lambda: self.clock_value,
@@ -134,6 +151,7 @@ class ServerCase(unittest.TestCase):
         self.thread.start()
 
     def tearDown(self):
+        srv.LOGGER.removeHandler(self.log_handler)
         self.server.shutdown()
         self.server.server_close()
         self.ctx.close()
@@ -209,8 +227,7 @@ class BootstrapTests(ServerCase):
     def test_first_fetch_message_once(self):
         self.req('GET', '/')
         self.req('GET', '/')
-        msg = 'client 127.0.0.1 fetched the bootstrap'
-        self.assertEqual(self.lines.count(msg), 1)
+        self.assertEqual(sum('bootstrap served client=127.0.0.1' in l for l in self.lines), 1)
 
     def test_other_paths_404(self):
         self.assertEqual(self.req('GET', '/nope')[0], 404)
@@ -229,7 +246,7 @@ class InventoryTests(ServerCase):
         self.assertEqual(json.loads(body), {'ok': True})
         out = self.output()
         self.assertIn('Erase this disk and install UniTotem? (y/n)', out)
-        self.assertIn('disk 0, Disk model', out)
+        self.assertIn('disk=0 model=Disk model', out)
         self.assertNotIn('WIPE-', out)
         self.assertNotIn('OTA key for this PC', out)
 
@@ -332,12 +349,12 @@ class ApprovalTests(ServerCase):
         self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-AAAA'),
                          {'state': 'approved', 'machine': 'MACHINE-AAAA', 'disk': 0, 'serial': 'S4EVNX0N123456A'})
-        self.assertIn('approved: (DESKTOP-ABC) disk 0', self.output())
+        self.assertIn('(DESKTOP-ABC) approved disk=0', self.output())
 
     def test_n_cancels_and_needs_two_again(self):
         self.ctx.apply_answer('y', 'stdin')
         self.ctx.apply_answer('n', 'stdin')
-        self.assertIn('cancelled: nothing was changed', self.output())
+        self.assertIn('cancelled changes=none', self.output())
         self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
 
@@ -352,7 +369,7 @@ class ApprovalTests(ServerCase):
             before = len(self.lines)
             self.ctx.apply_answer(bad, 'stdin')
             new = self.lines[before:]
-            self.assertEqual(new[0], 'Invalid answer, type y or n')
+            self.assertIn('Invalid answer, type y or n', new[0])
             self.assertIn('Last chance: erase this disk? (y/n)', new[1])
             self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
         self.ctx.apply_answer('y', 'stdin')          # still at the second question
@@ -365,7 +382,7 @@ class ApprovalTests(ServerCase):
 
     def test_dash_y_file_approves_last_pc_without_questions(self):
         srv.write_approval(self.ctx.approvals_dir, 'approve')
-        self.assertTrue(self.wait_for(lambda: 'approved: (DESKTOP-ABC) disk 0' in self.output()))
+        self.assertTrue(self.wait_for(lambda: '(DESKTOP-ABC) approved disk=0' in self.output()))
         self.assertEqual(os.listdir(self.ctx.approvals_dir), [])
         self.assertEqual(self.approval('MACHINE-AAAA'),
                          {'state': 'approved', 'machine': 'MACHINE-AAAA', 'disk': 0, 'serial': 'S4EVNX0N123456A'})
@@ -373,20 +390,20 @@ class ApprovalTests(ServerCase):
 
     def test_dash_y_for_a_specific_machine(self):
         self.assertEqual(self.post_json('/inventory', inventory(machine='MACHINE-BBBB', hostname='LAPTOP-XYZ',
-                                                                serial='OTHER123'))[0], 200)
+                                                                serial='OTHER123'))[0], 409)
         srv.write_approval(self.ctx.approvals_dir, 'approve MACHINE-AAAA')
-        self.assertTrue(self.wait_for(lambda: 'approved: (DESKTOP-ABC) disk 0' in self.output()))
+        self.assertTrue(self.wait_for(lambda: '(DESKTOP-ABC) approved disk=0' in self.output()))
         self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
-        self.assertEqual(self.approval('MACHINE-BBBB'), {'state': 'wait'})
 
     def test_dash_y_refused_for_unknown_machine_or_plan_none(self):
         self.ctx.approve_direct('MACHINE-ZZZZ', 'file')
         self.assertIn('no such PC', self.output())
+        self.ctx.release()
         inv = inventory(machine='MACHINE-CCCC', hostname='NOPE')
-        inv['plan'] = {'where': 'none', 'reason': 'restart in normal mode'}
+        inv['plan'] = {'where': 'none', 'reason': 'storage_stopped'}
         self.post_json('/inventory', inv)
         self.ctx.approve_direct('MACHINE-CCCC', 'file')
-        self.assertIn('cannot approve: restart in normal mode', self.output())
+        self.assertIn('cannot approve reason=storage_stopped', self.output())
         self.assertEqual(self.approval('MACHINE-CCCC'), {'state': 'wait'})
 
     def test_garbage_in_the_approvals_dir_approves_nothing(self):
@@ -396,12 +413,13 @@ class ApprovalTests(ServerCase):
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
 
     def test_answers_go_to_the_pc_that_reported_last(self):
+        self.ctx.release()
         self.assertEqual(self.post_json('/inventory',
                                         inventory(machine='MACHINE-BBBB', hostname='LAPTOP-XYZ',
                                                   serial='OTHER123'))[0], 200)
         self.y_twice()
         self.assertEqual(self.approval('MACHINE-BBBB')['state'], 'approved')
-        self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
+        self.assertEqual(self.req('GET', '/approval?machine=MACHINE-AAAA')[0], 409)
 
     def test_new_inventory_revokes_approval(self):
         self.y_twice()
@@ -424,10 +442,10 @@ class ApprovalTests(ServerCase):
     def test_no_pc_waiting(self):
         ctx = srv.Context(self.payload, os.path.join(self.tmp, 'state2'), None, 60, template=self.template,
                           out=[].append)
-        lines = []
-        ctx.out_fn = lines.append
-        ctx.apply_answer('y', 'stdin')
-        self.assertEqual(lines, ['no PC is waiting'])
+        with self.assertLogs('winserver', 'WARNING') as cm:
+            ctx.apply_answer('y', 'stdin')
+        self.assertEqual([r.getMessage() for r in cm.records], ['no PC is waiting'])
+        ctx.close()
 
 
 class UnicodeLogTests(ServerCase):
@@ -476,20 +494,32 @@ class PlanTests(ServerCase):
         inv = inventory()
         inv['firmware'] = 'bios'
         inv['secureboot'] = 'na'
-        inv['plan'] = {'where': 'cdrive', 'reason': 'C: is NTFS'}
-        inv['notes'] = ['Safe Mode: the Storage services are stopped.']
+        inv['plan'] = {'where': 'cdrive', 'reason': 'c_ntfs_not_encrypted'}
+        inv['facts'] = ['C: fs=NTFS bitlocker=off free=100MB', 'boot_mode=safe']
         self.post_json('/inventory', inv)
         out = self.output()
-        for text in ('Model:       LENOVO 20XW', 'CPU:         Intel', 'RAM:         16.0 GB, 2 modules',
-                     'Secure Boot: n/a (legacy BIOS)', 'Plan:        cdrive - C: is NTFS',
-                     'Note:        Safe Mode: the Storage services are stopped.', '60 MB free'):
+        for text in ('  model:        LENOVO 20XW', '  cpu:          Intel', '  ram:          16.0 GB, 2 modules',
+                     '  secure_boot:  n/a', '  plan:         destination=cdrive reason=c_ntfs_not_encrypted',
+                     'C: fs=NTFS bitlocker=off free=100MB', 'boot_mode=safe', 'free=60MB'):
             self.assertIn(text, out)
+
+    def test_summary_is_indented_without_timestamp_and_logs_are_not(self):
+        self.post_json('/inventory', inventory())
+        every = self.output().splitlines()
+        block = [l for l in every if l.startswith('  ')]
+        self.assertGreater(len(block), 10)
+        self.assertTrue(all(not re.match(r'\d{4}-\d\d-\d\d ', l) for l in block))
+        self.assertIn('  disks:', every)
+        self.assertTrue(any(l.startswith('      part 1: letter=C') for l in every))
+        logs = [l for l in every if re.match(r'\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (INFO|WARNING|ERROR|DEBUG) \(', l)]
+        self.assertTrue(logs)
+        self.assertNotIn('Note', self.output())
 
     def test_plan_none_asks_nothing(self):
         inv = inventory()
-        inv['plan'] = {'where': 'none', 'reason': 'restart in normal mode'}
+        inv['plan'] = {'where': 'none', 'reason': 'storage_stopped'}
         self.post_json('/inventory', inv)
-        self.assertIn('Cannot install on this PC: restart in normal mode', self.output())
+        self.assertIn('cannot install reason=storage_stopped', self.output())
         self.assertNotIn('(y/n)', self.output())
         self.ctx.apply_answer('y', 'stdin')
         self.assertIn('no PC is waiting', self.output())
@@ -538,8 +568,8 @@ class RestartTests(ServerCase):
         ctx, lines = self.new_ctx()
         self.assertIn('MACHINE-AAAA', ctx.inventories)
         self.assertEqual(ctx.get_approval('MACHINE-AAAA'), {'state': 'wait'})
-        text = '\n'.join(lines)
-        self.assertIn('approvals must be given again', text)
+        text = '\n'.join(lines) + self.output()
+        self.assertIn('state restored machines=1 approvals=dropped', text)
         self.assertIn('Erase this disk and install UniTotem? (y/n)', text)
         ctx.apply_answer('y', 'stdin')
         ctx.apply_answer('y', 'stdin')
@@ -577,7 +607,7 @@ class RestartTests(ServerCase):
         with open(os.path.join(self.state, 'machines', 'BAD-MACHINE-1.json'), 'w') as f:
             f.write('{not json')
         ctx, lines = self.new_ctx()
-        self.assertIn('ignored an unreadable state file', '\n'.join(lines))
+        self.assertIn('state file ignored', self.output())
         ctx.close()
 
     def test_same_inventory_again_is_idempotent(self):
@@ -625,17 +655,29 @@ class DisplayTests(ServerCase):
         self.assertIn('NTFS/exFAT (IFS) (IFS)', self.output())
 
     def test_host_colour_stable_and_in_memory(self):
-        self.ctx.color = True
-        a = self.ctx.host_tag('laptop-ale')
-        self.assertEqual(a, self.ctx.host_tag('laptop-ale'))
-        self.assertRegex(a, r'^\x1b\[38;5;\d+m\(laptop-ale\)\x1b\[0m$')
+        colors = srv.HostColors()
+        a = colors.name('laptop-ale')
+        self.assertEqual(a, colors.name('laptop-ale'))
+        self.assertRegex(a, r'^\x1b\[38;5;\d+mlaptop-ale\x1b\[0m$')
         code = int(re.search(r'38;5;(\d+)m', a).group(1))
         self.assertIn(code, srv.PALETTE)
         self.assertNotIn(code, (0, 15, 2, 10, 82, 46, 255, 16))
-        other = self.ctx.host_tag('pc-two')
-        self.assertNotEqual(a, other.replace('pc-two', 'laptop-ale'))
-        self.ctx.color = False
-        self.assertEqual(self.ctx.host_tag('laptop-ale'), '(laptop-ale)')
+        self.assertNotEqual(colors.name('pc-two').replace('pc-two', 'x'), a.replace('laptop-ale', 'x'))
+
+    def test_log_filter_colours_only_when_asked(self):
+        rec = logging.LogRecord('winserver', logging.INFO, __file__, 1, 'm', None, None)
+        rec.host = 'laptop-ale'
+        srv.HostFilter(srv.HostColors(), False).filter(rec)
+        self.assertEqual(rec.host, 'laptop-ale')
+        rec.host = 'laptop-ale'
+        srv.HostFilter(srv.HostColors(), True).filter(rec)
+        self.assertIn('\x1b[38;5;', rec.host)
+
+    def test_log_format_is_the_standard_one(self):
+        rec = logging.LogRecord('winserver', logging.WARNING, __file__, 1, 'disk=0 serial=X', None, None)
+        rec.host = 'DESKTOP-ABC'
+        self.assertRegex(srv.make_formatter().format(rec),
+                         r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d WARNING \(DESKTOP-ABC\) disk=0 serial=X$')
 
     def test_questions_yellow_and_not_in_palette(self):
         self.ctx.color = True
@@ -656,7 +698,7 @@ class DisplayTests(ServerCase):
 class StatusTests(ServerCase):
     def test_status_printed_sanitised(self):
         self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
-        status, _, _ = self.post_json('/status', {'machine': 'MACHINE-AAAA', 'level': 'ok',
+        status, _, _ = self.post_json('/status', {'machine': 'MACHINE-AAAA', 'level': 'done',
                                                   'text': 'Partitioning\x1b[0m done'})
         self.assertEqual(status, 200)
         self.assertIn('(DESKTOP-ABC) Partitioning[0m done', self.output())
@@ -668,7 +710,7 @@ class StatusTests(ServerCase):
         self.assertIn('(UNKNOWN-0001) hi', self.output())
 
     def test_status_bad_level(self):
-        status, _, _ = self.post_json('/status', {'machine': 'UNKNOWN-0001', 'level': 'warn',
+        status, _, _ = self.post_json('/status', {'machine': 'UNKNOWN-0001', 'level': 'debug',
                                                   'text': 'hi'})
         self.assertEqual(status, 400)
 
@@ -784,7 +826,7 @@ class MachineKeyTests(ServerCase):
             self.assertEqual(body.decode().strip(), f.read().strip())
         self.assertNotIn(b'PRIVATE', body)
         self.assertEqual(self.req('GET', '/key?machine=bad')[0], 400)
-        self.assertEqual(self.req('GET', '/key?machine=MACHINE-BBBB')[0], 403)
+        self.assertEqual(self.req('GET', '/key?machine=MACHINE-BBBB')[0], 409)
 
     def test_personal_key_never_used(self):
         self.approve()
@@ -805,13 +847,74 @@ class MachineKeyTests(ServerCase):
         with open(self.key_files()[1] + '.pub') as f:
             self.assertEqual(first, f.read())
 
-    def test_machine_a_approval_does_not_release_b_key(self):
-        self.post_json('/inventory', inventory(machine='MACHINE-BBBB', hostname='OTHERPC'))
+    def test_other_machine_gets_no_key(self):
         self.post_json('/inventory', inventory(machine='MACHINE-AAAA'))
         self.ctx.apply_answer('y', 'stdin')
         self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.req('GET', '/key?machine=MACHINE-AAAA')[0], 200)
-        self.assertEqual(self.req('GET', '/key?machine=MACHINE-BBBB')[0], 403)
+        self.assertEqual(self.req('GET', '/key?machine=MACHINE-BBBB')[0], 409)
+
+
+class SingleClientTests(ServerCase):
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
+
+    def other(self):
+        return inventory(machine='MACHINE-BBBB', hostname='LAPTOP-XYZ', serial='OTHER123')
+
+    def test_second_machine_is_refused_everywhere_with_409(self):
+        status, _, body = self.post_json('/inventory', self.other())
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body), {'error': 'busy', 'message': 'server busy: another PC is being installed'})
+        self.assertEqual(self.req('GET', '/approval?machine=MACHINE-BBBB')[0], 409)
+        self.assertEqual(self.req('GET', '/key?machine=MACHINE-BBBB')[0], 409)
+        self.assertEqual(self.post_json('/status', {'machine': 'MACHINE-BBBB', 'level': 'info', 'text': 'x'})[0], 409)
+        self.assertNotIn('MACHINE-BBBB', self.ctx.inventories)
+
+    def test_refusal_is_a_warning_logged_once_a_minute(self):
+        for _ in range(3):
+            self.post_json('/inventory', self.other())
+        warns = [l for l in self.lines if ' WARNING ' in l and 'reason=busy' in l]
+        self.assertEqual(len(warns), 1)
+        self.assertIn('machine=MACHINE-BBBB', warns[0])
+
+    def test_same_machine_keeps_working(self):
+        self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
+        self.assertEqual(self.post_json('/status', {'machine': 'MACHINE-AAAA', 'level': 'info', 'text': 'x'})[0], 200)
+
+    def test_released_by_n(self):
+        self.ctx.apply_answer('n', 'stdin')
+        self.assertEqual(self.post_json('/inventory', self.other())[0], 200)
+
+    def test_released_by_done_and_by_error(self):
+        for level in ('done', 'error'):
+            with self.subTest(level=level):
+                self.ctx.release()
+                self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
+                self.assertEqual(self.post_json('/inventory', self.other())[0], 409)
+                self.post_json('/status', {'machine': 'MACHINE-AAAA', 'level': level, 'text': 'end'})
+                self.assertEqual(self.post_json('/inventory', self.other())[0], 200)
+
+    def test_released_by_reset_file(self):
+        srv.write_approval(self.ctx.approvals_dir, 'reset')
+        self.assertTrue(self.wait_for(lambda: any('session reset' in l for l in self.lines)))
+        self.assertEqual(self.post_json('/inventory', self.other())[0], 200)
+
+    def test_session_decays_after_the_timeout(self):
+        now = [1000.0]
+        self.ctx.wall = lambda: now[0]
+        self.ctx.active_since = now[0]
+        now[0] += 60 * 60 + 1
+        self.assertEqual(self.post_json('/inventory', self.other())[0], 200)
+        self.assertTrue(any('session expired machine=MACHINE-AAAA' in l for l in self.lines))
+
+    def test_no_pc_is_active_after_a_none_plan(self):
+        self.ctx.release()
+        inv = self.other()
+        inv['plan'] = {'where': 'none', 'reason': 'storage_stopped'}
+        self.assertEqual(self.post_json('/inventory', inv)[0], 200)
+        self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
 
 
 class PtyTests(unittest.TestCase):
@@ -863,7 +966,7 @@ class PtyTests(unittest.TestCase):
             self.assertIn(b'ab', self.read_until(master, b'ab'))
             self.assertEqual(post('/status', {'machine': 'MACHINE-AAAA', 'level': 'info', 'text': 'log line A'}), 200)
             out = self.read_until(master, b'(y/n) ab')
-            self.assertIn(b'\r\x1b[2K(DESKTOP-ABC) log line A\r\n', out)         # above the prompt, erasing it first
+            self.assertRegex(out, rb'\r\x1b\[2K\d{4}-\d\d-\d\d \d\d:\d\d:\d\d INFO \(DESKTOP-ABC\) log line A\r\n')  # above the prompt, erasing it first
             self.assertTrue(out.rstrip().endswith(b'UniTotem? (y/n) ab'), out[-120:])  # prompt and typed text again
             os.write(master, b'\x7f')
             out = self.read_until(master, b'(y/n) a')
@@ -875,7 +978,7 @@ class PtyTests(unittest.TestCase):
             os.write(master, b'y\r')
             self.assertIn(b'Last chance: erase this disk? (y/n)', self.read_until(master, b'Last chance: erase this disk? (y/n) '))
             os.write(master, b'Y\r')
-            self.assertIn(b'approved: (DESKTOP-ABC) disk 0', self.read_until(master, b'approved: (DESKTOP-ABC) disk 0'))
+            self.assertIn(b'(DESKTOP-ABC) approved disk=0', self.read_until(master, b'(DESKTOP-ABC) approved disk=0'))
         finally:
             proc.terminate()
             try:
@@ -944,7 +1047,7 @@ class CliTests(unittest.TestCase):
             p.wait(timeout=10)
         self.assertIn('irm http://127.0.0.1:', out)
         self.assertNotIn('-NoProfile', out)
-        self.assertIn('Win+R -> powershell -> Ctrl+Shift+Enter\nthen paste the irm line', out)
+        self.assertTrue(out.startswith('On the Windows machine press Win+R, type powershell, press Enter, type one of the following commands and press Enter\nirm http://127.0.0.1:'))
         self.assertEqual(out.count('irm http://'), 1)
         for text in ('sha256', 'payload', 'OTA key', 'OTA_FALLBACK_KEY', 'key file'):
             self.assertNotIn(text, out)

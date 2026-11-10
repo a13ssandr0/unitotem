@@ -121,28 +121,34 @@ Describe 'New-GrubCfg directory' {
 Describe 'Build-Plan' {
     It 'UEFI, boot partition: no shrink, no BitLocker action' {
         $p = (Build-Plan @{ Undo = $false; Mode = 'uefi'; Where = 'boot'; NeededBytes = 240MB; PartBytes = 304MB; Token = 'QUJD' }) -join "`n"
-        $p | Should -Match 'C: and BitLocker are not touched'
-        $p | Should -Not -Match 'Shrink'
-        $p | Should -Match 'Arm the OTA login'
+        $p | Should -Match 'place=boot_partition c=untouched bitlocker=untouched'
+        $p | Should -Not -Match 'shrink'
+        $p | Should -Match 'ota_login=key'
     }
     It 'UEFI, new partition: shrink and BitLocker only on the new partition' {
         $p = (Build-Plan @{ Undo = $false; Mode = 'uefi'; Where = 'new'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null }) -join "`n"
-        $p | Should -Match 'Shrink C: by 304 MiB'
-        $p | Should -Match 'BitLocker off on it only'
-        $p | Should -Match 'open mode'
+        $p | Should -Match 'shrink_c_mb=304'
+        $p | Should -Match 'bitlocker=off_on_new_only'
+        $p | Should -Match 'ota_login=open'
         $p | Should -Not -Match 'Decrypt C'
     }
     It 'BIOS plan' {
         $p = (Build-Plan @{ Undo = $false; Mode = 'bios'; Where = 'boot'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null }) -join "`n"
-        $p | Should -Match 'unitotem-g2\.img'
-        $p | Should -Not -Match 'Shrink'
+        $p | Should -Match 'loader=unitotem-g2\.img'
+        $p | Should -Not -Match 'shrink'
+    }
+    It 'plan lines hold facts, not sentences' {
+        foreach ($w in 'boot', 'cdrive', 'new') {
+            foreach ($l in (Build-Plan @{ Undo = $false; Mode = 'bios'; Where = $w; NeededBytes = 240MB; PartBytes = 304MB; Token = $null })) {
+                $l | Should -Not -Match '\b(the|will|because|please|nothing)\b'
+            }
+        }
     }
     It 'Undo plans' {
-        ((Build-Plan @{ Undo = $true; Mode = 'bios' }) -join "`n") | Should -Match 'folder unitotem'
-        ((Build-Plan @{ Undo = $true; Mode = 'uefi' }) -join "`n") | Should -Match 'EFI\\unitotem'
+        ((Build-Plan @{ Undo = $true; Mode = 'bios' }) -join "`n") | Should -Match 'remove folder=unitotem'
+        ((Build-Plan @{ Undo = $true; Mode = 'uefi' }) -join "`n") | Should -Match 'remove folder=EFI\\unitotem'
     }
 }
-
 Describe 'Get-ConfirmWord' {
     It 'is bound to host, disk number and serial' {
         Get-ConfirmWord 'desktop-ABC' 0 'S4EVNX0N123456A ' | Should -Be 'WIPE-DESKTOP-ABC-DISK0-S4EVNX0N'
@@ -292,7 +298,7 @@ Describe 'Unicode log transport' {
         }
     }
     It 'the log file is written as UTF-8' {
-        Get-Content (Join-Path $PSScriptRoot 'Install-UniTotem.ps1') -Raw | Should -Match 'Add-Content -LiteralPath .Script:LogFile -Value .line -Encoding UTF8'
+        Get-Content (Join-Path $PSScriptRoot 'Install-UniTotem.ps1') -Raw | Should -Match 'Add-Content -LiteralPath .Script:LogFile -Value \(Format-LogLine .Level .Text\) -Encoding UTF8'
     }
 }
 
@@ -311,7 +317,7 @@ Describe 'Select-BiosWhere' {
     It 'refuses a new partition in Safe Mode' {
         $r = Select-BiosWhere (F @{ CEncrypted = $true }) $need
         $r.Where | Should -Be 'none'
-        $r.Reason | Should -Match 'Safe Mode'
+        $r.Reason | Should -Be 'safe_mode_no_partition_has_room'
     }
     It 'new partition only in normal mode and with a free slot' {
         (Select-BiosWhere (F @{ CFree = 1MB; BootMode = 'normal' }) $need).Where | Should -Be 'new'
@@ -322,7 +328,7 @@ Describe 'Select-BiosWhere' {
         (Select-BiosWhere (F @{ CFs = 'FAT32' }) $need).Where | Should -Be 'none'
     }
     It 'plan text for C:' {
-        ((Build-Plan @{ Undo = $false; Mode = 'bios'; Where = 'cdrive'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null }) -join "`n") | Should -Match 'no partition change'
+        ((Build-Plan @{ Undo = $false; Mode = 'bios'; Where = 'cdrive'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null }) -join "`n") | Should -Match 'partition_changes=none'
     }
 }
 Describe 'MBR and CIM letters' {
@@ -464,11 +470,11 @@ public class FailingStream : MemoryStream {
         Mock Send-Json { }
         $r = Wait-Approval @{ machine = 'x' } ((Get-Date).AddMinutes(57))
         $r.state | Should -Be 'approved'
-        @($script:con | Where-Object { $_ -like 'Server not reachable, retrying (*:*:*)' }).Count | Should -Be 1
-        @($script:con | Where-Object { $_ -eq 'Server reachable again' }).Count | Should -Be 1
-        @($script:con | Where-Object { $_ -eq 'Server did not know this PC, inventory sent again' }).Count | Should -Be 1
-        @($script:con | Where-Object { $_ -match '^Waiting for approval, 57 min left$' }).Count | Should -Be 1
-        @($script:con | Where-Object { $_ -like 'Waiting for approval*' }).Count | Should -Be 1   # next one only after 5 minutes
+        @($script:con | Where-Object { $_ -match '^\d\d:\d\d:\d\d WARNING \(\S+\) server unreachable, retrying$' }).Count | Should -Be 1
+        @($script:con | Where-Object { $_ -match ' INFO \(\S+\) server reachable again$' }).Count | Should -Be 1
+        @($script:con | Where-Object { $_ -match 'server did not know this PC, inventory sent again$' }).Count | Should -Be 1
+        @($script:con | Where-Object { $_ -match ' INFO \(\S+\) waiting for approval minutes_left=57$' }).Count | Should -Be 1
+        @($script:con | Where-Object { $_ -like '*waiting for approval*' }).Count | Should -Be 1   # next one only after 5 minutes
     }
     It 'Send-InventoryUntil says once that the server is lost and when the inventory got through' {
         $script:con = New-Object System.Collections.Generic.List[string]
@@ -476,7 +482,77 @@ public class FailingStream : MemoryStream {
         $script:n = 0
         Mock Send-Json { $script:n++; if ($script:n -lt 4) { throw 'down' } }
         Send-InventoryUntil @{ a = 1 } ((Get-Date).AddMinutes(1)) | Should -BeTrue
-        @($script:con | Where-Object { $_ -like 'Server not reachable, retrying (*' }).Count | Should -Be 1
-        $script:con[-1] | Should -Be 'Server reachable again, inventory sent'
+        @($script:con | Where-Object { $_ -like '*server unreachable, retrying' }).Count | Should -Be 1
+        $script:con[-1] | Should -Match ' INFO \(\S+\) server reachable again, inventory sent$'
+    }
+}
+
+Describe 'Log format, busy server and elevation' {
+    BeforeAll {
+        function global:Invoke-RestMethod { param($Uri, $Method, $Body, $ContentType, $TimeoutSec) }
+        function global:Start-Process { param($FilePath, $Verb, $ArgumentList) }
+    }
+    BeforeEach {
+        Mock Start-Sleep { }
+        $script:LogFile = Join-Path ([IO.Path]::GetTempPath()) ('unitotem-test-log-' + [guid]::NewGuid() + '.txt')
+        $script:Opt.Server = 'http://127.0.0.1:8000'
+        $script:Opt.MachineId = ''
+    }
+    AfterEach { Remove-Item -LiteralPath $script:LogFile -Force -ErrorAction SilentlyContinue; $env:UNITOTEM_ELEVATED = $null }
+
+    It 'log lines are "date time LEVEL (host) message", console with time only' {
+        $env:COMPUTERNAME = 'DESKTOP-HM6RMUF'
+        Format-LogLine 'WARNING' 'disk=0 serial=X' | Should -Match '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d WARNING \(DESKTOP-HM6RMUF\) disk=0 serial=X$'
+        Format-LogLine 'INFO' 'm' 'HH:mm:ss' | Should -Match '^\d\d:\d\d:\d\d INFO \(DESKTOP-HM6RMUF\) m$'
+    }
+    It 'Say writes the console line and the log file line with the same level' {
+        $env:COMPUTERNAME = 'PC-1'
+        Mock Write-Host { }
+        Say 'step=copy' 'ERROR' -Local
+        Get-Content $script:LogFile | Should -Match '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ERROR \(PC-1\) step=copy$'
+    }
+    It 'Test-BusyError recognises HTTP 409 without comparing text' {
+        $resp = [pscustomobject]@{ StatusCode = 409 }
+        $ex = New-Object System.Exception('anything in any language')
+        $ex | Add-Member -NotePropertyName Response -NotePropertyValue $resp
+        $er = New-Object System.Management.Automation.ErrorRecord($ex, 'x', 'NotSpecified', $null)
+        Test-BusyError $er | Should -BeTrue
+        $resp.StatusCode = 500
+        Test-BusyError $er | Should -BeFalse
+        Test-BusyError (New-Object System.Management.Automation.ErrorRecord((New-Object System.Exception('plain')), 'x', 'NotSpecified', $null)) | Should -BeFalse
+    }
+    It 'a 409 on the inventory ends with the Busy exit code and no change' {
+        $ex = New-Object System.Exception('409')
+        $ex | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = 409 })
+        Mock Send-Json { throw $ex }
+        Mock Write-Host { }
+        $script:Opt.Remote = $true
+        try {
+            { Send-InventoryUntil @{ a = 1 } ((Get-Date).AddMinutes(1)) } | Should -Throw ('UNITOTEM_EXIT:' + $Script:Exit.Busy)
+        } finally { $script:Opt.Remote = $false }
+        $Script:Exit.Busy | Should -Be 10
+    }
+    It 'not elevated: starts an elevated PowerShell with the bootstrap command and returns' {
+        Mock Start-Process { }
+        Mock Write-Host { }
+        Start-Elevated
+        Should -Invoke Start-Process -Times 1 -ParameterFilter {
+            $Verb -eq 'RunAs' -and $FilePath -eq 'powershell.exe' -and
+            ($ArgumentList -join ' ') -eq '-NoProfile -NoExit -Command "$env:UNITOTEM_ELEVATED=1; irm http://127.0.0.1:8000|iex"'
+        }
+    }
+    It 'a refused elevation ends with the NotAdmin exit code' {
+        Mock Start-Process { throw 'cancelled by the user' }
+        Mock Write-Host { }
+        $script:Opt.Remote = $true
+        try { { Start-Elevated } | Should -Throw ('UNITOTEM_EXIT:' + $Script:Exit.NotAdmin) } finally { $script:Opt.Remote = $false }
+    }
+    It 'no second relaunch from an already relaunched process' {
+        $env:UNITOTEM_ELEVATED = '1'
+        Mock Start-Process { }
+        Mock Write-Host { }
+        $script:Opt.Remote = $true
+        try { { Start-Elevated } | Should -Throw ('UNITOTEM_EXIT:' + $Script:Exit.NotAdmin) } finally { $script:Opt.Remote = $false }
+        Should -Invoke Start-Process -Times 0
     }
 }

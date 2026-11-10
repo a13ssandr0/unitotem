@@ -60,7 +60,7 @@ if (-not $Script:Here) {
 $Script:LogFile = Join-Path $Script:Here 'Install-UniTotem.log'
 $Script:StateFile = Join-Path $Script:Here 'Install-UniTotem.state.json'
 $Script:StatusFile = Join-Path $Script:Here 'Install-UniTotem.status.json'
-$Script:Exit = @{ Ok = 0; Failed = 1; Usage = 2; NotAdmin = 3; Unsupported = 4; NotConfirmed = 5; Payload = 6; DecryptTimeout = 7; NoApproval = 8; Server = 9 }
+$Script:Exit = @{ Ok = 0; Failed = 1; Usage = 2; NotAdmin = 3; Unsupported = 4; NotConfirmed = 5; Payload = 6; DecryptTimeout = 7; NoApproval = 8; Server = 9; Busy = 10 }
 $Script:Status = [ordered]@{ Result = 'running'; Code = -1; Message = ''; Step = ''; Mode = ''; DiskNumber = $null; DiskSerial = ''; DiskModel = ''; Where = ''; Partition = ''; BootEntry = ''; ExpectedToken = ''; DryRun = [bool]$WhatIf; Time = '' }
 # Parameters as script state, so functions never depend on the caller's scope.
 $Script:Opt = @{ WhatIf = [bool]$WhatIf; Undo = [bool]$Undo; Unattended = [bool]$Unattended; Reboot = [bool]$Reboot; Disk = $Disk; ConfirmToken = $ConfirmToken; AuthorizedKey = $AuthorizedKey; PayloadDir = $PayloadDir; DecryptTimeoutMinutes = $DecryptTimeoutMinutes; Remote = [bool]$Remote; Server = $Server; PayloadSha256 = $PayloadSha256; PayloadBytes = $PayloadBytes; PollSeconds = $PollSeconds; TimeoutMinutes = $TimeoutMinutes; DownloadTimeoutMinutes = $DownloadTimeoutMinutes; MachineId = '' }
@@ -184,53 +184,65 @@ function Get-ConfirmWord {
     return ('WIPE-' + $h + '-DISK' + $Number + '-' + $clean)
 }
 
-# Ordered list of plan lines (text only; the executor runs the same steps). Ctx.Where: boot | new.
+# Plan lines (key=value facts; the executor runs the same steps). Ctx.Where: boot | cdrive | new.
 function Build-Plan {
     param([hashtable]$Ctx)
     $p = New-Object System.Collections.Generic.List[string]
     if ($Ctx.Undo) {
-        $p.Add('Remove the boot entry "' + $Script:EntryName + '" (boot manager and one-shot)')
+        $p.Add('remove boot_entry="' + $Script:EntryName + '"')
         if ($Ctx.Mode -eq 'bios') {
-            $p.Add('Remove the folder ' + $Script:BiosDir + ' and ' + $Script:BiosImage + ' from the boot partition')
+            $p.Add('remove folder=' + $Script:BiosDir + ' file=' + $Script:BiosImage)
         } else {
-            $p.Add('Remove ' + $Script:EspDir + ' from the EFI system partition')
+            $p.Add('remove folder=' + $Script:EspDir)
         }
-        $p.Add('Remove the partition labelled ' + $Script:Label + ' and extend C: again, if one was created')
+        $p.Add('remove partition_label=' + $Script:Label + ' extend=C:')
         return , $p
     }
     $mb = [math]::Round($Ctx.PartBytes / 1MB)
     $need = [math]::Round($Ctx.NeededBytes / 1MB)
     if ($Ctx.Where -eq 'boot') {
-        $p.Add('Put the boot files (' + $need + ' MiB) on the boot partition: C: and BitLocker are not touched')
+        $p.Add('files_mb=' + $need + ' place=boot_partition c=untouched bitlocker=untouched')
     } elseif ($Ctx.Where -eq 'cdrive') {
-        $p.Add('Put the boot files (' + $need + ' MiB) in C:\' + $Script:BiosDir + ': no partition change, only file copies and bcdedit')
+        $p.Add('files_mb=' + $need + ' place=C:\' + $Script:BiosDir + ' partition_changes=none')
     } else {
-        $p.Add('Shrink C: by ' + $mb + ' MiB (the boot partition has too little space)')
-        $p.Add('Create a FAT32 partition labelled ' + $Script:Label + ' (' + $mb + ' MiB) and turn BitLocker off on it only')
-        $p.Add('Put the boot files on it')
+        $p.Add('shrink_c_mb=' + $mb)
+        $p.Add('create_partition fs=FAT32 label=' + $Script:Label + ' size_mb=' + $mb + ' bitlocker=off_on_new_only')
+        $p.Add('files_mb=' + $need + ' place=new_partition')
     }
     if ($Ctx.Mode -eq 'bios') {
-        $p.Add('Copy the GRUB loader to the boot partition as ' + $Script:BiosImage)
+        $p.Add('loader=' + $Script:BiosImage)
     } else {
-        $p.Add('Copy ' + ($Script:ChainFiles -join ', ') + ' and grub.cfg to ' + $Script:EspDir + ' on the EFI system partition')
+        $p.Add('chain=' + ($Script:ChainFiles -join ',') + ' folder=' + $Script:EspDir)
     }
-    if ($Ctx.Token) { $p.Add('Arm the OTA login with the supplied ed25519 key') } else { $p.Add('No key: open mode (empty root password accepted from the network)') }
-    $p.Add('Create the boot entry "' + $Script:EntryName + '" and boot it once on the next restart')
+    if ($Ctx.Token) { $p.Add('ota_login=key') } else { $p.Add('ota_login=open') }
+    $p.Add('boot_entry="' + $Script:EntryName + '" oneshot=yes')
     return , $p
 }
 
 # ---- messages and logging ----------------------------------------------------------------------------------
 
-function Write-Log {
-    param([string]$Text)
-    $line = '{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Text
-    try { Add-Content -LiteralPath $Script:LogFile -Value $line -Encoding UTF8 } catch { }
+# Log line format: "YYYY-MM-DD HH:MM:SS LEVEL (host) message"; levels INFO, WARNING, ERROR, DEBUG. The console uses
+# HH:MM:SS, the log file the full date.
+function Get-LogHost {
+    $h = [regex]::Replace(("" + $env:COMPUTERNAME), '[^A-Za-z0-9-]', '')
+    if ($h.Length -gt 15) { $h = $h.Substring(0, 15) }
+    if (-not $h) { $h = 'localhost' }
+    return $h
 }
+function Format-LogLine {
+    param([string]$Level, [string]$Text, [string]$TimeFormat = 'yyyy-MM-dd HH:mm:ss')
+    return ('{0} {1} ({2}) {3}' -f (Get-Date -Format $TimeFormat), $Level, (Get-LogHost), $Text)
+}
+function Write-Log {
+    param([string]$Text, [string]$Level = 'DEBUG')
+    try { Add-Content -LiteralPath $Script:LogFile -Value (Format-LogLine $Level $Text) -Encoding UTF8 } catch { }
+}
+# Console + log file + (remote mode) the host. -Local keeps the line off the host, -Done marks the end of the run.
 function Say {
-    param([string]$Text)
-    Write-Host $Text
-    Write-Log $Text
-    if ($Script:Opt.Remote -and $Script:Opt.MachineId) { Send-Remote $Text }
+    param([string]$Text, [string]$Level = 'INFO', [switch]$Local, [switch]$Done)
+    Write-Host (Format-LogLine $Level $Text 'HH:mm:ss')
+    Write-Log $Text $Level
+    if (-not $Local -and $Script:Opt.Remote -and $Script:Opt.MachineId) { Send-Remote $Text $Level $Done }
 }
 # Status file for an orchestrator: one JSON object, rewritten at the end of every run.
 function Write-Status {
@@ -252,12 +264,11 @@ function Format-FailureDetail {
 
 function Show-Plan {
     param([hashtable]$Ctx)
-    Say 'Plan:'
-    foreach ($l in (Build-Plan $Ctx)) { Say ('  - ' + $l) }
+    foreach ($l in (Build-Plan $Ctx)) { Say ('plan ' + $l) }
 }
 function Stop-Script {
     param([string]$Text, [int]$Code = 1)
-    Say ('Stopped: ' + $Text)
+    if ($Code -eq 0) { Say ('stopped ' + $Text) } else { Say ('stopped ' + $Text) 'ERROR' }
     $r = 'stopped'
     if ($Code -eq 0) { $r = 'cancelled' }
     Write-Status $r $Code $Text
@@ -328,11 +339,11 @@ function Disable-Volume {
     if (-not (Test-FullMatch $Letter $Script:Re.Letter)) { throw 'invalid letter' }
     $st = Get-BitLockerStatus $Letter
     if (-not (Test-NeedsDecrypt $st)) { return $true }
-    Say ('Decrypting ' + $Letter + ': (' + (Get-BitLockerPercent $Letter) + '% encrypted)')
+    Say ('bitlocker decrypting drive=' + $Letter + ' encrypted_percent=' + (Get-BitLockerPercent $Letter))
     if ($st -ne 3) {
         try { Invoke-Native 'manage-bde.exe' @('-off', ($Letter + ':')) | Out-Null }
         catch {
-            Say 'manage-bde unavailable; using Disable-BitLocker'
+            Say 'manage-bde unavailable fallback=Disable-BitLocker' 'WARNING'
             Disable-BitLocker -MountPoint ($Letter + ':') | Out-Null
         }
     }
@@ -340,9 +351,9 @@ function Disable-Volume {
     $lastPrint = -1
     while ((Get-Date) -lt $end) {
         $st = Get-BitLockerStatus $Letter
-        if (-not (Test-NeedsDecrypt $st)) { Say ($Letter + ': decrypted'); return $true }
+        if (-not (Test-NeedsDecrypt $st)) { Say ('bitlocker drive=' + $Letter + ' state=decrypted'); return $true }
         $pct = Get-BitLockerPercent $Letter
-        if ($null -ne $pct -and ($lastPrint -lt 0 -or $lastPrint - $pct -ge 5)) { Say ('  ' + $pct + '% still encrypted'); $lastPrint = $pct }
+        if ($null -ne $pct -and ($lastPrint -lt 0 -or $lastPrint - $pct -ge 5)) { Say ('bitlocker drive=' + $Letter + ' encrypted_percent=' + $pct); $lastPrint = $pct }
         Start-Sleep -Seconds 5
     }
     return $false
@@ -498,18 +509,18 @@ function Get-MbrEntries {
 function Select-BiosWhere {
     param([hashtable]$F, [long]$Need)
     if ($F.ActiveLetter -and ($F.ActiveFs -in 'NTFS', 'FAT32') -and (Get-StorageChoice $F.ActiveFree $Need) -eq 'boot') {
-        return @{ Where = 'boot'; Reason = 'the active partition has room' }
+        return @{ Where = 'boot'; Reason = 'active_partition_has_room' }
     }
     if ($F.CFs -eq 'NTFS' -and -not $F.CEncrypted -and (Get-StorageChoice $F.CFree $Need) -eq 'boot') {
-        return @{ Where = 'cdrive'; Reason = 'the active partition is too small or has no drive letter; C: is NTFS, not encrypted, with room' }
+        return @{ Where = 'cdrive'; Reason = 'c_ntfs_not_encrypted_has_room' }
     }
     if ($F.BootMode -ne 'normal') {
-        return @{ Where = 'none'; Reason = 'Storage services are stopped in Safe Mode and no existing partition can hold the files: restart in normal mode' }
+        return @{ Where = 'none'; Reason = 'safe_mode_no_partition_has_room' }
     }
     if ($F.PartCount -ge 4 -and -not $F.HasOta) {
-        return @{ Where = 'none'; Reason = 'no existing partition can hold the files and the MBR disk has no free primary slot' }
+        return @{ Where = 'none'; Reason = 'no_partition_has_room_no_primary_slot' }
     }
-    return @{ Where = 'new'; Reason = 'no existing partition can hold the files; a new FAT32 partition is created' }
+    return @{ Where = 'new'; Reason = 'new_fat32_partition' }
 }
 
 function Get-LetterVolume {
@@ -527,11 +538,11 @@ function Get-SupportedSize {
 
 function Show-Disk {
     param($Disk)
-    Say ('Disk {0}: {1}, {2} GB, {3}, serial {4}' -f $Disk.Number, $Disk.FriendlyName.Trim(), [math]::Round($Disk.Size / 1GB, 1), $Disk.PartitionStyle, ("" + $Disk.SerialNumber).Trim())
+    Say ('disk={0} model={1} size={2}GB style={3} serial={4}' -f $Disk.Number, $Disk.FriendlyName.Trim(), [math]::Round($Disk.Size / 1GB, 1), $Disk.PartitionStyle, ("" + $Disk.SerialNumber).Trim())
     foreach ($p in (Get-PartitionsSafe $Disk.Number | Sort-Object PartitionNumber)) {
         $l = ''
         if ($p.DriveLetter) { $l = [string]$p.DriveLetter + ':' }
-        Say ('  #{0} {1,-5} {2,9} MB  {3}' -f $p.PartitionNumber, $l, [math]::Round($p.Size / 1MB), $p.Type)
+        Say ('disk={0} partition={1} letter={2} size={3}MB type={4}' -f $Disk.Number, $p.PartitionNumber, $(if ($l) { $l } else { '-' }), [math]::Round($p.Size / 1MB), $p.Type)
     }
 }
 
@@ -619,15 +630,14 @@ function Save-State {
 function Show-Result {
     param($Guid, $Token)
     $Script:Status.BootEntry = $Guid
-    Say ('Ready. One-shot boot entry ' + $Guid + ' set for the next restart.')
-    if ($Token) { Say 'OTA login: the supplied key.' } else { Say 'OTA login: open mode.' }
-    Say 'After the restart the screen shows the address. Then run on the host: deploy/remote-deploy.sh recover ADDRESS --parts DIR'
-    Say 'To cancel before the install: run this script with -Undo.'
+    $login = 'open'
+    if ($Token) { $login = 'key' }
+    Say ('boot entry created guid=' + $Guid + ' oneshot=yes ota_login=' + $login) 'INFO' -Done
     Write-Status 'prepared' 0 'boot entry created'
     if ($Script:Opt.Remote) { Invoke-StatusFlushFinal }
     $go = $false
     if ($Script:Opt.Unattended) { $go = [bool]$Script:Opt.Reboot } else { $go = Read-Word 'Type RESTART to restart now' 'RESTART' }
-    if ($go) { Invoke-Native 'shutdown.exe' @('/r', '/t', '10', '/c', 'UniTotem OTA') | Out-Null }
+    if ($go) { Say 'restart in=10s'; Invoke-Native 'shutdown.exe' @('/r', '/t', '10', '/c', 'UniTotem OTA') | Out-Null }
 }
 
 function Confirm-Erase {
@@ -655,7 +665,7 @@ function Invoke-Undo {
     $mode = 'uefi'
     if ([string]$st.Mode -ceq 'bios') { $mode = 'bios' }
     Show-Plan @{ Undo = $true; Mode = $mode }
-    if ($Script:Opt.WhatIf) { Say 'Dry run: nothing changed.'; Write-Status 'dry-run' 0 'plan printed'; return }
+    if ($Script:Opt.WhatIf) { Say 'dry run changes=none'; Write-Status 'dry-run' 0 'plan printed'; return }
     if (-not $Script:Opt.Unattended -and -not (Read-Word 'Type UNDO to continue' 'UNDO')) { Stop-Script 'not confirmed' 0 }
     $g = [string]$st.Guid
     if ($mode -eq 'bios') {
@@ -691,10 +701,10 @@ function Invoke-Undo {
         try {
             $usd = Get-SystemDisk
             Resize-Partition -DiskNumber $usd.Disk.Number -PartitionNumber $usd.Part.PartitionNumber -Size (Get-SupportedSize $usd).SizeMax
-        } catch { Say 'C: not extended; extend it in Disk Management.' }
+        } catch { Say 'extend_c failed' 'WARNING' }
     }
     Remove-Item -LiteralPath $Script:StateFile -Force
-    Say 'Undone.'
+    Say 'undone'
     Write-Status 'undone' 0 'boot entry and files removed'
 }
 
@@ -728,13 +738,13 @@ function Invoke-Install {
     }
     $ctx = @{ Undo = $false; Mode = 'uefi'; Where = $where; NeededBytes = ($kiBytes + $chainBytes); PartBytes = $partBytes; Token = $token }
 
-    Say ('Secure Boot: ' + (Get-SecureBootState))
-    Say ('EFI system partition free: {0} MiB' -f [math]::Round($free / 1MB))
+    Say ('secure_boot=' + (Get-SecureBootState))
+    Say ('esp free_mb=' + [math]::Round($free / 1MB))
     Show-Disk $sd.Disk
-    Say 'UniTotem will ERASE this whole disk when the host starts the install. Windows will be gone.'
+    Say ('disk=' + $sd.Disk.Number + ' action=erase_on_install') 'WARNING'
     Show-Plan $ctx
     Confirm-Erase $sd.Disk
-    if ($Script:Opt.WhatIf) { Say 'Dry run: nothing changed.'; Write-Status 'dry-run' 0 'plan printed'; return }
+    if ($Script:Opt.WhatIf) { Say 'dry run changes=none'; Write-Status 'dry-run' 0 'plan printed'; return }
 
     $guid = $null
     $partLetter = $null
@@ -801,13 +811,13 @@ function Invoke-InstallBios {
         if (-not (Test-ShrinkFeasible $sd.Part.Size $sup.SizeMin $partBytes)) { Stop-Script 'C: cannot shrink enough; free disk space first' $Script:Exit.Unsupported }
     }
     $ctx = @{ Undo = $false; Mode = 'bios'; Where = $where; NeededBytes = $kiBytes; PartBytes = $partBytes; Token = $token }
-    Say 'Secure Boot: not applicable (legacy BIOS)'
-    Say ('Destination: ' + $where + ' (' + $choice.Reason + ')')
+    Say 'secure_boot=na firmware=bios'
+    Say ('destination selected: ' + $where + ' reason=' + $choice.Reason)
     Show-Disk $sd.Disk
-    Say 'UniTotem will ERASE this whole disk when the host starts the install. Windows will be gone.'
+    Say ('disk=' + $sd.Disk.Number + ' action=erase_on_install') 'WARNING'
     Show-Plan $ctx
     Confirm-Erase $sd.Disk
-    if ($Script:Opt.WhatIf) { Say 'Dry run: nothing changed.'; Write-Status 'dry-run' 0 'plan printed'; return }
+    if ($Script:Opt.WhatIf) { Say 'dry run changes=none'; Write-Status 'dry-run' 0 'plan printed'; return }
 
     # imgLetter holds the loader image (bootmgr must read it); kletter holds kernel and initrd.
     $assigned = $false
@@ -896,6 +906,7 @@ function Invoke-StatusFlush {
     while ($Script:StatusQueue.Count -gt 0) {
         if (-not $Force -and (Get-Date) -lt $Script:StatusNext) { return }
         try { Send-Json '/status' $Script:StatusQueue.Peek() 5 | Out-Null } catch {
+            if (Test-BusyError $_) { $Script:StatusQueue.Clear(); return }
             $Script:StatusFails++
             $wait = Get-Backoff $Script:StatusFails
             $Script:StatusNext = (Get-Date).AddSeconds($wait)
@@ -908,9 +919,9 @@ function Invoke-StatusFlush {
 }
 
 function Send-Remote {
-    param([string]$Text)
+    param([string]$Text, [string]$Level = 'INFO', [switch]$Done)
     $level = 'info'
-    if ($Text -like 'Stopped:*' -or $Text -like 'Failed:*') { $level = 'error' } elseif ($Text -like 'Ready*') { $level = 'ok' }
+    if ($Level -eq 'WARNING') { $level = 'warn' } elseif ($Level -eq 'ERROR') { $level = 'error' } elseif ($Done) { $level = 'done' }
     try {
         $Script:StatusQueue.Enqueue(@{ machine = $Script:Opt.MachineId; level = $level; text = (Get-Printable $Text 4000) })
         while ($Script:StatusQueue.Count -gt $Script:StatusQueueMax) { [void]$Script:StatusQueue.Dequeue(); $Script:StatusDropped++; Write-Log 'status queue full: oldest line dropped' }
@@ -971,11 +982,11 @@ function Get-RamInfo {
     })
 }
 
-# Plan hint sent with the inventory: where the boot files would go, and what Safe Mode changes.
+# Plan hint sent with the inventory: the destination of the boot files and the facts behind it (one line each).
 function Get-PlanHint {
     param([string]$Firmware, $Sd, [string]$BootMode)
-    $notes = @()
-    if ($BootMode -eq 'safe') { $notes += 'Safe Mode: the Storage services are stopped; shrinking C: and creating partitions are unavailable. Copying files and bcdedit work.' }
+    $facts = New-Object System.Collections.Generic.List[string]
+    $facts.Add('boot_mode=' + $BootMode)
     $map = Get-CimLetterMap
     $kiEstimate = [long]$Script:Opt.PayloadBytes
     if ($Firmware -eq 'bios') {
@@ -988,15 +999,19 @@ function Get-PlanHint {
         }
         $cv = Get-LetterVolume $Sd.Letter
         $enc = Test-NeedsDecrypt (Get-BitLockerStatus $Sd.Letter)
+        $facts.Add('active letter=' + $(if ($al) { $al } else { '-' }) + ' fs=' + $(if ($afs) { $afs } else { '-' }) + ' free=' + $(if ($al) { [string][math]::Floor($afree / 1MB) + 'MB' } else { 'unknown' }))
+        $facts.Add($Sd.Letter + ': fs=' + $(if ($cv) { $cv.FileSystem } else { '-' }) + ' bitlocker=' + $(if ($enc) { 'on' } else { 'off' }) + ' free=' + $(if ($cv) { [string][math]::Floor($cv.SizeRemaining / 1MB) + 'MB' } else { 'unknown' }))
         $f = @{ ActiveLetter = $al; ActiveFs = $afs; ActiveFree = $afree; CFs = $(if ($cv) { $cv.FileSystem } else { '' }); CFree = $(if ($cv) { $cv.SizeRemaining } else { 0L }); CEncrypted = $enc; BootMode = $BootMode; PartCount = $parts.Count; HasOta = (@(Find-OtaPartition $Sd.Disk.Number).Count -gt 0) }
         $r = Select-BiosWhere $f $kiEstimate
     } else {
         $free = Get-BootFreeMb $Firmware $Sd
-        if ($null -ne $free -and (Get-StorageChoice ([long]$free * 1MB) $kiEstimate) -eq 'boot') { $r = @{ Where = 'boot'; Reason = 'the EFI system partition has room' } }
-        elseif ($BootMode -ne 'normal') { $r = @{ Where = 'none'; Reason = 'the EFI system partition is too small and Storage services are stopped in Safe Mode: restart in normal mode' } }
-        else { $r = @{ Where = 'new'; Reason = 'the EFI system partition is too small; a new FAT32 partition is created' } }
+        $facts.Add('esp free=' + $(if ($null -ne $free) { [string]$free + 'MB' } else { 'unknown' }))
+        if ($null -ne $free -and (Get-StorageChoice ([long]$free * 1MB) $kiEstimate) -eq 'boot') { $r = @{ Where = 'boot'; Reason = 'esp_has_room' } }
+        elseif ($BootMode -ne 'normal') { $r = @{ Where = 'none'; Reason = 'safe_mode_esp_too_small' } }
+        else { $r = @{ Where = 'new'; Reason = 'esp_too_small_new_fat32_partition' } }
     }
-    return @{ plan = @{ where = $r.Where; reason = (Get-Printable $r.Reason 200) }; notes = $notes }
+    $facts.Add('destination selected: ' + $r.Where + ' reason=' + $r.Reason)
+    return @{ plan = @{ where = $r.Where; reason = $r.Reason }; facts = @($facts) }
 }
 
 # Read-only description of the PC for the host.
@@ -1032,7 +1047,7 @@ function Get-Inventory {
     try { $ips = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | ForEach-Object { [string]$_.IPAddress }) } catch { }
     $hint = Get-PlanHint $Firmware $sd (Get-BootMode)
     $plan = $hint.plan
-    $notes = $hint.notes
+    $facts = $hint.facts
     $svc = @()
     foreach ($n in 'vds', 'StorSvc', 'smphost') {
         $st = 'missing'
@@ -1045,9 +1060,15 @@ function Get-Inventory {
         machine = $Script:Opt.MachineId; hostname = $hn; ips = $ips; firmware = $Firmware; secureboot = $(if ($Firmware -eq 'bios') { 'na' } else { Get-SecureBootState })
         bitlocker = $bl; boot_free_mb = (Get-BootFreeMb $Firmware $sd); system_disk = [int]$sd.Disk.Number
         os = (Get-Printable ((Get-CimInstance Win32_OperatingSystem).Caption)); disks = $disks
-        model = (Get-MachineModel); cpu = (Get-CpuInfo); ram = (Get-RamInfo); plan = $plan; notes = $notes
+        model = (Get-MachineModel); cpu = (Get-CpuInfo); ram = (Get-RamInfo); plan = $plan; facts = $facts
         ui_culture = (Get-Printable ((Get-UICulture).Name) 20); services = $svc
     }
+}
+
+# True when a web error is the server's HTTP 409 (another PC is being installed); no localized text is compared.
+function Test-BusyError {
+    param($ErrorRecord)
+    try { return ([int]$ErrorRecord.Exception.Response.StatusCode -eq 409) } catch { return $false }
 }
 
 # Sends the inventory, retrying with backoff until the deadline; $true when the host took it.
@@ -1057,11 +1078,12 @@ function Send-InventoryUntil {
     while ((Get-Date) -lt $Deadline) {
         try {
             Send-Json '/inventory' $Inv | Out-Null
-            if ($n -gt 0) { Write-Host 'Server reachable again, inventory sent' }
+            if ($n -gt 0) { Say 'server reachable again, inventory sent' 'INFO' -Local }
             return $true
         } catch {
+            if (Test-BusyError $_) { Stop-Script 'server busy: another PC is being installed changes=none' $Script:Exit.Busy }
             $n++
-            if ($n -eq 1) { Write-Host ('Server not reachable, retrying (' + (Get-Date -Format 'HH:mm:ss') + ')') }
+            if ($n -eq 1) { Say 'server unreachable, retrying' 'WARNING' -Local }
             Write-Log ('inventory post: ' + $_.Exception.Message)
             Start-Sleep -Seconds (Get-Backoff $n)
         }
@@ -1081,26 +1103,27 @@ function Wait-Approval {
         try {
             $r = Invoke-RestMethod -Uri ($Script:Opt.Server + '/approval?machine=' + $Script:Opt.MachineId) -TimeoutSec 15
             $errs = 0
-            if ($lost) { $lost = $false; Write-Host 'Server reachable again' }
+            if ($lost) { $lost = $false; Say 'server reachable again' 'INFO' -Local }
             if ($r.state -ceq 'approved') { return $r }
             if ($r.state -ceq 'unknown' -and $null -ne $Inv) {
                 try {
                     Send-Json '/inventory' $Inv | Out-Null
-                    Write-Host 'Server did not know this PC, inventory sent again'
+                    Say 'server did not know this PC, inventory sent again' 'INFO' -Local
                     Write-Log 'inventory sent again (host did not know this PC)'
                 } catch { Write-Log ('inventory again: ' + $_.Exception.Message) }
             }
         } catch {
+            if (Test-BusyError $_) { Stop-Script 'server busy: another PC is being installed changes=none' $Script:Exit.Busy }
             $errs++
             $pause = Get-Backoff $errs
             Write-Log ('approval poll: ' + $_.Exception.Message)
-            if (-not $lost) { $lost = $true; Write-Host ('Server not reachable, retrying (' + (Get-Date -Format 'HH:mm:ss') + ')') }
+            if (-not $lost) { $lost = $true; Say 'server unreachable, retrying' 'WARNING' -Local }
         }
         Invoke-StatusFlush
         $left = ($Deadline - (Get-Date)).TotalSeconds
         if ($left -le 0) { break }
         if (((Get-Date) - $lastCount).TotalSeconds -ge 300) {
-            Write-Host ('Waiting for approval, ' + [int][math]::Ceiling($left / 60) + ' min left')
+            Say ('waiting for approval minutes_left=' + [int][math]::Ceiling($left / 60)) 'INFO' -Local
             $lastCount = Get-Date
         }
         Start-Sleep -Seconds ([math]::Max(1, [math]::Min($pause, [math]::Ceiling($left))))
@@ -1161,7 +1184,7 @@ function Get-RemotePayload {
     $deadline = (Get-Date).AddMinutes($Script:Opt.DownloadTimeoutMinutes)
     $ok = $false
     while (-not $ok) {
-        if (-not (Receive-File ($Script:Opt.Server + '/payload.zip') $zip $Script:Opt.PayloadBytes $deadline)) { Stop-Script 'the payload download did not finish in time; nothing was changed' $Script:Exit.Payload }
+        if (-not (Receive-File ($Script:Opt.Server + '/payload.zip') $zip $Script:Opt.PayloadBytes $deadline)) { Stop-Script 'payload download timeout changes=none' $Script:Exit.Payload }
         $h = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($h -ceq $Script:Opt.PayloadSha256) { $ok = $true } else {
             Write-Log 'payload checksum mismatch: downloading again'
@@ -1185,13 +1208,27 @@ function Get-RemoteKey {
             Start-Sleep -Seconds (Get-Backoff $n)
         }
     }
-    Stop-Script 'cannot fetch the OTA key from the host; nothing was changed' $Script:Exit.Server
+    Stop-Script 'key fetch timeout changes=none' $Script:Exit.Server
+}
+
+# Not elevated: starts the same bootstrap in an elevated PowerShell (one UAC prompt, none when UAC is off) and
+# returns; a refused or failed elevation ends with its own exit code. The marker stops a second relaunch.
+function Start-Elevated {
+    if ($env:UNITOTEM_ELEVATED) { Stop-Script 'not elevated after relaunch changes=none' $Script:Exit.NotAdmin }
+    $cmd = '$env:UNITOTEM_ELEVATED=1; irm ' + $Script:Opt.Server + '|iex'
+    try {
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ErrorAction Stop -ArgumentList @('-NoProfile', '-NoExit', '-Command', ('"' + $cmd + '"')) | Out-Null
+    } catch {
+        Write-Log ('elevation: ' + $_.Exception.Message)
+        Stop-Script ('elevation refused or failed id=' + $_.FullyQualifiedErrorId + ' changes=none') $Script:Exit.NotAdmin
+    }
+    Say 'not elevated, elevated process started'
 }
 
 function Invoke-Remote {
     if (-not (Test-FullMatch $Script:Opt.Server $Script:Re.Server)) { Stop-Script 'invalid server address' $Script:Exit.Usage }
     if (-not (Test-FullMatch $Script:Opt.PayloadSha256 $Script:Re.Hash)) { Stop-Script 'invalid payload checksum' $Script:Exit.Usage }
-    if (-not (Test-IsAdmin)) { Stop-Script 'Run as administrator' $Script:Exit.NotAdmin }
+    if (-not (Test-IsAdmin)) { Start-Elevated; return }
     [Net.WebRequest]::DefaultWebProxy = $null
     $fw = Get-FirmwareKind
     if ($fw -ne 'uefi' -and $fw -ne 'bios') { Stop-Script 'cannot tell the firmware type' $Script:Exit.Unsupported }
@@ -1201,18 +1238,18 @@ function Invoke-Remote {
     $inv = Get-Inventory $fw
     $deadline = (Get-Date).AddMinutes($Script:Opt.TimeoutMinutes)
     Set-Step 'send the inventory'
-    if (-not (Send-InventoryUntil $inv $deadline)) { Stop-Script 'no approval from the host (it did not answer); nothing was changed' $Script:Exit.NoApproval }
-    if ($inv.plan.where -eq 'none') { Stop-Script ('cannot install: ' + $inv.plan.reason) $Script:Exit.Unsupported }
+    if (-not (Send-InventoryUntil $inv $deadline)) { Stop-Script 'no approval: server did not answer changes=none' $Script:Exit.NoApproval }
+    if ($inv.plan.where -eq 'none') { Stop-Script ('cannot install reason=' + $inv.plan.reason) $Script:Exit.Unsupported }
     Set-Step 'wait for approval'
-    Say ('Inventory sent. Waiting for approval on the host (up to ' + $Script:Opt.TimeoutMinutes + ' min). Nothing has been changed.')
+    Say ('inventory sent timeout_min=' + $Script:Opt.TimeoutMinutes + ' changes=none')
     $ap = Wait-Approval $inv $deadline
-    if ($null -eq $ap) { Stop-Script 'no approval from the host; nothing was changed' $Script:Exit.NoApproval }
+    if ($null -eq $ap) { Stop-Script 'no approval: timeout changes=none' $Script:Exit.NoApproval }
     $sd = Get-SystemDisk
     # The host's approval names machine, disk number and serial; this PC checks all three against itself.
     $serial = (("" + $sd.Disk.SerialNumber).Trim())
-    if ([string]$ap.machine -cne $Script:Opt.MachineId -or [int]$ap.disk -ne [int]$sd.Disk.Number -or [string]$ap.serial -cne (Get-Printable $serial 40)) { Stop-Script 'the approval does not match this PC and disk' $Script:Exit.NotConfirmed }
+    if ([string]$ap.machine -cne $Script:Opt.MachineId -or [int]$ap.disk -ne [int]$sd.Disk.Number -or [string]$ap.serial -cne (Get-Printable $serial 40)) { Stop-Script 'approval mismatch machine/disk/serial' $Script:Exit.NotConfirmed }
     $word = Get-ConfirmWord $env:COMPUTERNAME $sd.Disk.Number $serial
-    Say 'Approved.'
+    Say 'approved'
     Set-Step 'download the payload'
     $pd = Get-RemotePayload
     Set-Step 'fetch the OTA key'
@@ -1236,8 +1273,8 @@ function Main {
     if ($Script:Opt.Unattended -and -not $Script:Opt.Undo -and (($Script:Opt.Disk -lt 0) -or (-not $Script:Opt.WhatIf -and -not $Script:Opt.ConfirmToken))) { Stop-Script '-Unattended needs -Disk and -ConfirmToken' $Script:Exit.Usage }
     if ($Script:Opt.Unattended -and $Script:Opt.ConfirmToken -and -not (Test-FullMatch $Script:Opt.ConfirmToken 'WIPE-[A-Z0-9-]{1,40}-DISK[0-9]{1,4}-[A-Z0-9]{1,8}')) { Stop-Script 'invalid -ConfirmToken' $Script:Exit.Usage }
     if ($Script:Opt.Unattended) { $Script:Status.Mode = '' }
-    if (-not (Test-IsAdmin)) { Stop-Script 'Run as administrator' $Script:Exit.NotAdmin }
-    Say ('Install-UniTotem ' + (Get-Date -Format 's'))
+    if (-not (Test-IsAdmin)) { Stop-Script 'not elevated' $Script:Exit.NotAdmin }
+    Say 'start'
     $fw = Get-FirmwareKind
     if ($fw -ne 'uefi' -and $fw -ne 'bios') { Stop-Script 'cannot tell the firmware type' $Script:Exit.Unsupported }
     try { $null = Get-Disk | Select-Object -First 1 } catch { Stop-Script 'the storage service is unavailable; restart Windows in normal mode' $Script:Exit.Unsupported }
@@ -1252,7 +1289,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             if (-not $Script:Opt.Remote) { exit $global:LASTEXITCODE }
         } else {
             $detail = Format-FailureDetail $_
-            Say ('Failed: ' + $detail)
+            Say ('failed ' + $detail) 'ERROR'
             Write-Status 'failed' $Script:Exit.Failed $detail
             $global:LASTEXITCODE = $Script:Exit.Failed
             if (-not $Script:Opt.Remote) { exit $Script:Exit.Failed }
