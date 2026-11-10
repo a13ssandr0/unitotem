@@ -1,0 +1,243 @@
+#!/bin/bash
+# UniTotem installer: runs inside the recovery initramfs booted from the installer ISO
+# (tools/build-installer-iso.sh, docs/system/installer-iso.md). Finds the media by its label, lets the person
+# pick a disk, asks for a typed confirmation, writes the flash image and verifies it by reading it back.
+# Nothing is written before the confirmation word is typed.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export TERMINFO=/lib/terminfo
+LOG=/run/unitotem-installer.log
+MEDIA=/run/installer-media
+MEDIA_LABEL=UNITOTEM_ISO
+CONFIRM_WORD=ERASE
+T=/run/unitotem-installer
+XZ_FILE='' XZ_SHA='' XZ_BYTES='' RAW_BYTES='' RAW_SHA='' MEDIA_DISK=''
+
+log() { echo "$*" >> "$LOG"; echo "<7>unitotem-installer: $*" > /dev/kmsg 2>/dev/null || true; }
+
+# Console selection: unitotem.installer.tty=ttyN|ttySN|ttyAMAN on the kernel command line, default tty1.
+if [ "${1:-}" != run ]; then
+    tty=tty1
+    for w in $(cat /proc/cmdline); do
+        case $w in unitotem.installer.tty=*) v=${w#*=}; [[ $v =~ ^(tty[0-9]{1,2}|ttyS[0-9]{1,2}|ttyAMA[0-9]{1,2})$ ]] && tty=$v ;; esac
+    done
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -c "/dev/$tty" ] && break; sleep 1; done
+    case $tty in ttyS*|ttyAMA*) term=vt220 ;; *) term=linux ;; esac
+    export TERM=$term
+    setsid -w -c bash -- "$0" run < "/dev/$tty" > "/dev/$tty" 2>&1
+    # the session ended without reboot or power off: leave a shell on the console
+    exec setsid -w -c sh < "/dev/$tty" > "/dev/$tty" 2>&1
+fi
+
+mkdir -p "$T" "$MEDIA"
+: > "$LOG"
+# Dirty pages never run ahead of the disk by more than 256 MiB: the gauge follows the real write speed.
+echo 268435456 > /proc/sys/vm/dirty_bytes 2>/dev/null || true
+printf '\033[2J\033[H\033[?25l'
+
+# whiptail wrappers (choice goes to stdout)
+box() { whiptail --title UniTotem "$@" 3>&1 1>&2 2>&3; }
+msg() { whiptail --title UniTotem --msgbox "$1" 12 70 || true; }
+gauge() { whiptail --title UniTotem --gauge "$1" 7 64 0; }
+
+# size_gib BYTES
+size_gib() { awk -v s="$1" 'BEGIN { printf "%.1f GiB", s / 1073741824 }'; }
+
+# disk_of DEVICE: name of the whole disk that holds DEVICE (/dev/sdb1 -> sdb)
+disk_of() {
+    local n p
+    n=${1##*/}
+    p=$(readlink -f "/sys/class/block/$n") || return 1
+    [ -e "$p/partition" ] && n=$(basename "$(dirname "$p")")
+    echo "$n"
+}
+
+# Reads payload.info as data: every key and value fullmatch-validated.
+read_info() {
+    local f=$1 k v
+    XZ_FILE='' XZ_SHA='' XZ_BYTES='' RAW_BYTES='' RAW_SHA=''
+    while IFS='=' read -r k v; do
+        case $k in
+            image)      [[ $v =~ ^[A-Za-z0-9._-]+$ ]] && XZ_FILE=$v ;;
+            xz_sha256)  [[ $v =~ ^[0-9a-f]{64}$ ]] && XZ_SHA=$v ;;
+            raw_sha256) [[ $v =~ ^[0-9a-f]{64}$ ]] && RAW_SHA=$v ;;
+            xz_bytes)   [[ $v =~ ^[0-9]{1,15}$ ]] && XZ_BYTES=$v ;;
+            raw_bytes)  [[ $v =~ ^[0-9]{1,15}$ ]] && RAW_BYTES=$v ;;
+        esac
+    done < "$f"
+    [ -n "$XZ_FILE" ] && [ -n "$XZ_SHA" ] && [ -n "$RAW_SHA" ] && [ -n "$XZ_BYTES" ] && [ -n "$RAW_BYTES" ]
+}
+
+# find_media: mounts the device labelled UNITOTEM_ISO that carries the payload (up to 90 s for slow USB)
+find_media() {
+    local i d
+    for ((i = 0; i < 45; i++)); do
+        udevadm settle --timeout=2 2>/dev/null
+        for d in $(blkid -t "LABEL=$MEDIA_LABEL" -o device 2>/dev/null); do
+            mountpoint -q "$MEDIA" && umount "$MEDIA" 2>/dev/null
+            mount -t iso9660 -o ro -- "$d" "$MEDIA" 2>>"$LOG" || continue
+            if [ -f "$MEDIA/unitotem/payload.info" ] && read_info "$MEDIA/unitotem/payload.info" \
+               && [ -f "$MEDIA/unitotem/$XZ_FILE" ]; then
+                MEDIA_DISK=$(disk_of "$d")
+                log "media $d disk=$MEDIA_DISK payload=$XZ_FILE raw=$RAW_BYTES"
+                return 0
+            fi
+            umount "$MEDIA" 2>/dev/null
+        done
+        sleep 2
+    done
+    return 1
+}
+
+# list_disks: "NAME<TAB>BYTES<TAB>MODEL" per candidate disk (whole disks of known kinds, not the boot media)
+list_disks() {
+    local s n bytes model
+    for s in /sys/block/*; do
+        n=${s##*/}
+        [[ $n =~ ^(sd[a-z]+|hd[a-z]+|vd[a-z]+|xvd[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$ ]] || continue
+        [ "$n" = "$MEDIA_DISK" ] && continue
+        [ "$(cat "$s/ro" 2>/dev/null)" = 1 ] && continue
+        bytes=$(( $(cat "$s/size" 2>/dev/null || echo 0) * 512 ))
+        [ "$bytes" -gt 0 ] || continue
+        model=$(tr -s ' ' < "$s/device/model" 2>/dev/null | sed 's/^ //; s/ $//')
+        printf '%s\t%s\t%s\n' "$n" "$bytes" "${model:-unknown}"
+    done
+}
+
+# finish ACTION-LIST: menu with the actions the person can take next; returns via the global NEXT
+finish_menu() {
+    local c
+    c=$(box --nocancel --menu "$1" 12 60 3 retry "Start over" reboot "Restart" off "Power off") || c=retry
+    NEXT=$c
+}
+
+end_session() {
+    sync
+    umount "$MEDIA" 2>/dev/null
+    printf '\033[2J\033[H\033[?25h'
+    if [ "$1" = off ]; then poweroff -f; else reboot -f; fi
+    sleep 60
+}
+
+# pick_disk: sets DISK, DISK_BYTES, DISK_MODEL; returns 1 on cancel
+pick_disk() {
+    local rows=() n b m cnt=0 first='' i label
+    while IFS=$'\t' read -r n b m; do
+        cnt=$((cnt + 1)); first=$n
+        label="$(size_gib "$b")  $m"
+        [ "$b" -lt "$RAW_BYTES" ] && label="$label  (too small)"
+        rows+=("/dev/$n" "$label")
+    done < <(list_disks)
+    if [ "$cnt" = 0 ]; then
+        msg "No disk found"
+        return 1
+    fi
+    if [ "$cnt" = 1 ]; then
+        DISK=/dev/$first
+    else
+        DISK=$(box --menu "Select the disk" $((cnt + 8)) 76 "$cnt" "${rows[@]}") || return 1
+    fi
+    n=${DISK#/dev/}
+    DISK_BYTES=$(( $(cat "/sys/block/$n/size") * 512 ))
+    DISK_MODEL=$(tr -s ' ' < "/sys/block/$n/device/model" 2>/dev/null | sed 's/^ //; s/ $//')
+    if [ "$DISK_BYTES" -lt "$RAW_BYTES" ]; then
+        msg "$DISK is too small ($(size_gib "$DISK_BYTES"), needs $(size_gib "$RAW_BYTES"))"
+        return 2
+    fi
+    return 0
+}
+
+# confirm_disk: shows the target and its partitions, asks for the word; returns 1 unless it is typed exactly
+confirm_disk() {
+    local parts ans nl
+    parts=$(lsblk -nl -o NAME,SIZE,FSTYPE,LABEL "$DISK" 2>/dev/null | tail -n +2 | head -n 8)
+    [ -n "$parts" ] || parts="no partitions"
+    nl=${parts//[^$'\n']/}
+    ans=$(box --inputbox "$DISK  ${DISK_MODEL:-unknown}  $(size_gib "$DISK_BYTES")\n\n$parts\n\nType $CONFIRM_WORD to erase this disk" \
+          $(( ${#nl} + 13 )) 76 "") || return 1
+    [ "$ans" = "$CONFIRM_WORD" ]
+}
+
+# Each stage prints its percent lines to the gauge and its result to $T/rc.
+stage_check() {
+    local f=$MEDIA/unitotem/$XZ_FILE
+    ( pv -n -s "$XZ_BYTES" -- "$f" 2>&3 | sha256sum | cut -d' ' -f1 > "$T/sum"; echo "${PIPESTATUS[*]}" > "$T/rc" ) 3>&1 | gauge "Checking media"
+    [ "$(cat "$T/rc")" = "0 0 0" ] && [ "$(cat "$T/sum")" = "$XZ_SHA" ]
+}
+
+stage_write() {
+    local f=$MEDIA/unitotem/$XZ_FILE sectors mib
+    sectors=$(blockdev --getsz "$DISK") || return 1
+    # old backup GPT at the disk end and old signatures right after the image must not survive
+    dd if=/dev/zero of="$DISK" bs=512 seek=$((sectors - 2048)) count=2048 conv=fsync 2>>"$LOG" || return 1
+    mib=$(( (RAW_BYTES + 1048575) / 1048576 ))
+    dd if=/dev/zero of="$DISK" bs=1M seek="$mib" count=16 conv=fsync 2>>"$LOG" || true
+    ( xz -dc -- "$f" 2>>"$LOG" | pv -n -s "$RAW_BYTES" 2>&3 | dd of="$DISK" bs=4M iflag=fullblock conv=fsync 2>>"$LOG"
+      echo "${PIPESTATUS[*]}" > "$T/rc" ) 3>&1 | gauge "Writing"
+    [ "$(cat "$T/rc")" = "0 0 0" ]
+}
+
+stage_verify() {
+    blockdev --flushbufs "$DISK" 2>/dev/null
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    ( dd if="$DISK" bs=4M iflag=count_bytes,fullblock count="$RAW_BYTES" 2>>"$LOG" | pv -n -s "$RAW_BYTES" 2>&3 \
+        | sha256sum | cut -d' ' -f1 > "$T/sum"; echo "${PIPESTATUS[*]}" > "$T/rc" ) 3>&1 | gauge "Verifying"
+    [ "$(cat "$T/rc")" = "0 0 0 0" ] && [ "$(cat "$T/sum")" = "$RAW_SHA" ]
+}
+
+# stage_shim: with Secure Boot on, activates the staged signed chain on the new EFI partition (same steps as
+# `ota-engine populate-bootfs --secure-boot shim`: chain first, shim renamed over BOOTX64.EFI last)
+stage_shim() {
+    local sbv=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c part m=$T/esp i f
+    [ -d /sys/firmware/efi/efivars ] && mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null
+    [ "$(od -An -tu1 -j4 -N1 "$sbv" 2>/dev/null | tr -d ' ')" = 1 ] || return 0
+    log "Secure Boot is on: activating the shim chain"
+    blockdev --rereadpt "$DISK" 2>/dev/null
+    case $DISK in *[0-9]) part=${DISK}p1 ;; *) part=${DISK}1 ;; esac
+    for ((i = 0; i < 20; i++)); do udevadm settle --timeout=2 2>/dev/null; [ -b "$part" ] && break; sleep 1; done
+    mkdir -p "$m"
+    mount -t vfat -o rw -- "$part" "$m" 2>>"$LOG" || return 1
+    local sb=$m/EFI/unitotem-sb bt=$m/EFI/BOOT
+    for f in shimx64.efi mmx64.efi grubx64.efi grub.cfg; do [ -s "$sb/$f" ] || { umount "$m"; return 1; }; done
+    mkdir -p "$bt" "$m/EFI/debian"
+    { cp "$sb/grubx64.efi" "$bt/grubx64.efi" && cp "$sb/mmx64.efi" "$bt/mmx64.efi" \
+        && cp "$sb/grub.cfg" "$bt/grub.cfg" && cp "$sb/grub.cfg" "$m/EFI/debian/grub.cfg" && sync \
+        && cp "$sb/shimx64.efi" "$bt/BOOTX64.EFI.new" && sync && mv -f "$bt/BOOTX64.EFI.new" "$bt/BOOTX64.EFI" \
+        && cmp -s "$sb/shimx64.efi" "$bt/BOOTX64.EFI" && echo shim > "$sb/active" && sync; } 2>>"$LOG"
+    i=$?
+    umount "$m"
+    return $i
+}
+
+install_disk() {
+    log "install to $DISK ($DISK_BYTES bytes)"
+    stage_check  || { log "media check failed"; msg "The installation media is damaged"; return 1; }
+    stage_write  || { log "write failed"; msg "Writing to $DISK failed"; return 1; }
+    stage_verify || { log "verify failed"; msg "Verification of $DISK failed"; return 1; }
+    stage_shim   || { log "Secure Boot activation failed"; msg "Secure Boot setup of $DISK failed"; return 1; }
+    log "install ok"
+}
+
+while :; do
+    if ! find_media; then
+        log "media not found"
+        finish_menu "Installation media not found"
+        case $NEXT in retry) continue ;; *) end_session "$NEXT" ;; esac
+    fi
+    pick_disk; rc=$?
+    if [ "$rc" = 2 ]; then continue; fi
+    if [ "$rc" != 0 ]; then
+        finish_menu "Installation cancelled"
+        case $NEXT in retry) continue ;; *) end_session "$NEXT" ;; esac
+    fi
+    if ! confirm_disk; then
+        log "not confirmed for $DISK"
+        msg "Nothing was written"
+        continue
+    fi
+    if install_disk; then
+        whiptail --title UniTotem --ok-button Restart --nocancel --msgbox "Installation complete\n\nRemove the installation media" 10 50
+        end_session reboot
+    fi
+    finish_menu "Installation failed"
+    case $NEXT in retry) continue ;; *) end_session "$NEXT" ;; esac
+done

@@ -48,8 +48,8 @@ Disk images are built from this repository (see Build from source): `unitotem-<d
 
 **PC**
 
-1. Write the amd64 image to the target disk with any image writer.
-2. Boot from that disk.
+1. Write `unitotem-installer-<date>-amd64.iso` to a USB stick (`dd` or Rufus in DD mode), boot the PC from it and follow the screen. It asks which disk and a typed confirmation before it writes, works offline and with Secure Boot on. See [docs/system/installer-iso.md](docs/system/installer-iso.md).
+   Alternative: write the amd64 flash image to the target disk with any image writer and boot from that disk.
 
 **Network deploy**
 
