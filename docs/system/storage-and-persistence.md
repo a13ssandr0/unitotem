@@ -105,6 +105,8 @@ Boot:
   - `unitotem-first-admin` reports the volatile state (see [Root and first access](image-runtime.md#root-and-first-access)).
 - systemd: `unitotem-ssh-hostkey`, `unitotem-persist-paths`, `unitotem-boot-ok`.
 
+Without DATA `unitotem-persist-paths` mounts a 32 MiB tmpfs on `/home` (volatile, like the other overlays) so the first administrator can be created; test `tools/release/test_persist_volatile.sh`.
+
 Persist paths (`name -> target (mode group)`): `uploaded -> /var/lib/unitotem/uploaded` (755 root); `crontabs -> /var/spool/cron/crontabs` (1730 crontab); `browser -> /var/lib/unitotem/browser` (700 root); `home -> /home` (755 root, administrators' home directories; ROOT is read-only, so `/home` cannot live there). Absent DATA dir: created and seeded from the target. Owner and mode always set. Bound if not already a mountpoint.
 
 Update into slot X from running slot C:
