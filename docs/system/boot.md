@@ -55,10 +55,10 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 1. `init-premount` runs `ota-engine init-premount`:
    - cmdline `unitotem.ota=1`: serve-fallback, idle 1800 s; `unitotem.ota=recover`: serve-fallback, no idle timeout.
    - `unitotem-ota.request` on FIRMWARE (Pi) or EFI (PC): read, deleted, serve-fallback (update, idle 1800 s).
-   - Root from `root=LABEL=` found by blkid (5 retries), checked by `check_root_readonly` (`e2fsck -fn`, `-fp` only if it fails).
+   - Root from `root=LABEL=`, resolved by `slot_pick` (5 retries, `udevadm settle`): one match: that device; two on one disk: ROOT_A the lowest partition, ROOT_B the highest; matches on several disks: the first sorted. With two or more matches the other copies on the picked disk are relabelled `ROOT_STALE` (`e2label`, never a mounted device) and `ROOT='/dev/...'` is appended to `/conf/param.conf`, so mountroot uses exactly the picked device. Normal boots change nothing. Then checked by `check_root_readonly` (`e2fsck -fn`, `-fp` only if it fails).
    - Check fails or root missing: `ab_failover` (A/B), else serve-fallback (recovery, idle 21600 s).
    - Boot counter (every layout, see [Boot counter](#boot-counter)): `unitotem-ota.bootcount` incremented once the root checks pass; 3 or more gives the OTA fallback.
-2. `ab_failover`: the other slot must pass `e2fsck -fn` and contain `/etc/unitotem/ota-preserve.list`. Writes guard `unitotem-ota.failover` (`cur->other`), switches the default (Pi: `os_prefix`, removes `tryboot.txt`; PC: `saved_entry`), `reboot -f`. Refused when the guard exists.
+2. `ab_failover`: the other slot (found by `slot_pick`) must pass `e2fsck -fn` and contain `/etc/unitotem/ota-preserve.list`. Writes guard `unitotem-ota.failover` (`cur->other`), switches the default (Pi: `os_prefix`, removes `tryboot.txt`; PC: `saved_entry`), `reboot -f`. Refused when the guard exists.
 3. mountroot, then local-bottom verify: `/sbin/init` and `/etc/unitotem/ota-preserve.list` must exist, else serve-fallback.
 4. init-bottom: `layout_complete` (flash image: ROOT_B and DATA created), DATA `e2fsck -p`, `grow_data` (DATA grown to the disk end), overlays on `/etc`, `/root`, `/var`, dpkg pinned to ROOT. Details: `storage-and-persistence.md`.
    - Overlay outcome: `/run/unitotem-overlay.status` (initramfs, one line): `ok`; `volatile:no-data` (no DATA partition) or `volatile:data-mount` (DATA present, mount failed): `/etc`, `/root`, `/var` overlay a tmpfs, state lost at reboot, no DATA record written (see [Volatile overlays](storage-and-persistence.md#how-it-works)); `failed:overlay-etc|overlay-root|overlay-var`, `failed:dpkg-pin`, `failed:volatile` (the tmpfs or one of its overlays failed). Log lines carry the prefix `overlay: status <state>`. The DATA record is the `overlay-status=` key of `/mnt/data/.unitotem-overlay-status`, written only when DATA is used. An 8 GB card has no DATA: it runs volatile by design.
@@ -190,12 +190,15 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 - On deployed Pi devices `config.txt` is rewritten at runtime by `ota-engine.sh` (`set-default-recovery`, `set-trial-boot`, `promote-default`); the shipped `config.txt` applies only to the built `.img`. Dtoverlay/dtparam changes go in `config-extra.txt`.
 - `plymouth-theme-unitotem` (manager repository) postinst: `update-alternatives` for `default.plymouth` (priority 100), `plymouth-set-default-theme unitotem`, `update-initramfs -u`, errors ignored. An image that pins another theme by hand puts the alternative in manual mode.
 - Stage 2 appends `FRAMEBUFFER=y` to `initramfs.conf`: the splash in the initramfs needs it.
+- Duplicate slot labels: `slot_pick` picks the device; `ROOT=` in `/conf/param.conf` pins it only when the label exists more than once. Normal boots write nothing.
+- amd64 GRUB `search --label ROOT_A|ROOT_B` (`grub-ab-entries`) takes the first match and is not changed by `slot_pick`. A legacy duplicate ROOT_B, created while slot B ran under the old updater, can load the kernel from the stale copy. The current updater cannot create one.
 
 ## Tests
 
 - `python3 tools/release/test_boot_orientation.py`, `test_rpi_backend.py`, `test_repair.py`, `test_secure_boot_gate.py`, `test_boot_recovery.py`.
 - `dash tools/release/test_overlay_status.sh`: overlay hook under dash with mocked mount, blkid, e2fsck (status states, log prefix, one-line file).
 - `python3 tools/release/test_boot_guard.py`, `bash tools/release/test_bootcount.sh`: boot health gate and boot counter (fixtures in tmp, no device).
+- `bash tools/release/test_slot_pick.sh`: `slot_pick`, `heal_dup_label`, `pin_root_dev` and the duplicate handling of `cmd_init_premount` (44 checks). `bash tools/release/test_slot_dup.sh`: privileged Docker, 548 checks, duplicate labels and interrupted repair writes ([ab-updates](ab-updates.md#slot-devices-and-repair-writes)).
 - `bash unitotem/check-recovery-commands.sh ROOTFS INITRD deploy/ota-engine.sh`.
 - `unitotem/verify-image.sh`: GRUB entries, fallback numbering, Secure Boot staging, Pi slot dirs, initramfs contents.
 - Firmware behaviour (`os_prefix`, tryboot) is verified on hardware only.

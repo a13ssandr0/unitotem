@@ -20,7 +20,9 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_deploy_recovery_source.py` | `recovery_from_parts` (`deploy/remote-deploy.sh`): resident fallback source of a deploy, 29 checks |
 | `tools/release/test_identity_merge.py` | `unitotem_identity.py` account merge |
 | `tools/release/test_pkglock.py` | `tools/pkglock.py` freeze/verify/prefs/snapshot/classification, offline |
-| `tools/release/test_repair.py` | Self-repair without block devices: boot-file clone, failover guard, repair decision |
+| `tools/release/test_repair.py` | Self-repair without block devices: boot-file clone, failover guard, repair decision, `patch_label`, `clone_into_slot` on a file, `slot_dev` with fake sysfs: 60 checks |
+| `tools/release/test_slot_pick.sh` | Engine `slot_pick`, `heal_dup_label`, `pin_root_dev` and boot stubs (`ota-engine.sh`): 44 checks |
+| `tools/release/test_slot_dup.sh` (+ `test_slot_dup_inside.sh`) | Duplicate labels and interrupted repair writes (`clone_into_slot`, `slot_dev`, `cmd_init_premount`), Docker `--privileged`, GPT and DOS, `metadata_csum` on and off: 548 checks; reproduces the old write order and interrupts after invalidate, mid-write (SIGKILL at 30 %), before and after the superblock |
 | `tools/release/test_rpi_backend.py` | Raspberry backend end to end on a synthetic GPT image |
 | `tools/release/test_secure_boot_gate.py` | `secure_boot_gate` and SecureBoot probe cut from `deploy/remote-deploy.sh` |
 | `tools/release/test_wifi_roam.py` | `unitotem-wifi-roam` scan parsing and candidate choice |
@@ -77,7 +79,7 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 ## Rules and gotchas
 
 - There is no single runner and no CI config; run each target by hand.
-- `test_rpi_backend.py` does not prove firmware `os_prefix`/`tryboot.txt` behaviour (hardware only). `test_repair.py` does not prove the partclone copy.
+- `test_rpi_backend.py` does not prove firmware `os_prefix`/`tryboot.txt` behaviour (hardware only). `test_repair.py` does not prove the partclone copy on a block device: `test_slot_dup.sh` does. Power cuts there are simulated by killing the process group, not by a block-level cut.
 - `powercut-ab.sh`: `kill -9` models loss of what the guest did not submit to the virtual disk; not a physical disk cache, write reordering or a cut inside one block write.
 - `inside-real-sd.sh` takes and verifies a read-only backup of the card first and always takes the table-recreate path.
 - Harness containers run `--privileged`; `run-real-sd.sh` scopes device-cgroup rules to one disk. `run-ab.sh` and `run-bootcount.sh` force `--platform linux/amd64`.
