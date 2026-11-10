@@ -1645,6 +1645,17 @@ cmd_serve_fallback() {
     ota_led_maintenance
 
     local myip; myip=$(configure_networking_ota || true)
+    # No address yet (an adapter that appears late): keep trying in the background for about 35 minutes. dropbear listens on
+    # every interface, so it answers as soon as one has an address.
+    if [ -z "$myip" ]; then
+        (
+            rn=0
+            while [ "$rn" -lt 60 ]; do
+                [ -n "$(configure_networking_ota 2>/dev/null || true)" ] && break
+                rn=$((rn + 1)); sleep 5
+            done
+        ) </dev/null >/dev/null 2>&1 &
+    fi
 
     mkdir -p /run/dropbear
     dropbearkey -t ed25519 -f /run/dropbear_ed25519_host_key >/dev/null 2>&1 \
