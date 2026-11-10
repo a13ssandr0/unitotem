@@ -18,6 +18,7 @@ words=$(awk '
     /^[[:space:]]*#/ { next }
     { if (match($0, /<<-?[[:space:]]*["\x27]?[A-Za-z_]+/)) { t = substr($0, RSTART, RLENGTH); gsub(/<<-?[[:space:]]*["\x27]?/, "", t); heredoc = t } else heredoc = ""
       line = $0; sub(/[[:space:]]#.*$/, "", line); print line; if (heredoc != "") skip = heredoc }' "$ENG" \
+    | sed -E 's/(^|[|;&(`{]|\$\(|\bthen\b|\bdo\b|\belse\b)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)+/\1 /g' \
     | grep -oE '(^|[|;&(`{]|\$\(|\bthen\b|\bdo\b|\belse\b)[[:space:]]*[a-z][a-z0-9._+-]+([[:space:]]|$)' \
     | sed -E 's/^[|;&(`{$[:space:]]*//; s/^(then|do|else)[[:space:]]*//; s/[[:space:]]+$//' | sort -u)
 for w in $words; do

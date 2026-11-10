@@ -28,7 +28,11 @@ partnum_of() { printf '%s\n' "${1##*[!0-9]}"; }
 
 # Devices that carry filesystem LABEL, sorted (one per line; none when no match).
 label_devices() {
-    blkid -t "LABEL=$1" -o device 2>/dev/null | LC_ALL=C sort || true
+    if command -v sort >/dev/null 2>&1; then
+        blkid -t "LABEL=$1" -o device 2>/dev/null | LC_ALL=C sort || true
+    else
+        blkid -t "LABEL=$1" -o device 2>/dev/null || true
+    fi
 }
 
 # block_disk DEV: the disk holding partition DEV, from the sysfs symlink target (not the device name). A whole

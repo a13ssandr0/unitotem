@@ -216,6 +216,9 @@ echo "== The recovery environment carries every command the OTA engine runs"
 RINIT="$FAT/unitotem/recovery-initrd.img"; [ "$ARCH" = arm64 ] && RINIT="$FAT/recovery-initrd.img"
 chk "recovery initrd has every external command ota-engine.sh runs (tr and cmp were missing: amd64 set-default-recovery and --secure-boot shim died mid-deploy)" \
     bash "$(dirname "${BASH_SOURCE[0]}")/check-recovery-commands.sh" "$R" "$RINIT" "$ENG"
+# the slot initramfs is built by the same hook and runs the same engine at every boot (build 61: no `sort`, root not found)
+[ -n "${INITRD:-}" ] && chk "slot initramfs has every external command ota-engine.sh runs (${INITRD##*/})" \
+    bash "$(dirname "${BASH_SOURCE[0]}")/check-recovery-commands.sh" "$R" "$INITRD" "$ENG"
 
 echo "== Ports and logs of the 3.0.0~dev5 manager"
 chk "firewall opens 4443/tcp (paired nodes' mutual-TLS link) on IPv4 and IPv6" bash -c "grep -q 'iptables -A INPUT -p tcp --dport 4443 -j ACCEPT' '$R/sbin/iptables-firewall.sh' && grep -q 'ip6tables -A INPUT -p tcp --dport 4443 -j ACCEPT' '$R/sbin/iptables-firewall.sh'"
