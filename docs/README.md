@@ -6,6 +6,7 @@ Component documentation of the UniTotem repository. System docs describe the ima
 
 - [build.md](system/build.md): image build pipeline for amd64 and arm64.
 - [package-lock.md](system/package-lock.md): pinned package sets used by the build.
+- [installer-iso.md](system/installer-iso.md): amd64 installer ISO (build, flow, tests).
 - [boot.md](system/boot.md): bootloaders, A/B slot choice, trial boot, splash, Secure Boot chain.
 - [storage-and-persistence.md](system/storage-and-persistence.md): partitions, read-only root, DATA overlays.
 - [image-runtime.md](system/image-runtime.md): services, timers, network, Wayland session, maintenance mode on a deployed image.
