@@ -45,7 +45,7 @@ for bin in \
     dropbear dropbearkey scp \
     wpa_supplicant wpa_passphrase \
     sha256sum base64 awk cut paste readlink mkfifo cp grep head tail stty \
-    tr cmp od sed lsblk partprobe basename dirname \
+    tr cmp od sed lsblk partprobe basename dirname sort \
     rm chmod tar \
     ip udevadm \
     setsid \
