@@ -1373,7 +1373,7 @@ configure_one_iface() {
 # the running system used), the one named in the deploy configuration first. WiFi targets keep the configured interface.
 # Prints the first address obtained, nothing if none got one.
 configure_networking_ota() {
-    local conf=/boot-ota/unitotem-ota.conf iface addr="" ifs="" i w=0 first
+    local conf=/boot-ota/unitotem-ota.conf iface addr="" ifs="" i w=0 first nw found
     [ -f "$conf" ] && read_kv_lines < "$conf"
     # Do not rely on udev's coldplug having bound a driver yet (virtio_net could be present but not loaded).
     # No-ops where these modules do not exist or are already loaded.
@@ -1387,6 +1387,23 @@ configure_networking_ota() {
         configure_one_iface "$iface"
         return 0
     fi
+    # A USB Ethernet adapter (Raspberry Pi 3, 3B+) shows up a few seconds after the kernel started: wait up to 30 s for a
+    # physical Ethernet device before concluding there is none.
+    nw=0
+    while [ "$nw" -lt 30 ]; do
+        found=0
+        for i in /sys/class/net/*; do
+            i=${i##*/}
+            [ "$i" = lo ] && continue
+            [ -e "/sys/class/net/$i/device" ] || continue
+            [ "$(cat /sys/class/net/$i/type 2>/dev/null)" = 1 ] || continue
+            [ -d "/sys/class/net/$i/wireless" ] && continue
+            found=1; break
+        done
+        [ "$found" = 1 ] && break
+        sleep 1; nw=$((nw + 1))
+        [ $((nw % 5)) = 0 ] && udevadm trigger --subsystem-match=net 2>/dev/null
+    done
     # physical Ethernet devices only (no lo, bridges, veth, tunnels)
     for i in /sys/class/net/*; do
         i=${i##*/}
@@ -1403,7 +1420,7 @@ configure_networking_ota() {
         ifs=" $iface"
     fi
     # give the links a few seconds to negotiate, then order: with carrier first, the configured interface first among them
-    while [ "$w" -lt 8 ]; do
+    while [ "$w" -lt 12 ]; do
         for i in $ifs; do [ "$(cat /sys/class/net/$i/carrier 2>/dev/null)" = 1 ] && break 2; done
         sleep 1; w=$((w + 1))
     done
