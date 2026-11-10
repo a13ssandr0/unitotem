@@ -6,11 +6,13 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import logging
 import math
 import os
 import random
 import re
 import secrets
+import signal
 import shutil
 import socket
 import stat
@@ -36,6 +38,7 @@ SUMS_ENTRY = ZIP_DIR + 'payload/SHA256SUMS'
 PLACEHOLDERS = ('SERVER', 'SHA256', 'BYTES', 'TIMEOUT', 'POLL', 'ENGINE')
 PLACEHOLDER_RE = re.compile(r'@(SERVER|SHA256|BYTES|TIMEOUT|POLL|ENGINE)@')
 MACHINE_RE = re.compile(r'[A-Za-z0-9-]{8,64}')
+REASON_RE = re.compile(r'[a-z0-9_=,.:-]{1,80}')
 HOST_RE = re.compile(r'[A-Za-z0-9-]{1,15}')
 # Characters of a log line printed whole (steps, error ids, statements, messages).
 LOG_LIMIT = 4000
@@ -79,7 +82,7 @@ POLL_SECONDS = 5
 RATE_LIMIT = 50
 INV_KEYS = ('machine', 'hostname', 'ips', 'firmware', 'secureboot', 'bitlocker',
             'boot_free_mb', 'system_disk', 'os', 'disks', 'ui_culture', 'services',
-            'model', 'cpu', 'ram', 'plan', 'notes')
+            'model', 'cpu', 'ram', 'plan', 'facts')
 DISK_KEYS = ('number', 'model', 'size_gb', 'style', 'serial', 'unique_id', 'bus',
              'system', 'partitions')
 PART_KEYS = ('number', 'letter', 'size_mb', 'type', 'free_mb')
@@ -202,8 +205,8 @@ def parse_inventory(data):
     ram = _str(data['ram'], 120, None, 'ram')
     _obj(data['plan'], ('where', 'reason'), 'plan')
     plan = {'where': _enum(data['plan']['where'], ('boot', 'cdrive', 'new', 'none'), 'plan where'),
-            'reason': _str(data['plan']['reason'], 400, None, 'plan reason')}
-    notes = [_str(x, 400, None, 'note') for x in _list(data['notes'], 8, 'notes')]
+            'reason': _str(data['plan']['reason'], 80, REASON_RE, 'plan reason')}
+    facts = [_str(x, 200, None, 'fact') for x in _list(data['facts'], 16, 'facts')]
     services = []
     for item in _list(data['services'], 16, 'services'):
         _obj(item, ('name', 'status'), 'service entry')
@@ -255,7 +258,7 @@ def parse_inventory(data):
         'cpu': cpu,
         'ram': ram,
         'plan': plan,
-        'notes': notes,
+        'facts': facts,
         'services': services,
         'disks': disks,
     }
@@ -265,52 +268,48 @@ def parse_status(data):
     _obj(data, STATUS_KEYS, 'status keys')
     return {
         'machine': _str(data['machine'], 64, MACHINE_RE, 'machine'),
-        'level': _enum(data['level'], ('info', 'ok', 'error'), 'level'),
+        'level': _enum(data['level'], ('info', 'warn', 'error', 'done'), 'level'),
         'text': _str(data['text'], 20000, None, 'text'),
     }
 
 
 def render_block(rec):
+    # Summary of the PC: indented two spaces, no timestamp or level (log lines start in column 0).
     sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
     lines = [
-        '',
-        '=== PC waiting for approval ===',
-        'Hostname:    ' + clean(rec['hostname'], 15),
-        'Machine:     ' + clean(rec['machine'], 64),
-        'Client IP:   ' + clean(rec['client_ip'], 45),
-        'Addresses:   ' + (clean(', '.join(rec['ips'])) or 'none'),
-        'OS:          ' + clean(rec['os']),
-        'Model:       ' + clean(rec['model'], 120),
-        'CPU:         ' + clean(rec['cpu'], 120),
-        'RAM:         ' + clean(rec['ram'], 120),
-        'UI language: ' + clean(rec['ui_culture'], 20),
-        'Storage svc: ' + (', '.join(clean(x['name'], 32) + '=' + clean(x['status'], 20) for x in rec['services']) or 'none'),
-        'Firmware:    ' + clean(rec['firmware'], 10),
-        'Secure Boot: ' + ('n/a (legacy BIOS)' if rec['secureboot'] == 'na' else clean(rec['secureboot'], 10)),
-        'BitLocker:   ' + (', '.join(clean(b['drive'], 1) + ': ' + clean(b['status'])
-                                     for b in rec['bitlocker']) or 'none'),
-        'Boot free:   ' + (str(rec['boot_free_mb']) + ' MB' if rec['boot_free_mb'] is not None
-                           else 'unknown'),
-        'Disks:',
+        'hostname:     ' + clean(rec['hostname'], 15),
+        'machine:      ' + clean(rec['machine'], 64),
+        'client_ip:    ' + clean(rec['client_ip'], 45),
+        'addresses:    ' + (clean(', '.join(rec['ips'])) or 'none'),
+        'os:           ' + clean(rec['os']),
+        'model:        ' + clean(rec['model'], 120),
+        'cpu:          ' + clean(rec['cpu'], 120),
+        'ram:          ' + clean(rec['ram'], 120),
+        'ui_language:  ' + clean(rec['ui_culture'], 20),
+        'storage_svc:  ' + (', '.join(clean(x['name'], 32) + '=' + clean(x['status'], 20) for x in rec['services']) or 'none'),
+        'firmware:     ' + clean(rec['firmware'], 10),
+        'secure_boot:  ' + ('n/a' if rec['secureboot'] == 'na' else clean(rec['secureboot'], 10)),
+        'bitlocker:    ' + (', '.join(clean(b['drive'], 1) + ': ' + clean(b['status'])
+                                      for b in rec['bitlocker']) or 'none'),
+        'boot_free:    ' + (str(rec['boot_free_mb']) + ' MB' if rec['boot_free_mb'] is not None else 'unknown'),
+        'disks:',
     ]
     for d in rec['disks']:
-        mark = ' [SYSTEM]' if d is sysd else ''
-        lines.append('  Disk %d%s: %s, %.1f GB, %s, serial %s, bus %s' % (
+        mark = ' (system)' if d is sysd else ''
+        lines.append('  disk %d%s: model=%s size=%.1fGB style=%s serial=%s bus=%s' % (
             d['number'], mark, clean(d['model']), d['size_gb'], clean(d['style'], 32),
             clean(d['serial']), clean(d['bus'], 32)))
         for p in d['partitions']:
-            free = '' if p['free_mb'] is None else ', %d MB free' % p['free_mb']
-            lines.append('    part %d  letter %s  %.0f MB%s  %s' % (
+            free = '' if p['free_mb'] is None else ' free=%dMB' % p['free_mb']
+            lines.append('    part %d: letter=%s size=%.0fMB%s type=%s' % (
                 p['number'], clean(p['letter'] or '-', 1), p['size_mb'], free, type_label(p['type'])))
-    lines.append('Plan:        ' + clean(rec['plan']['where']) + ' - ' + clean(rec['plan']['reason'], 400))
-    for note in rec['notes']:
-        lines.append('Note:        ' + clean(note, 400))
-    return '\n'.join(lines)
+    lines.append('plan:         destination=' + clean(rec['plan']['where']) + ' reason=' + clean(rec['plan']['reason'], 80))
+    return '\n'.join('  ' + line for line in lines)
 
 
 def disk_question(rec, text):
     sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
-    return '%s: disk %d, %s, %.1f GB, serial %s. %s' % (
+    return '(%s) disk=%d model=%s size=%.1fGB serial=%s: %s' % (
         clean(rec['hostname'], 15), sysd['number'], clean(sysd['model']), sysd['size_gb'], clean(sysd['serial']), text)
 
 
@@ -450,6 +449,13 @@ def _reject_const(name):
     raise ValueError('constant ' + name)
 
 
+class Busy(Exception):
+    pass
+
+
+BUSY_MESSAGE = 'server busy: another PC is being installed'
+
+
 class Terminal:
     # One print lock for every thread. While a question is pending on a terminal, a log line is printed above the
     # prompt and the prompt with what the operator already typed is drawn again below it.
@@ -458,7 +464,7 @@ class Terminal:
     def __init__(self, stream=None, interactive=False):
         self.stream = stream or sys.stdout
         self.interactive = interactive
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()  # shared with the logging handler
         self.prompt = None
         self.buf = ''
 
@@ -511,17 +517,75 @@ class Terminal:
         return None
 
 
+LOG_FORMAT = '%(asctime)s %(levelname)s (%(host)s) %(message)s'
+LOG_DATEFMT = '%Y-%m-%d %H:%M:%S'
+LOGGER = logging.getLogger('winserver')
+
+
+class PromptHandler(logging.StreamHandler):
+    # Prints a record above the pending prompt and draws the prompt (with the typed text) again below it, under the
+    # lock the terminal reader uses.
+    def __init__(self, term):
+        super().__init__(term.stream)
+        self.term = term
+        self.lock = term.lock
+
+    def emit(self, record):
+        try:
+            self.term.log(self.format(record))
+        except Exception:
+            self.handleError(record)
+
+
+class HostColors:
+    # Stable random colour per host name (256-colour code), kept in memory only.
+    def __init__(self):
+        self.codes = {}
+        self.lock = threading.Lock()
+
+    def name(self, name):
+        name = clean(name, 15)
+        with self.lock:
+            code = self.codes.get(name)
+            if code is None:
+                free = [c for c in PALETTE if c not in self.codes.values()] or list(PALETTE)
+                code = random.choice(free)
+                self.codes[name] = code
+        return '\x1b[38;5;%dm%s%s' % (code, name, RESET)
+
+
+class HostFilter(logging.Filter):
+    # Sets record.host: "server" or the PC name, in a stable random colour when the stream is a terminal.
+    def __init__(self, colors, color=False):
+        super().__init__()
+        self.colors = colors
+        self.color = color
+
+    def filter(self, record):
+        name = clean(getattr(record, 'host', None) or 'server', 15)
+        record.host = self.colors.name(name) if self.color else name
+        return True
+
+
+def make_formatter():
+    return logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
+
+
 class Context:
     def __init__(self, payload, state_dir, key_path, timeout_minutes, template=TEMPLATE,
-                 out=None, clock=time.monotonic, poll_interval=1.0, keep_approvals=False):
+                 out=None, clock=time.monotonic, poll_interval=1.0, keep_approvals=False, term=None, colors=None):
         self.state_dir = prepare_dir(os.path.abspath(state_dir))
         self.machines_dir = prepare_dir(os.path.join(self.state_dir, 'machines'))
         self.keep_approvals = keep_approvals
         self.raw = {}
         self.approvals_dir = prepare_dir(os.path.join(self.state_dir, 'approvals'))
         self.lock = threading.Lock()
-        self.term = Terminal(sys.stdout, sys.stdout.isatty() and sys.stdin is not None and sys.stdin.isatty())
+        self.term = term or Terminal(sys.stdout, sys.stdout.isatty() and sys.stdin is not None and sys.stdin.isatty())
         self.current_question = None
+        self.wall = time.time
+        self.active = None
+        self.active_since = 0.0
+        self.busy_logged = {}
         self.out_fn = out
         self.clock = clock
         self.poll_interval = poll_interval
@@ -538,7 +602,7 @@ class Context:
         self.key_path = key_path
         self.explicit_key = read_key(key_path) if key_path else None
         self.keys = {}
-        self.colors = {}
+        self.colors = colors or HostColors()
         self.color = use_color()
         self.stage = 0
         self.last_machine = None
@@ -547,11 +611,15 @@ class Context:
         clean_approvals(self.approvals_dir)
         self.load_state()
 
-    def emit(self, text):
-        if self.out_fn is not None:
-            self.out_fn(text)
+    def emit(self, text, level=logging.INFO, host=None, raw=False):
+        # Log records go through the logging module; raw lines (the PC summary, questions) are printed as they are.
+        if raw:
+            if self.out_fn is not None:
+                self.out_fn(text)
+            else:
+                self.term.log(text)
         else:
-            self.term.log(text)
+            LOGGER.log(level, text, extra={'host': host or 'server'})
 
     def question(self, text):
         # The pending question: the prompt on a terminal, a log line otherwise (and in the tests).
@@ -632,7 +700,7 @@ class Context:
                 else:
                     priv, line = ensure_machine_key(ip)
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                self.emit('ignored an unreadable state file: ' + clean(name, 80))
+                self.emit('state file ignored name=%s' % clean(name, 80), logging.WARNING)
                 continue
             m = rec['machine']
             self.inventories[m] = rec
@@ -647,9 +715,11 @@ class Context:
                 newest = (mtime, m)
             restored += 1
         self.last_machine = newest[1]
+        if newest[1] is not None and self.wall() - newest[0] <= self.timeout_minutes * 60:
+            self.active = newest[1]
+            self.active_since = newest[0]
         if restored:
-            self.emit('restored %d PC(s) from %s%s' % (restored, clean(self.machines_dir, 200),
-                      '' if self.keep_approvals else '; approvals must be given again'))
+            self.emit('state restored machines=%d approvals=%s' % (restored, 'kept' if self.keep_approvals else 'dropped'))
             rec = self.inventories.get(newest[1]) if newest[1] else None
             if rec is not None and newest[1] not in self.approved:
                 self.question(disk_question(rec, Q_FIRST))
@@ -657,10 +727,15 @@ class Context:
     def add_inventory(self, data, client_ip):
         rec = parse_inventory(data)
         rec['client_ip'] = client_ip
+        self.check_machine(rec['machine'], client_ip)
         with self.lock:
             same = self.raw.get(rec['machine']) == data and \
                 self.inventories[rec['machine']]['client_ip'] == client_ip
         if same:
+            with self.lock:
+                if self.active is None and rec['plan']['where'] != 'none':
+                    self.active = rec['machine']
+                    self.active_since = self.wall()
             return self.inventories[rec['machine']]  # idempotent: nothing changes, no new question
         if self.explicit_key is not None:
             priv = self.key_path[:-4] if self.key_path.endswith('.pub') else None
@@ -672,16 +747,55 @@ class Context:
             self.keys[rec['machine']] = {'priv': priv, 'line': line}
             self.raw[rec['machine']] = data
             self.approved.pop(rec['machine'], None)
+            self.active = rec['machine']
+            self.active_since = self.wall()
             self.last_machine = rec['machine'] if rec['plan']['where'] != 'none' else None
             self.stage = 0
         self.save_machine(rec['machine'])
-        self.emit(render_block(rec))
+        self.emit('inventory received machine=%s client=%s firmware=%s' % (clean(rec['machine'], 64), clean(client_ip, 45), clean(rec['firmware'], 10)), host=rec['hostname'])
+        self.emit(render_block(rec), raw=True)
+        for fact in rec['facts']:
+            self.emit(clean(fact, 200), host=rec['hostname'])
         if rec['plan']['where'] == 'none':
             self.question(None)
-            self.emit(self.ask('Cannot install on this PC: ' + clean(rec['plan']['reason'], 400)))
+            self.release(rec['machine'])
+            self.emit('cannot install reason=%s' % clean(rec['plan']['reason'], 80), logging.ERROR, rec['hostname'])
         else:
             self.question(disk_question(rec, Q_FIRST))
         return rec
+
+    # One PC at a time: the machine that sent an inventory is active until it finishes, is cancelled, is reset or
+    # its session is older than --timeout-minutes. Requests of another machine id get HTTP 409.
+    def expire_locked(self):
+        if self.active is not None and self.wall() - self.active_since > self.timeout_minutes * 60:
+            gone, self.active = self.active, None
+            return gone
+        return None
+
+    def check_machine(self, machine, client_ip):
+        with self.lock:
+            gone = self.expire_locked()
+            busy = self.active is not None and self.active != machine
+            now = self.wall()
+            log = busy and now - self.busy_logged.get(machine, 0) > 60
+            if log:
+                self.busy_logged[machine] = now
+        if gone:
+            self.emit('session expired machine=%s' % clean(gone, 64), logging.WARNING)
+        if busy:
+            if log:
+                self.emit('rejected machine=%s client=%s reason=busy' % (clean(machine, 64), clean(client_ip, 45)), logging.WARNING)
+            raise Busy(BUSY_MESSAGE)
+
+    def release(self, machine=None):
+        with self.lock:
+            if machine is None or self.active == machine:
+                self.active = None
+
+    def reset(self):
+        with self.lock:
+            gone, self.active = self.active, None
+        self.emit('session reset machine=%s' % clean(gone or 'none', 64))
 
     def get_key(self, machine):
         # Public key line, only for a machine whose approval is valid.
@@ -699,14 +813,19 @@ class Context:
         return 'OTA_FALLBACK_KEY=%s deploy/remote-deploy.sh recover %s --parts DIR --yes' % (
             k['priv'] or '<private key>', rec['client_ip'])
 
-    def add_status(self, data):
+    def add_status(self, data, client_ip=''):
         st = parse_status(data)
+        self.check_machine(st['machine'], client_ip)
         with self.lock:
             rec = self.inventories.get(st['machine'])
+            if self.active == st['machine']:
+                self.active_since = self.wall()
         name = rec['hostname'] if rec else st['machine']
-        # Errors are printed whole: the step, the failing statement and the error id are needed remotely.
-        limit = LOG_LIMIT
-        self.emit(self.host_tag(name) + ' ' + clean(st['text'], limit))
+        level = {'info': logging.INFO, 'warn': logging.WARNING, 'error': logging.ERROR, 'done': logging.INFO}[st['level']]
+        # Messages are printed whole: step, failing statement and error id are needed remotely.
+        self.emit(clean(st['text'], LOG_LIMIT), level, name)
+        if st['level'] in ('done', 'error'):
+            self.release(st['machine'])
 
     def get_approval_locked(self, machine):
         rec = self.inventories.get(machine)
@@ -730,36 +849,29 @@ class Context:
         # Questions to the operator in yellow (same rules as the host colours).
         return YELLOW + text + RESET if self.color else text
 
-    def host_tag(self, name):
-        # "(host)" with a stable random colour per host name (in memory only); plain without a terminal.
-        name = clean(name, 15)
-        tag = '(' + name + ')'
-        if not self.color:
-            return tag
-        with self.lock:
-            code = self.colors.get(name)
-            if code is None:
-                free = [c for c in PALETTE if c not in self.colors.values()] or list(PALETTE)
-                code = random.choice(free)
-                self.colors[name] = code
-        return '\x1b[38;5;%dm%s%s' % (code, tag, RESET)
-
     def apply_answer(self, text, source):
         # The operator answers y twice for the PC that reported last; n cancels; anything else is asked again.
         text = text.strip().lower()
         approved = None
         again = None
+        host = None
+        level = logging.INFO
         with self.lock:
             machine = self.last_machine
             rec = self.inventories.get(machine) if machine else None
+            if rec is not None:
+                host = rec['hostname']
             if rec is None:
                 msg = 'no PC is waiting'
+                level = logging.WARNING
             elif text not in (YES, NO):
                 msg = INVALID_ANSWER
+                level = logging.WARNING
                 again = self.current_question
             elif text == NO:
                 self.stage = 0
-                msg = 'cancelled: nothing was changed'
+                self.active = None
+                msg = 'cancelled changes=none'
                 again = False
             elif self.stage == 0:
                 self.stage = 1
@@ -767,9 +879,10 @@ class Context:
                 again = disk_question(rec, Q_LAST)
             else:
                 self.stage = 0
+                self.active_since = self.wall()
                 sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
                 self.approved[machine] = {'disk': sysd['number'], 'serial': sysd['serial']}
-                msg = 'approved: ' + self.host_tag(rec['hostname']) + ' disk ' + str(sysd['number'])
+                msg = 'approved disk=%d serial=%s' % (sysd['number'], clean(sysd['serial'], 40))
                 approved = machine
                 again = False
         if approved is not None and self.keep_approvals:
@@ -777,36 +890,44 @@ class Context:
         if again is False:
             self.question(None)
         if msg is not None:
-            self.emit(msg)
+            self.emit(msg, level, host)
         if again:
             self.question(again)
         if approved is not None:
-            self.emit('When the PC shows its address in the OTA environment, run: ' + self.next_command(approved))
+            self.emit('next: ' + self.next_command(approved), logging.INFO, host)
 
     def approve_direct(self, machine, source):
         # `-y`: approves without the two questions; same binding to machine id + disk number + serial.
         approved = None
+        host = None
+        level = logging.INFO
         with self.lock:
             machine = machine or self.last_machine
             rec = self.inventories.get(machine) if machine else None
+            if rec is not None:
+                host = rec['hostname']
             if rec is None:
                 msg = 'no such PC' if machine else 'no PC is waiting'
+                level = logging.WARNING
             elif rec['plan']['where'] == 'none':
-                msg = 'cannot approve: ' + clean(rec['plan']['reason'], 400)
+                msg = 'cannot approve reason=%s' % clean(rec['plan']['reason'], 80)
+                level = logging.ERROR
             else:
                 sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
                 self.approved[machine] = {'disk': sysd['number'], 'serial': sysd['serial']}
                 self.stage = 0
-                msg = 'approved: ' + self.host_tag(rec['hostname']) + ' disk ' + str(sysd['number'])
+                self.active = machine
+                self.active_since = self.wall()
+                msg = 'approved disk=%d serial=%s' % (sysd['number'], clean(sysd['serial'], 40))
                 approved = machine
         if approved is not None:
             if self.keep_approvals:
                 self.save_machine(approved)
             if machine == self.last_machine:
                 self.question(None)
-        self.emit(msg)
+        self.emit(msg, level, host)
         if approved is not None:
-            self.emit('When the PC shows its address in the OTA environment, run: ' + self.next_command(approved))
+            self.emit('next: ' + self.next_command(approved), logging.INFO, host)
 
     def poll_approvals_once(self):
         for name in sorted(os.listdir(self.approvals_dir)):
@@ -818,6 +939,9 @@ class Context:
                 os.unlink(path)
             except OSError:
                 pass
+            if word == 'reset':
+                self.reset()
+                continue
             m = APPROVE_FILE_RE.fullmatch(word or '')
             if m is not None:
                 self.approve_direct(m.group(1), 'file')
@@ -827,7 +951,7 @@ class Context:
             try:
                 self.poll_approvals_once()
             except OSError as e:
-                self.emit('approvals directory error: ' + clean(e.strerror or 'error'))
+                self.emit('approvals directory error=%s' % clean(e.strerror or 'error'), logging.ERROR)
 
     def _tty_loop(self, stream):
         # Raw character input (no echo, ISIG kept) so the typed text can be drawn again under the log lines.
@@ -928,9 +1052,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/inventory':
                 self.ctx.add_inventory(data, self.client_address[0])
             else:
-                self.ctx.add_status(data)
+                self.ctx.add_status(data, self.client_address[0])
         except Invalid as e:
             self.fail(400, 'invalid ' + str(e))
+            return
+        except Busy as e:
+            self.send_json(409, {'error': 'busy', 'message': str(e)})
             return
         self.send_json(200, {'ok': True})
 
@@ -963,7 +1090,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self.ctx.render_bootstrap_for(ip, self.server.server_port).encode('utf-8')
         client = self.client_address[0]
         if self.ctx.first_fetch(client):
-            self.ctx.emit('client ' + clean(client, 45) + ' fetched the bootstrap')
+            self.ctx.emit('bootstrap served client=%s' % clean(client, 45))
         self.send_body(200, body, 'text/plain; charset=utf-8')
 
     def send_payload(self):
@@ -1005,6 +1132,11 @@ class Handler(BaseHTTPRequestHandler):
         if len(values) != 1 or MACHINE_RE.fullmatch(values[0]) is None:
             self.fail(400, 'bad machine id')
             return
+        try:
+            self.ctx.check_machine(values[0], self.client_address[0])
+        except Busy as e:
+            self.send_json(409, {'error': 'busy', 'message': str(e)})
+            return
         line = self.ctx.get_key(values[0])
         if line is None:
             self.fail(403, 'not approved')
@@ -1015,6 +1147,11 @@ class Handler(BaseHTTPRequestHandler):
         values = parse_qs(query, keep_blank_values=True).get('machine', [])
         if len(values) != 1 or MACHINE_RE.fullmatch(values[0]) is None:
             self.fail(400, 'bad machine id')
+            return
+        try:
+            self.ctx.check_machine(values[0], self.client_address[0])
+        except Busy as e:
+            self.send_json(409, {'error': 'busy', 'message': str(e)})
             return
         self.send_json(200, self.ctx.get_approval(values[0]))
 
@@ -1102,6 +1239,8 @@ def parse_args(argv):
     p.add_argument('-y', '--yes', action='store_true',
                    help='approve the PC that reported last in the running server (no questions)')
     p.add_argument('--machine', metavar='ID', default=None, help='with -y: approve this machine id')
+    p.add_argument('--reset', action='store_true', help='free the session of the running server (SIGHUP does the same)')
+    p.add_argument('--log-file', metavar='FILE', default=None, help='also write the log to FILE (UTF-8)')
     return p.parse_args(argv)
 
 
@@ -1110,6 +1249,14 @@ def main(argv=None):
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='replace')
     args = parse_args(argv)
+    if args.reset:
+        if args.yes or args.machine is not None:
+            print('--reset cannot be combined with -y', file=sys.stderr)
+            return 2
+        approvals = prepare_dir(os.path.join(prepare_dir(os.path.abspath(args.state_dir)), 'approvals'))
+        write_approval(approvals, 'reset')
+        print('reset queued: the running server takes it within one second')
+        return 0
     if args.machine is not None and not args.yes:
         print('--machine needs -y', file=sys.stderr)
         return 2
@@ -1122,20 +1269,32 @@ def main(argv=None):
         print('approval queued: the running server takes it within one second')
         return 0
 
+    term = Terminal(sys.stdout, sys.stdout.isatty() and sys.stdin is not None and sys.stdin.isatty())
+    colors = HostColors()
+    handler = PromptHandler(term)
+    handler.setFormatter(make_formatter())
+    handler.addFilter(HostFilter(colors, use_color()))
+    LOGGER.setLevel(logging.INFO)
+    LOGGER.addHandler(handler)
+    LOGGER.propagate = False
+    if args.log_file:
+        fh = logging.FileHandler(args.log_file, encoding='utf-8')
+        fh.setFormatter(make_formatter())
+        fh.addFilter(HostFilter(colors, False))
+        LOGGER.addHandler(fh)
     try:
         ctx = Context(args.payload, args.state_dir, args.authorized_key, args.timeout_minutes,
-                      keep_approvals=args.keep_approvals)
+                      keep_approvals=args.keep_approvals, term=term, colors=colors)
     except (OSError, ValueError) as e:
         print('error: ' + str(e), file=sys.stderr)
         return 2
 
     addrs = [args.advertise] if args.advertise else local_ipv4s()
+    print('On the Windows machine press Win+R, type powershell, press Enter, type one of the following commands and press Enter')
     for a in addrs:
         print('irm http://%s:%d|iex' % (a, args.port))
     if not addrs:
         print('no IPv4 address found: use --advertise IP')
-    print('Win+R -> powershell -> Ctrl+Shift+Enter')
-    print('then paste the irm line')
 
     try:
         server = make_server(args.bind, args.port, ctx)
@@ -1143,6 +1302,7 @@ def main(argv=None):
         ctx.close()
         print('error: cannot listen: ' + str(e), file=sys.stderr)
         return 2
+    signal.signal(signal.SIGHUP, lambda *_: ctx.reset())
     stdin_stream = sys.stdin if (sys.stdin is not None and sys.stdin.isatty()) else None
     ctx.start_background(stdin_stream)
     line = 'listening on %s:%d' % (args.bind, server.server_port)
