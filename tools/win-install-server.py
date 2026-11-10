@@ -42,6 +42,7 @@ LOG_LIMIT = 4000
 
 # Operator answers: y approves (asked twice), n cancels; nothing else is accepted.
 YES = 'y'
+APPROVE_FILE_RE = re.compile(r'approve(?: ([A-Za-z0-9-]{8,64}))?')
 NO = 'n'
 INVALID_ANSWER = 'Invalid answer, type y or n'
 Q_FIRST = 'Erase this disk and install UniTotem? (y/n)'
@@ -782,6 +783,31 @@ class Context:
         if approved is not None:
             self.emit('When the PC shows its address in the OTA environment, run: ' + self.next_command(approved))
 
+    def approve_direct(self, machine, source):
+        # `-y`: approves without the two questions; same binding to machine id + disk number + serial.
+        approved = None
+        with self.lock:
+            machine = machine or self.last_machine
+            rec = self.inventories.get(machine) if machine else None
+            if rec is None:
+                msg = 'no such PC' if machine else 'no PC is waiting'
+            elif rec['plan']['where'] == 'none':
+                msg = 'cannot approve: ' + clean(rec['plan']['reason'], 400)
+            else:
+                sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
+                self.approved[machine] = {'disk': sysd['number'], 'serial': sysd['serial']}
+                self.stage = 0
+                msg = 'approved: ' + self.host_tag(rec['hostname']) + ' disk ' + str(sysd['number'])
+                approved = machine
+        if approved is not None:
+            if self.keep_approvals:
+                self.save_machine(approved)
+            if machine == self.last_machine:
+                self.question(None)
+        self.emit(msg)
+        if approved is not None:
+            self.emit('When the PC shows its address in the OTA environment, run: ' + self.next_command(approved))
+
     def poll_approvals_once(self):
         for name in sorted(os.listdir(self.approvals_dir)):
             if name.startswith('.') or not name.endswith('.word'):
@@ -792,8 +818,9 @@ class Context:
                 os.unlink(path)
             except OSError:
                 pass
-            if word is not None:
-                self.apply_answer(word, 'file')
+            m = APPROVE_FILE_RE.fullmatch(word or '')
+            if m is not None:
+                self.approve_direct(m.group(1), 'file')
 
     def _poll_loop(self):
         while not self.stop.wait(self.poll_interval):
@@ -1050,6 +1077,7 @@ def int_arg(lo, hi):
 
 
 def write_approval(approvals_dir, word):
+    # word: 'approve' or 'approve MACHINE-ID'
     tmp = os.path.join(approvals_dir, '.tmp-' + secrets.token_hex(8))
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, 'wb') as f:
@@ -1071,8 +1099,9 @@ def parse_args(argv):
                    help='restore approvals after a restart (default: they must be given again)')
     p.add_argument('--timeout-minutes', type=int_arg(1, 1440), default=60)
     p.add_argument('--state-dir', default=default_state_dir())
-    p.add_argument('--approve', metavar='y', action='append', default=None,
-                   help='answer for the PC that reported last; give it twice: --approve y --approve y')
+    p.add_argument('-y', '--yes', action='store_true',
+                   help='approve the PC that reported last in the running server (no questions)')
+    p.add_argument('--machine', metavar='ID', default=None, help='with -y: approve this machine id')
     return p.parse_args(argv)
 
 
@@ -1081,13 +1110,15 @@ def main(argv=None):
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='replace')
     args = parse_args(argv)
-    if args.approve is not None:
-        if [a.lower() for a in args.approve] != [YES, YES]:
-            print('use exactly: --approve y --approve y', file=sys.stderr)
+    if args.machine is not None and not args.yes:
+        print('--machine needs -y', file=sys.stderr)
+        return 2
+    if args.yes:
+        if args.machine is not None and MACHINE_RE.fullmatch(args.machine) is None:
+            print('invalid machine id', file=sys.stderr)
             return 2
         approvals = prepare_dir(os.path.join(prepare_dir(os.path.abspath(args.state_dir)), 'approvals'))
-        for _ in range(2):
-            write_approval(approvals, YES)
+        write_approval(approvals, 'approve' + (' ' + args.machine if args.machine else ''))
         print('approval queued: the running server takes it within one second')
         return 0
 

@@ -363,12 +363,37 @@ class ApprovalTests(ServerCase):
         self.assertIn('Invalid answer, type y or n', self.output())
         self.assertIn('Erase this disk and install UniTotem? (y/n)', self.lines[-1])
 
-    def test_via_approvals_dir(self):
-        srv.write_approval(self.ctx.approvals_dir, 'y')
-        srv.write_approval(self.ctx.approvals_dir, 'y')
+    def test_dash_y_file_approves_last_pc_without_questions(self):
+        srv.write_approval(self.ctx.approvals_dir, 'approve')
         self.assertTrue(self.wait_for(lambda: 'approved: (DESKTOP-ABC) disk 0' in self.output()))
         self.assertEqual(os.listdir(self.ctx.approvals_dir), [])
+        self.assertEqual(self.approval('MACHINE-AAAA'),
+                         {'state': 'approved', 'machine': 'MACHINE-AAAA', 'disk': 0, 'serial': 'S4EVNX0N123456A'})
+        self.assertNotIn('Last chance', self.output())
+
+    def test_dash_y_for_a_specific_machine(self):
+        self.assertEqual(self.post_json('/inventory', inventory(machine='MACHINE-BBBB', hostname='LAPTOP-XYZ',
+                                                                serial='OTHER123'))[0], 200)
+        srv.write_approval(self.ctx.approvals_dir, 'approve MACHINE-AAAA')
+        self.assertTrue(self.wait_for(lambda: 'approved: (DESKTOP-ABC) disk 0' in self.output()))
         self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
+        self.assertEqual(self.approval('MACHINE-BBBB'), {'state': 'wait'})
+
+    def test_dash_y_refused_for_unknown_machine_or_plan_none(self):
+        self.ctx.approve_direct('MACHINE-ZZZZ', 'file')
+        self.assertIn('no such PC', self.output())
+        inv = inventory(machine='MACHINE-CCCC', hostname='NOPE')
+        inv['plan'] = {'where': 'none', 'reason': 'restart in normal mode'}
+        self.post_json('/inventory', inv)
+        self.ctx.approve_direct('MACHINE-CCCC', 'file')
+        self.assertIn('cannot approve: restart in normal mode', self.output())
+        self.assertEqual(self.approval('MACHINE-CCCC'), {'state': 'wait'})
+
+    def test_garbage_in_the_approvals_dir_approves_nothing(self):
+        for word in ('y', 'approve\nextra', 'approve bad id', 'APPROVE'):
+            srv.write_approval(self.ctx.approvals_dir, word)
+        self.assertTrue(self.wait_for(lambda: os.listdir(self.ctx.approvals_dir) == []))
+        self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
 
     def test_answers_go_to_the_pc_that_reported_last(self):
         self.assertEqual(self.post_json('/inventory',
@@ -877,9 +902,10 @@ class CliTests(unittest.TestCase):
         return subprocess.run([sys.executable, '-I', SERVER_PATH, '--state-dir', self.tmp] + list(args),
                               capture_output=True, text=True, timeout=60)
 
-    def test_approve_y_twice_writes_two_files_0600(self):
-        res = self.run_cli('--approve', 'y', '--approve', 'Y')
-        self.assertEqual(res.returncode, 0, res.stderr)
+    def test_dash_y_writes_one_file_0600(self):
+        for flag in ('-y', '--yes'):
+            res = self.run_cli(flag)
+            self.assertEqual(res.returncode, 0, res.stderr)
         appr = os.path.join(self.tmp, 'approvals')
         names = sorted(os.listdir(appr))
         self.assertEqual(len(names), 2)
@@ -887,14 +913,20 @@ class CliTests(unittest.TestCase):
             path = os.path.join(appr, n)
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
             with open(path, encoding='ascii') as f:
-                self.assertEqual(f.read(), 'y\n')
+                self.assertEqual(f.read(), 'approve\n')
 
-    def test_approve_anything_else_rejected(self):
-        for args in (('--approve', 'y'), ('--approve', 'yes', '--approve', 'yes'), ('--approve', 'n', '--approve', 'n'),
-                     ('--approve', 'y', '--approve', 'y', '--approve', 'y'), ('--approve', 'WIPE-x-DISK0-A')):
+    def test_dash_y_with_machine(self):
+        res = self.run_cli('-y', '--machine', 'MACHINE-AAAA')
+        self.assertEqual(res.returncode, 0, res.stderr)
+        appr = os.path.join(self.tmp, 'approvals')
+        with open(os.path.join(appr, os.listdir(appr)[0]), encoding='ascii') as f:
+            self.assertEqual(f.read(), 'approve MACHINE-AAAA\n')
+
+    def test_invalid_arguments_exit_2(self):
+        for args in (('--machine', 'MACHINE-AAAA'), ('-y', '--machine', 'bad id'), ('-y', '--machine', 'x'),
+                     ('--approve', 'y'), ('-y', 'extra')):
             with self.subTest(args=args):
-                res = self.run_cli(*args)
-                self.assertEqual(res.returncode, 2)
+                self.assertEqual(self.run_cli(*args).returncode, 2)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, 'approvals')) and
                          os.listdir(os.path.join(self.tmp, 'approvals')))
 
