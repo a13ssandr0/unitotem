@@ -59,7 +59,7 @@ First boot of a flash image and of any image on a larger disk (initramfs init-bo
      - Pending flags are the MBR types `da` (ROOT_B) and `db` (DATA). `--append` and `--no-reread` keep the disk label-id and the kernel away from the mounted root.
      - Formatting: DATA first, then ROOT_B (`mke2fs -t ext4 -L <label>`), each followed by its type change to `83`.
      - Power cuts: before the table write nothing changed. After it, the next boot finds `da`/`db` and formats them. A cut after `mke2fs` and before the type change leaves a flagged, empty filesystem that the next boot formats again. Known residual: if the type change fails after DATA was formatted and used, the next boot formats DATA again.
-     - Slot devices on MBR are found by filesystem label (`slot_dev` in `unitotem-update`: PARTLABEL first, then label).
+     - Slot devices on MBR are found by filesystem label: `slot_dev` in `unitotem-update`, rules in [ab-updates](ab-updates.md#slot-devices-and-repair-writes).
      - Still GPT-only: `grow_data` (logs one line and skips DOS), `tools/release/unitotem-release` (`sgdisk -i`), GRUB `part_gpt` in `grub-ab-entries` and `grub-ota-entry`. Full A/B on a DOS disk (Pi 3) also needs a one-shot trial without tryboot, a release build for MBR, and DATA growth on DOS.
 2. `grow_data` (DATA found, `e2fsck -p` done, not mounted): acts when the disk is GPT, DATA is ext4 and the last partition by start sector, and at least 64 MiB are free after it.
    - `sgdisk -e`; `sfdisk -N 4` (`--wipe never --wipe-partitions never`: sfdisk otherwise wipes the filesystem signature of the resized partition) rewrites only the DATA entry (type, GUID, name, attributes kept) in one table write; `sgdisk -v` must be clean; `partx -u --nr 4` updates the kernel size of DATA only.
@@ -87,7 +87,7 @@ unitotem/update/               unitotem-update state
 Boot:
 
 - Bootloader passes `root=LABEL=ROOT_A|ROOT_B`, `unitotem.slot=a|b`, `ro`.
-- init-premount (`ota-engine.sh init-premount`): validates the slot with a read-only fsck; on failure uses the other slot, else the OTA fallback. Then the boot counter gate, every layout ([Boot counter](boot.md#boot-counter)).
+- init-premount (`ota-engine.sh init-premount`): validates the slot with a read-only fsck; on failure uses the other slot, else the OTA fallback. The root label is resolved by `slot_pick`; two copies on one disk are healed (the other one relabelled `ROOT_STALE`, `ROOT=` pinned; [boot.md](boot.md#boot-decision-initramfs-both-backends)). Then the boot counter gate, every layout ([Boot counter](boot.md#boot-counter)).
 - local-bottom (`local-bottom-verify`): `/sbin/init` must exist, else OTA fallback.
 - init-bottom (`overlayfs-hook.sh`):
   0. `layout_complete` (see Images above).
@@ -140,6 +140,7 @@ State in `DATA/unitotem/update/`: `slots.json` (`{slot: {version, valid, prepare
 ## Rules and gotchas
 
 - Uppers are per slot; never delete the other slot's upper (rollback depends on it).
+- ROOT_A or ROOT_B on two partitions of one disk is a repair interrupted by a reboot, not a second slot. Boot resolves it; a repair never labels the target with the source's label ([ab-updates](ab-updates.md#slot-devices-and-repair-writes)).
 - DOS first boot changes the table with `sfdisk --append` only: no rewrite, label-id kept.
 - An upper file shadows the image file at the same path: a whitelisted file overrides the new image's version.
 - `**` is not recursive (Python `glob` without `recursive`, bash without globstar).

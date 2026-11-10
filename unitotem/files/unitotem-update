@@ -11,7 +11,7 @@ Everything is JSON with --json; progress for long operations goes to /run/unitot
 line rewritten atomically. `fetch` runs detached (systemd-run) unless --foreground, so a manager restart
 does not interrupt it; poll `status`.
 """
-import argparse, datetime, fcntl, glob, hashlib, json, os, re, shutil, signal, ssl, subprocess, sys, tempfile, time
+import argparse, datetime, fcntl, glob, hashlib, json, os, re, shutil, signal, ssl, struct, subprocess, sys, tempfile, time
 import urllib.request, urllib.error
 sys.path.insert(0, "/usr/lib/unitotem")          # unitotem_identity (the account merge)
 
@@ -208,14 +208,96 @@ def label(slot):
     return "ROOT_" + slot.upper()
 
 
+SLOT_RESERVED = ("DATA", "FIRMWARE", "EFI", "BOOT")     # labels of partitions that are never a slot
+
+
+def _sys_block():
+    return os.environ.get("UNITOTEM_SYS_BLOCK", "/sys/class/block")
+
+
+def _sys_part(dev):
+    """(disk name, partition number) of a partition device, or None."""
+    d = os.path.join(_sys_block(), os.path.basename(dev))
+    try:
+        num = int(open(os.path.join(d, "partition")).read().strip())
+    except (OSError, ValueError):
+        return None
+    return os.path.basename(os.path.dirname(os.path.realpath(d))), num
+
+
+def _disk_part(disk, num):
+    """Device of partition NUM on DISK, or ""."""
+    base = os.path.join(_sys_block(), disk)
+    for name in os.listdir(base):
+        try:
+            if int(open(os.path.join(base, name, "partition")).read().strip()) == num:
+                return "/dev/" + name
+        except (OSError, ValueError):
+            continue
+    return ""
+
+
+def _root_source():
+    src = run_out("findmnt", "-no", "SOURCE", "/", check=False)
+    return src if src.startswith("/dev/") else ""
+
+
+def _label_devs(tag, value):
+    return sorted(run_out("blkid", "-t", f"{tag}={value}", "-o", "device", check=False).split())
+
+
+def _by_name(slot):
+    """Device named SLOT by GPT name or filesystem label; None when nothing carries that name."""
+    devs = _label_devs("PARTLABEL", label(slot))
+    if devs:
+        return devs[0]
+    devs = _label_devs("LABEL", label(slot))
+    if not devs:
+        return None
+    if len(devs) == 1:
+        return devs[0]
+    # Duplicate labels (an interrupted copy): the two slots are on the disk of the running root, A is the lower
+    # partition number and B the higher one.
+    parts = {d: _sys_part(d) for d in devs}
+    root = _sys_part(_root_source()) if _root_source() else None
+    disk = root[0] if root else (parts[devs[0]] or (None, 0))[0]
+    cands = sorted((d for d in devs if parts[d] and parts[d][0] == disk), key=lambda d: parts[d][1])
+    if not cands:
+        return ""
+    return cands[0] if slot == "a" else cands[-1]
+
+
+def _neighbour(slot):
+    """Slot with a neutral or blank label: the partition next to the other slot, on the same disk."""
+    other = _by_name(other_slot(slot))
+    if not other:
+        return ""
+    sp = _sys_part(other)
+    if not sp:
+        return ""
+    disk, num = sp
+    want = num + 1 if slot == "b" else num - 1
+    if want < 1:
+        return ""
+    dev = _disk_part(disk, want)
+    if not dev or dev == _root_source():
+        return ""
+    lab = run_out("blkid", "-s", "LABEL", "-o", "value", dev, check=False)
+    typ = run_out("blkid", "-s", "TYPE", "-o", "value", dev, check=False)
+    if lab in SLOT_RESERVED or typ not in ("", "ext4"):
+        return ""
+    return dev
+
+
 def slot_dev(slot):
     """Block device of slot A or B, or "". GPT partition name first; MBR disks have no partition names, so the
-    filesystem label (the one root=LABEL= uses) is the fallback. A slot that lost power mid-write has a neutral
-    label: it is found by its GPT name only, so on MBR such a slot is not found."""
-    dev = run_out("blkid", "-t", f"PARTLABEL={label(slot)}", "-o", "device", check=False).splitlines()
-    if dev:
-        return dev[0]
-    return run_out("blkid", "-L", label(slot), check=False)
+    filesystem label (the one root=LABEL= uses) is the fallback. A copy interrupted by a power cut has a neutral label:
+    then the device is the partition next to the other slot. Never raises."""
+    try:
+        dev = _by_name(slot)
+        return dev if dev is not None else _neighbour(slot)
+    except (OSError, ValueError, Fail):
+        return ""
 
 
 def run_out(*cmd, check=True):
@@ -1142,6 +1224,118 @@ def rpi_clone_bootfiles(conf, cur, new):
     subprocess.run(["sync"])
 
 
+# CRC-32C (Castagnoli), the checksum ext4 metadata_csum uses for the superblock.
+_POLY = 0x82F63B78
+_TABLE = []
+for _i in range(256):
+    _c = _i
+    for _ in range(8):
+        _c = (_c >> 1) ^ _POLY if _c & 1 else _c >> 1
+    _TABLE.append(_c)
+
+
+def crc32c_raw(crc, data):
+    for b in data:
+        crc = _TABLE[(crc ^ b) & 0xFF] ^ (crc >> 8)
+    return crc & 0xFFFFFFFF
+
+
+def patch_label(sb_block, new_label):   # 1024-byte superblock = device bytes 1024..2047
+    raw = new_label.encode("ascii")
+    if len(raw) > 16 or b"\0" in raw: raise ValueError(f"bad ext4 label {new_label!r}")
+    if len(sb_block) < 1024: raise ValueError("superblock block shorter than 1024 bytes")
+    sb = bytearray(sb_block[:1024])
+    if struct.unpack_from("<H", sb, 0x38)[0] != 0xEF53: raise ValueError("not an ext superblock")
+    sb[0x78:0x88] = raw.ljust(16, b"\0")
+    if struct.unpack_from("<I", sb, 0x64)[0] & 0x400:       # ro_compat metadata_csum
+        if sb[0x175] != 1: raise ValueError("s_checksum_type is not crc32c")
+        struct.pack_into("<I", sb, 0x3FC, crc32c_raw(0xFFFFFFFF, bytes(sb[:0x3FC])))
+    return bytes(sb)
+
+
+CLONE_CHUNK = 1 << 20
+CLONE_ZERO = bytes(CLONE_CHUNK)
+
+
+def _pwrite_all(fd, data, off):
+    mv = memoryview(data)
+    while mv:
+        n = os.pwrite(fd, mv, off)
+        if n <= 0: raise OSError("short write")
+        mv = mv[n:]; off += n
+
+
+def _tail(*files):
+    out = b""
+    for f in files:
+        f.seek(0); out += f.read()
+    return out.decode(errors="replace")[-300:]
+
+
+def clone_into_slot(conf, src_stdout, dev, new_label, serr_file):
+    """Write the partclone image in src_stdout (the whole partition from block 0) to DEV, labelled NEW_LABEL. The first MiB is
+    held back: the rest is written first, then the superblock with NEW_LABEL already in it. Until that last write DEV has no
+    superblock, and afterwards it never carries the source's label, so a copy interrupted at any point is never mistaken for
+    the running slot. Raises Fail; the caller marks the slot invalid."""
+    fd = os.open(dev, os.O_RDWR)
+    try:
+        devsize = os.lseek(fd, 0, os.SEEK_END)
+        try:
+            _pwrite_all(fd, CLONE_ZERO, 0)            # the old identity goes first
+            os.fsync(fd)
+        except OSError as e:
+            raise Fail("write-failed", f"cannot clear {dev}: {e}")
+        crashpoint(conf, "repair_after_invalidate")
+        pc = subprocess.Popen(["partclone.restore", "-C", "-s", "-", "-o", "-"], stdin=src_stdout,
+                              stdout=subprocess.PIPE, stderr=serr_file)
+        src_stdout.close()
+        out = pc.stdout
+        head = b""; pos = 0; half = False
+        try:
+            while True:
+                chunk = out.read(CLONE_CHUNK)
+                if not chunk: break
+                if pos + len(chunk) > devsize:
+                    raise Fail("write-failed", f"the image is larger than {dev} ({devsize} bytes)")
+                if pos == 0:
+                    head = chunk
+                elif chunk.count(0) == len(chunk):    # zeros: write only where the target holds something else
+                    try:
+                        if os.pread(fd, len(chunk), pos).count(0) != len(chunk): _pwrite_all(fd, chunk, pos)
+                    except OSError as e:
+                        raise Fail("write-failed", f"write at byte {pos} of {dev}: {e}")
+                else:
+                    try:
+                        _pwrite_all(fd, chunk, pos)
+                    except OSError as e:               # ENOSPC: the partition is smaller than the image
+                        raise Fail("write-failed", f"write at byte {pos} of {dev}: {e}")
+                pos += len(chunk)
+                if not half and pos * 2 >= devsize:
+                    crashpoint(conf, "repair_mid_write"); half = True
+        except BaseException:
+            pc.kill(); pc.wait(); raise
+        out.close()
+        rc = pc.wait()
+        if rc:
+            raise Fail("write-failed", f"partclone restore rc={rc}: {_tail(serr_file)}")
+        if len(head) < CLONE_CHUNK:
+            raise Fail("write-failed", "the image is shorter than 1 MiB")
+        try:
+            os.fsync(fd)
+            crashpoint(conf, "repair_before_head")
+            sb = patch_label(head[1024:2048], new_label)
+            _pwrite_all(fd, head[:1024], 0)           # everything of the head except the superblock
+            _pwrite_all(fd, head[2048:], 2048)
+            os.fsync(fd)
+            _pwrite_all(fd, sb, 1024)                 # last: the superblock with the new label
+            os.fsync(fd)
+        except (OSError, ValueError) as e:
+            raise Fail("write-failed", f"cannot write the superblock of {dev}: {e}")
+        crashpoint(conf, "repair_after_head")
+    finally:
+        os.close(fd)
+
+
 def do_repair(a, conf):
     """Rebuild the OTHER slot as a copy of the one we are running whenever it is not a sound system (damaged, empty after a recovery,
     half-fetched): simple rule, the running slot is by definition good. Does nothing when the other slot is sound."""
@@ -1169,20 +1363,24 @@ def do_repair(a, conf):
             st[new] = {"version": None, "valid": False}
             write_state(conf, "slots.json", st)
             progress(conf, op="repair", phase="write", state="running", percent=10)
-            # partclone copies only the used blocks; label and UUID travel with them and are reset below like in fetch
+            # partclone copies only the used blocks. clone_into_slot writes the superblock last, with the new label: the copy never
+            # carries the source's label, only its UUID, which is replaced below.
             with tempfile.TemporaryFile() as serr_f, tempfile.TemporaryFile() as derr_f:
                 src = subprocess.Popen(["partclone.extfs", "-c", "-F", "-s", cdev, "-o", "-"], stdout=subprocess.PIPE, stderr=serr_f)
-                dst = subprocess.Popen(["partclone.restore", "-C", "-s", "-", "-o", ndev], stdin=src.stdout,
-                                       stdout=subprocess.DEVNULL, stderr=derr_f)
-                src.stdout.close()
-                dst.wait(); src.wait()
-                serr_f.seek(0); derr_f.seek(0)
-                tail = (derr_f.read() + serr_f.read()).decode(errors="replace")[-300:]
-            if src.returncode or dst.returncode:
-                raise Fail("write-failed", f"partclone read rc={src.returncode} write rc={dst.returncode}: {tail}")
+                try:
+                    clone_into_slot(conf, src.stdout, ndev, label(new), derr_f)
+                except Exception as e:
+                    if src.poll() is None: src.kill()
+                    src.wait()
+                    msg = f"{e}; {_tail(serr_f, derr_f)}"
+                    if isinstance(e, Fail): raise Fail(e.code, msg) from None
+                    raise
+                src.wait()
+                if src.returncode:
+                    raise Fail("write-failed", f"partclone read rc={src.returncode}: {_tail(serr_f, derr_f)}")
             progress(conf, op="repair", phase="verify", state="running", percent=80)
-            # The copy carries the source's label AND UUID, and e2fsck/blkid then confuse it with the mounted original (e2fsck can fail with rc 8 on the
-            # duplicate), so the new identity comes FIRST. -f: tune2fs otherwise refuses to change the UUID of a copy of a used filesystem
+            # The copy carries the source's UUID, and e2fsck/blkid then confuse it with the mounted original (e2fsck can fail with rc 8 on the
+            # duplicate), so the new UUID comes FIRST. -f: tune2fs otherwise refuses to change the UUID of a copy of a used filesystem
             # ("requires a freshly checked filesystem"); the real fsck follows right after. It is OUR new copy, so a fsck that fixes it
             # is exactly right (rc 0/1 = clean/fixed, anything else = failed copy).
             run_out("tune2fs", "-f", "-U", "random", "-L", label(new), ndev)

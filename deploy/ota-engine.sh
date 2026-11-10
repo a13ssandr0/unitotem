@@ -26,6 +26,97 @@ pdev_target() {
 
 partnum_of() { printf '%s\n' "${1##*[!0-9]}"; }
 
+# Devices that carry filesystem LABEL, sorted (one per line; none when no match).
+label_devices() {
+    blkid -t "LABEL=$1" -o device 2>/dev/null | LC_ALL=C sort || true
+}
+
+# block_disk DEV: the disk holding partition DEV, from the sysfs symlink target (not the device name). A whole
+# disk (no partition file) is its own disk. OTA_SYS_BLOCK points a test at a fixture.
+block_disk() {
+    local name="${1##*/}" dir="${OTA_SYS_BLOCK:-/sys/class/block}" t
+    if [ -f "$dir/$name/partition" ] && t=$(readlink -f "$dir/$name") && [ -n "$t" ]; then
+        basename "$(dirname "$t")"
+    else
+        printf '%s\n' "$name"
+    fi
+}
+
+# block_partnum DEV: the partition number from sysfs; the trailing digits of the name when sysfs has none.
+block_partnum() {
+    local name="${1##*/}" p=""
+    p=$(cat "${OTA_SYS_BLOCK:-/sys/class/block}/$name/partition" 2>/dev/null) || p=$(partnum_of "$name")
+    case "$p" in ''|*[!0-9]*) p=0 ;; esac
+    printf '%s\n' "$p"
+}
+
+# slot_pick LABEL: the device that carries LABEL. Two or more matches on one disk: ROOT_A is the lowest partition
+# number, ROOT_B the highest, any other label the first sorted. Matches on several disks: the first sorted.
+slot_pick() {
+    local label="$1" dev disk0 best="" bestn=0 n same=1
+    local -a devs=()
+    mapfile -t devs < <(label_devices "$label")
+    case "${#devs[@]}" in
+        0) return 1 ;;
+        1) printf '%s\n' "${devs[0]}"; return 0 ;;
+    esac
+    disk0=$(block_disk "${devs[0]}")
+    for dev in "${devs[@]}"; do
+        [ "$(block_disk "$dev")" = "$disk0" ] || same=0
+    done
+    if [ "$same" = 0 ]; then
+        printf '%s\n' "${devs[0]}"
+        return 0
+    fi
+    for dev in "${devs[@]}"; do
+        n=$(block_partnum "$dev")
+        if [ -z "$best" ]; then
+            best=$dev; bestn=$n
+        elif [ "$label" = ROOT_A ] && [ "$n" -lt "$bestn" ]; then
+            best=$dev; bestn=$n
+        elif [ "$label" = ROOT_B ] && [ "$n" -gt "$bestn" ]; then
+            best=$dev; bestn=$n
+        fi
+    done
+    printf '%s\n' "$best"
+}
+
+# dev_mounted DEV: DEV is a mount source in /proc/mounts (OTA_PROC_MOUNTS points a test at a fixture).
+dev_mounted() {
+    awk -v d="$1" '$1 == d { found = 1 } END { exit !found }' "${OTA_PROC_MOUNTS:-/proc/mounts}" 2>/dev/null
+}
+
+# heal_dup_label LABEL PICKED: a repair interrupted by a reboot leaves a second filesystem with LABEL (a partclone
+# copy of the slot). Every other LABEL device on PICKED's disk is relabelled ROOT_STALE (label only, no UUID or data
+# change), except a mounted one. Devices on other disks are not touched.
+heal_dup_label() {
+    local label="$1" picked="$2" dev disk
+    disk=$(block_disk "$picked")
+    while IFS= read -r dev; do
+        [ -n "$dev" ] || continue
+        [ "$dev" = "$picked" ] && continue
+        [ "$(block_disk "$dev")" = "$disk" ] || continue
+        if dev_mounted "$dev"; then
+            warn "duplicate label $label on $dev is mounted: left as it is"
+            continue
+        fi
+        if e2label "$dev" ROOT_STALE; then
+            warn "duplicate label $label on $dev (same disk as $picked): relabelled ROOT_STALE"
+        else
+            warn "duplicate label $label on $dev: relabel to ROOT_STALE failed"
+        fi
+    done < <(label_devices "$label")
+}
+
+# pin_root_dev DEV: write ROOT= for the initramfs (sourced from /conf/param.conf after init-premount), so the
+# mountroot step uses this device and not a label lookup. Only /dev paths of plain characters are accepted.
+pin_root_dev() {
+    local dev="$1" conf="${OTA_CONF_PARAM:-/conf/param.conf}"
+    case "$dev" in /dev/*) ;; *) warn "root device $dev is not a /dev path: not pinned"; return 1 ;; esac
+    case "$dev" in *[!A-Za-z0-9/._-]*) warn "root device $dev has unexpected characters: not pinned"; return 1 ;; esac
+    printf "ROOT='%s'\n" "$dev" >> "$conf" || { warn "could not pin ROOT=$dev in $conf"; return 1; }
+}
+
 # Mount a boot-fs device for writing, tolerating it already being mounted read-only elsewhere (on the resident
 # fallback /boot-ota stays mounted ro for the whole session). A plain `mount -t vfat` silently comes up
 # read-only when the same block device is already mounted ro, so the existing mount is remounted rw and
@@ -1808,7 +1899,7 @@ ab_failover() {
     case "$cur" in a) other=b ;; b) other=a ;; *) return 1 ;; esac
     mountpoint -q /boot-ota || return 1
     [ ! -e "$guard" ] || { warn "failover already done once without a successful boot: not switching again"; return 1; }
-    case "$other" in a) odev=$(blkid -L ROOT_A 2>/dev/null) ;; b) odev=$(blkid -L ROOT_B 2>/dev/null) ;; esac
+    case "$other" in a) odev=$(slot_pick ROOT_A 2>/dev/null || true) ;; b) odev=$(slot_pick ROOT_B 2>/dev/null || true) ;; esac
     [ -n "$odev" ] || return 1
     check_root_readonly "$odev" || return 1
     mkdir -p /tmp/ota-failover-root
@@ -1867,17 +1958,25 @@ cmd_init_premount() {
     local root_label root_dev tries=0
     root_label=$(cmdline_get root 2>/dev/null || true)
     case "$root_label" in LABEL=*) root_label=${root_label#LABEL=} ;; *) root_label=ROOT ;; esac
-    root_dev=$(blkid -L "$root_label" 2>/dev/null || true)
+    root_dev=$(slot_pick "$root_label" 2>/dev/null || true)
     while [ -z "$root_dev" ] && [ "$tries" -lt 5 ]; do
         udevadm settle --timeout=2 2>/dev/null || true
         sleep 1
-        root_dev=$(blkid -L "$root_label" 2>/dev/null || true)
+        root_dev=$(slot_pick "$root_label" 2>/dev/null || true)
         tries=$((tries + 1))
     done
     if [ -z "$root_dev" ]; then
         ab_failover && return
         cmd_serve_fallback --reason "partition $root_label not found" --kind recovery --idle-timeout 21600
         return
+    fi
+    # Two filesystems with the label (a repair interrupted by a reboot): the picked one is mounted by device, and the
+    # other is relabelled, so later label lookups find one filesystem only.
+    local -a labelled=()
+    mapfile -t labelled < <(label_devices "$root_label")
+    if [ "${#labelled[@]}" -gt 1 ]; then
+        heal_dup_label "$root_label" "$root_dev"
+        pin_root_dev "$root_dev" || true
     fi
     if ! check_root_readonly "$root_dev"; then
         ab_failover && return

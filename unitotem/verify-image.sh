@@ -298,6 +298,8 @@ chk "unitotem-boot-orientation is installed (boot screen orientation: Pi cmdline
 chk "unitotem-update has the policy/auto/reboot commands" bash -c "grep -q 'def cmd_auto' '$R/usr/sbin/unitotem-update' && grep -q 'def cmd_policy' '$R/usr/sbin/unitotem-update'"
 chk "unitotem-update installed" test -x "$R/usr/sbin/unitotem-update"
 chk "unitotem-update can rebuild a damaged slot from the running one (repair + failover bookkeeping)" bash -c "grep -q 'def do_repair' $R/usr/sbin/unitotem-update && grep -q 'def note_failover' $R/usr/sbin/unitotem-update"
+chk "the slot copy never exposes a foreign label (clone_into_slot writes the superblock last; slot_dev resolves duplicate labels by partition position)" bash -c "grep -q 'def clone_into_slot' '$R/usr/sbin/unitotem-update' && grep -q 'def patch_label' '$R/usr/sbin/unitotem-update' && grep -q 'def _neighbour' '$R/usr/sbin/unitotem-update'"
+chk "the initramfs engine picks the slot by partition position among duplicate labels and relabels the stale copy (slot_pick, heal_dup_label, pin_root_dev)" bash -c "grep -q '^slot_pick()' '$R/usr/lib/unitotem/ota-engine.sh' && grep -q '^heal_dup_label()' '$R/usr/lib/unitotem/ota-engine.sh' && grep -q '^pin_root_dev()' '$R/usr/lib/unitotem/ota-engine.sh'"
 chk "partclone.extfs (source of the slot copy) is installed" bash -c "test -x '$R/usr/sbin/partclone.extfs' || test -x '$R/usr/bin/partclone.extfs'"
 chk "update root key installed" test -s "$R/usr/share/unitotem/update-keys/root.pub"
 chk "release-version present" test -s "$R/usr/share/unitotem/release-version"

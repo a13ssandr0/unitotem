@@ -34,7 +34,7 @@ ab_failover()      { FAILOVER_CALLS=$((FAILOVER_CALLS + 1)); return 1; }
 cmd_serve_fallback() { SERVE_CALLS+=("$*"); return 0; }
 # blkid -L LABEL: ROOT exists only when TEST_HAVE_ROOT=1; DATA, FIRMWARE and EFI never exist.
 blkid() {
-    if [ "${TEST_HAVE_ROOT:-0}" = 1 ] && [ "${2:-}" = ROOT ]; then echo /dev/fixture-root; return 0; fi
+    if [ "${TEST_HAVE_ROOT:-0}" = 1 ] && { [ "${2:-}" = ROOT ] || [ "${2:-}" = LABEL=ROOT ]; }; then echo /dev/fixture-root; return 0; fi
     return 2
 }
 # Same contract as the engine's cmdline_get, read from $TEST_CMDLINE.
