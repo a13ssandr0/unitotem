@@ -1,7 +1,7 @@
 # UniTotem installer bootstrap, served by tools/win-install-server.py and run with: irm http://HOST:PORT | iex
 # It runs in memory; no script file is written. First an inventory only; nothing changes until the host approves.
 $ErrorActionPreference = 'Stop'
-$UniTotemRemote = @{ Remote = $true; Server = '@SERVER@'; PayloadSha256 = '@SHA256@'; PayloadBytes = [long]@BYTES@; PollSeconds = @POLL@; TimeoutMinutes = @TIMEOUT@ }
+$UniTotemRemote = @{ Remote = $true; Server = '@SERVER@'; PayloadSha256 = '@SHA256@'; PayloadBytes = [long]@BYTES@; PollSeconds = @POLL@; Undo = @UNDO@; TimeoutMinutes = @TIMEOUT@ }
 $UniTotemEngine = @'
 @ENGINE@
 '@

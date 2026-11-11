@@ -17,7 +17,7 @@ if [ -z "$IMAGE" ]; then
     IMAGE=$(ls -1 "$DIR"/work/flash-images/unitotem-*-amd64-flash.img.xz | sort | tail -n 1)
 fi
 [ -f "$IMAGE" ] || { echo "image not found: $IMAGE" >&2; exit 1; }
-for t in xz sfdisk mcopy zip sha256sum docker; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }; done
+for t in xz sfdisk mcopy zip sha256sum curl; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }; done
 
 SRC="$DIR/tools/windows-installer"
 WORK=$(mktemp -d "$DIR/work/winins.XXXXXX")
@@ -56,24 +56,21 @@ for f in shimx64.efi mmx64.efi grubx64.efi; do mcopy -n -i "$M" "::EFI/unitotem-
 rm -f -- "$WORK/esp.img" "$WORK/head.img"
 [ -z "$INITRD" ] || cp -- "$INITRD" "$STAGE/payload/initrd.img"
 
-# Legacy BIOS loader: lnxboot.img + core.img (modules built in, two-line embedded config), loaded by bootmgr.
-cat > "$WORK/embedded.cfg" <<'CFG'
-search --no-floppy --file --set=root /unitotem/recovery-vmlinuz
-configfile /unitotem/grub.cfg
-CFG
-docker run --rm -v "$WORK:/w" debian:bookworm bash -c '
-    set -e
-    apt-get update -qq >/dev/null && apt-get install -y -qq grub-pc-bin grub-common >/dev/null
-    grub-mkimage -O i386-pc -o /w/core.img -c /w/embedded.cfg -p /unitotem \
-        biosdisk part_msdos part_gpt ntfs fat ext2 linux normal search search_fs_file echo configfile boot
-    cat /usr/lib/grub/i386-pc/lnxboot.img /w/core.img > /w/g2.img
-    dpkg -s grub-pc-bin | sed -n "s/^Version: /grub-pc-bin /p" > /w/grub-version.txt'
-cp -- "$WORK/g2.img" "$STAGE/payload/g2.img"
+# Legacy BIOS boot method: GRUB4DOS (GPL-2.0), pinned by the SHA-256 of the official release archive.
+G4D_URL=https://github.com/chenall/grub4dos/releases/download/2020-08-09-0da21fe/grub4dos-0.4.6a-2020-08-09.7z
+G4D_SHA256=73fd88d7eb231bf0321f6159e0f40e7d4dd18529d8b6f6dde2a0f1b2555c571f
+command -v 7z >/dev/null || { echo "missing tool: 7z (p7zip-full)" >&2; exit 1; }
+curl -fsSL --retry 3 -o "$WORK/grub4dos.7z" -- "$G4D_URL"
+GOT=$(sha256sum -- "$WORK/grub4dos.7z" | cut -d' ' -f1)
+[ "$GOT" = "$G4D_SHA256" ] || { echo "grub4dos archive hash mismatch: $GOT" >&2; exit 1; }
+7z x -y -o"$WORK/g4d" "$WORK/grub4dos.7z" >/dev/null
+for f in grldr grldr.mbr COPYING; do cp -- "$WORK/g4d/grub4dos-0.4.6a/$f" "$STAGE/payload/$f"; done
+mv -- "$STAGE/payload/COPYING" "$STAGE/payload/COPYING-grub4dos"
 
-cp -- "$SRC/Install-UniTotem.ps1" "$SRC/grub.cfg.template" "$SRC/grub-bios.cfg.template" "$STAGE/payload/" 
+cp -- "$SRC/Install-UniTotem.ps1" "$SRC/grub.cfg.template" "$SRC/menu.lst.template" "$STAGE/payload/"
 mv -- "$STAGE/payload/Install-UniTotem.ps1" "$STAGE/Install-UniTotem.ps1"
 cp -- "$SRC/README.txt" "$STAGE/README.txt"
-( cd "$STAGE/payload" && sha256sum vmlinuz initrd.img shimx64.efi mmx64.efi grubx64.efi g2.img grub.cfg.template grub-bios.cfg.template > SHA256SUMS )
+( cd "$STAGE/payload" && sha256sum vmlinuz initrd.img shimx64.efi mmx64.efi grubx64.efi grldr grldr.mbr COPYING-grub4dos grub.cfg.template menu.lst.template > SHA256SUMS )
 # No SSH public key line may ship in the text files of the payload (exceptions: none).
 if grep -rIlE -e '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+) +[A-Za-z0-9+/=]{40,}' -- "$STAGE"; then
     echo "build refused: an SSH public key line is in the payload (files above)" >&2; exit 1
