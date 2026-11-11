@@ -641,6 +641,73 @@ Describe 'GRUB4DOS boot entry, files and undo' {
         @(Find-OtaBcdEntries) | Should -Be @('{0a1b2c3d-1111-2222-3333-444455556666}')
     }
     It 'plan and facts name the boot method' {
-        ((Build-Plan @{ Undo = $false; Mode = 'bios'; Where = 'cdrive'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null }) -join "`n") | Should -Match 'boot-method=grub4dos loader=grldr.mbr,grldr,menu.lst'
+        ((Build-Plan @{ Undo = $false; Mode = 'bios'; Where = 'cdrive'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null }) -join "`n") | Should -Match 'loader=grldr.mbr,grldr,menu.lst'
+    }
+}
+
+Describe 'Consistent output: numbers, labels, no repeated facts' {
+    BeforeAll {
+        function global:Get-CimInstance { param($ClassName, $Filter, $Namespace) }
+        function global:Get-CimAssociatedInstance { param($InputObject, $ResultClassName) }
+    }
+    BeforeEach {
+        Mock Start-Sleep { }
+        $script:LogFile = Join-Path ([IO.Path]::GetTempPath()) ('unitotem-test-log-' + [guid]::NewGuid() + '.txt')
+        $script:Opt.Remote = $false
+        $script:Opt.PayloadBytes = 241MB
+        $script:con = New-Object System.Collections.Generic.List[string]
+        Mock Write-Host { $script:con.Add([string]$Object) }
+        $script:oldCulture = [Threading.Thread]::CurrentThread.CurrentCulture
+    }
+    AfterEach {
+        [Threading.Thread]::CurrentThread.CurrentCulture = $script:oldCulture
+        Remove-Item -LiteralPath $script:LogFile -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'numbers use a decimal point under it-IT' {
+        [Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo('it-IT')
+        Format-Invariant 232.94 | Should -Be '232.9'
+        Format-Invariant 237901 '0' | Should -Be '237901'
+        Mock Get-PartitionsSafe { @([pscustomobject]@{ PartitionNumber = 2; Offset = 1; Size = 237901MB; Type = 'Installable File System'; DriveLetter = '' }) }
+        Mock Get-CimLetterMap { @{} }
+        Show-Disk ([pscustomobject]@{ Number = 0; FriendlyName = 'Samsung SSD 860 EVO 250GB'; Size = 232.94GB; PartitionStyle = 'GPT'; SerialNumber = 'S4' })
+        ($script:con -join "`n") | Should -Match 'size=232\.9GB'
+        ($script:con -join "`n") | Should -Not -Match 'size=232,9'
+        ($script:con -join "`n") | Should -Match 'type=NTFS/exFAT \(IFS\) \(Installable File System\)'
+    }
+    It 'partition type labels are the host server labels' {
+        Get-TypeLabel 'MBR 0x07 active' | Should -Be 'NTFS/exFAT (IFS) (0x07), active'
+        Get-TypeLabel 'MBR 0x27' | Should -Be 'Recovery (0x27)'
+        Get-TypeLabel 'IFS' | Should -Be 'NTFS/exFAT (IFS) (IFS)'
+        Get-TypeLabel 'Unknown' | Should -Be 'Unknown (Unknown)'
+        Get-TypeLabel 'Weird' | Should -Be 'Weird'
+    }
+    It 'the active-partition fact uses the system volume value, never "unknown", when it has no letter' {
+        Mock Get-BootMode { 'safe' }
+        Mock Get-CimLetterMap { @{} }
+        Mock Get-PartitionsSafe { @([pscustomobject]@{ PartitionNumber = 1; Offset = 1048576; Size = 50MB; IsActive = $true; DriveLetter = '' }) }
+        Mock Get-CimInstance { [pscustomobject]@{ FileSystem = 'NTFS'; FreeSpace = 19MB } }
+        Mock Get-LetterVolume { @{ FileSystem = 'NTFS'; SizeRemaining = 100GB; Size = 200GB; Label = '' } }
+        Mock Get-BitLockerStatus { $null }
+        Mock Find-OtaPartition { @() }
+        $h = Get-PlanHint 'bios' @{ Disk = [pscustomobject]@{ Number = 0 }; Letter = 'C' } 'safe'
+        $h.facts | Should -Contain 'active letter=- fs=NTFS free=19MB'
+        ($h.facts -join "`n") | Should -Not -Match 'unknown'
+        $h.plan.where | Should -Be 'cdrive'
+        $h.plan.method | Should -Be 'grub4dos'
+        @($h.facts | Where-Object { $_ -like 'boot-method=*' }).Count | Should -Be 1
+        @($h.facts | Where-Object { $_ -like 'destination selected:*' }).Count | Should -Be 1
+    }
+    It 'the plan after the approval does not repeat the inventory facts' {
+        foreach ($m in 'bios', 'uefi') {
+            foreach ($l in (Build-Plan @{ Undo = $false; Mode = $m; Where = 'cdrive'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null })) {
+                $l | Should -Not -Match 'boot-method|destination selected|secure_boot'
+            }
+        }
+    }
+    It 'the remote flow says "approved" only once (the host already printed it) and skips the disk dump' {
+        $src = Get-Content (Join-Path $PSScriptRoot 'Install-UniTotem.ps1') -Raw
+        $src | Should -Not -Match "Say 'approved'"
+        $src | Should -Match '(?s)if \(-not \$Script:Opt\.Remote\) \{\s+Say .secure_boot=na firmware=bios.'
     }
 }

@@ -213,7 +213,7 @@ function Build-Plan {
         $p.Add('files_mb=' + $need + ' place=new_partition')
     }
     if ($Ctx.Mode -eq 'bios') {
-        $p.Add('boot-method=grub4dos loader=' + $Script:BiosLoaderMbr + ',' + $Script:BiosLoader + ',' + $Script:BiosMenu)
+        $p.Add('loader=' + $Script:BiosLoaderMbr + ',' + $Script:BiosLoader + ',' + $Script:BiosMenu)
     } else {
         $p.Add('chain=' + ($Script:ChainFiles -join ',') + ' folder=' + $Script:EspDir)
     }
@@ -539,13 +539,42 @@ function Get-SupportedSize {
     return (Get-PartitionSupportedSize -DiskNumber $Sd.Disk.Number -PartitionNumber $Sd.Part.PartitionNumber)
 }
 
+# Partition type labels, the same table as the host server.
+function Get-TypeLabel {
+    param([string]$Raw)
+    $m = [regex]::Match($Raw, '\AMBR 0x([0-9A-F]{2})( active)?\z')
+    if ($m.Success) {
+        $code = [Convert]::ToInt32($m.Groups[1].Value, 16)
+        $names = @{ 0x05 = 'Extended'; 0x07 = 'NTFS/exFAT (IFS)'; 0x0B = 'FAT32'; 0x0C = 'FAT32 LBA'; 0x0E = 'FAT16 LBA'; 0x0F = 'Extended LBA'; 0x27 = 'Recovery'; 0x82 = 'Linux swap'; 0x83 = 'Linux'; 0xEE = 'GPT protective'; 0xEF = 'EFI System' }
+        $n = 'MBR type'
+        if ($names.ContainsKey($code)) { $n = $names[$code] }
+        $act = ''
+        if ($m.Groups[2].Success) { $act = ', active' }
+        return ($n + ' (0x' + $m.Groups[1].Value + ')' + $act)
+    }
+    $t = @{ 'IFS' = 'NTFS/exFAT (IFS)'; 'Installable File System' = 'NTFS/exFAT (IFS)'; 'Basic' = 'Basic data'; 'System' = 'EFI System'; 'Reserved' = 'Microsoft reserved'; 'Recovery' = 'Recovery'; 'Unknown' = 'Unknown' }
+    if ($t.ContainsKey($Raw)) { return ($t[$Raw] + ' (' + $Raw + ')') }
+    return $Raw
+}
+
+# Numbers are always written with the invariant culture (a decimal point), whatever the Windows language.
+function Format-Invariant {
+    param([double]$Value, [string]$Format = '0.#')
+    return $Value.ToString($Format, [Globalization.CultureInfo]::InvariantCulture)
+}
+
 function Show-Disk {
     param($Disk)
-    Say ('disk={0} model={1} size={2}GB style={3} serial={4}' -f $Disk.Number, $Disk.FriendlyName.Trim(), [math]::Round($Disk.Size / 1GB, 1), $Disk.PartitionStyle, ("" + $Disk.SerialNumber).Trim())
+    Say ('disk=' + $Disk.Number + ' model=' + $Disk.FriendlyName.Trim() + ' size=' + (Format-Invariant ($Disk.Size / 1GB)) + 'GB style=' + $Disk.PartitionStyle + ' serial=' + ("" + $Disk.SerialNumber).Trim())
+    $mbr = @()
+    if ([string]$Disk.PartitionStyle -eq 'MBR') { $mbr = @(Get-MbrEntries ([int]$Disk.Number)) }
+    $map = Get-CimLetterMap
     foreach ($p in (Get-PartitionsSafe $Disk.Number | Sort-Object PartitionNumber)) {
-        $l = ''
-        if ($p.DriveLetter) { $l = [string]$p.DriveLetter + ':' }
-        Say ('disk={0} partition={1} letter={2} size={3}MB type={4}' -f $Disk.Number, $p.PartitionNumber, $(if ($l) { $l } else { '-' }), [math]::Round($p.Size / 1MB), $p.Type)
+        $l = Get-PartLetter ([int]$Disk.Number) $p $map
+        $type = [string]$p.Type
+        $e = @($mbr | Where-Object { $_.Offset -eq [long]$p.Offset }) | Select-Object -First 1
+        if ($e) { $type = ('MBR 0x{0:X2}' -f $e.Type); if ($e.Active) { $type += ' active' } }
+        Say ('disk=' + $Disk.Number + ' partition=' + $p.PartitionNumber + ' letter=' + $(if ($l) { $l } else { '-' }) + ' size=' + (Format-Invariant ($p.Size / 1MB) '0') + 'MB type=' + (Get-TypeLabel $type))
     }
 }
 
@@ -796,10 +825,12 @@ function Invoke-Install {
     }
     $ctx = @{ Undo = $false; Mode = 'uefi'; Where = $where; NeededBytes = ($kiBytes + $chainBytes); PartBytes = $partBytes; Token = $token }
 
-    Say ('secure_boot=' + (Get-SecureBootState))
-    Say ('esp free_mb=' + [math]::Round($free / 1MB))
-    Show-Disk $sd.Disk
-    Say ('disk=' + $sd.Disk.Number + ' action=erase_on_install') 'WARNING'
+    if (-not $Script:Opt.Remote) {
+        Say ('secure_boot=' + (Get-SecureBootState))
+        Say ('esp free_mb=' + [math]::Round($free / 1MB))
+        Show-Disk $sd.Disk
+        Say ('disk=' + $sd.Disk.Number + ' action=erase_on_install') 'WARNING'
+    }
     Show-Plan $ctx
     Confirm-Erase $sd.Disk
     if ($Script:Opt.WhatIf) { Say 'dry run changes=none'; Write-Status 'dry-run' 0 'plan printed'; return }
@@ -908,10 +939,12 @@ function Invoke-InstallBios {
         if (-not (Test-ShrinkFeasible $sd.Part.Size $sup.SizeMin $partBytes)) { Stop-Script 'C: cannot shrink enough; free disk space first' $Script:Exit.Unsupported }
     }
     $ctx = @{ Undo = $false; Mode = 'bios'; Where = $where; NeededBytes = $kiBytes; PartBytes = $partBytes; Token = $token }
-    Say 'secure_boot=na firmware=bios'
-    Say ('destination selected: ' + $where + ' reason=' + $choice.Reason)
-    Show-Disk $sd.Disk
-    Say ('disk=' + $sd.Disk.Number + ' action=erase_on_install') 'WARNING'
+    if (-not $Script:Opt.Remote) {
+        Say 'secure_boot=na firmware=bios'
+        Say ('destination selected: ' + $where + ' reason=' + $choice.Reason)
+        Show-Disk $sd.Disk
+        Say ('disk=' + $sd.Disk.Number + ' action=erase_on_install') 'WARNING'
+    }
     Show-Plan $ctx
     Confirm-Erase $sd.Disk
     if ($Script:Opt.WhatIf) { Say 'dry run changes=none'; Write-Status 'dry-run' 0 'plan printed'; return }
@@ -947,7 +980,6 @@ function Invoke-InstallBios {
         Set-Step 'create the boot entry'
         $guid = New-BcdBootsector $imgLetter
         Save-State @{ Mode = 'bios'; Guid = $guid; DiskNumber = $sd.Disk.Number; SystemLetter = $imgLetter; KernelLetter = $kletter; Where = $where; BootMethod = 'grub4dos'; Files = $files }
-        Say ('boot-method=grub4dos loader=' + $Script:BiosLoaderMbr + ' device=' + $imgLetter + ': guid=' + $guid)
     } finally {
         if ($assigned) { try { Remove-PartitionAccessPath -DiskNumber $sd.Disk.Number -PartitionNumber $ap.PartitionNumber -AccessPath ($imgLetter + ':') } catch { Write-Log ('letter: ' + $_.Exception.Message) } }
     }
@@ -1084,7 +1116,15 @@ function Get-PlanHint {
         }
         $cv = Get-LetterVolume $Sd.Letter
         $enc = Test-NeedsDecrypt (Get-BitLockerStatus $Sd.Letter)
-        $facts.Add('active letter=' + $(if ($al) { $al } else { '-' }) + ' fs=' + $(if ($afs) { $afs } else { '-' }) + ' free=' + $(if ($al) { [string][math]::Floor($afree / 1MB) + 'MB' } else { 'unknown' }))
+        if (-not $al) {
+            # No letter (System Reserved): the system volume through Win32_Volume, the same value as boot_free.
+            $sv = @(Get-CimInstance -ClassName Win32_Volume -Filter 'SystemVolume=TRUE') | Select-Object -First 1
+            if ($sv) { $afs = [string]$sv.FileSystem; $afree = [long]$sv.FreeSpace }
+        }
+        $line = 'active letter=' + $(if ($al) { $al } else { '-' })
+        if ($afs) { $line += ' fs=' + $afs }
+        if ($afs -or $al) { $line += ' free=' + [string][math]::Floor($afree / 1MB) + 'MB' }
+        $facts.Add($line)
         $facts.Add($Sd.Letter + ': fs=' + $(if ($cv) { $cv.FileSystem } else { '-' }) + ' bitlocker=' + $(if ($enc) { 'on' } else { 'off' }) + ' free=' + $(if ($cv) { [string][math]::Floor($cv.SizeRemaining / 1MB) + 'MB' } else { 'unknown' }))
         $f = @{ ActiveLetter = $al; ActiveFs = $afs; ActiveFree = $afree; CFs = $(if ($cv) { $cv.FileSystem } else { '' }); CFree = $(if ($cv) { $cv.SizeRemaining } else { 0L }); CEncrypted = $enc; BootMode = $BootMode; PartCount = $parts.Count; HasOta = (@(Find-OtaPartition $Sd.Disk.Number).Count -gt 0) }
         $r = Select-BiosWhere $f $kiEstimate
@@ -1347,7 +1387,6 @@ function Invoke-Remote {
     $serial = (("" + $sd.Disk.SerialNumber).Trim())
     if ([string]$ap.machine -cne $Script:Opt.MachineId -or [int]$ap.disk -ne [int]$sd.Disk.Number -or [string]$ap.serial -cne (Get-Printable $serial 40)) { Stop-Script 'approval mismatch machine/disk/serial' $Script:Exit.NotConfirmed }
     $word = Get-ConfirmWord $env:COMPUTERNAME $sd.Disk.Number $serial
-    Say 'approved'
     Set-Step 'download the payload'
     $pd = Get-RemotePayload
     Set-Step 'fetch the OTA key'
