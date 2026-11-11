@@ -1,0 +1,95 @@
+#!/bin/bash
+# Entry point of the installer initramfs (init-premount, replaces the recovery initrd's `zz-unitotem-ota`): network,
+# ssh in open mode, and the console screen: address for remote install and the menu. Never returns.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export TERMINFO=/lib/terminfo
+. /usr/lib/unitotem/ota-engine.sh      # configure_networking_ota, ota_logo, ota_frame (the OTA recovery screen)
+set +eEu +o pipefail; trap - ERR
+STATE=/run/unitotem-installer.state
+mkdir -p /run/systemd /run/dropbear /root /etc
+[ -d /dev/pts ] || mkdir -p /dev/pts
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts       # ssh sessions with a terminal
+echo "3 4 1 3" > /proc/sys/kernel/printk 2>/dev/null
+echo unitotem-installer > /proc/sys/kernel/hostname 2>/dev/null
+
+# console: unitotem.installer.tty=ttyN|ttySN|ttyAMAN, default tty1
+tty=tty1
+for w in $(cat /proc/cmdline); do
+    case $w in unitotem.installer.tty=*) v=${w#*=}; [[ $v =~ ^(tty[0-9]{1,2}|ttyS[0-9]{1,2}|ttyAMA[0-9]{1,2})$ ]] && tty=$v ;; esac
+done
+for ((i = 0; i < 10; i++)); do [ -c "/dev/$tty" ] && break; sleep 1; done
+case $tty in ttyS*|ttyAMA*) TERM=vt220 ;; *) TERM=linux ;; esac
+export TERM
+
+if [ "${1:-}" != ui ]; then
+# root without password (installation media), login shell greeting
+printf 'root:x:0:0:root:/root:/bin/bash\n' > /etc/passwd
+printf 'root::19000:0:99999:7:::\n' > /etc/shadow; chmod 600 /etc/shadow
+printf '/bin/sh\n/bin/bash\n' > /etc/shells
+cat > /etc/profile <<'PROFILE'
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export TERMINFO=/lib/terminfo
+PS1='# '
+printf 'UniTotem installer\nTo install UniTotem run: install\n'
+PROFILE
+
+# network in the background, ssh from the start (it listens on every interface as soon as one has an address)
+(
+    for ((n = 0; n < 60; n++)); do
+        [ -n "$(configure_networking_ota 2>/dev/null)" ] && break
+        sleep 5
+    done
+) < /dev/null > /dev/null 2>&1 &
+unitotem-ssh start && echo "INFO ssh listening port=22" >> /run/unitotem-installer.log
+fi
+
+# addresses, one per line
+ip_list() { ip -4 -o addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }'; }
+snapshot() { echo "$(ip_list | tr '\n' ' ')|$(cat "$STATE" 2>/dev/null)"; }
+
+# the screen: the OTA recovery look (logo, rounded frame), 72x14 dialog
+draw_frame() { [ "$tty" = tty1 ] && ( sleep 1; ota_logo; ota_frame ) < /dev/null > /dev/null 2>&1 & }
+
+screen() {
+    local snap text ip n=0 choice wpid watcher
+    snap=$(snapshot)
+    text=''
+    for ip in $(ip_list); do
+        n=$((n + 1)); [ "$n" -le 2 ] && text="${text}Remote install: ssh root@$ip\n"
+    done
+    [ "$n" = 0 ] && text="Remote install: waiting for network\n"
+    printf '\033[2J\033[H'
+    if [ "$(cat "$STATE" 2>/dev/null)" = remote ]; then
+        whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' --infobox "$text\nInstallation in progress (remote)" 14 72 < /dev/tty
+        draw_frame
+        while [ "$(snapshot)" = "$snap" ]; do sleep 1; done
+        return
+    fi
+    : > /run/unitotem-installer.choice
+    whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' --nocancel --notags \
+        --menu "$(printf "$text")" 14 72 3 install "Install UniTotem" restart "Restart" off "Power off" \
+        2> /run/unitotem-installer.choice < /dev/tty &
+    wpid=$!
+    ( while kill -0 "$wpid" 2>/dev/null; do
+          sleep 1
+          [ "$(snapshot)" = "$snap" ] || { kill "$wpid" 2>/dev/null; break; }
+      done ) < /dev/null > /dev/null 2>&1 &
+    watcher=$!
+    draw_frame
+    wait "$wpid"
+    kill "$watcher" 2>/dev/null
+    choice=$(cat /run/unitotem-installer.choice)
+    stty sane 2>/dev/null
+    printf '\033[2J\033[H'
+    case $choice in
+        install) install --console ;;
+        restart) sync; reboot -f ;;
+        off)     sync; poweroff -f ;;
+    esac
+}
+
+# one session on the console: a controlling terminal for whiptail, the screen loop inside
+if [ "${1:-}" = ui ]; then
+    while :; do screen; done
+fi
+exec setsid -w -c bash "$0" ui < "/dev/$tty" > "/dev/$tty" 2>&1

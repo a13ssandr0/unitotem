@@ -1,0 +1,46 @@
+#!/bin/bash
+# unitotem-ssh start|stop: dropbear of the installer initramfs in open mode (root, empty password), port 22.
+# stop ends the listener and every open session (their shells included). Inspired by the open mode of the OTA fallback
+# (deploy/ota-engine.sh, fallback_auth_setup).
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+PIDF=/run/dropbear.pid
+KEY=/run/dropbear_ed25519_host_key
+
+# descendants PID: the pids below PID, deepest first
+descendants() {
+    local -A kids=()
+    local f st pid ppid p
+    for f in /proc/[0-9]*/stat; do
+        st=$(cat "$f" 2>/dev/null) || continue
+        pid=${f#/proc/}; pid=${pid%/stat}
+        st=${st##*) }; set -- $st; ppid=$2
+        kids[$ppid]="${kids[$ppid]:-} $pid"
+    done
+    walk() { local c; for c in ${kids[$1]:-}; do walk "$c"; echo "$c"; done; }
+    walk "$1"
+}
+
+case ${1:-} in
+    start)
+        mkdir -p /run/dropbear
+        [ -s "$KEY" ] || dropbearkey -t ed25519 -f "$KEY" > /dev/null 2>&1 || exit 1
+        dropbear -E -p 22 -r "$KEY" -T 3 -j -k -B -P "$PIDF" 2>> /run/installer-dropbear.log
+        ;;
+    stop)
+        [ -s "$PIDF" ] || exit 0
+        main=$(cat "$PIDF")
+        pids=()
+        for f in /proc/[0-9]*/comm; do
+            [ "$(cat "$f" 2>/dev/null)" = dropbear ] || continue
+            p=${f#/proc/}; p=${p%/comm}; pids+=("$p")
+        done
+        all=()
+        for p in "${pids[@]}"; do all+=($(descendants "$p")); done
+        kill -TERM "$main" 2>/dev/null          # the listener first: nothing new connects
+        kill -TERM "${all[@]}" "${pids[@]}" 2>/dev/null
+        kill -KILL "${all[@]}" "${pids[@]}" 2>/dev/null
+        rm -f "$PIDF"
+        exit 0
+        ;;
+    *) echo "usage: unitotem-ssh start|stop" >&2; exit 2 ;;
+esac
