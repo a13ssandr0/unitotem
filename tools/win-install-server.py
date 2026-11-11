@@ -36,7 +36,7 @@ ENGINE_ENTRY = ZIP_DIR + 'Install-UniTotem.ps1'
 SUMS_ENTRY = ZIP_DIR + 'payload/SHA256SUMS'
 
 PLACEHOLDERS = ('SERVER', 'SHA256', 'BYTES', 'TIMEOUT', 'POLL', 'ENGINE')
-PLACEHOLDER_RE = re.compile(r'@(SERVER|SHA256|BYTES|TIMEOUT|POLL|ENGINE)@')
+PLACEHOLDER_RE = re.compile(r'@(SERVER|SHA256|BYTES|TIMEOUT|POLL|UNDO|ENGINE)@')
 MACHINE_RE = re.compile(r'[A-Za-z0-9-]{8,64}')
 REASON_RE = re.compile(r'[a-z0-9_=,.:-]{1,80}')
 HOST_RE = re.compile(r'[A-Za-z0-9-]{1,15}')
@@ -203,9 +203,10 @@ def parse_inventory(data):
     model = _str(data['model'], 120, None, 'model')
     cpu = _str(data['cpu'], 120, None, 'cpu')
     ram = _str(data['ram'], 120, None, 'ram')
-    _obj(data['plan'], ('where', 'reason'), 'plan')
+    _obj(data['plan'], ('where', 'reason', 'method'), 'plan')
     plan = {'where': _enum(data['plan']['where'], ('boot', 'cdrive', 'new', 'none'), 'plan where'),
-            'reason': _str(data['plan']['reason'], 80, REASON_RE, 'plan reason')}
+            'reason': _str(data['plan']['reason'], 80, REASON_RE, 'plan reason'),
+            'method': _enum(data['plan']['method'], ('grub4dos', 'shim-grub'), 'plan method')}
     facts = [_str(x, 200, None, 'fact') for x in _list(data['facts'], 16, 'facts')]
     services = []
     for item in _list(data['services'], 16, 'services'):
@@ -303,7 +304,7 @@ def render_block(rec):
             free = '' if p['free_mb'] is None else ' free=%dMB' % p['free_mb']
             lines.append('    part %d: letter=%s size=%.0fMB%s type=%s' % (
                 p['number'], clean(p['letter'] or '-', 1), p['size_mb'], free, type_label(p['type'])))
-    lines.append('plan:         destination=' + clean(rec['plan']['where']) + ' reason=' + clean(rec['plan']['reason'], 80))
+    lines.append('plan:         destination=' + clean(rec['plan']['where']) + ' reason=' + clean(rec['plan']['reason'], 80) + ' boot-method=' + clean(rec['plan']['method'], 20))
     return '\n'.join('  ' + line for line in lines)
 
 
@@ -633,8 +634,9 @@ class Context:
     def close(self):
         self.stop.set()
 
-    def render_bootstrap(self, server_url):
+    def render_bootstrap(self, server_url, undo=False):
         values = {
+            'UNDO': '$true' if undo else '$false',
             'SERVER': server_url,
             'SHA256': self.sha,
             'BYTES': str(self.size),
@@ -988,9 +990,9 @@ class Context:
             target = self._tty_loop if self.term.interactive else self._stdin_loop
             threading.Thread(target=target, args=(stdin_stream,), daemon=True).start()
 
-    def render_bootstrap_for(self, ip, port):
+    def render_bootstrap_for(self, ip, port, undo=False):
         host = '[' + ip + ']' if ':' in ip else ip
-        return self.render_bootstrap('http://' + host + ':' + str(port))
+        return self.render_bootstrap('http://' + host + ':' + str(port), undo)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1028,6 +1030,8 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path == '/':
             self.send_bootstrap()
+        elif url.path == '/undo':
+            self.send_bootstrap(undo=True)
         elif url.path == '/payload.zip':
             self.send_payload()
         elif url.path == '/approval':
@@ -1085,11 +1089,13 @@ class Handler(BaseHTTPRequestHandler):
             self.fail(400, 'invalid json')
             return None
 
-    def send_bootstrap(self):
+    def send_bootstrap(self, undo=False):
         ip = self.connection.getsockname()[0]
-        body = self.ctx.render_bootstrap_for(ip, self.server.server_port).encode('utf-8')
+        body = self.ctx.render_bootstrap_for(ip, self.server.server_port, undo).encode('utf-8')
         client = self.client_address[0]
-        if self.ctx.first_fetch(client):
+        if undo:
+            self.ctx.emit('undo bootstrap served client=%s' % clean(client, 45))
+        elif self.ctx.first_fetch(client):
             self.ctx.emit('bootstrap served client=%s' % clean(client, 45))
         self.send_body(200, body, 'text/plain; charset=utf-8')
 
@@ -1295,6 +1301,8 @@ def main(argv=None):
         print('irm http://%s:%d|iex' % (a, args.port))
     if not addrs:
         print('no IPv4 address found: use --advertise IP')
+    else:
+        print('To undo: irm http://%s:%d/undo|iex' % (addrs[0], args.port))
 
     try:
         server = make_server(args.bind, args.port, ctx)

@@ -14,6 +14,7 @@ is in `unitotem-manager/debian/copyright`.
 | Raspberry Pi archive keyring | Public key copied | `stage0/files/raspberrypi.gpg` | Public key | Raspberry Pi (Trading) Ltd. | https://archive.raspberrypi.com/ |
 | Debian and Raspberry Pi OS packages | Installed into the images (not copied into the repository) | `unitotem/stage1-packages.sh`, `unitotem/locks/` | Per package, see below | Per package | https://www.debian.org/ , https://archive.raspberrypi.com/ |
 | Debian debconf choice lists | Choice lists copied into comments | `stage2/01-sys-tweaks/00-debconf` | GPL-2+ (package data) | Debian debconf authors | https://www.debian.org/ |
+| GRUB4DOS 0.4.6a (2020-08-09, `grldr`, `grldr.mbr`) | Binaries downloaded at build time, shipped in the Windows installer zip with its license text (`COPYING-grub4dos`); legacy-BIOS boot entry created from Windows | `tools/build-windows-installer.sh` (URL and SHA-256 pinned) | GPL-2.0 | GRUB4DOS developers (Tinybit, Bean, chenall and others) | https://github.com/chenall/grub4dos |
 
 Not stored, only linked in `README.md`: DonateButtons (GPL-3.0, https://github.com/aha999/DonateButtons) and the
 Buy Me a Coffee / PayPal images (brand assets of their owners).

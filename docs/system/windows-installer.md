@@ -45,7 +45,7 @@ WinRE (the recovery command prompt) has no PowerShell, no `curl` and normally no
 | Path | Role |
 |---|---|
 | `tools/windows-installer/Install-UniTotem.ps1` | The installer (PowerShell 5.1, ASCII only, no modules) |
-| `tools/windows-installer/grub.cfg.template`, `grub-bios.cfg.template` | GRUB configuration written at install time (`@AUTHKEY@`, `@DIR@`) |
+| `tools/windows-installer/grub.cfg.template`, `menu.lst.template` | UEFI GRUB configuration and BIOS GRUB4DOS menu written at install time (`@AUTHKEY@`, `@DIR@`) |
 | `tools/windows-installer/Install-UniTotem.Tests.ps1` | Pester tests of the pure functions and of a mocked dry run |
 | `tools/windows-installer/bootstrap.ps1.tmpl` | Bootstrap served by the server (the installer is embedded in it) |
 | `tools/win-install-server.py`, `tools/release/test_win_install_server.py` | Host server and its tests |
@@ -66,7 +66,7 @@ Other values are shown unchanged.
 
 Both build scripts (`build-windows-installer.sh`, `build-installer-iso.sh`) fail when a text file of the payload holds an SSH public key line (`ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp* <base64>`; no exceptions).
 
-Zip content: `Install-UniTotem.ps1`, `README.txt`, `payload/` (`vmlinuz`, `initrd.img`, `shimx64.efi`, `mmx64.efi`, `grubx64.efi` taken from the image's ESP `unitotem/recovery-*` and `EFI/unitotem-sb/`; `g2.img`; the templates; `SHA256SUMS`). The script verifies every payload file against `payload/SHA256SUMS` before use and again after copying.
+Zip content: `Install-UniTotem.ps1`, `README.txt`, `payload/` (`vmlinuz`, `initrd.img`, `shimx64.efi`, `mmx64.efi`, `grubx64.efi` taken from the image's ESP `unitotem/recovery-*` and `EFI/unitotem-sb/`; `grldr`, `grldr.mbr`, `COPYING-grub4dos`; the templates; `SHA256SUMS`). The script verifies every payload file against `payload/SHA256SUMS` before use and again after copying.
 
 ## Prerequisites
 
@@ -99,21 +99,24 @@ Signed chain to `S:\EFI\unitotem\` (`shimx64.efi`, `mmx64.efi`, `grubx64.efi`, `
 
 ### Legacy BIOS
 
-`bootmgr` cannot load a Linux kernel, but it can load a boot-sector image. Method (source: help-grub thread "Format option for chainloading GRUB from BOOTMGR", 2013): `grub-mkimage -O i386-pc` core image with the needed modules built in, `cat lnxboot.img core.img > g2.img`, registered as a BCD `bootsector` application:
+Boot method `grub4dos` (GRUB4DOS 0.4.6a, build 2020-08-09, GPL-2.0, https://github.com/chenall/grub4dos; archive pinned by SHA-256 in `tools/build-windows-installer.sh`, the build fails on a mismatch; license text in the zip as `payload/COPYING-grub4dos`; listed in `THIRD-PARTY.md`). `bootmgr` cannot load a Linux kernel; it can load a boot-sector file, and `grldr.mbr` is the GRUB4DOS file made for that. BCD entry:
 
 ```
 bcdedit /create /d "UniTotem OTA" /application bootsector   :: -> {id}
 bcdedit /set {id} device partition=<boot partition letter>:
-bcdedit /set {id} path \unitotem-g2.img
+bcdedit /set {id} path \grldr.mbr
 bcdedit /displayorder {id} /addlast
 bcdedit /bootsequence {id}
 ```
 
-`g2.img` is the file `unitotem-g2.img` on the partition named in the BCD entry; its embedded configuration searches `/unitotem/recovery-vmlinuz` on any partition and runs `/unitotem/grub.cfg` (written by the script, carries the key token). No Secure Boot. GRUB reads NTFS and FAT32. Destination, in order: (1) the active partition (System Reserved) when it has a drive letter and room; (2) `C:` when it is NTFS, not BitLocker-encrypted and has room: files in `C:\unitotem\`, loader `C:\unitotem-g2.img`, BCD `device partition=C:`, no Storage module involved (works in Safe Mode where `vds`/`StorSvc`/`smphost` are stopped); (3) a new FAT32 partition from a shrunk `C:`, only in normal mode and with a free primary slot. If none applies the inventory says why (`cannot install reason=...`, `ERROR`) and the host is not asked. The Windows boot sector and MBR are not modified. Undo removes the BCD entry, `unitotem\` and `unitotem-g2.img`.
+Files at the root of that partition: `grldr.mbr` (boot sector), `grldr` (second stage found in the root), `menu.lst` (`default 0`, `timeout 0`, `title UniTotem OTA`, `find --set-root /unitotem/vmlinuz`, `kernel /unitotem/vmlinuz ... unitotem.ota=1 ... [unitotem.ota.authkey=<token>]`, `initrd /unitotem/initrd.img`, `boot`). Kernel and initrd: `<partition>\unitotem\`. A file with one of these names that already exists and differs is never overwritten (`file exists and is not ours`, exit 4). GRUB4DOS reads NTFS and FAT32; no Secure Boot. Destination, in order: (1) the active partition (System Reserved) when it has a drive letter and room; (2) `C:` when it is NTFS, not BitLocker-encrypted and has room, with no Storage module involved (works in Safe Mode where `vds`/`StorSvc`/`smphost` are stopped); (3) a new FAT32 partition from a shrunk `C:`, only in normal mode and with a free primary slot. If none applies the inventory says why (`cannot install reason=...`, `ERROR`) and the host is not asked. The Windows boot sector and MBR are not modified. The inventory reports `boot-method=grub4dos`.
 
-Measured on a Windows 10 Pro laptop (legacy BIOS, MBR, Samsung SSD 860 EVO 250 GB, System Reserved 50 MB active, `C:` 232 GB NTFS, BitLocker off, Safe Mode with networking): the 50 MB System Reserved cannot hold the 240 MB payload, the Storage services were stopped, so the plan is destination (2).
+Proof (emulated, not on Windows; QEMU/SeaBIOS with TCG): disk with a bootmgr stand-in (446 bytes, reads the whole `grldr.mbr` to 0000:7C00 and jumps), an NTFS partition (`mkntfs -p 2048 -H 255 -S 63`) holding `grldr`, `menu.lst`, the 14.3 MB kernel and the 225.6 MB initrd. Result: `Command line: nomodeset loglevel=7 unitotem.ota=1 console=tty0 console=ttyS0,115200 unitotem.ota.authkey=QUJD`, `Freeing initrd memory: 220352K`, `Run /init as init process`, `Begin: Running /scripts/init-premount`. With only the first 512 bytes of `grldr.mbr` loaded the boot stops at `Missing helper.`: the whole 8 KB file must be loaded, as the canonical recipe assumes. Whether the real `bootmgr` loads the whole file is not proven here. The alternative of GRUB4DOS loading GRUB 2 (`kernel /unitotem/lnxboot.img`, `initrd /unitotem/core.img`) was not needed and not tested.
 
-Proof (emulated, not on Windows): a Debian `grub-mkimage` core image with a two-line embedded configuration (`search --file /unitotem/recovery-vmlinuz`, `configfile /unitotem/grub.cfg`) prefixed with `lnxboot.img` (2.06-13+deb12u2: 1 KiB + 147 KB), placed in raw sectors and started by a 446-byte test loader that copies the whole file to `0000:7C00` and jumps (emulating the behaviour reported in the thread), booted the recovery kernel and initrd from an NTFS partition in QEMU (TCG): `Command line: BOOT_IMAGE=/unitotem/recovery-vmlinuz ... unitotem.ota=1 ... unitotem.ota.authkey=QUJD`, initrd unpacked, `Run /init`. Whether bootmgr loads the image like the test loader is not proven; the OTA splash was not observed on the serial console.
+## Lessons
+
+- 2026-11-10, Windows 10 Pro, legacy BIOS, MBR, `C:` NTFS: the first BIOS build registered `lnxboot.img` + `core.img` (147 KB, GRUB 2) as the BCD boot-sector file `\unitotem-g2.img`. At the restart the Windows Boot Manager showed error 0xc000007b (STATUS_INVALID_IMAGE_FORMAT): it read the file and did not accept it. Cause: a BCD `bootsector` entry needs a real boot sector that loads its second stage from the file system by itself; `lnxboot.img` is a stub made to be loaded as a "kernel" by GRUB Legacy/NTLDR-style loaders. The QEMU proof of that build used a stand-in loader of ours, which did not behave like `bootmgr`. Fix: the GRUB4DOS recipe above (`\grldr.mbr`); `-Undo` / `/undo` removes the broken entry and its files.
+
 
 ## After the restart
 
@@ -144,7 +147,12 @@ Not unattended: firmware that ignores `BootNext` (Windows starts again), a firmw
 
 ## Undo
 
-`Install-UniTotem.ps1 -Undo` (before the host starts the install): removes the BCD entry and one-shot value, the ESP folder or the `unitotem` folder and `unitotem-g2.img`, the `UNITOTEMOTA` partition, and extends `C:` again. After the install has started there is no way back.
+Before the host starts the install, from the PC that ran the installer: `irm http://<host-ip>:8000/undo|iex` (the server prints `To undo: irm http://<ip>:8000/undo|iex` at start; the local script has `-Undo`). The bootstrap in undo mode needs no inventory and no approval; it elevates itself like the install and logs every step.
+- BCD: the entry from the state file (`%ProgramData%\UniTotem-install\Install-UniTotem.state.json`) and every entry whose block in `bcdedit /enum all` contains the description `UniTotem OTA` (the GUID is read by pattern, no localized label is compared) is taken out of the display order, the one-shot value is deleted, then the entry is deleted. `default` is never changed by the install, so nothing else needs restoring.
+- Files (BIOS): only the files recorded in the state with their SHA-256 (`grldr.mbr`, `grldr`, `menu.lst`, `unitotem\vmlinuz`, `unitotem\initrd.img`); a file whose hash changed is kept and logged (`kept path=... reason=not_ours_hash_differs`), and so is any other file; the `unitotem` folder goes when empty. State of an earlier version (loader image `unitotem-g2.img`) removes that file and its folder. Without a state file only the BCD entries are removed (`files kept reason=no_state`).
+- UEFI: the ESP folder `EFI\unitotem`, the `UNITOTEMOTA` partition, and `C:` is extended again.
+
+After the install has started there is no way back.
 
 ## Tests
 

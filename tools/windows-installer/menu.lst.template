@@ -1,0 +1,7 @@
+default 0
+timeout 0
+title UniTotem OTA
+find --set-root /unitotem/vmlinuz
+kernel /unitotem/vmlinuz nomodeset quiet loglevel=3 fbcon=font:TER16x32 unitotem.ota=1 console=tty0 console=ttyS0,115200@AUTHKEY@
+initrd /unitotem/initrd.img
+boot

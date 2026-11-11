@@ -31,7 +31,7 @@ _spec.loader.exec_module(srv)
 ZIP_DIR = 'unitotem-windows-installer/'
 ENGINE = "# fake engine\nWrite-Output 'Install-UniTotem fake'\n"
 TEST_TEMPLATE = (
-    'server=@SERVER@ sha=@SHA256@ bytes=@BYTES@ timeout=@TIMEOUT@ poll=@POLL@\n'
+    'server=@SERVER@ sha=@SHA256@ bytes=@BYTES@ timeout=@TIMEOUT@ poll=@POLL@ undo=@UNDO@\n'
     '@ENGINE@'
 )
 KEY_LINE = 'ssh-ed25519 ' + 'A' * 68 + ' test@example'
@@ -77,7 +77,7 @@ def inventory(machine='MACHINE-AAAA', hostname='DESKTOP-ABC', serial='S4EVNX0N12
         'model': 'LENOVO 20XW',
         'cpu': 'Intel(R) Core(TM) i5, 4 cores, 8 threads',
         'ram': '16.0 GB, 2 modules',
-        'plan': {'where': 'boot', 'reason': 'active_partition_has_room'},
+        'plan': {'where': 'boot', 'reason': 'active_partition_has_room', 'method': 'shim-grub'},
         'facts': [],
         'services': [{'name': 'vds', 'status': 'Stopped'}],
         'disks': [{
@@ -185,6 +185,20 @@ class ServerCase(unittest.TestCase):
                 return True
             time.sleep(0.05)
         return False
+
+
+class UndoRouteTests(ServerCase):
+    def test_undo_route_serves_the_bootstrap_in_undo_mode(self):
+        status, _, body = self.req('GET', '/undo')
+        self.assertEqual(status, 200)
+        self.assertIn(b'undo=$true', body)
+        status, _, body = self.req('GET', '/')
+        self.assertIn(b'undo=$false', body)
+        self.assertTrue(any('undo bootstrap served client=127.0.0.1' in l for l in self.lines))
+
+    def test_real_template_has_the_undo_placeholder_and_header_prints_the_undo_line(self):
+        with open(REAL_TEMPLATE, encoding='utf-8') as f:
+            self.assertIn('Undo = @UNDO@', f.read())
 
 
 class BootstrapTests(ServerCase):
@@ -400,7 +414,7 @@ class ApprovalTests(ServerCase):
         self.assertIn('no such PC', self.output())
         self.ctx.release()
         inv = inventory(machine='MACHINE-CCCC', hostname='NOPE')
-        inv['plan'] = {'where': 'none', 'reason': 'storage_stopped'}
+        inv['plan'] = {'where': 'none', 'reason': 'storage_stopped', 'method': 'grub4dos'}
         self.post_json('/inventory', inv)
         self.ctx.approve_direct('MACHINE-CCCC', 'file')
         self.assertIn('cannot approve reason=storage_stopped', self.output())
@@ -494,12 +508,12 @@ class PlanTests(ServerCase):
         inv = inventory()
         inv['firmware'] = 'bios'
         inv['secureboot'] = 'na'
-        inv['plan'] = {'where': 'cdrive', 'reason': 'c_ntfs_not_encrypted'}
+        inv['plan'] = {'where': 'cdrive', 'reason': 'c_ntfs_not_encrypted', 'method': 'grub4dos'}
         inv['facts'] = ['C: fs=NTFS bitlocker=off free=100MB', 'boot_mode=safe']
         self.post_json('/inventory', inv)
         out = self.output()
         for text in ('  model:        LENOVO 20XW', '  cpu:          Intel', '  ram:          16.0 GB, 2 modules',
-                     '  secure_boot:  n/a', '  plan:         destination=cdrive reason=c_ntfs_not_encrypted',
+                     '  secure_boot:  n/a', '  plan:         destination=cdrive reason=c_ntfs_not_encrypted boot-method=grub4dos',
                      'C: fs=NTFS bitlocker=off free=100MB', 'boot_mode=safe', 'free=60MB'):
             self.assertIn(text, out)
 
@@ -517,7 +531,7 @@ class PlanTests(ServerCase):
 
     def test_plan_none_asks_nothing(self):
         inv = inventory()
-        inv['plan'] = {'where': 'none', 'reason': 'storage_stopped'}
+        inv['plan'] = {'where': 'none', 'reason': 'storage_stopped', 'method': 'grub4dos'}
         self.post_json('/inventory', inv)
         self.assertIn('cannot install reason=storage_stopped', self.output())
         self.assertNotIn('(y/n)', self.output())
@@ -526,7 +540,7 @@ class PlanTests(ServerCase):
 
     def test_bad_plan_rejected(self):
         inv = inventory()
-        inv['plan'] = {'where': 'elsewhere', 'reason': 'x'}
+        inv['plan'] = {'where': 'elsewhere', 'reason': 'x', 'method': 'grub4dos'}
         self.assertEqual(self.post_json('/inventory', inv)[0], 400)
 
     def test_mbr_type_labels(self):
@@ -912,7 +926,7 @@ class SingleClientTests(ServerCase):
     def test_no_pc_is_active_after_a_none_plan(self):
         self.ctx.release()
         inv = self.other()
-        inv['plan'] = {'where': 'none', 'reason': 'storage_stopped'}
+        inv['plan'] = {'where': 'none', 'reason': 'storage_stopped', 'method': 'grub4dos'}
         self.assertEqual(self.post_json('/inventory', inv)[0], 200)
         self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
 
@@ -1048,7 +1062,8 @@ class CliTests(unittest.TestCase):
         self.assertIn('irm http://127.0.0.1:', out)
         self.assertNotIn('-NoProfile', out)
         self.assertTrue(out.startswith('On the Windows machine press Win+R, type powershell, press Enter, type one of the following commands and press Enter\nirm http://127.0.0.1:'))
-        self.assertEqual(out.count('irm http://'), 1)
+        self.assertEqual(out.count('irm http://'), 2)  # the command and the undo line
+        self.assertRegex(out, r'To undo: irm http://127\.0\.0\.1:\d+/undo\|iex\n')
         for text in ('sha256', 'payload', 'OTA key', 'OTA_FALLBACK_KEY', 'key file'):
             self.assertNotIn(text, out)
         self.assertNotIn('\x1b', out)  # no colour without a terminal

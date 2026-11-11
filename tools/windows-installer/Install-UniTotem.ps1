@@ -44,7 +44,10 @@ $Script:Label = 'UNITOTEMOTA'
 $Script:EntryName = 'UniTotem OTA'
 $Script:EspDir = 'EFI\unitotem'
 $Script:BiosDir = 'unitotem'
-$Script:BiosImage = 'unitotem-g2.img'
+$Script:BiosLoaderMbr = 'grldr.mbr'
+$Script:BiosLoader = 'grldr'
+$Script:BiosMenu = 'menu.lst'
+$Script:LegacyImage = 'unitotem-g2.img'
 $Script:ChainFiles = @('shimx64.efi', 'mmx64.efi', 'grubx64.efi')
 $Script:MinPartBytes = 256MB
 $Script:HeadroomBytes = 64MB
@@ -191,7 +194,7 @@ function Build-Plan {
     if ($Ctx.Undo) {
         $p.Add('remove boot_entry="' + $Script:EntryName + '"')
         if ($Ctx.Mode -eq 'bios') {
-            $p.Add('remove folder=' + $Script:BiosDir + ' file=' + $Script:BiosImage)
+            $p.Add('remove folder=' + $Script:BiosDir + ' files=' + $Script:BiosLoaderMbr + ',' + $Script:BiosLoader + ',' + $Script:BiosMenu + ' only_ours=yes')
         } else {
             $p.Add('remove folder=' + $Script:EspDir)
         }
@@ -210,7 +213,7 @@ function Build-Plan {
         $p.Add('files_mb=' + $need + ' place=new_partition')
     }
     if ($Ctx.Mode -eq 'bios') {
-        $p.Add('loader=' + $Script:BiosImage)
+        $p.Add('boot-method=grub4dos loader=' + $Script:BiosLoaderMbr + ',' + $Script:BiosLoader + ',' + $Script:BiosMenu)
     } else {
         $p.Add('chain=' + ($Script:ChainFiles -join ',') + ' folder=' + $Script:EspDir)
     }
@@ -372,7 +375,7 @@ function Get-Payload {
     param([string]$Dir, [string]$Mode)
     $sums = Read-Sums (Get-Content -LiteralPath (Join-Path $Dir 'SHA256SUMS'))
     $need = @('vmlinuz', 'initrd.img')
-    if ($Mode -eq 'bios') { $need += @('g2.img', 'grub-bios.cfg.template') } else { $need += @('grub.cfg.template') + $Script:ChainFiles }
+    if ($Mode -eq 'bios') { $need += @('grldr', 'grldr.mbr', 'menu.lst.template') } else { $need += @('grub.cfg.template') + $Script:ChainFiles }
     foreach ($n in $need) {
         if (-not $sums.ContainsKey($n)) { throw ('missing in SHA256SUMS: ' + $n) }
         $f = Join-Path $Dir $n
@@ -584,6 +587,12 @@ function Get-TokenFromFile {
     return (ConvertTo-AuthKeyToken $key)
 }
 
+function Get-BytesHash {
+    param([byte[]]$Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return (($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) -join '') } finally { $sha.Dispose() }
+}
+
 function Test-HashOf {
     param([string]$File, [string]$Expected)
     $h = (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -657,53 +666,102 @@ function Confirm-Erase {
     if (-not (Read-Word ('Type ' + $w + ' to confirm that disk ' + $Disk.Number + ' will be erased') $w)) { Stop-Script 'not confirmed' 0 }
 }
 
+# Boot entries named like ours in the BCD, found without reading localized labels: blocks of `bcdedit /enum all`
+# that hold the description, each with its first {GUID}.
+function Find-OtaBcdEntries {
+    $found = @()
+    try {
+        $text = (Invoke-Native 'bcdedit.exe' @('/enum', 'all')) -join "`n"
+        foreach ($blk in ($text -split '(?:\r?\n){2,}')) {
+            if ($blk.Contains($Script:EntryName)) {
+                $m = [regex]::Match($blk, $Script:Re.Guid)
+                if ($m.Success -and $found -notcontains $m.Value) { $found += $m.Value }
+            }
+        }
+    } catch { Write-Log ('bcd scan: ' + $_.Exception.Message) }
+    return $found
+}
+
+$Script:UndoPath = '[A-Z]:\\(grldr\.mbr|grldr|menu\.lst|unitotem\\(vmlinuz|initrd\.img))'
+
+# Removes the files recorded in the state when they still have the recorded hash; others are kept and logged. The
+# unitotem folder goes when it is empty.
+function Remove-OurFiles {
+    param($Files, [string]$PathPattern = $Script:UndoPath)
+    foreach ($f in @($Files)) {
+        $path = [string]$f.Path
+        if (-not (Test-FullMatch $path $PathPattern)) { Say ('kept path=' + $path + ' reason=unexpected_name') 'WARNING'; continue }
+        if (-not (Test-Path -LiteralPath $path)) { Say ('file path=' + $path + ' state=absent'); continue }
+        $h = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($h -ceq [string]$f.Sha256) { Remove-Item -LiteralPath $path -Force; Say ('removed path=' + $path) } else { Say ('kept path=' + $path + ' reason=not_ours_hash_differs') 'WARNING' }
+    }
+    foreach ($d in @($Files | ForEach-Object { Split-Path -Parent ([string]$_.Path) } | Sort-Object -Unique)) {
+        if ((Split-Path -Leaf $d) -ceq $Script:BiosDir -and (Test-Path -LiteralPath $d) -and @(Get-ChildItem -LiteralPath $d -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $d -Force
+            Say ('removed path=' + $d)
+        }
+    }
+}
+
 function Invoke-Undo {
-    if (-not (Test-Path -LiteralPath $Script:StateFile)) { Stop-Script 'nothing to undo (no state file)' 0 }
-    $st = Get-Content -LiteralPath $Script:StateFile -Raw | ConvertFrom-Json
-    if (-not (Test-FullMatch ([string]$st.Guid) $Script:Re.Guid)) { Stop-Script 'state file invalid' }
-    if (-not (Test-FullMatch ([string]$st.DiskNumber) $Script:Re.Number)) { Stop-Script 'state file invalid' }
-    $mode = 'uefi'
-    if ([string]$st.Mode -ceq 'bios') { $mode = 'bios' }
+    $st = $null
+    if (Test-Path -LiteralPath $Script:StateFile) {
+        $st = Get-Content -LiteralPath $Script:StateFile -Raw | ConvertFrom-Json
+        if (-not (Test-FullMatch ([string]$st.Guid) $Script:Re.Guid) -or -not (Test-FullMatch ([string]$st.DiskNumber) $Script:Re.Number)) { Stop-Script 'state file invalid' }
+        Say ('state found mode=' + [string]$st.Mode + ' guid=' + [string]$st.Guid)
+    } else {
+        Say 'state not found' 'WARNING'
+    }
+    $guids = @()
+    if ($null -ne $st) { $guids += [string]$st.Guid }
+    foreach ($g in (Find-OtaBcdEntries)) { if ($guids -notcontains $g) { $guids += $g; Say ('bcd entry found by description guid=' + $g) } }
+    if ($guids.Count -eq 0) { Stop-Script 'nothing to undo no_state=1 no_bcd_entry=1 changes=none' 0 }
+    $mode = 'bios'
+    if ($null -ne $st -and [string]$st.Mode -ceq 'uefi') { $mode = 'uefi' }
     Show-Plan @{ Undo = $true; Mode = $mode }
     if ($Script:Opt.WhatIf) { Say 'dry run changes=none'; Write-Status 'dry-run' 0 'plan printed'; return }
     if (-not $Script:Opt.Unattended -and -not (Read-Word 'Type UNDO to continue' 'UNDO')) { Stop-Script 'not confirmed' 0 }
-    $g = [string]$st.Guid
-    if ($mode -eq 'bios') {
-        $steps = @(@('/displayorder', $g, '/remove'), @('/deletevalue', '{bootmgr}', 'bootsequence'), @('/delete', $g, '/f'))
-    } else {
-        $steps = @(@('/set', '{fwbootmgr}', 'displayorder', $g, '/remove'), @('/deletevalue', '{fwbootmgr}', 'bootsequence'), @('/delete', $g, '/f'))
-    }
-    foreach ($a in $steps) {
-        try { Invoke-Native 'bcdedit.exe' $a | Out-Null } catch { Write-Log ('undo step: ' + $_.Exception.Message) }
-    }
-    # Boot files: ESP folder (UEFI) or the boot partition folder and loader (BIOS).
-    $letter = Get-FreeLetter (Get-UsedLetters)
-    $sysLetter = [string]$st.SystemLetter
-    if ($mode -eq 'bios') {
-        if (-not (Test-FullMatch $sysLetter $Script:Re.Letter)) { Stop-Script 'state file invalid' }
-        foreach ($kl in @($sysLetter, [string]$st.KernelLetter)) {
-            if (-not (Test-FullMatch $kl $Script:Re.Letter)) { continue }
-            $dir = $kl + ':\' + $Script:BiosDir
-            if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+    foreach ($g in $guids) {
+        # Entry out of the display order and the one-shot value, then the entry itself (BIOS and firmware forms).
+        foreach ($a in @(@('/displayorder', $g, '/remove'), @('/deletevalue', '{bootmgr}', 'bootsequence'), @('/set', '{fwbootmgr}', 'displayorder', $g, '/remove'), @('/deletevalue', '{fwbootmgr}', 'bootsequence'), @('/delete', $g, '/f'))) {
+            try { Invoke-Native 'bcdedit.exe' $a | Out-Null } catch { Write-Log ('undo step: ' + $_.Exception.Message) }
         }
-        $img = $sysLetter + ':\' + $Script:BiosImage
-        if (Test-Path -LiteralPath $img) { Remove-Item -LiteralPath $img -Force }
+        Say ('bcd entry removed guid=' + $g)
+    }
+    if ($null -eq $st) {
+        Say 'files kept reason=no_state' 'WARNING'
+    } elseif ([string]$st.Mode -ceq 'bios') {
+        if ($st.PSObject.Properties['Files']) {
+            Remove-OurFiles $st.Files
+        } else {
+            # State of an earlier version: the loader image and the folder it created.
+            foreach ($kl in @([string]$st.SystemLetter, [string]$st.KernelLetter)) {
+                if (-not (Test-FullMatch $kl $Script:Re.Letter)) { continue }
+                $img = $kl + ':\' + $Script:LegacyImage
+                if (Test-Path -LiteralPath $img) { Remove-Item -LiteralPath $img -Force; Say ('removed path=' + $img) }
+                $dir = $kl + ':\' + $Script:BiosDir
+                if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force; Say ('removed path=' + $dir) }
+            }
+        }
     } else {
+        $letter = Get-FreeLetter (Get-UsedLetters)
         Mount-Esp $letter
         try {
             $dir = $letter + ':\' + $Script:EspDir
-            if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+            if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force; Say ('removed path=' + $Script:EspDir) }
         } finally { Dismount-Esp $letter }
     }
-    $removed = $false
-    foreach ($p in (Find-OtaPartition ([int]$st.DiskNumber))) { Remove-Partition -InputObject $p -Confirm:$false; $removed = $true }
-    if ($removed) {
-        try {
-            $usd = Get-SystemDisk
-            Resize-Partition -DiskNumber $usd.Disk.Number -PartitionNumber $usd.Part.PartitionNumber -Size (Get-SupportedSize $usd).SizeMax
-        } catch { Say 'extend_c failed' 'WARNING' }
+    if ($null -ne $st) {
+        $removed = $false
+        try { foreach ($p in (Find-OtaPartition ([int]$st.DiskNumber))) { Remove-Partition -InputObject $p -Confirm:$false; $removed = $true; Say 'partition removed label=UNITOTEMOTA' } } catch { Say 'partition removal failed' 'WARNING' }
+        if ($removed) {
+            try {
+                $usd = Get-SystemDisk
+                Resize-Partition -DiskNumber $usd.Disk.Number -PartitionNumber $usd.Part.PartitionNumber -Size (Get-SupportedSize $usd).SizeMax
+            } catch { Say 'extend_c failed' 'WARNING' }
+        }
+        Remove-Item -LiteralPath $Script:StateFile -Force
     }
-    Remove-Item -LiteralPath $Script:StateFile -Force
     Say 'undone'
     Write-Status 'undone' 0 'boot entry and files removed'
 }
@@ -775,6 +833,45 @@ function Invoke-Install {
     Show-Result $guid $token
 }
 
+# GRUB4DOS files: grldr.mbr, grldr and menu.lst at the root of the boot partition, kernel and initrd in the unitotem
+# folder. Refuses to overwrite a file that is not ours; verifies every copy; returns the recorded files for Undo.
+function Install-GrubFourDosFiles {
+    param([string]$PayloadDir, $Sums, [string]$Root, [string]$KernelDir, [string]$MenuText)
+    $menuBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($MenuText)
+    $menuHash = Get-BytesHash $menuBytes
+    $targets = @(
+        @{ Path = (Join-Path $Root $Script:BiosLoaderMbr); Src = (Join-Path $PayloadDir 'grldr.mbr'); Hash = $Sums['grldr.mbr'] },
+        @{ Path = (Join-Path $Root $Script:BiosLoader); Src = (Join-Path $PayloadDir 'grldr'); Hash = $Sums['grldr'] },
+        @{ Path = (Join-Path $Root $Script:BiosMenu); Src = $null; Hash = $menuHash },
+        @{ Path = (Join-Path $KernelDir 'vmlinuz'); Src = (Join-Path $PayloadDir 'vmlinuz'); Hash = $Sums['vmlinuz'] },
+        @{ Path = (Join-Path $KernelDir 'initrd.img'); Src = (Join-Path $PayloadDir 'initrd.img'); Hash = $Sums['initrd.img'] })
+    foreach ($t in $targets) {
+        if ((Test-Path -LiteralPath $t.Path) -and (Get-FileHash -LiteralPath $t.Path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $t.Hash) {
+            Stop-Script ('file exists and is not ours path=' + $t.Path + ' changes=none') $Script:Exit.Unsupported
+        }
+    }
+    New-Item -ItemType Directory -Path $KernelDir -Force | Out-Null
+    foreach ($t in $targets) {
+        if ($t.Src) { Copy-Item -LiteralPath $t.Src -Destination $t.Path -Force } else { [IO.File]::WriteAllBytes($t.Path, $menuBytes) }
+    }
+    $files = @()
+    foreach ($t in $targets) { Test-HashOf $t.Path $t.Hash; $files += @{ Path = $t.Path; Sha256 = $t.Hash } }
+    return $files
+}
+
+# BCD boot-sector entry for grldr.mbr (the GRUB4DOS recipe); returns the entry id. Boots once on the next restart.
+function New-BcdBootsector {
+    param([string]$Letter)
+    $o = Invoke-Native 'bcdedit.exe' @('/create', '/d', $Script:EntryName, '/application', 'bootsector')
+    $guid = Get-BcdGuid $o
+    if ($null -eq $guid) { throw 'bcdedit returned no entry id' }
+    Invoke-Native 'bcdedit.exe' @('/set', $guid, 'device', ('partition=' + $Letter + ':')) | Out-Null
+    Invoke-Native 'bcdedit.exe' @('/set', $guid, 'path', ('\' + $Script:BiosLoaderMbr)) | Out-Null
+    Invoke-Native 'bcdedit.exe' @('/displayorder', $guid, '/addlast') | Out-Null
+    Invoke-Native 'bcdedit.exe' @('/bootsequence', $guid) | Out-Null
+    return $guid
+}
+
 # Legacy BIOS: the Windows boot manager starts GRUB 2 (lnxboot.img + core.img) as a boot-sector entry; GRUB reads
 # kernel and initrd from NTFS or FAT32. They go on the active (boot) partition when they fit, else on C: (NTFS, not
 # encrypted: only file copies and bcdedit, no Storage module), else on a new FAT32 partition.
@@ -844,25 +941,13 @@ function Invoke-InstallBios {
         }
         $Script:Status.Partition = ($kletter + ':')
         $dir = $kletter + ':\' + $Script:BiosDir
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $PayloadDir 'vmlinuz') -Destination (Join-Path $dir 'recovery-vmlinuz') -Force
-        Copy-Item -LiteralPath (Join-Path $PayloadDir 'initrd.img') -Destination (Join-Path $dir 'recovery-initrd.img') -Force
-        $tpl = Get-Content -LiteralPath (Join-Path $PayloadDir 'grub-bios.cfg.template') -Raw
-        [IO.File]::WriteAllText((Join-Path $dir 'grub.cfg'), (New-GrubCfg $tpl $token).Replace("`r`n", "`n"), (New-Object Text.UTF8Encoding($false)))
-        $img = $imgLetter + ':\' + $Script:BiosImage
-        Copy-Item -LiteralPath (Join-Path $PayloadDir 'g2.img') -Destination $img -Force
-        Test-HashOf (Join-Path $dir 'recovery-vmlinuz') $sums['vmlinuz']
-        Test-HashOf (Join-Path $dir 'recovery-initrd.img') $sums['initrd.img']
-        Test-HashOf $img $sums['g2.img']
+        $tpl = Get-Content -LiteralPath (Join-Path $PayloadDir 'menu.lst.template') -Raw
+        $menuText = (New-GrubCfg $tpl $token).Replace("`r`n", "`n")
+        $files = Install-GrubFourDosFiles $PayloadDir $sums ($imgLetter + ':\') $dir $menuText
         Set-Step 'create the boot entry'
-        $o = Invoke-Native 'bcdedit.exe' @('/create', '/d', $Script:EntryName, '/application', 'bootsector')
-        $guid = Get-BcdGuid $o
-        if ($null -eq $guid) { throw 'bcdedit returned no entry id' }
-        Save-State @{ Mode = 'bios'; Guid = $guid; DiskNumber = $sd.Disk.Number; SystemLetter = $imgLetter; KernelLetter = $kletter; Where = $where }
-        Invoke-Native 'bcdedit.exe' @('/set', $guid, 'device', ('partition=' + $imgLetter + ':')) | Out-Null
-        Invoke-Native 'bcdedit.exe' @('/set', $guid, 'path', ('\' + $Script:BiosImage)) | Out-Null
-        Invoke-Native 'bcdedit.exe' @('/displayorder', $guid, '/addlast') | Out-Null
-        Invoke-Native 'bcdedit.exe' @('/bootsequence', $guid) | Out-Null
+        $guid = New-BcdBootsector $imgLetter
+        Save-State @{ Mode = 'bios'; Guid = $guid; DiskNumber = $sd.Disk.Number; SystemLetter = $imgLetter; KernelLetter = $kletter; Where = $where; BootMethod = 'grub4dos'; Files = $files }
+        Say ('boot-method=grub4dos loader=' + $Script:BiosLoaderMbr + ' device=' + $imgLetter + ': guid=' + $guid)
     } finally {
         if ($assigned) { try { Remove-PartitionAccessPath -DiskNumber $sd.Disk.Number -PartitionNumber $ap.PartitionNumber -AccessPath ($imgLetter + ':') } catch { Write-Log ('letter: ' + $_.Exception.Message) } }
     }
@@ -1011,7 +1096,10 @@ function Get-PlanHint {
         else { $r = @{ Where = 'new'; Reason = 'esp_too_small_new_fat32_partition' } }
     }
     $facts.Add('destination selected: ' + $r.Where + ' reason=' + $r.Reason)
-    return @{ plan = @{ where = $r.Where; reason = $r.Reason }; facts = @($facts) }
+    $method = 'shim-grub'
+    if ($Firmware -eq 'bios') { $method = 'grub4dos' }
+    $facts.Add('boot-method=' + $method)
+    return @{ plan = @{ where = $r.Where; reason = $r.Reason; method = $method }; facts = @($facts) }
 }
 
 # Read-only description of the PC for the host.
@@ -1215,7 +1303,9 @@ function Get-RemoteKey {
 # returns; a refused or failed elevation ends with its own exit code. The marker stops a second relaunch.
 function Start-Elevated {
     if ($env:UNITOTEM_ELEVATED) { Stop-Script 'not elevated after relaunch changes=none' $Script:Exit.NotAdmin }
-    $cmd = '$env:UNITOTEM_ELEVATED=1; irm ' + $Script:Opt.Server + '|iex'
+    $path = ''
+    if ($Script:Opt.Undo) { $path = '/undo' }
+    $cmd = '$env:UNITOTEM_ELEVATED=1; irm ' + $Script:Opt.Server + $path + '|iex'
     try {
         Start-Process -FilePath 'powershell.exe' -Verb RunAs -ErrorAction Stop -ArgumentList @('-NoProfile', '-NoExit', '-Command', ('"' + $cmd + '"')) | Out-Null
     } catch {
@@ -1230,6 +1320,14 @@ function Invoke-Remote {
     if (-not (Test-FullMatch $Script:Opt.PayloadSha256 $Script:Re.Hash)) { Stop-Script 'invalid payload checksum' $Script:Exit.Usage }
     if (-not (Test-IsAdmin)) { Start-Elevated; return }
     [Net.WebRequest]::DefaultWebProxy = $null
+    if ($Script:Opt.Undo) {
+        # irm <server>/undo|iex: removes what an earlier run created; no inventory, no approval.
+        Set-Step 'undo'
+        try { $Script:Opt.MachineId = Get-MachineId } catch { Write-Log ('machine id: ' + $_.Exception.Message) }
+        $Script:Opt.Unattended = $true
+        Invoke-Undo
+        return
+    }
     $fw = Get-FirmwareKind
     if ($fw -ne 'uefi' -and $fw -ne 'bios') { Stop-Script 'cannot tell the firmware type' $Script:Exit.Unsupported }
     Set-Step 'read the machine id'

@@ -114,7 +114,7 @@ Describe 'New-GrubCfg directory' {
         $t = Get-Content -Raw (Join-Path $PSScriptRoot 'grub.cfg.template')
         (New-GrubCfg $t 'QUJD' '/EFI/unitotem') | Should -Match 'search --no-floppy --file --set=root /EFI/unitotem/unitotem-vmlinuz'
         (New-GrubCfg $t 'QUJD' '/EFI/unitotem') | Should -Not -Match '@'
-        $b = Get-Content -Raw (Join-Path $PSScriptRoot 'grub-bios.cfg.template')
+        $b = Get-Content -Raw (Join-Path $PSScriptRoot 'menu.lst.template')
         (New-GrubCfg $b '') | Should -Not -Match '@'
     }
 }
@@ -134,7 +134,7 @@ Describe 'Build-Plan' {
     }
     It 'BIOS plan' {
         $p = (Build-Plan @{ Undo = $false; Mode = 'bios'; Where = 'boot'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null }) -join "`n"
-        $p | Should -Match 'loader=unitotem-g2\.img'
+        $p | Should -Match 'loader=grldr\.mbr'
         $p | Should -Not -Match 'shrink'
     }
     It 'plan lines hold facts, not sentences' {
@@ -554,5 +554,93 @@ Describe 'Log format, busy server and elevation' {
         $script:Opt.Remote = $true
         try { { Start-Elevated } | Should -Throw ('UNITOTEM_EXIT:' + $Script:Exit.NotAdmin) } finally { $script:Opt.Remote = $false }
         Should -Invoke Start-Process -Times 0
+    }
+}
+
+Describe 'GRUB4DOS boot entry, files and undo' {
+    BeforeAll {
+        function global:Invoke-RestMethod { param($Uri, $Method, $Body, $ContentType, $TimeoutSec) }
+        $script:pd = Join-Path ([IO.Path]::GetTempPath()) ('unitotem-g4d-' + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $script:pd | Out-Null
+        $script:sums = @{}
+        foreach ($n in 'vmlinuz', 'initrd.img', 'grldr', 'grldr.mbr') {
+            [IO.File]::WriteAllBytes((Join-Path $script:pd $n), [Text.Encoding]::ASCII.GetBytes('payload ' + $n))
+            $script:sums[$n] = (Get-FileHash (Join-Path $script:pd $n) -Algorithm SHA256).Hash.ToLower()
+        }
+    }
+    AfterAll { Remove-Item -LiteralPath $script:pd -Recurse -Force }
+    BeforeEach {
+        Mock Start-Sleep { }
+        Mock Write-Host { }
+        $script:LogFile = Join-Path $script:pd 'log.txt'
+        $script:root = Join-Path $script:pd ('root-' + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $script:root | Out-Null
+    }
+
+    It 'the BCD entry is a bootsector application with device partition=C: and path \grldr.mbr' {
+        $script:calls = New-Object System.Collections.Generic.List[string]
+        Mock Invoke-Native { $script:calls.Add($Arguments -join ' '); if ($Arguments[0] -eq '/create') { return , @('The entry was successfully created: {0A1B2C3D-1111-2222-3333-444455556666}.') }; return , @() }
+        $g = New-BcdBootsector 'C'
+        $g | Should -Be '{0A1B2C3D-1111-2222-3333-444455556666}'
+        $script:calls[0] | Should -Be '/create /d UniTotem OTA /application bootsector'
+        $script:calls | Should -Contain '/set {0A1B2C3D-1111-2222-3333-444455556666} device partition=C:'
+        $script:calls | Should -Contain ('/set {0A1B2C3D-1111-2222-3333-444455556666} path \grldr.mbr')
+        $script:calls | Should -Contain '/displayorder {0A1B2C3D-1111-2222-3333-444455556666} /addlast'
+        $script:calls | Should -Contain '/bootsequence {0A1B2C3D-1111-2222-3333-444455556666}'
+        ($script:calls -join "`n") | Should -Not -Match 'g2'
+    }
+    It 'copies grldr.mbr, grldr, menu.lst, kernel and initrd, verified, and records them' {
+        $menu = "default 0`ntitle UniTotem OTA`n"
+        $kdir = Join-Path $script:root 'unitotem'
+        $files = Install-GrubFourDosFiles $script:pd $script:sums ($script:root + [IO.Path]::DirectorySeparatorChar) $kdir $menu
+        $files.Count | Should -Be 5
+        foreach ($n in 'grldr.mbr', 'grldr', 'menu.lst') { Test-Path (Join-Path $script:root $n) | Should -BeTrue }
+        foreach ($n in 'vmlinuz', 'initrd.img') { Test-Path (Join-Path $kdir $n) | Should -BeTrue }
+        [IO.File]::ReadAllText((Join-Path $script:root 'menu.lst')) | Should -Be $menu
+        foreach ($f in $files) { (Get-FileHash $f.Path -Algorithm SHA256).Hash.ToLower() | Should -Be $f.Sha256 }
+    }
+    It 'refuses to overwrite a menu.lst that is not ours' {
+        Set-Content (Join-Path $script:root 'menu.lst') 'title Someone else' 
+        $script:Opt.Remote = $true
+        try {
+            { Install-GrubFourDosFiles $script:pd $script:sums ($script:root + [IO.Path]::DirectorySeparatorChar) (Join-Path $script:root 'unitotem') "default 0`n" } | Should -Throw ('UNITOTEM_EXIT:' + $Script:Exit.Unsupported)
+        } finally { $script:Opt.Remote = $false }
+        Test-Path (Join-Path $script:root 'grldr') | Should -BeFalse
+        Get-Content (Join-Path $script:root 'menu.lst') | Should -Be 'title Someone else'
+    }
+    It 'undo removes only our files and keeps a changed one' {
+        $kdir = Join-Path $script:root 'unitotem'
+        $files = Install-GrubFourDosFiles $script:pd $script:sums ($script:root + [IO.Path]::DirectorySeparatorChar) $kdir "default 0`n"
+        Set-Content (Join-Path $script:root 'other.txt') 'user file'
+        Set-Content (Join-Path $kdir 'user-note.txt') 'user file in the folder'
+        Set-Content (Join-Path $script:root 'menu.lst') 'edited by someone'
+        Remove-OurFiles $files '.*'
+        foreach ($n in 'grldr.mbr', 'grldr') { Test-Path (Join-Path $script:root $n) | Should -BeFalse }
+        foreach ($n in 'vmlinuz', 'initrd.img') { Test-Path (Join-Path $kdir $n) | Should -BeFalse }
+        Test-Path (Join-Path $script:root 'menu.lst') | Should -BeTrue
+        Test-Path (Join-Path $script:root 'other.txt') | Should -BeTrue
+        Test-Path (Join-Path $kdir 'user-note.txt') | Should -BeTrue
+        Test-Path $kdir | Should -BeTrue   # not empty: kept
+    }
+    It 'undo drops the empty unitotem folder and rejects unexpected paths' {
+        $kdir = Join-Path $script:root 'unitotem'
+        $files = Install-GrubFourDosFiles $script:pd $script:sums ($script:root + [IO.Path]::DirectorySeparatorChar) $kdir "default 0`n"
+        Remove-OurFiles $files '.*'
+        Test-Path $kdir | Should -BeFalse
+        Set-Content (Join-Path $script:root 'victim.txt') 'x'
+        Remove-OurFiles @(@{ Path = (Join-Path $script:root 'victim.txt'); Sha256 = (Get-FileHash (Join-Path $script:root 'victim.txt') -Algorithm SHA256).Hash.ToLower() }) 
+        Test-Path (Join-Path $script:root 'victim.txt') | Should -BeTrue   # default pattern allows only grldr.mbr, grldr, menu.lst, unitotem\vmlinuz|initrd.img
+    }
+    It 'the default undo pattern matches the files we create and nothing else' {
+        foreach ($p in 'C:\grldr.mbr', 'C:\grldr', 'C:\menu.lst', 'D:\unitotem\vmlinuz', 'D:\unitotem\initrd.img') { Test-FullMatch $p $Script:UndoPath | Should -BeTrue }
+        foreach ($p in 'C:\Windows\System32\config', 'C:\boot.ini', 'C:\unitotem\..\x', 'C:\grldr.bak', 'C:\unitotem') { Test-FullMatch $p $Script:UndoPath | Should -BeFalse }
+    }
+    It 'finds BCD entries by description without reading localized labels' {
+        $text = "Gestore di avvio\r\n-------\r\nidentificatore {bootmgr}\r\n\r\nApplicazione\r\n---\r\nidentificatore {0a1b2c3d-1111-2222-3333-444455556666}\r\ndescrizione UniTotem OTA\r\n\r\nWindows 10\r\nidentificatore {7e0a0a0a-1111-2222-3333-444455556666}\r\ndescrizione Windows 10"
+        Mock Invoke-Native { , ($text -split "`n") }
+        @(Find-OtaBcdEntries) | Should -Be @('{0a1b2c3d-1111-2222-3333-444455556666}')
+    }
+    It 'plan and facts name the boot method' {
+        ((Build-Plan @{ Undo = $false; Mode = 'bios'; Where = 'cdrive'; NeededBytes = 240MB; PartBytes = 304MB; Token = $null }) -join "`n") | Should -Match 'boot-method=grub4dos loader=grldr.mbr,grldr,menu.lst'
     }
 }
