@@ -621,7 +621,7 @@ class RestartTests(ServerCase):
         with open(os.path.join(self.state, 'machines', 'BAD-MACHINE-1.json'), 'w') as f:
             f.write('{not json')
         ctx, lines = self.new_ctx()
-        self.assertIn('state file ignored', self.output())
+        self.assertIn('state file discarded name=BAD-MACHINE-1.json reason=corrupt', self.output())
         ctx.close()
 
     def test_same_inventory_again_is_idempotent(self):
@@ -850,7 +850,7 @@ class MachineKeyTests(ServerCase):
 
     def test_next_command_printed_after_approval(self):
         self.approve()
-        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' deploy/remote-deploy.sh recover 127.0.0.1 --parts DIR --yes',
+        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' deploy/remote-deploy.sh recover 127.0.0.1 --parts ' + (self.ctx.find_parts('uefi') or '<parts>') + ' --yes',
                       self.output())
 
     def test_second_inventory_reuses_the_key(self):
@@ -931,6 +931,111 @@ class SingleClientTests(ServerCase):
         self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
 
 
+class ConnectionResetTests(ServerCase):
+    def rst(self, payload=b'GET /appr'):
+        import socket
+        import struct
+        s = socket.create_connection(('127.0.0.1', self.port), timeout=5)
+        s.sendall(payload)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))  # close sends RST
+        s.close()
+
+    def test_reset_is_one_info_line_and_no_traceback_on_stderr(self):
+        import contextlib
+        import io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for _ in range(3):
+                self.rst()
+            self.assertTrue(self.wait_for(lambda: any('client disconnected addr=127.0.0.1' in l for l in self.lines)))
+            time.sleep(0.3)
+        self.assertEqual(err.getvalue(), '')
+        info = [l for l in self.lines if 'client disconnected' in l]
+        self.assertTrue(info and all(' INFO (server) ' in l for l in info))
+        self.assertFalse(any('Traceback' in l for l in self.lines))
+
+    def test_other_errors_are_logged_in_the_standard_format_with_traceback(self):
+        import contextlib
+        import io
+        err = io.StringIO()
+        try:
+            raise RuntimeError('boom')
+        except RuntimeError:
+            with contextlib.redirect_stderr(err):
+                self.server.handle_error(None, ('127.0.0.1', 1234))
+        self.assertEqual(err.getvalue(), '')
+        text = '\n'.join(self.lines)
+        self.assertRegex(text, r'\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ERROR \(server\) request failed addr=127\.0\.0\.1')
+        self.assertIn('RuntimeError: boom', text)
+
+    def test_server_still_answers_after_resets(self):
+        self.rst()
+        self.assertEqual(self.req('GET', '/approval?machine=MACHINE-AAAA')[0], 200)
+
+
+class StateFileTests(ServerCase):
+    def new_ctx(self):
+        lines = []
+        return srv.Context(self.payload, self.state, None, 60, template=self.template, out=lines.append), lines
+
+    def put(self, name, text, age=0):
+        path = os.path.join(self.state, 'machines', name)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(text)
+        if age:
+            old = time.time() - age
+            os.utime(path, (old, old))
+        return path
+
+    def test_reasons_and_deletion(self):
+        corrupt = self.put('CORRUPT-1.json', '{not json')
+        schema = self.put('SCHEMA-01.json', json.dumps({'inventory': {'machine': 'SCHEMA-01'}, 'client_ip': '127.0.0.1'}))
+        stale = self.put('STALE-001.json', json.dumps({'inventory': inventory(machine='STALE-001'), 'client_ip': '127.0.0.1'}),
+                         age=8 * 24 * 3600)
+        ctx, _ = self.new_ctx()
+        out = self.output()
+        for name, reason in (('CORRUPT-1.json', 'corrupt'), ('SCHEMA-01.json', 'schema'), ('STALE-001.json', 'stale')):
+            self.assertRegex(out, r' WARNING \(server\) state file discarded name=%s reason=%s' % (re.escape(name), reason))
+        for path in (corrupt, schema, stale):
+            self.assertFalse(os.path.exists(path))
+        ctx.close()
+
+    def test_old_format_inventory_is_discarded_with_reason_schema(self):
+        old = inventory(machine='OLDFORMAT-1')
+        old['notes'] = ['x']
+        del old['facts']
+        path = self.put('OLDFORMAT-1.json', json.dumps({'inventory': old, 'client_ip': '127.0.0.1'}))
+        ctx, _ = self.new_ctx()
+        self.assertIn('reason=schema', self.output())
+        self.assertFalse(os.path.exists(path))
+        ctx.close()
+
+
+class NextCommandTests(ServerCase):
+    def test_real_parts_path_when_present_and_warning_when_not(self):
+        base = os.path.join(self.tmp, 'repo')
+        for name, bios in (('unitotem-2026-11-07-amd64.parts', True), ('unitotem-2026-11-09-amd64.parts', False)):
+            d = os.path.join(base, 'deploy', 'amd64', name)
+            os.makedirs(d)
+            open(os.path.join(d, 'p1-EFI.bootfs.tar.xz'), 'w').close()
+            if bios:
+                open(os.path.join(d, 'p5-BIOS.raw.pc.xz'), 'w').close()
+        old = srv.REPO_ROOT
+        srv.REPO_ROOT = base
+        try:
+            self.post_json('/inventory', inventory())
+            self.assertEqual(self.ctx.find_parts('uefi'), 'deploy/amd64/unitotem-2026-11-09-amd64.parts')
+            self.assertEqual(self.ctx.find_parts('bios'), 'deploy/amd64/unitotem-2026-11-07-amd64.parts')
+            self.assertIn('--parts deploy/amd64/unitotem-2026-11-09-amd64.parts --yes', self.ctx.next_command('MACHINE-AAAA'))
+            srv.REPO_ROOT = os.path.join(self.tmp, 'empty')
+            cmd = self.ctx.next_command('MACHINE-AAAA')
+            self.assertIn('--parts <parts> --yes', cmd)
+            self.assertNotIn('DIR', cmd)
+            self.assertTrue(any(' WARNING ' in l and 'no parts set found under deploy/amd64' in l for l in self.lines))
+        finally:
+            srv.REPO_ROOT = old
+
+
 class PtyTests(unittest.TestCase):
     # The real server on a pseudo-terminal: a log line arriving while the prompt waits goes above it and the
     # prompt, with what was typed, is drawn again below.
@@ -1006,6 +1111,95 @@ class PtyTests(unittest.TestCase):
         t.set_prompt('Q? (y/n) ')
         t.log('line')
         self.assertEqual(t.stream.getvalue(), 'Q? (y/n) \nline\n')
+
+
+class TerminalRestoreTests(unittest.TestCase):
+    # The server switches the terminal to cbreak for the prompt; whatever ends it, the terminal comes back.
+    FLAGS = ('ECHO', 'ICANON', 'ISIG', 'ICRNL')
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='win-srv-tty-')
+        fake_home(self, self.tmp)
+        self.zip = make_zip(os.path.join(self.tmp, 'p.zip'))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def flags(self, fd):
+        import termios
+        a = termios.tcgetattr(fd)
+        return {n: bool((a[3] if n != 'ICRNL' else a[0]) & getattr(termios, n)) for n in self.FLAGS}
+
+    def wait_for(self, cond, timeout=10.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if cond():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def run_and_signal(self, sig):
+        import pty
+        import signal as sg
+        master, slave = pty.openpty()
+        initial = self.flags(master)
+        proc = subprocess.Popen([sys.executable, '-I', SERVER_PATH, '--state-dir', os.path.join(self.tmp, 'st'),
+                                 '--port', str(free_port()), '--advertise', '127.0.0.1', '--payload', self.zip],
+                                stdin=slave, stdout=slave, stderr=slave, env=dict(os.environ, NO_COLOR='1'), close_fds=True)
+        os.close(slave)
+        try:
+            self.assertTrue(self.wait_for(lambda: not self.flags(master)['ICANON']), 'cbreak was not entered')
+            during = self.flags(master)
+            os.write(master, b'abc')
+            time.sleep(0.3)
+            proc.send_signal(getattr(sg, sig))
+            rc = proc.wait(timeout=15)
+            after = self.flags(master)
+            return initial, during, after, rc
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            os.close(master)
+
+    def test_flags_restored_after_each_signal(self):
+        import signal as sg
+        for sig in ('SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'):
+            with self.subTest(sig=sig):
+                initial, during, after, rc = self.run_and_signal(sig)
+                self.assertFalse(during['ICANON'])
+                self.assertEqual(after, initial)
+                self.assertEqual(rc, 128 + getattr(sg, sig))  # normal exit through SystemExit, not a kill
+
+    def test_flags_restored_when_the_prompt_thread_crashes(self):
+        import pty
+        master, slave = pty.openpty()
+        initial = self.flags(master)
+        stream = os.fdopen(slave, 'r')
+        ctx = srv.Context(self.zip, os.path.join(self.tmp, 'st2'), None, 60, out=lambda s: None)
+        ctx.term.key = lambda ch: (_ for _ in ()).throw(RuntimeError('simulated crash'))
+        seen = []
+        old_hook = threading.excepthook
+        threading.excepthook = lambda args: seen.append(args.exc_type)
+        try:
+            th = threading.Thread(target=ctx._tty_loop, args=(stream,), daemon=True)
+            th.start()
+            self.assertTrue(self.wait_for(lambda: not self.flags(master)['ICANON']))
+            os.write(master, b'a')
+            th.join(timeout=10)
+            self.assertFalse(th.is_alive())
+            self.assertEqual(seen, [RuntimeError])
+            self.assertEqual(self.flags(master), initial)
+        finally:
+            threading.excepthook = old_hook
+            ctx.close()
+            stream.close()
+            os.close(master)
+
+    def test_restore_is_idempotent_and_touches_nothing_without_a_terminal(self):
+        srv.restore_terminal()
+        srv.restore_terminal()
+        self.assertEqual(srv._SAVED_TTY, {})
 
 
 class CliTests(unittest.TestCase):

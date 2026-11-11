@@ -3,6 +3,7 @@
 # intake, operator approval. A PC runs: irm http://HOST:PORT|iex
 
 import argparse
+import atexit
 import hashlib
 import ipaddress
 import json
@@ -37,11 +38,13 @@ SUMS_ENTRY = ZIP_DIR + 'payload/SHA256SUMS'
 
 PLACEHOLDERS = ('SERVER', 'SHA256', 'BYTES', 'TIMEOUT', 'POLL', 'ENGINE')
 PLACEHOLDER_RE = re.compile(r'@(SERVER|SHA256|BYTES|TIMEOUT|POLL|UNDO|ENGINE)@')
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MACHINE_RE = re.compile(r'[A-Za-z0-9-]{8,64}')
 REASON_RE = re.compile(r'[a-z0-9_=,.:-]{1,80}')
 HOST_RE = re.compile(r'[A-Za-z0-9-]{1,15}')
 # Characters of a log line printed whole (steps, error ids, statements, messages).
 LOG_LIMIT = 4000
+STATE_MAX_AGE = 7 * 24 * 3600  # state files older than this are discarded (reason=stale)
 
 # Operator answers: y approves (asked twice), n cancels; nothing else is accepted.
 YES = 'y'
@@ -450,6 +453,46 @@ def _reject_const(name):
     raise ValueError('constant ' + name)
 
 
+_SAVED_TTY = {}
+
+
+def enter_cbreak(fd):
+    # Saves the terminal attributes once and switches to cbreak (no echo, ISIG kept).
+    import termios
+    import tty
+    if fd not in _SAVED_TTY:
+        _SAVED_TTY[fd] = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+
+
+def restore_terminal():
+    # Idempotent: puts every saved terminal back (also from atexit and the signal handlers) and ends the line.
+    import termios
+    restored = False
+    for fd, attrs in list(_SAVED_TTY.items()):
+        try:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, attrs)
+            restored = True
+        except (OSError, termios.error):
+            pass
+        _SAVED_TTY.pop(fd, None)
+    if restored:
+        try:
+            sys.stdout.write('\n')
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass
+
+
+atexit.register(restore_terminal)
+
+
+def terminate_on_signal(signum, frame):
+    # Restores the terminal and ends the process normally (finally blocks and atexit run).
+    restore_terminal()
+    raise SystemExit(128 + signum)
+
+
 class Busy(Exception):
     pass
 
@@ -689,20 +732,39 @@ class Context:
             if name.startswith('.') or not name.endswith('.json'):
                 continue
             path = os.path.join(self.machines_dir, name)
+            reason = None
             try:
-                with open(path, encoding='utf-8') as f:
-                    doc = json.load(f)
-                rec = parse_inventory(doc['inventory'])
-                ip = str(doc['client_ip'])
-                ipaddress.ip_address(ip)
-                rec['client_ip'] = ip
+                if time.time() - os.stat(path).st_mtime > STATE_MAX_AGE:
+                    reason = 'stale'
+                else:
+                    with open(path, encoding='utf-8') as f:
+                        doc = json.load(f)
+            except (OSError, ValueError):
+                reason = 'corrupt'
+            if reason is None:
+                try:
+                    rec = parse_inventory(doc['inventory'])
+                    ip = str(doc['client_ip'])
+                    ipaddress.ip_address(ip)
+                    rec['client_ip'] = ip
+                except (KeyError, TypeError, ValueError):
+                    reason = 'schema'
+            if reason is not None:
+                # Only our own files live in this directory: the unusable one is deleted.
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                self.emit('state file discarded name=%s reason=%s' % (clean(name, 80), reason), logging.WARNING)
+                continue
+            try:
                 if self.explicit_key is not None:
                     priv = self.key_path[:-4] if self.key_path.endswith('.pub') else None
                     line = self.explicit_key
                 else:
                     priv, line = ensure_machine_key(ip)
-            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                self.emit('state file ignored name=%s' % clean(name, 80), logging.WARNING)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                self.emit('state file kept name=%s reason=key' % clean(name, 80), logging.WARNING)
                 continue
             m = rec['machine']
             self.inventories[m] = rec
@@ -806,14 +868,31 @@ class Context:
             k = self.keys.get(machine)
         return k['line'] if (ok and k) else None
 
+    def find_parts(self, firmware):
+        # Newest parts set under deploy/amd64; for a BIOS PC one that carries the BIOS stream (p5-BIOS.*).
+        base = os.path.join(REPO_ROOT, 'deploy', 'amd64')
+        try:
+            sets = sorted((d for d in os.listdir(base) if d.endswith('.parts') and os.path.isdir(os.path.join(base, d))), reverse=True)
+        except OSError:
+            sets = []
+        for d in sets:
+            names = os.listdir(os.path.join(base, d))
+            if firmware != 'bios' or any(n.startswith('p5-BIOS') for n in names):
+                return os.path.join('deploy', 'amd64', d)
+        return None
+
     def next_command(self, machine):
         with self.lock:
             rec = self.inventories.get(machine)
             k = self.keys.get(machine)
         if not rec or not k:
             return ''
-        return 'OTA_FALLBACK_KEY=%s deploy/remote-deploy.sh recover %s --parts DIR --yes' % (
-            k['priv'] or '<private key>', rec['client_ip'])
+        parts = self.find_parts(rec['firmware'])
+        if parts is None:
+            self.emit('no parts set found under deploy/amd64', logging.WARNING, rec['hostname'])
+            parts = '<parts>'
+        return 'OTA_FALLBACK_KEY=%s deploy/remote-deploy.sh recover %s --parts %s --yes' % (
+            k['priv'] or '<private key>', rec['client_ip'], parts)
 
     def add_status(self, data, client_ip=''):
         st = parse_status(data)
@@ -958,11 +1037,8 @@ class Context:
     def _tty_loop(self, stream):
         # Raw character input (no echo, ISIG kept) so the typed text can be drawn again under the log lines.
         import select
-        import termios
-        import tty
         fd = stream.fileno()
-        old = termios.tcgetattr(fd)
-        tty.setcbreak(fd)
+        enter_cbreak(fd)
         try:
             while not self.stop.is_set():
                 if not select.select([fd], [], [], 0.2)[0]:
@@ -975,7 +1051,7 @@ class Context:
                     if line is not None and line.strip():
                         self.apply_answer(line, 'stdin')
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            restore_terminal()
 
     def _stdin_loop(self, stream):
         for line in stream:
@@ -1165,6 +1241,16 @@ class Handler(BaseHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
+    def handle_error(self, request, client_address):
+        # A PC that restarts or disconnects is expected: one INFO line. Anything else is logged with its traceback in
+        # the standard format; socketserver's raw dump on stderr is never used.
+        exc = sys.exc_info()[1]
+        addr = clean(client_address[0] if client_address else '-', 45)
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError, socket.timeout)):
+            LOGGER.info('client disconnected addr=%s reason=%s', addr, type(exc).__name__, extra={'host': 'server'})
+        else:
+            LOGGER.exception('request failed addr=%s', addr, extra={'host': 'server'})
+
 
 def make_server(bind, port, ctx):
     srv = Server((bind, port), Handler)
@@ -1245,7 +1331,7 @@ def parse_args(argv):
     p.add_argument('-y', '--yes', action='store_true',
                    help='approve the PC that reported last in the running server (no questions)')
     p.add_argument('--machine', metavar='ID', default=None, help='with -y: approve this machine id')
-    p.add_argument('--reset', action='store_true', help='free the session of the running server (SIGHUP does the same)')
+    p.add_argument('--reset', action='store_true', help='free the session of the running server')
     p.add_argument('--log-file', metavar='FILE', default=None, help='also write the log to FILE (UTF-8)')
     return p.parse_args(argv)
 
@@ -1310,15 +1396,17 @@ def main(argv=None):
         ctx.close()
         print('error: cannot listen: ' + str(e), file=sys.stderr)
         return 2
-    signal.signal(signal.SIGHUP, lambda *_: ctx.reset())
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, terminate_on_signal)
     stdin_stream = sys.stdin if (sys.stdin is not None and sys.stdin.isatty()) else None
     ctx.start_background(stdin_stream)
     line = 'listening on %s:%d' % (args.bind, server.server_port)
     print(GREEN + line + RESET if use_color() else line, flush=True)
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
+    except SystemExit:
         print('stopped')
+        raise
     finally:
         server.server_close()
         ctx.close()
