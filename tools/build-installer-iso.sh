@@ -42,9 +42,9 @@ fi
 
 # ---------------------------------------------------------------- inside the container
 export DEBIAN_FRONTEND=noninteractive
-if ! command -v xorriso >/dev/null || ! command -v grub-mkimage >/dev/null || ! command -v mcopy >/dev/null; then
+if ! command -v xorriso >/dev/null || ! command -v grub-mkimage >/dev/null || ! command -v mcopy >/dev/null || ! command -v unmkinitramfs >/dev/null || ! command -v zstd >/dev/null || ! command -v readelf >/dev/null || ! command -v python3 >/dev/null; then
     apt-get update -qq
-    apt-get install -y -qq --no-install-recommends xorriso grub-pc-bin grub-common mtools dosfstools gdisk xz-utils cpio gzip coreutils >/dev/null
+    apt-get install -y -qq --no-install-recommends xorriso grub-pc-bin grub-common mtools dosfstools gdisk xz-utils cpio gzip coreutils initramfs-tools-core zstd kmod binutils python3 util-linux >/dev/null
 fi
 
 W=$(mktemp -d /tmp/installer-iso.XXXXXX)
@@ -89,18 +89,39 @@ raw_sha256=$RAW_SHA
 raw_bytes=$RAW_BYTES
 EOF
 
-echo "== installer overlay initrd"
-install -m 755 -- "$HERE/unitotem/files/unitotem-installer" "$OVL/usr/lib/unitotem/unitotem-installer"
-# Replaces the recovery initrd's init-premount entry (always the fallback): the installer takes over.
-cat > "$OVL/scripts/init-premount/zz-unitotem-ota" <<'EOF'
+echo "== installer initramfs (the recovery initramfs, reduced)"
+# unmkinitramfs unpacks the early microcode archive and the main archive; only the main one is kept.
+RT=$W/rtree
+unmkinitramfs "$TREE/boot/unitotem/initrd.img" "$W/unpacked" >/dev/null
+if [ -d "$W/unpacked/main" ]; then mv "$W/unpacked/main" "$RT"; else mv "$W/unpacked" "$RT"; fi
+RECOVERY_BYTES=$(stat -c %s -- "$TREE/boot/unitotem/initrd.img")
+python3 -I "$HERE/tools/slim-installer-initrd.py" "$RT"
+[ ! -e "$RT/usr/bin/install" ] || { echo "the recovery initramfs already has /usr/bin/install" >&2; exit 1; }
+install -m 755 -- "$HERE/unitotem/files/unitotem-installer" "$RT/usr/bin/install"
+install -m 755 -- "$HERE/unitotem/files/unitotem-ssh" "$RT/usr/bin/unitotem-ssh"
+install -m 755 -- "$HERE/unitotem/files/unitotem-installer-start" "$RT/usr/lib/unitotem/unitotem-installer-start"
+install -m 755 -- "$(command -v flock)" "$RT/usr/bin/flock"
+# replaces the recovery initramfs' init-premount entry (always the OTA fallback)
+cat > "$RT/scripts/init-premount/zz-unitotem-ota" <<'EOF2'
 #!/bin/sh
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case "$1" in prereqs) prereqs; exit 0 ;; esac
-exec /usr/lib/unitotem/unitotem-installer
-EOF
-chmod 755 "$OVL/scripts/init-premount/zz-unitotem-ota"
-(cd "$OVL" && find . -mindepth 1 | LC_ALL=C sort | cpio -o -H newc --quiet --owner 0:0 | gzip -9n) > "$TREE/boot/unitotem/installer.img"
+exec /usr/lib/unitotem/unitotem-installer-start
+EOF2
+chmod 755 "$RT/scripts/init-premount/zz-unitotem-ota"
+# the programs the installer and the console screen run must exist; the ones it never runs must not
+for c in bash whiptail pv xz dd sha256sum sgdisk blockdev blkid lsblk mount umount mountpoint udevadm dropbear dropbearkey \
+         ip ipconfig awk sed tr cut od cmp cp mv head tail grep readlink stty setsid kill sleep sync reboot poweroff flock \
+         modprobe; do
+    [ -e "$RT/usr/bin/$c" ] || [ -e "$RT/usr/sbin/$c" ] || { echo "installer initramfs lacks $c" >&2; exit 1; }
+done
+for c in partclone.restore wpa_supplicant plymouth grub-install parted; do
+    [ ! -e "$RT/usr/bin/$c" ] && [ ! -e "$RT/usr/sbin/$c" ] || { echo "installer initramfs still has $c" >&2; exit 1; }
+done
+(cd "$RT" && find . -mindepth 1 | LC_ALL=C sort | cpio -o -H newc --quiet --owner 0:0 | xz -9 -T0 --check=crc32) > "$TREE/boot/unitotem/initrd.img"
+INITRD_BYTES=$(stat -c %s -- "$TREE/boot/unitotem/initrd.img")
+echo "initramfs: recovery $RECOVERY_BYTES bytes, installer $INITRD_BYTES bytes"
 
 echo "== GRUB"
 cat > "$TREE/boot/grub/grub.cfg" <<'EOF'
@@ -114,15 +135,15 @@ if serial --unit=0 --speed=115200; then
 fi
 menuentry "Install UniTotem" {
     linux /boot/unitotem/vmlinuz quiet loglevel=3 consoleblank=0 plymouth.enable=0 console=tty0
-    initrd /boot/unitotem/initrd.img /boot/unitotem/installer.img
+    initrd /boot/unitotem/initrd.img
 }
 menuentry "Install UniTotem (serial console)" {
     linux /boot/unitotem/vmlinuz quiet loglevel=3 consoleblank=0 plymouth.enable=0 console=tty0 console=ttyS0,115200 unitotem.installer.tty=ttyS0
-    initrd /boot/unitotem/initrd.img /boot/unitotem/installer.img
+    initrd /boot/unitotem/initrd.img
 }
 menuentry "Install UniTotem (safe graphics)" {
     linux /boot/unitotem/vmlinuz quiet loglevel=3 consoleblank=0 plymouth.enable=0 nomodeset console=tty0
-    initrd /boot/unitotem/initrd.img /boot/unitotem/installer.img
+    initrd /boot/unitotem/initrd.img
 }
 EOF
 : > "$TREE/boot/grub/unitotem-iso"
