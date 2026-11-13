@@ -31,7 +31,7 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
   1. Checks: layout 2, version newer (or `--force`), `root` part exists, slot found by `slot_dev` ([order](#slot-devices-and-repair-writes)), not mounted.
   2. `cur` := valid+confirmed; `other` := invalid.
   3. Stream HTTPS -> `xz -dc` -> `partclone.restore -C -s - -o <dev>`; sha256 of the compressed stream must match.
-  4. `e2fsck -fn`; `tune2fs -L ROOT_<X> -U random`; mount ro; `release-version` must equal the manifest version; `usr/lib/systemd/systemd` must exist.
+  4. `e2fsck -fy`; `tune2fs -U random -L ROOT_<X>`; `e2fsck -fn`; mount ro; `release-version` must equal the manifest version; `usr/lib/systemd/systemd` must exist.
   5. Raspberry: extract `bootfiles` into `<bootfs>/slot<other>/`; rewrite `cmdline.txt` (`root=LABEL=ROOT_<X>`, `unitotem.slot=<x>`).
   6. `prepare_overlays`: new uppers `etc/root/var.<other>`; whitelist import; copy `root.<cur>`; identity merge.
   7. `os.sync()`, then `other` := valid+prepared.
@@ -64,7 +64,7 @@ Repair writes go through `clone_into_slot`:
 
 - The first MiB of the target is zeroed first: the old identity is gone.
 - `partclone.restore -C -s - -o -` streams the whole partition from block 0. Zero chunks are written only where the target is not already zero.
-- The first MiB is held back. Its superblock is patched in memory with the target's label, `metadata_csum` recomputed (crc32c), and written last. Until that write the target has no filesystem; afterwards it never carries a foreign label. The UUID stays the source's until `tune2fs -f -U random` right after.
+- The first MiB is held back. Its superblock is patched in memory with the target's label, `metadata_csum` recomputed (crc32c), and written last. Until that write the target has no filesystem; afterwards it never carries a foreign label. The UUID stays the source's until `e2fsck -fy` and then `tune2fs -U random -L ROOT_<X>` right after (tune2fs refuses a new UUID on a `metadata_csum` filesystem that was mounted after its last check, and `-f` does not bypass this: the copy carries the source's state).
 - libblkid ignores a superblock whose checksum does not match, so a half-patched superblock is invisible.
 - Fetch needs no such order: the release root carries the neutral label `ROOT_NEW` and its own UUID (`unitotem-release`), and `partclone.restore -o DEV` writes it to the slot directly.
 
