@@ -102,7 +102,7 @@ Engine subcommands (`--name value`; `--disk` on disk operations):
 | `apply-network` | `--data-mnt [--slot --link wired\|wifi --mode dhcp\|static --addr --gw --dns --ssid-b64 --psk-b64]` | `UNITOTEM_NET_APPLIED=1\|skip-existing\|not-needed` |
 | `serve-fallback` | `[--reason --kind update\|recovery --idle-timeout S]` | blocks |
 
-Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.authkey=<base64 of one ssh-ed25519 line>` (fallback login key); boot-FAT files `unitotem-ota.request`, `unitotem-ota.authorized_keys` (fallback login key, kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_NET_LINK/MODE/IFACE/ADDR/GW`, `OTA_WIFI_SSID_B64`, `OTA_WIFI_PSK_B64`), `unitotem-ota.failover`, `unitotem-grub/grub/grubenv`, `tryboot.txt`, `cmdline-trial.txt`. Semantics: `boot.md`.
+Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.authkey=<base64 of one ssh-ed25519 line>` (fallback login key); `unitotem.ota.addr=A.B.C.D/N` and `unitotem.ota.gw=A.B.C.D` (a fixed address for the fallback, armed from the probe of a target whose earlier system used one on a wired link; strict IPv4, anything else is ignored, the command line wins over `unitotem-ota.conf`; without them the fallback asks DHCP); boot-FAT files `unitotem-ota.request`, `unitotem-ota.authorized_keys` (fallback login key, kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_NET_LINK/MODE/IFACE/ADDR/GW`, `OTA_WIFI_SSID_B64`, `OTA_WIFI_PSK_B64`), `unitotem-ota.failover`, `unitotem-grub/grub/grubenv`, `tryboot.txt`, `cmdline-trial.txt`. Semantics: `boot.md`.
 
 ## Fallback authentication
 
@@ -183,6 +183,7 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 
 - `python3 tools/release/test_deploy_backup.py`: `backup_stream`, `backup_running_system`.
 - `tools/release/test_ssh_t_stdout.sh`: the sudo set-up of `ssh_t` writes nothing to stdout (its messages go to stderr: a backup stream is the stdout of an `ssh_t` pipeline).
+- `python3 tools/release/test_ota_net_cmdline.py`: the static address on the kernel command line, both sides (18 checks: validation, precedence, command line length).
 - `python3 tools/release/test_tryboot_firmware.py`: `ensure_tryboot_firmware` with fake ssh, backup and probe (15 checks: no-ops, refusals, order, apt failure, confirmation).
 - `python3 tools/release/test_secure_boot_gate.py`: SecureBoot parsing, gate branches (a non-A/B parts set is refused in `load_parts`, before the gate).
 - `python3 tools/release/test_deploy_bios.py`: BIOS parts set through `load_parts`, the manifest loop and the `restore-part` dd branch (no partclone).

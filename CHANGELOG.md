@@ -47,6 +47,7 @@
 - `slot_sound` requires a kernel and initrd on GRUB; update lock no longer unlinked on release; health check verifies TLS against a CA file; `unitotem-maintenance` stops when `update-grub` fails.
 
 #### Deploy and recovery
+- A target that had a fixed wired address reaches the OTA fallback at it: the address and gateway travel on the kernel command line (a node on a routed network has no DHCP server and the earlier system leaves no boot FAT to read them from).
 - Deploy through a non-root login user: the escalation message no longer lands inside the backup stream (the archive of a password-sudo target was corrupt).
 - Deploy of a Raspberry Pi 4/5 whose firmware has no tryboot: the script first saves the old firmware files, upgrades `raspberrypi-bootloader`, restarts the board and probes again (refused while under-voltage is reported; `--no-firmware-update` skips).
 - Deploy probe: dhcp or static is read from the default route protocol, so a stale lease file no longer turns a static node into a DHCP one.

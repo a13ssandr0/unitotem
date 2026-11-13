@@ -448,6 +448,11 @@ build_legacy_cmdline() {
     # fbcon=font:TER16x32: the firmware framebuffer is often the monitor's native size, where the default 8x16 font is
     # tiny; the 16x32 font doubles every glyph (ignored by a kernel that lacks it).
     cmdline="unitotem.ota=1 quiet loglevel=3 fbcon=font:TER16x32 console=${console} unitotem.ota.authkey=${authkey}"
+    # A fixed address of the earlier system: the fallback has no DHCP server to ask (a node on a routed VPN) and no boot FAT to read it from.
+    if [ "${P[NETMODE]:-}" = static ] && [ "${P[NETLINK]:-wired}" = wired ] && [ -n "${P[NETADDR]:-}" ]; then
+        cmdline="${cmdline} unitotem.ota.addr=${P[NETADDR]}"
+        [ -z "${P[NETGW]:-}" ] || cmdline="${cmdline} unitotem.ota.gw=${P[NETGW]}"
+    fi
     [ "${#cmdline}" -lt 400 ] || die "kernel command line too long for the fallback boot (${#cmdline} characters, limit 400)"
     echo "$cmdline"
 }
