@@ -147,6 +147,7 @@
 
 #### Viewer and CEF
 - Qt6 and CEF viewer replaces Electron; one window per screen, follows mode and rotation changes.
+- A cookie written by a page in a frame without SameSite gets `SameSite=None; Secure` (a site keeping its language in such a cookie reloaded itself every 3.5 s).
 - Wayland-only kiosk under labwc; output names follow the compositor (HDMI-A-1).
 - Splash service shows the Plymouth wordmark and spinner until each window's first frame.
 - Public-kiosk lockdown: no context menu, downloads, popups, printing or browser shortcuts.
