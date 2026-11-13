@@ -9,6 +9,7 @@
 #   ./deploy/remote-deploy.sh deploy  root@host [--parts DIR] [--disk BYID]
 #                                     [--port N] [--wipe-data] [--backup-dir DIR] [--no-backup]
 #                                     [--admin-user NAME --admin-password-file FILE [--timezone ZONE]]
+#                                     [--no-firmware-update]
 #                                     [--console STR] [--yes]
 #                                     [--accept-changes DIGEST]
 #                                     [--secure-boot shim|noshim|abort]
@@ -55,6 +56,7 @@ OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
 # Backup of the UniTotem data of a target that already runs UniTotem, taken before anything is overwritten (default: backups/ in the repository).
 OPT_BACKUP_DIR="${UNITOTEM_BACKUP_DIR:-${DIR}/backups}" OPT_NO_BACKUP=0
 OPT_ADMIN_USER="" OPT_ADMIN_PWFILE="" OPT_TIMEZONE="" LEGACY_ARCHIVE=""
+OPT_NO_FIRMWARE_UPDATE=0
 # Empty by default: build_legacy_cmdline() picks the console per architecture (tty0 for amd64, tty1 +
 # serial for arm64) unless --console is given.
 OPT_CONSOLE="" OPT_YES=0 OPT_FALLBACK_ONLY=0
@@ -73,6 +75,7 @@ while [ $# -gt 0 ]; do
         --wipe-data)  OPT_WIPE_DATA=1; shift ;;
         --backup-dir) OPT_BACKUP_DIR="$2"; shift 2 ;;
         --no-backup)  OPT_NO_BACKUP=1; shift ;;
+        --no-firmware-update) OPT_NO_FIRMWARE_UPDATE=1; shift ;;
         --admin-user) OPT_ADMIN_USER="$2"; shift 2 ;;
         --admin-password-file) OPT_ADMIN_PWFILE="$2"; shift 2 ;;
         --timezone)   OPT_TIMEZONE="$2"; shift 2 ;;
@@ -864,8 +867,51 @@ migrate_legacy() {
         || warn "the migration failed: the settings are intact in ${LEGACY_ARCHIVE}; run tools/migrate-legacy.py again"
 }
 
+# The A/B layout on a Raspberry Pi 4/5 needs tryboot, which the running VideoCore firmware announces (probe: TRYBOOT) and an old one does not.
+# A target with the earlier system on it is therefore brought up to date first: the old firmware files are saved (checked by reading the archive
+# back), `raspberrypi-bootloader` is upgraded, the target restarts and is probed again. Nothing is written while the board reports under-voltage.
+ensure_tryboot_firmware() {
+    [ "$FIRMWARE" = rpi ] && [ "${TRYBOOT_CAPABLE:-0}" != 1 ] || return 0
+    [ "${P[HAVE_UNITOTEM]:-0}" != 1 ] && [ "$OPT_FALLBACK_ONLY" != 1 ] && [ "$OPT_NO_FIRMWARE_UPDATE" != 1 ] || return 0
+    case "${P[SOC]:-}" in *bcm2711*|*bcm2712*) ;; *) return 0 ;; esac
+    local host="${TARGET_USERHOST##*@}" ts thr saved waited=0 out
+    ssh_t 'dpkg-query -W raspberrypi-bootloader >/dev/null 2>&1' \
+        || die "the firmware of ${host} lacks tryboot and the package raspberrypi-bootloader is not installed: update the firmware by hand"
+    thr=$(ssh_t 'vcgencmd get_throttled 2>/dev/null' | sed -n 's/^throttled=//p')
+    if [[ "$thr" =~ ^0x[0-9a-fA-F]+$ ]] && [ $(( thr & 1 )) -ne 0 ]; then
+        die "${host} reports under-voltage right now (get_throttled=${thr}): check the power supply, nothing was written"
+    fi
+    if [ "$OPT_YES" != 1 ]; then
+        read -rp "The firmware of ${host} has no tryboot: update it with raspberrypi-bootloader, restart and probe again? [type YES]: " ans
+        [ "$ans" = "YES" ] || die "cancelled by the user"
+    fi
+    ts=$(date +%Y%m%d-%H%M%S)
+    mkdir -p "$OPT_BACKUP_DIR" || die "cannot create the backup directory ${OPT_BACKUP_DIR}"
+    saved=$(backup_stream "$OPT_BACKUP_DIR" "unitotem-firmware-${host}-${ts}" ssh_t \
+        'd=/boot; [ -f /boot/firmware/start4.elf ] && d=/boot/firmware; cd "$d" && tar --numeric-owner -cf - $(ls start*.elf fixup*.dat bootcode.bin 2>/dev/null)') \
+        || die "the old firmware files of ${host} could not be saved: nothing was changed"
+    log "Old firmware files saved and verified: ${saved}"
+    log "Updating the firmware of ${host} (raspberrypi-bootloader)..."
+    out=$(ssh_t 'export DEBIAN_FRONTEND=noninteractive; timeout 600 apt-get update -o Acquire::Retries=2 \
+        && timeout 1200 apt-get install -y --only-upgrade -o Dpkg::Options::=--force-confold raspberrypi-bootloader' 2>&1) \
+        || die "the firmware update of ${host} failed: $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ') (old files: ${saved})"
+    log "Firmware package updated; restarting ${host}..."
+    ssh_t 'sync; systemctl reboot' >/dev/null 2>&1 || true
+    clear_target_privilege
+    sleep 40
+    until ssh_t true >/dev/null 2>&1; do
+        sleep 10; waited=$((waited + 10))
+        [ "$waited" -lt 360 ] || die "${host} did not answer within 6 minutes after the firmware update (old files: ${saved})"
+    done
+    do_probe
+    [ "${TRYBOOT_CAPABLE:-0}" = 1 ] \
+        || die "${host} still reports no tryboot after the firmware update (old files: ${saved})"
+    log "Firmware of ${host} supports tryboot."
+}
+
 cmd_deploy() {
     do_probe
+    ensure_tryboot_firmware
     select_disk
 
     load_parts

@@ -26,6 +26,7 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
 - `probe`: one `ssh_t bash -s` round trip; prints `KEY: value` and `DISK:` lines. A 64-bit Pi model (3, 4, 5, Zero 2) gives arm64/`rpi`; else EFI gives amd64/`uefi`; else amd64/`bios`. Other Pi models are refused.
 - Disk: `--disk` (kernel name or by-id path) or interactive. A disk without a stable by-id/by-path is refused.
 - `deploy`, in order:
+  0. `ensure_tryboot_firmware` (Pi 4/5 with the earlier system, `tryboot: 0`): refused while `vcgencmd get_throttled` shows under-voltage now (bit 0); `YES` unless `--yes`; the old `start*.elf`, `fixup*.dat` and `bootcode.bin` of `/boot` (or `/boot/firmware`) are saved as `unitotem-firmware-<host>-<ts>.tar.zst` and read back; `apt-get install --only-upgrade raspberrypi-bootloader` after `apt-get update` (nothing else is upgraded); the target restarts, is waited for (6 minutes) and probed again; no tryboot after that stops the deploy with the saved files named. A target without the package, or without network to its apt repository, stops before anything is written or at the update with the apt error.
   1. `secure_boot_gate` (amd64 UEFI with Secure Boot active), `changes_gate` (installed UniTotem), confirmation `YES` unless `--yes` or `--accept-changes`.
   2. Backups before anything is armed (Backups).
   3. Arm. Installed UniTotem: `unitotem-ota-arm --port 2222 [--wipe-data] --authkey-file FILE` (`-` = stdin; the public key goes to `unitotem-ota.authorized_keys` on the boot partition), which reboots into the fallback. Other system: copy recovery kernel and initrd to the boot partition, one-shot boot with `unitotem.ota.authkey=<base64 of the key line>` on the kernel command line (Pi: `config.txt`/`cmdline.txt` swap, originals kept as `*.unitotem-bak`; x86: GRUB entry `UniTotem OTA` + `grub-reboot`), reboot. The per-target key is created here (see [Fallback authentication](#fallback-authentication)).
@@ -39,7 +40,7 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
   - The check runs over `ssh_t` with no timeout of its own and is I/O bound: the first run after a boot is much slower than later ones, so callers allow generous time.
   - Exit 127 comes from the SSH wrapper when the target lacks the tool (image predates it): `changes` exits 3, the deploy gate only warns and continues.
 - The probe takes dhcp or static from the protocol of the default route of the link (`proto dhcp`, `proto static`); lease files and `nmcli` decide only when the route names none (a lease file left from an earlier DHCP setup made a static node look DHCP).
-- `tryboot` comes from the `tryboot` node the running VideoCore firmware publishes under `/proc/device-tree/chosen/bootloader`: a Pi 4 whose `/boot` firmware is older (measured: `start4.elf` of March 2022 has no node, October 2022 has it, with the same EEPROM and the same `capabilities` word `0x1f`) reads `tryboot: 0` and the deploy refuses it until `raspberrypi-bootloader` is updated.
+- `tryboot` comes from the `tryboot` node the running VideoCore firmware publishes under `/proc/device-tree/chosen/bootloader`: a Pi 4 whose `/boot` firmware is older (measured: `start4.elf` of March 2022 has no node, October 2022 has it, with the same EEPROM and the same `capabilities` word `0x1f`) reads `tryboot: 0`. `deploy` brings such a target up to date first (below); `--no-firmware-update` skips that and the A/B check then refuses the target.
 - `probe` prints `Secure Boot : enabled (deploy will ask how to proceed) | disabled | cannot be detected` and `Earlier UniTotem (single root): <version|none>`. The state is read from the `SecureBoot` EFI variable on a UEFI boot only, never guessed.
 
 Stage 1 (fallback installed; a power loss boots the fallback):
@@ -181,6 +182,7 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 ## Tests
 
 - `python3 tools/release/test_deploy_backup.py`: `backup_stream`, `backup_running_system`.
+- `python3 tools/release/test_tryboot_firmware.py`: `ensure_tryboot_firmware` with fake ssh, backup and probe (15 checks: no-ops, refusals, order, apt failure, confirmation).
 - `python3 tools/release/test_secure_boot_gate.py`: SecureBoot parsing, gate branches (a non-A/B parts set is refused in `load_parts`, before the gate).
 - `python3 tools/release/test_deploy_bios.py`: BIOS parts set through `load_parts`, the manifest loop and the `restore-part` dd branch (no partclone).
 - `tools/release/test_parts_bios.sh`: `make_parts` on a loop image with an ef02 partition (Docker, privileged): raw `dd` stream, sha256, byte identity.
