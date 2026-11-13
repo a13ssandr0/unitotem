@@ -303,7 +303,8 @@ def slot_dev(slot):
 def run_out(*cmd, check=True):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if check and r.returncode:
-        raise Fail("command-failed", f"{' '.join(cmd)}: {r.stderr.strip() or r.stdout.strip()}")
+        detail = " | ".join(t for t in (r.stderr.strip(), r.stdout.strip()) if t)   # tune2fs states its refusal on stdout, its version on stderr
+        raise Fail("command-failed", f"{' '.join(cmd)}: {detail}")
     return r.stdout.strip()
 
 
@@ -1379,14 +1380,15 @@ def do_repair(a, conf):
                 if src.returncode:
                     raise Fail("write-failed", f"partclone read rc={src.returncode}: {_tail(serr_f, derr_f)}")
             progress(conf, op="repair", phase="verify", state="running", percent=80)
-            # The copy carries the source's UUID, and e2fsck/blkid then confuse it with the mounted original (e2fsck can fail with rc 8 on the
-            # duplicate), so the new UUID comes FIRST. -f: tune2fs otherwise refuses to change the UUID of a copy of a used filesystem
-            # ("requires a freshly checked filesystem"); the real fsck follows right after. It is OUR new copy, so a fsck that fixes it
-            # is exactly right (rc 0/1 = clean/fixed, anything else = failed copy).
-            run_out("tune2fs", "-f", "-U", "random", "-L", label(new), ndev)
+            # The copy is a snapshot of a filesystem that was mounted at some point (last mount time after last check): tune2fs refuses to
+            # change the UUID of such a filesystem until it has been checked ("requires a freshly checked filesystem"; -f does not
+            # bypass it), so the check comes first. It is OUR new copy, so a fsck that fixes it is exactly right (rc 0/1 = clean/fixed,
+            # anything else = failed copy). The copy has its own label already and shares only the UUID with the original; that is
+            # replaced right after, then the filesystem is checked again.
             rc = subprocess.run(["e2fsck", "-fy", ndev], capture_output=True).returncode
             if rc > 1:
                 raise Fail("bad-copy", f"e2fsck on the copy returned {rc}")
+            run_out("tune2fs", "-U", "random", "-L", label(new), ndev)
             run_out("e2fsck", "-fn", ndev)
             mnt = tempfile.mkdtemp(prefix="unitotem-slot-")
             run_out("mount", "-o", "ro", ndev, mnt)
