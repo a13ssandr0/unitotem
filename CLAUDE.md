@@ -49,6 +49,7 @@ Developer machines, devices, credentials and procedures: `CLAUDE.local.md` (not 
 ## UI
 - Simple, easy, working, intuitive. Simple means easy to use, not fewer settings. Main screens uncluttered; secondary settings in menus.
 - One source of truth for state; the page always reflects the server state. Unavailable controls are disabled, not hidden.
+- Every configuration change, without exception, is reflected in the web UI at once. The code has hand-written callbacks (`on_assets_update`, `on_current_update`, the broadcast helpers) that do this automatically: new code uses and extends them, never bypasses them or refreshes by hand.
 - On-screen texts are minimal: a label or one short action phrase (setup page: "Create a new administrator account"), never explanatory paragraphs; detail belongs in `docs/`. Live checklists of validation rules are state, not explanation, and are fine.
 - Slot names are capitals (A, B) everywhere. The first-boot welcome page's look is fixed: do not change it.
 

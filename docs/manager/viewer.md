@@ -51,7 +51,7 @@ Viewer start (`run_gui`):
 - Page load end: queued JS flushed; navigation away from the page reverted; a reloaded page sends `WindowReloaded`.
 - Renderer crash: reload after 200 ms, doubling, 10 s max. The new page has no keyboard focus: see Window and page.
 - WebSocket client to `wss://localhost:<port_secure>/remote`, `instance_id=local-webview`, retry every 3 s. `WebviewInfo` sent on connect and on every screen or window change (debounced 100 ms).
-- DevTools (`cdp.py`, asyncio thread): polls `/json/version`, attaches to page targets, enables Runtime, Page, Network, adds bindings, injects FOCUS, ACTIVITY, NO_PRINT, NO_DROP, CURSOR scripts, auto-attaches iframes. Target `?window=N` maps to window N. On page ready: keyboard, screensaver, ticker config re-applied, idle watch reset.
+- DevTools (`cdp.py`, asyncio thread): polls `/json/version`, attaches to page targets, enables Runtime, Page, Network, adds bindings, injects FOCUS, ACTIVITY, NO_PRINT, NO_DROP, CURSOR, FRAME_COOKIE scripts (`PAGE_SCRIPTS`), auto-attaches iframes. Target `?window=N` maps to window N. On page ready: keyboard, screensaver, ticker config re-applied, idle watch reset.
 - Threads: commands go WS thread to Qt thread by `Signal`. `Cdp` and `IdleWatch` run on the asyncio thread.
 - First frame: page calls `utFrame`; its splash leaves 300 ms later. Safety net: all splashes close after 20 s.
 - Shutdown: `request_quit()` quits `exec()`, then `cef.Shutdown()`. If Qt ends the loop alone (compositor gone), `run_gui` raises `RuntimeError` so systemd restarts the service.
@@ -158,6 +158,7 @@ Commands from the manager (`target`, `window_id`):
 - Language: window choice overrides node language; the node language is written into the profile at every start.
 - The page is `file://`; `disable-web-security` is deliberate (scheduled images are drawn into canvases for the average colour).
 - Pages cannot open popups or print; `window.print` is a no-op; drops are cancelled unless the page handles them.
+- A page in a frame is cross-site to the window document, so the browser rejects a cookie it writes without `SameSite` (default Lax). The `document.cookie` setter of https frames adds `SameSite=None; Secure` to a cookie with no SameSite of its own (`FRAME_COOKIE_SCRIPT`). Measured on a Pi 3 with a university timetable monitor page (the page keeps its language in such a cookie and reloads itself when the cookie is missing): 11 reloads in 40 s (a reload every 3.5 s, the renderer at 100% of a core) before, none in 50 s after. Cause found with DevTools: `Network.requestWillBeSent` initiator stack (script and column) of the Document request, and `Network.getCookies`.
 
 ## Tests
 - `python -m pytest manager/tests/test_viewer_profile.py manager/tests/test_viewer_lockdown.py manager/tests/test_viewer_turn.py manager/tests/test_output_transform.py manager/tests/test_identify_pages.py` (repository root).
