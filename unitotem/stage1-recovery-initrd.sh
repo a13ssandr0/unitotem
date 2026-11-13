@@ -21,6 +21,10 @@ mkdir -p "${ROOTFS}" "/deploy/${ARCH}"
 echo "Extracting stage 1..."
 tar -I pigz -C "${ROOTFS}" -xf "${STAGE1}"
 
+# The initrd carries a copy of the OTA engine. The stage1 tarball can be older than deploy/ota-engine.sh (a change of the engine alone does not
+# rebuild stage 1), so the copy is refreshed here, as stage 2 does for the slot initramfs.
+install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
+
 ensure_qemu
 mount_chroot
 install_policy_rc

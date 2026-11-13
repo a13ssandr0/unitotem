@@ -183,6 +183,7 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 
 - `python3 tools/release/test_deploy_backup.py`: `backup_stream`, `backup_running_system`.
 - `tools/release/test_ssh_t_stdout.sh`: the sudo set-up of `ssh_t` writes nothing to stdout (its messages go to stderr: a backup stream is the stdout of an `ssh_t` pipeline).
+- `tools/release/test_check_engine_copy.sh`: `check-engine-copy.sh` on small cpio archives (identical, stale, absent, unreadable).
 - `python3 tools/release/test_ota_net_cmdline.py`: the static address on the kernel command line, both sides (18 checks: validation, precedence, command line length).
 - `python3 tools/release/test_tryboot_firmware.py`: `ensure_tryboot_firmware` with fake ssh, backup and probe (15 checks: no-ops, refusals, order, apt failure, confirmation).
 - `python3 tools/release/test_secure_boot_gate.py`: SecureBoot parsing, gate branches (a non-A/B parts set is refused in `load_parts`, before the gate).
