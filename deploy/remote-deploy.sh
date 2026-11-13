@@ -10,6 +10,7 @@
 #                                     [--port N] [--wipe-data] [--backup-dir DIR] [--no-backup]
 #                                     [--admin-user NAME --admin-password-file FILE [--timezone ZONE]]
 #                                     [--no-firmware-update]
+#   ./deploy/remote-deploy.sh recover HOST[:PORT] ... [--net-dns "A;B;C"]
 #                                     [--console STR] [--yes]
 #                                     [--accept-changes DIGEST]
 #                                     [--secure-boot shim|noshim|abort]
@@ -57,6 +58,7 @@ OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
 OPT_BACKUP_DIR="${UNITOTEM_BACKUP_DIR:-${DIR}/backups}" OPT_NO_BACKUP=0
 OPT_ADMIN_USER="" OPT_ADMIN_PWFILE="" OPT_TIMEZONE="" LEGACY_ARCHIVE=""
 OPT_NO_FIRMWARE_UPDATE=0
+OPT_NET_DNS=""
 # Empty by default: build_legacy_cmdline() picks the console per architecture (tty0 for amd64, tty1 +
 # serial for arm64) unless --console is given.
 OPT_CONSOLE="" OPT_YES=0 OPT_FALLBACK_ONLY=0
@@ -76,6 +78,7 @@ while [ $# -gt 0 ]; do
         --backup-dir) OPT_BACKUP_DIR="$2"; shift 2 ;;
         --no-backup)  OPT_NO_BACKUP=1; shift ;;
         --no-firmware-update) OPT_NO_FIRMWARE_UPDATE=1; shift ;;
+        --net-dns)    OPT_NET_DNS="$2"; shift 2 ;;
         --admin-user) OPT_ADMIN_USER="$2"; shift 2 ;;
         --admin-password-file) OPT_ADMIN_PWFILE="$2"; shift 2 ;;
         --timezone)   OPT_TIMEZONE="$2"; shift 2 ;;
@@ -1059,6 +1062,27 @@ backup_fallback_data() {
         || warn "DATA could not be saved (it does not mount or the transfer failed): continuing without a backup"
 }
 
+# A recovery has no running system to probe, but the fallback was armed with the fixed address of the node (unitotem.ota.addr/gw on its kernel
+# command line, see build_legacy_cmdline): the installed system gets the same address. DNS servers come from --net-dns (IPv4, ';' separated).
+recover_net_from_cmdline() {   # $1 = /proc/cmdline of the fallback
+    local tok addr="" gw=""
+    for tok in $1; do
+        case "$tok" in
+            unitotem.ota.addr=*) addr="${tok#*=}" ;;
+            unitotem.ota.gw=*)   gw="${tok#*=}" ;;
+        esac
+    done
+    [ -z "${P[NETMODE]:-}" ] || return 0
+    [[ "$addr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] || return 0
+    P[NETMODE]=static; P[NETLINK]=wired; P[NETADDR]="$addr"
+    [[ "$gw" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && P[NETGW]="$gw"
+    if [ -n "$OPT_NET_DNS" ]; then
+        [[ "$OPT_NET_DNS" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(;([0-9]{1,3}\.){3}[0-9]{1,3}){0,5}$ ]] || die "--net-dns: IPv4 addresses separated by ';'"
+        P[NETDNS]="$OPT_NET_DNS"
+    fi
+    return 0
+}
+
 cmd_recover() {
     # The target is already in the OTA fallback (both slots unusable, or an unrepairable boot failure): nothing to
     # arm, everything is learned from the engine's probe. DATA is kept when the partition table still has the
@@ -1148,6 +1172,8 @@ cmd_recover() {
     if [ "$keep" != 1 ] && [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ] && [ "$OPT_NO_BACKUP" != 1 ]; then
         backup_fallback_data "$host"
     fi
+    recover_net_from_cmdline "$(ota_ssh "$host" 'cat /proc/cmdline' 2>/dev/null || true)"
+    [ -z "${P[NETADDR]:-}" ] || log "The installed system keeps the fixed address ${P[NETADDR]} (gateway ${P[NETGW]:-none}, DNS ${P[NETDNS]:-none})."
     run_ota_sequence "$host" "$disk"
     log "Recovery sequence sent: the target reboots into the restored system."
 }
