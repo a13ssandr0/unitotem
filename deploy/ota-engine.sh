@@ -1467,9 +1467,30 @@ configure_one_iface() {
 # Network bring-up of the fallback: try every wired interface that has a link (the cable may be in a different port than
 # the running system used), the one named in the deploy configuration first. WiFi targets keep the configured interface.
 # Prints the first address obtained, nothing if none got one.
+# ota_net_from_cmdline: a static address handed to the fallback on the kernel command line (`unitotem.ota.addr=A.B.C.D/N`, optional
+# `unitotem.ota.gw=A.B.C.D`), for a target whose earlier system had a fixed address and no boot FAT to carry unitotem-ota.conf. Values that
+# are not plain IPv4 (octets 0-255, prefix 1-32) are ignored. The command line wins over the file.
+ota_net_from_cmdline() {
+    local addr gw o ip prefix
+    addr=$(cmdline_get unitotem.ota.addr 2>/dev/null) || return 0
+    [[ "$addr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || { log "static address on the command line ignored (not A.B.C.D/N)"; return 0; }
+    for o in 1 2 3 4; do [ "$((10#${BASH_REMATCH[$o]}))" -le 255 ] || { log "static address on the command line ignored (octet above 255)"; return 0; }; done
+    prefix=$((10#${BASH_REMATCH[5]}))
+    { [ "$prefix" -ge 1 ] && [ "$prefix" -le 32 ]; } || { log "static address on the command line ignored (prefix out of range)"; return 0; }
+    ip="${addr%/*}"
+    OTA_NET_MODE=static; OTA_NET_ADDR="${ip}/${prefix}"; OTA_NET_LINK=wired
+    gw=$(cmdline_get unitotem.ota.gw 2>/dev/null) || gw=""
+    OTA_NET_GW=""
+    if [[ "$gw" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+        for o in 1 2 3 4; do [ "$((10#${BASH_REMATCH[$o]}))" -le 255 ] || return 0; done
+        OTA_NET_GW="$gw"
+    fi
+}
+
 configure_networking_ota() {
     local conf=/boot-ota/unitotem-ota.conf iface addr="" ifs="" i w=0 first nw found
     [ -f "$conf" ] && read_kv_lines < "$conf"
+    ota_net_from_cmdline
     # Do not rely on udev's coldplug having bound a driver yet (virtio_net could be present but not loaded).
     # No-ops where these modules do not exist or are already loaded.
     modprobe -a virtio_net genet bcmgenet 2>/dev/null || true
