@@ -5,6 +5,7 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Image and build
+- The recovery initrd gets the current `ota-engine.sh` (stage 1b refreshes it from the repository, not the stage 1 tarball); verify-image compares the engine copy of the recovery initrd and of the slot initramfs with the repository's.
 - Kiosk image on Debian 13 (trixie), amd64 and arm64, built with Docker or natively on the Pi.
 - arm64 uses the Raspberry Pi kernel, raspi-firmware boot files and a slimmed initramfs.
 - amd64 boots on BIOS and UEFI; Intel, AMD and NVIDIA GPUs supported, vendor picked at runtime.

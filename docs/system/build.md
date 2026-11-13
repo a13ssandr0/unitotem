@@ -20,6 +20,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | `unitotem/make-flash-image.sh` | Flash image from the full image |
 | `unitotem/verify-image.sh` | Static rule checks on the mounted image (PASS/FAIL) |
 | `unitotem/check-recovery-commands.sh` | Every external command of `ota-engine.sh` exists in the recovery initrd |
+| `unitotem/check-engine-copy.sh` | The `ota-engine.sh` inside an initramfs is the repository's (verify-image: recovery initrd and slot initramfs) |
 | `unitotem/slim-initramfs.py` | arm64 initramfs reduction: no `hwdb.bin`, Raspberry Pi Wi-Fi firmware only |
 | `unitotem/locks/<arch>.lock` | Pinned package set (see `package-lock.md`) |
 | `unitotem/files/` | Payload copied into the image: units, scripts, configs, hooks, pre-rendered OTA frame and logo blobs |
@@ -36,6 +37,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - arm64 on an amd64 build server (Docker + `qemu-aarch64` registered in `binfmt_misc`; check with `docker run --rm --platform linux/arm64 debian:trixie uname -m`): `FORCE_STAGE=1 ARCHES=arm64 ./build-unitotem.sh` with `PI_HOST` unset. Measured on a 144-core server building amd64 in parallel: stage 0 about 15 min, stage 1 about 50 min (package configuration under emulation), stages 2-3 about 15 min; about 65 min to the image, `verify-image` 190 checks, 0 failed. The resulting image booted on a Raspberry Pi 4 and passed the A/B update, so it is equivalent to a native build. The native path needs the test Pi for 1.5-2 h and blocks it; the server path does not.
   - Stage 0 and 1: run when the tarball is missing or stale.
   - Stage 1b (recovery initrd): runs when stage 1 ran or `recovery.manifest` is missing.
+  - Stage 1b installs `deploy/ota-engine.sh` into its rootfs after extracting `stage1.tar.gz` (as stage 2 does for the slot initramfs): the tarball can hold an older engine. Rebuild after a change of the engine alone, without redoing stage 1 (about an hour per architecture): on the build server set the mtime of `deploy/ota-engine.sh` before the stage 1 tarball (`touch -d`), delete `deploy/<arch>/recovery.manifest`, run with `FORCE_STAGE=2`; stage 1 is skipped, 1b, 2 and 3 run (about 25 minutes). A later full rebuild reads the real file.
   - Stage 2: runs when stale or when `AB_LAYOUT` differs from `work/<arch>/stage2.layout`.
   - Stage 3: always runs.
 - Staleness: a tarball is rebuilt when `unitotem/stage<N>*.sh`, `unitotem/common.sh`, `Dockerfile.unitotem` or the previous tarball is newer. Stages 1 and 2 also depend on `unitotem/files/*` and `deploy/ota-engine.sh`. `FORCE_STAGE=N` deletes tarballs N and up.
