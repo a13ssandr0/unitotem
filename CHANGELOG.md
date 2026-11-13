@@ -49,7 +49,7 @@
 
 #### Deploy and recovery
 - `recover` of a node armed with a fixed address installs the system with the same address and gateway (`--net-dns` for the resolvers).
-- The deploy checks that the target can open the data connection to the host and, when it cannot (a node behind a VPN), serves the data through a reverse SSH tunnel over the OTA session.
+- The deploy checks that the target can open the data connection to the host and, when it cannot (a node behind a VPN), pushes the data through the OTA session into an `nc` on the target's loopback.
 - A target that had a fixed wired address reaches the OTA fallback at it: the address and gateway travel on the kernel command line (a node on a routed network has no DHCP server and the earlier system leaves no boot FAT to read them from).
 - Deploy through a non-root login user: the escalation message no longer lands inside the backup stream (the archive of a password-sudo target was corrupt).
 - Deploy of a Raspberry Pi 4/5 whose firmware has no tryboot: the script first saves the old firmware files, upgrades `raspberrypi-bootloader`, restarts the board and probes again (refused while under-voltage is reported; `--no-firmware-update` skips).
