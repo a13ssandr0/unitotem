@@ -137,6 +137,7 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 - Each archive has a `.sha256` sidecar and is read back before the deploy continues; `.tar.xz` when zstd is missing.
 - Free space must exceed the used size. A failed backup stops the deploy with the target unchanged.
 - `--no-backup` skips; `--fallback-only` never backs up.
+- Single-root archives also hold `etc/timezone`. After the deploy, `--admin-user`/`--admin-password-file` (and `--timezone`) make the script migrate the archive onto the new system with `tools/migrate-legacy.py` ([legacy-import.md](../manager/legacy-import.md)); the backup is always made by the script itself, before anything is armed.
 
 ## Rules and gotchas
 

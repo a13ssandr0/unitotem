@@ -22,6 +22,7 @@ Component documentation of the UniTotem repository. System docs describe the ima
 - [overview.md](manager/overview.md): functional specification.
 - [backend.md](manager/backend.md): web server, websocket API, sessions, uploads, backup, notifications, plugin loader.
 - [scheduler.md](manager/scheduler.md): playlists, assets, uploads, assignment to windows and panes.
+- [legacy-import.md](manager/legacy-import.md): import of a 2.x node (settings, media, timers) and its migration by the deploy.
 - [layout-and-ticker.md](manager/layout-and-ticker.md): window layouts and the RSS ticker.
 - [viewer.md](manager/viewer.md): fullscreen CEF windows, Qt splash, compositor units, on-screen keyboard.
 - [cef.md](manager/cef.md): CEF runtime, Wayland Views API, CEF and wheel builds, codecs, hardware decode.

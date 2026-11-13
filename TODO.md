@@ -68,7 +68,6 @@
 
 ## Defects found in review
 - [manager/webui] Scheduler: deleting files from the file list, and deleting items from the playlist, change the playlists on the server but the playlist shown in the web UI is not refreshed afterwards; go through the callbacks (`_bind_playlist_callbacks`, `on_assets_update`) and check every other configuration change against the new rule in CLAUDE.md (reported by the user 2026-11-13).
-- [manager] `tools/import-unitotem2.py` does not assign the imported playlist to the viewer windows: the window shows the idle page until the playlist is assigned by hand (found on the production Pi 3, 2026-11-13); assign it and verify it in the importer, with a test.
 - [manager] debian/control:89 depends on python3-pampy but osusers.py imports `pam` (python-pam); also in unitotem/locks/*.lock.
 - [manager] webui scheduler.vue:557 upload errors only logged, :535 Reload button only animates; users.vue:36 deletes account without confirmation, :164 hard-coded permission list (keep in step with `UserPerms`); display.vue:9 label promises a missing click action, orientation/flip always send `window_id: 0`.
 - [manager] webui polish: native `confirm()` (scheduler.vue:528,603, timers.vue:277); viewers.vue:340-349 `pending` set and cleared in one tick, `assignments`/`connected` never read; base.vue:103,115 Vuetify 2 colour names (`red darken-1`); info.vue:59-60 temperatures above 300 greyed, purpose unclear.
