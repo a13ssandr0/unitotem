@@ -36,7 +36,7 @@ require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip b
 
 # The sudo askpass helper holds the target password, so it must not outlive the run (including failure or
 # Ctrl-C). No-op when logged in as root or when sudo is passwordless.
-trap 'data_tunnel_stop; clear_target_privilege; [ -z "${RECOVERY_TMP:-}" ] || rm -rf -- "${RECOVERY_TMP}"' EXIT
+trap 'clear_target_privilege; [ -z "${RECOVERY_TMP:-}" ] || rm -rf -- "${RECOVERY_TMP}"' EXIT
 
 # ---------------------------------------------------------------------------
 SUBCMD="${1:-}"; shift || true
@@ -586,24 +586,20 @@ populate_bootfs_step() {
     [ -z "${DATA_HOSTIP_OVERRIDE:-}" ] || hostip="$DATA_HOSTIP_OVERRIDE"
     local bootfs_tar; bootfs_tar=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
     [ -n "$bootfs_tar" ] || return 0
-    local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
-    wait_port_bound "$OPT_PORT" 10 || die "data listener not ready (bootfs)"
+    local pid; pid=$(serve_data "$host" "${OPT_PARTS}/${bootfs_tar}")
+    wait_data_ready bootfs
     local lay="--layout ab"
     [ "$SB_MODE" = shim ] && lay="$lay --secure-boot shim"
     # shellcheck disable=SC2086
     ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}' ${lay}"
-    wait "$pid" 2>/dev/null || true
+    data_wait "$pid"
 }
 
 # The data channel is opened by the TARGET towards this host (restore-part, populate-bootfs). A node on a routed network (a VPN) answers the SSH
 # connection but has no route back to the host, and "No route to host" stops the sequence after the table is rewritten. So the way back is tried first
-# with a throw-away listener; when it fails, this host opens a reverse tunnel over the OTA session (the target's loopback port reaches this host)
-# and the engine is told to use 127.0.0.1. DATA_HOSTIP_OVERRIDE is empty when the direct way works.
-DATA_HOSTIP_OVERRIDE="" DATA_TUNNEL_PID=""
-data_tunnel_stop() {
-    [ -z "${DATA_TUNNEL_PID:-}" ] || kill "$DATA_TUNNEL_PID" 2>/dev/null || true
-    DATA_TUNNEL_PID=""
-}
+# with a throw-away listener. When it fails the data goes in through the OTA session instead (the fallback's dropbear runs with -j -k: no port
+# forwarding): this host pipes each file into an `nc` that listens on the target's loopback and the engine is told `--data-host 127.0.0.1`.
+DATA_HOSTIP_OVERRIDE="" DATA_PUSH=0
 data_path_ok() {   # $1 host, $2 address the target connects to
     local lp rc
     socat -u "TCP-LISTEN:${OPT_PORT},reuseaddr" OPEN:/dev/null >/dev/null 2>&1 &
@@ -614,24 +610,44 @@ data_path_ok() {   # $1 host, $2 address the target connects to
     wait "$lp" 2>/dev/null || true
     return "$rc"
 }
+data_push_start() {   # $1 host, $2 file; prints the pid of the pipe
+    ota_auth_for "$1"
+    ( cat -- "$2" | _ota_ssh_exec "$OTA_AUTH_TARGET" "nc -l -p ${OPT_PORT} -s 127.0.0.1 -q 2" ) >/dev/null 2>&1 &
+    echo $!
+}
+data_push_ok() {   # $1 host: a few bytes through the pipe, read back on the target's loopback
+    local pp rc
+    ota_auth_for "$1"
+    ( printf 'ok\n' | _ota_ssh_exec "$OTA_AUTH_TARGET" "nc -l -p ${OPT_PORT} -s 127.0.0.1 -q 1" ) >/dev/null 2>&1 &
+    pp=$!
+    sleep 3
+    ota_ssh "$1" "timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/${OPT_PORT}; read -r -t 4 x <&3; [ \"\$x\" = ok ]'" >/dev/null 2>&1; rc=$?
+    kill "$pp" 2>/dev/null || true
+    wait "$pp" 2>/dev/null || true
+    return "$rc"
+}
+serve_data() {   # $1 host, $2 file; prints the pid of what serves the file
+    if [ "$DATA_PUSH" = 1 ]; then data_push_start "$1" "$2"; else serve_file_once "$2" "$OPT_PORT"; fi
+}
+data_wait() {   # $1 pid: the server of a file ran inside $(...), so `wait` cannot see it; its next successor must not meet it on the same port
+    local n=0
+    while kill -0 "$1" 2>/dev/null && [ "$n" -lt 120 ]; do sleep 0.5; n=$((n + 1)); done
+    return 0
+}
+wait_data_ready() {   # $1 what, for the message
+    if [ "$DATA_PUSH" = 1 ]; then sleep 3; else wait_port_bound "$OPT_PORT" 10 || die "data listener not ready ($1)"; fi
+}
 data_path_setup() {   # $1 host, $2 host address as the target should reach it
     local host="$1" hostip="$2"
-    DATA_HOSTIP_OVERRIDE=""
+    DATA_HOSTIP_OVERRIDE=""; DATA_PUSH=0
     if data_path_ok "$host" "$hostip"; then
         log "The target reaches the data listener at ${hostip}:${OPT_PORT}."
         return 0
     fi
-    log "The target cannot reach ${hostip}:${OPT_PORT}: opening a reverse tunnel over the OTA session."
-    ota_auth_for "$host"
-    _ota_ssh_exec -n -N -o ExitOnForwardFailure=yes -R "${OPT_PORT}:127.0.0.1:${OPT_PORT}" "$OTA_AUTH_TARGET" >/dev/null 2>&1 &
-    DATA_TUNNEL_PID=$!
-    sleep 3
-    if ! kill -0 "$DATA_TUNNEL_PID" 2>/dev/null || ! data_path_ok "$host" 127.0.0.1; then
-        data_tunnel_stop
-        die "the target cannot reach this host for the data channel, neither directly nor through a reverse tunnel"
-    fi
-    DATA_HOSTIP_OVERRIDE=127.0.0.1
-    log "Reverse tunnel up: the target reads the data from its own 127.0.0.1:${OPT_PORT}."
+    log "The target cannot reach ${hostip}:${OPT_PORT}: sending the data through the OTA session."
+    data_push_ok "$host" || die "the target cannot reach this host for the data channel, neither directly nor through the OTA session"
+    DATA_HOSTIP_OVERRIDE=127.0.0.1; DATA_PUSH=1
+    log "Data through the OTA session: the target reads it from its own 127.0.0.1:${OPT_PORT}."
 }
 
 run_ota_sequence() {
@@ -757,10 +773,10 @@ run_ota_sequence() {
                 stream="${block[UNITOTEM_PART_STREAM_FILE]}"
                 comp="${block[UNITOTEM_PART_COMP]:-xz}"
                 log "Restoring partition ${partnum} (${label}, ${cloner})..."
-                local pid; pid=$(serve_file_once "${OPT_PARTS}/${stream}" "$OPT_PORT")
-                wait_port_bound "$OPT_PORT" 10 || die "data listener not ready (partition ${partnum})"
+                local pid; pid=$(serve_data "$host" "${OPT_PARTS}/${stream}")
+                wait_data_ready "partition ${partnum}"
                 ota_ssh "$host" "unitotem-ota-engine restore-part --disk '${disk}' --part '${partnum}' --cloner '${cloner}' --comp '${comp}' --used-bytes '${used}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
-                wait "$pid" 2>/dev/null || true
+                data_wait "$pid"
                 ;;
             format)
                 ota_ssh "$host" "unitotem-ota-engine format-part --disk '${disk}' --part '${partnum}' --label '${label}'"
