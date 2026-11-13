@@ -47,6 +47,7 @@
 - `slot_sound` requires a kernel and initrd on GRUB; update lock no longer unlinked on release; health check verifies TLS against a CA file; `unitotem-maintenance` stops when `update-grub` fails.
 
 #### Deploy and recovery
+- Deploy through a non-root login user: the escalation message no longer lands inside the backup stream (the archive of a password-sudo target was corrupt).
 - Deploy of a Raspberry Pi 4/5 whose firmware has no tryboot: the script first saves the old firmware files, upgrades `raspberrypi-bootloader`, restarts the board and probes again (refused while under-voltage is reported; `--no-firmware-update` skips).
 - Deploy probe: dhcp or static is read from the default route protocol, so a stale lease file no longer turns a static node into a DHCP one.
 - `remote-deploy.sh deploy` migrates the settings of a 2.x node from its own backup archive (`--admin-user`, `--admin-password-file`, `--timezone`): first administrator, playlist assigned to the windows, media, hostname, time zone, power/reboot timers from the crontab.
