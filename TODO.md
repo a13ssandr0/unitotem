@@ -11,7 +11,7 @@
 - [system] Real GitHub release test (redirects, API limits, 2 GiB asset limit, publish workflow) and whether images may be public once checked for secrets.
 - [system] Legacy pi-gen tree at the repo root (build.sh, stage0-2/, export-image/, Dockerfile...): remove or keep.
 - [system] Windows-source installer: build (8-12 days MVP, docs/system/windows-install-research.md) or delete the research.
-- [system] Secure Boot: always ship the shim chain? QEMU proof pending; real firmware "Security Violation" text unverified.
+- [system] Secure Boot: always ship the shim chain? Proven again in QEMU/OVMF on build 66 (`boot.md#secure-boot-amd64`); real firmware (the .8 of the field has Secure Boot on, Intel board, db with the Microsoft Third Party Marketplace Root) and the "Security Violation" text unverified; NVIDIA needs the MOK enrolment.
 - [system] Pi 4K60 (hdmi_enable_4kp60) undecided; pin ~60 Raspberry packages and backports (kernel, Mesa, firmware) undecided.
 - [manager] Upstream CEF/cefpython issues and PRs are not opened (patches and docs/manager/cef/pr-*.md ready); user decides.
 - [manager] Lean CEF build (docs/manager/cef/lean-build.md section 6): decision open.

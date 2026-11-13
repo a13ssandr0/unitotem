@@ -78,6 +78,7 @@
 - `/home` is a size-capped tmpfs when there is no DATA, so the first administrator can be created.
 
 #### Boot and display
+- Secure Boot chain (shim, signed GRUB, signed kernel) booted again under QEMU/OVMF with the Microsoft keys on build 2026.11.66, kernel locked down; the plain image is refused.
 - Plymouth UniTotem theme starts before the OTA check; held until the compositor starts.
 - Black gap at boot cut to about 0.5 s on Raspberry Pi 4.
 - Boot orientation set per display connector on Raspberry Pi and PC.
