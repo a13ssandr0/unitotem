@@ -600,28 +600,37 @@ populate_bootfs_step() {
 # with a throw-away listener. When it fails the data goes in through the OTA session instead (the fallback's dropbear runs with -j -k: no port
 # forwarding): this host pipes each file into an `nc` that listens on the target's loopback and the engine is told `--data-host 127.0.0.1`.
 DATA_HOSTIP_OVERRIDE="" DATA_PUSH=0
+run_bounded() {   # $1 seconds, then a command or function: its status, or 124 when it ran out of time (the fallback has no `timeout`)
+    local secs="$1" bp n=0 rc; shift
+    ( "$@" ) &
+    bp=$!
+    while kill -0 "$bp" 2>/dev/null && [ "$n" -lt $((secs * 2)) ]; do sleep 0.5; n=$((n + 1)); done
+    if kill -0 "$bp" 2>/dev/null; then kill "$bp" 2>/dev/null || true; wait "$bp" 2>/dev/null || true; return 124; fi
+    wait "$bp"; rc=$?
+    return "$rc"
+}
 data_path_ok() {   # $1 host, $2 address the target connects to
     local lp rc
     socat -u "TCP-LISTEN:${OPT_PORT},reuseaddr" OPEN:/dev/null >/dev/null 2>&1 &
     lp=$!
     wait_port_bound "$OPT_PORT" 5 || { kill "$lp" 2>/dev/null; return 1; }
-    ota_ssh "$1" "timeout 5 bash -c 'exec 3<>/dev/tcp/${2}/${OPT_PORT}'" >/dev/null 2>&1; rc=$?
+    run_bounded 15 ota_ssh "$1" "/bin/bash -c 'exec 3<>/dev/tcp/${2}/${OPT_PORT}'" >/dev/null 2>&1; rc=$?
     kill "$lp" 2>/dev/null || true
     wait "$lp" 2>/dev/null || true
     return "$rc"
 }
-data_push_start() {   # $1 host, $2 file; prints the pid of the pipe
+data_push_start() {   # $1 host, $2 file; prints the pid of the pipe. The fallback's loopback is down until `ip link set lo up`.
     ota_auth_for "$1"
-    ( cat -- "$2" | _ota_ssh_exec "$OTA_AUTH_TARGET" "nc -l -p ${OPT_PORT} -s 127.0.0.1 -q 2" ) >/dev/null 2>&1 &
+    ( cat -- "$2" | _ota_ssh_exec "$OTA_AUTH_TARGET" "ip link set lo up; nc -l -p ${OPT_PORT} -s 127.0.0.1 -q 2" ) >/dev/null 2>&1 &
     echo $!
 }
 data_push_ok() {   # $1 host: a few bytes through the pipe, read back on the target's loopback
     local pp rc
     ota_auth_for "$1"
-    ( printf 'ok\n' | _ota_ssh_exec "$OTA_AUTH_TARGET" "nc -l -p ${OPT_PORT} -s 127.0.0.1 -q 1" ) >/dev/null 2>&1 &
+    ( printf 'ok\n' | _ota_ssh_exec "$OTA_AUTH_TARGET" "ip link set lo up; nc -l -p ${OPT_PORT} -s 127.0.0.1 -q 1" ) >/dev/null 2>&1 &
     pp=$!
     sleep 3
-    ota_ssh "$1" "timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/${OPT_PORT}; read -r -t 4 x <&3; [ \"\$x\" = ok ]'" >/dev/null 2>&1; rc=$?
+    run_bounded 15 ota_ssh "$1" "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/${OPT_PORT}; read -r -t 4 x <&3; [ \"\$x\" = ok ]'" >/dev/null 2>&1; rc=$?
     kill "$pp" 2>/dev/null || true
     wait "$pp" 2>/dev/null || true
     return "$rc"
