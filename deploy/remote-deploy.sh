@@ -8,6 +8,7 @@
 #   ./deploy/remote-deploy.sh changes root@host [--json]
 #   ./deploy/remote-deploy.sh deploy  root@host [--parts DIR] [--disk BYID]
 #                                     [--port N] [--wipe-data] [--backup-dir DIR] [--no-backup]
+#                                     [--admin-user NAME --admin-password-file FILE [--timezone ZONE]]
 #                                     [--console STR] [--yes]
 #                                     [--accept-changes DIGEST]
 #                                     [--secure-boot shim|noshim|abort]
@@ -53,6 +54,7 @@ esac
 OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
 # Backup of the UniTotem data of a target that already runs UniTotem, taken before anything is overwritten (default: backups/ in the repository).
 OPT_BACKUP_DIR="${UNITOTEM_BACKUP_DIR:-${DIR}/backups}" OPT_NO_BACKUP=0
+OPT_ADMIN_USER="" OPT_ADMIN_PWFILE="" OPT_TIMEZONE="" LEGACY_ARCHIVE=""
 # Empty by default: build_legacy_cmdline() picks the console per architecture (tty0 for amd64, tty1 +
 # serial for arm64) unless --console is given.
 OPT_CONSOLE="" OPT_YES=0 OPT_FALLBACK_ONLY=0
@@ -71,6 +73,9 @@ while [ $# -gt 0 ]; do
         --wipe-data)  OPT_WIPE_DATA=1; shift ;;
         --backup-dir) OPT_BACKUP_DIR="$2"; shift 2 ;;
         --no-backup)  OPT_NO_BACKUP=1; shift ;;
+        --admin-user) OPT_ADMIN_USER="$2"; shift 2 ;;
+        --admin-password-file) OPT_ADMIN_PWFILE="$2"; shift 2 ;;
+        --timezone)   OPT_TIMEZONE="$2"; shift 2 ;;
         --console)    OPT_CONSOLE="$2"; shift 2 ;;
         --yes)        OPT_YES=1; shift ;;
         --fallback-only) OPT_FALLBACK_ONLY=1; shift ;;
@@ -798,7 +803,7 @@ backup_running_system() {
 # UniTotem 1.x/2.x on a single-root system keeps its data in a few places of the ordinary root filesystem: settings in /etc/unitotem, the uploaded
 # media next to the package, root's crontab (the scheduled reboots/shutdowns), the network profiles, hostname, the TLS certificate and the kiosk
 # launch file. They are saved before the disk is replaced, with the same checks as the A/B backup.
-LEGACY_DATA_PATHS="etc/unitotem usr/share/unitotem-manager/static/uploaded var/spool/cron/crontabs/root etc/netplan etc/hostname etc/hosts etc/ssl/unitotem.pem etc/asound.conf etc/X11/xinit/xinitrc"
+LEGACY_DATA_PATHS="etc/unitotem usr/share/unitotem-manager/static/uploaded var/spool/cron/crontabs/root etc/netplan etc/hostname etc/timezone etc/hosts etc/ssl/unitotem.pem etc/asound.conf etc/X11/xinit/xinitrc"
 backup_legacy_system() {
     [ -n "${P[LEGACY_UNITOTEM]:-}" ] && [ "${P[LEGACY_UNITOTEM]}" != none ] && [ "${P[HAVE_UNITOTEM]:-0}" != 1 ] \
         && [ "$OPT_NO_BACKUP" != 1 ] && [ "$OPT_FALLBACK_ONLY" != 1 ] || return 0
@@ -812,6 +817,7 @@ backup_legacy_system() {
     out=$(backup_stream "$OPT_BACKUP_DIR" "unitotem-legacy-${label}-${ver}-${ts}" ssh_t \
         "cd /; tar --numeric-owner --ignore-failed-read -cf - \$(for p in $LEGACY_DATA_PATHS; do [ -e \$p ] && echo \$p; done)") \
         || die "the backup of ${label} failed: nothing was changed on the target (--no-backup skips the backup)"
+    LEGACY_ARCHIVE="${out}"
     log "Backup written and verified: ${out}"
 }
 
@@ -833,6 +839,24 @@ post_deploy_probe() {
         301|302|307|308) [[ "$redir" == https://* ]] && { echo "$answer"; return 0; } ;;
     esac
     return 1
+}
+
+# Migration of the settings of the earlier system: the archive written by backup_legacy_system is the only input; tools/migrate-legacy.py creates the
+# first administrator (when the new system has none) and imports settings, media, hostname, time zone and the marked crontab lines as they were.
+migrate_legacy() {
+    local ip="$1"
+    [ -n "${LEGACY_ARCHIVE:-}" ] || return 0
+    if [ -z "$OPT_ADMIN_USER" ] || [ -z "$OPT_ADMIN_PWFILE" ]; then
+        warn "the settings of the earlier system are in ${LEGACY_ARCHIVE}; give --admin-user and --admin-password-file to migrate them"
+        return 0
+    fi
+    [ -r "$OPT_ADMIN_PWFILE" ] || die "cannot read ${OPT_ADMIN_PWFILE}"
+    local args=(--archive "$LEGACY_ARCHIVE" --host "$ip" --admin-user "$OPT_ADMIN_USER" --admin-password-file "$OPT_ADMIN_PWFILE")
+    [ -z "$OPT_TIMEZONE" ] || args+=(--timezone "$OPT_TIMEZONE")
+    log "Migrating the settings of the earlier system to ${ip}..."
+    python3 -I "${DIR}/tools/migrate-legacy.py" "${args[@]}" \
+        && log "Settings migrated and verified." \
+        || warn "the migration failed: the settings are intact in ${LEGACY_ARCHIVE}; run tools/migrate-legacy.py again"
 }
 
 cmd_deploy() {
@@ -916,6 +940,7 @@ cmd_deploy() {
         [ "$waited" -lt 600 ] || { warn "${target_ip} did not answer on the new system within 10 minutes - check manually (it may still be in stage 2, or waiting in the fallback)"; return 0; }
     done
     log "Deploy complete: ${target_ip} answers on the new system (HTTPS /login: ${answer})."
+    migrate_legacy "$target_ip"
     return 0
 }
 
