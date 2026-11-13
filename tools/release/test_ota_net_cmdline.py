@@ -19,7 +19,7 @@ def check(name, cond, extra=""):
 
 
 def cut(text, name):
-    m = re.search(r"^%s\(\) \{\n.*?^\}\n" % name, text, re.S | re.M)
+    m = re.search(r"^%s\(\) \{[^\n]*\n.*?^\}\n" % name, text, re.S | re.M)
     assert m, name + " not found"
     return m.group(0)
 
@@ -66,6 +66,28 @@ out, rc = arming("static", link="wifi")
 check("wifi node: no address on the command line", rc == 0 and "unitotem.ota.addr" not in out, out)
 out, rc = arming("static", gw="")
 check("static node without gateway: address only", rc == 0 and "unitotem.ota.addr=10.113.6.7/24" in out and "unitotem.ota.gw" not in out, out)
+
+
+RECOVER = cut(DEPLOY, "recover_net_from_cmdline")
+
+
+def recovering(cmdline, dns="", pre=""):
+    script = ("set -u\ndie() { echo \"DIE: $*\"; exit 1; }\ndeclare -A P\nOPT_NET_DNS='%s'\n%s" % (dns, pre) + RECOVER
+              + "\nrecover_net_from_cmdline '%s'\necho \"MODE=${P[NETMODE]:-} LINK=${P[NETLINK]:-} ADDR=${P[NETADDR]:-} GW=${P[NETGW]:-} DNS=${P[NETDNS]:-}\"\n" % cmdline)
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    return r.stdout.strip(), r.returncode
+
+
+out, rc = recovering("quiet unitotem.ota=1 unitotem.ota.addr=10.113.6.7/24 unitotem.ota.gw=10.113.6.254", dns="192.167.48.2;1.1.1.1")
+check("recover: address, gateway and DNS become the installed system's network", rc == 0 and out == "MODE=static LINK=wired ADDR=10.113.6.7/24 GW=10.113.6.254 DNS=192.167.48.2;1.1.1.1", out)
+out, rc = recovering("quiet unitotem.ota=1")
+check("recover: a fallback armed without an address changes nothing", rc == 0 and out == "MODE= LINK= ADDR= GW= DNS=", out)
+out, rc = recovering("unitotem.ota.addr=10.113.6.7/24 unitotem.ota.gw=x;reboot")
+check("recover: a bad gateway is dropped, the address kept", rc == 0 and "ADDR=10.113.6.7/24 GW= " in out, out)
+out, rc = recovering("unitotem.ota.addr=10.113.6.7/24", dns="8.8.8.8;evil")
+check("recover: bad DNS list refused", rc == 1 and "DIE" in out, out)
+out, rc = recovering("unitotem.ota.addr=10.113.6.7/24", pre="P[NETMODE]=dhcp\n")
+check("recover: an already known network mode is not overridden", rc == 0 and out.startswith("MODE=dhcp"), out)
 
 print(f"\n{ok} passed, {fail} failed")
 raise SystemExit(1 if fail else 0)
