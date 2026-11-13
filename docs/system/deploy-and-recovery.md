@@ -38,6 +38,8 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
   - UI sequence: `changes --json`; if `verdict` is `clean`, deploy; else show packages and unexplained files, keep `digest`, and after confirmation run `deploy --accept-changes DIGEST`. A digest mismatch means the system changed: restart from `changes`.
   - The check runs over `ssh_t` with no timeout of its own and is I/O bound: the first run after a boot is much slower than later ones, so callers allow generous time.
   - Exit 127 comes from the SSH wrapper when the target lacks the tool (image predates it): `changes` exits 3, the deploy gate only warns and continues.
+- The probe takes dhcp or static from the protocol of the default route of the link (`proto dhcp`, `proto static`); lease files and `nmcli` decide only when the route names none (a lease file left from an earlier DHCP setup made a static node look DHCP).
+- `tryboot` comes from the `tryboot` node the running VideoCore firmware publishes under `/proc/device-tree/chosen/bootloader`: a Pi 4 whose `/boot` firmware is older (measured: `start4.elf` of March 2022 has no node, October 2022 has it, with the same EEPROM and the same `capabilities` word `0x1f`) reads `tryboot: 0` and the deploy refuses it until `raspberrypi-bootloader` is updated.
 - `probe` prints `Secure Boot : enabled (deploy will ask how to proceed) | disabled | cannot be detected` and `Earlier UniTotem (single root): <version|none>`. The state is read from the `SecureBoot` EFI variable on a UEFI boot only, never guessed.
 
 Stage 1 (fallback installed; a power loss boots the fallback):
