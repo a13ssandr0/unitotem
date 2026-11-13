@@ -200,9 +200,14 @@ fi
 echo "NETIF: ${NETIF:-none}"
 if [ -n "$NETIF" ]; then
     [ -e "/sys/class/net/${NETIF}/wireless" ] && echo "NETLINK: wifi" || echo "NETLINK: wired"
-    if nmcli -t -f IP4.DHCP4 device show "$NETIF" 2>/dev/null | grep -q .; then
+    # The protocol of the default route is what configured the link ("proto dhcp" or "proto static"); the lease files below can be left over
+    # from an earlier DHCP configuration and only decide when the route says nothing.
+    RPROTO=$(ip -o -4 route show default dev "$NETIF" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="proto"){print $(i+1); exit}}')
+    if [ "$RPROTO" = dhcp ]; then
         echo "NETMODE: dhcp"
-    elif [ -f "/var/lib/dhcp/dhclient.${NETIF}.leases" ] || [ -f "/run/systemd/netif/leases/$(cat /sys/class/net/${NETIF}/ifindex 2>/dev/null)" ]; then
+    elif [ "$RPROTO" != static ] && nmcli -t -f IP4.DHCP4 device show "$NETIF" 2>/dev/null | grep -q .; then
+        echo "NETMODE: dhcp"
+    elif [ "$RPROTO" != static ] && { [ -f "/var/lib/dhcp/dhclient.${NETIF}.leases" ] || [ -f "/run/systemd/netif/leases/$(cat /sys/class/net/${NETIF}/ifindex 2>/dev/null)" ]; }; then
         echo "NETMODE: dhcp"
     else
         echo "NETMODE: static"

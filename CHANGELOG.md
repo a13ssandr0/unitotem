@@ -47,6 +47,7 @@
 - `slot_sound` requires a kernel and initrd on GRUB; update lock no longer unlinked on release; health check verifies TLS against a CA file; `unitotem-maintenance` stops when `update-grub` fails.
 
 #### Deploy and recovery
+- Deploy probe: dhcp or static is read from the default route protocol, so a stale lease file no longer turns a static node into a DHCP one.
 - `remote-deploy.sh deploy` migrates the settings of a 2.x node from its own backup archive (`--admin-user`, `--admin-password-file`, `--timezone`): first administrator, playlist assigned to the windows, media, hostname, time zone, power/reboot timers from the crontab.
 - Remote deploy over SSH reflashes existing devices without physical access.
 - Two-stage OTA: RAM-resident fallback restores ROOT and BOOT, DATA preserved.
