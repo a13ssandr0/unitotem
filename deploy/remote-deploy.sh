@@ -35,7 +35,7 @@ require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip b
 
 # The sudo askpass helper holds the target password, so it must not outlive the run (including failure or
 # Ctrl-C). No-op when logged in as root or when sudo is passwordless.
-trap 'clear_target_privilege; [ -z "${RECOVERY_TMP:-}" ] || rm -rf -- "${RECOVERY_TMP}"' EXIT
+trap 'data_tunnel_stop; clear_target_privilege; [ -z "${RECOVERY_TMP:-}" ] || rm -rf -- "${RECOVERY_TMP}"' EXIT
 
 # ---------------------------------------------------------------------------
 SUBCMD="${1:-}"; shift || true
@@ -580,6 +580,7 @@ populate_bootfs_step() {
     local hostip="${P[SSHCLIENT]:-}"
     [ -n "$hostip" ] && [ "$hostip" != none ] || hostip=$(ip -o route get "${host}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
     [ -n "$hostip" ] || die "cannot determine the host IP towards the target"
+    [ -z "${DATA_HOSTIP_OVERRIDE:-}" ] || hostip="$DATA_HOSTIP_OVERRIDE"
     local bootfs_tar; bootfs_tar=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
     [ -n "$bootfs_tar" ] || return 0
     local pid; pid=$(serve_file_once "${OPT_PARTS}/${bootfs_tar}" "$OPT_PORT")
@@ -589,6 +590,45 @@ populate_bootfs_step() {
     # shellcheck disable=SC2086
     ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}' ${lay}"
     wait "$pid" 2>/dev/null || true
+}
+
+# The data channel is opened by the TARGET towards this host (restore-part, populate-bootfs). A node on a routed network (a VPN) answers the SSH
+# connection but has no route back to the host, and "No route to host" stops the sequence after the table is rewritten. So the way back is tried first
+# with a throw-away listener; when it fails, this host opens a reverse tunnel over the OTA session (the target's loopback port reaches this host)
+# and the engine is told to use 127.0.0.1. DATA_HOSTIP_OVERRIDE is empty when the direct way works.
+DATA_HOSTIP_OVERRIDE="" DATA_TUNNEL_PID=""
+data_tunnel_stop() {
+    [ -z "${DATA_TUNNEL_PID:-}" ] || kill "$DATA_TUNNEL_PID" 2>/dev/null || true
+    DATA_TUNNEL_PID=""
+}
+data_path_ok() {   # $1 host, $2 address the target connects to
+    local lp rc
+    socat -u "TCP-LISTEN:${OPT_PORT},reuseaddr" OPEN:/dev/null >/dev/null 2>&1 &
+    lp=$!
+    wait_port_bound "$OPT_PORT" 5 || { kill "$lp" 2>/dev/null; return 1; }
+    ota_ssh "$1" "timeout 5 bash -c 'exec 3<>/dev/tcp/${2}/${OPT_PORT}'" >/dev/null 2>&1; rc=$?
+    kill "$lp" 2>/dev/null || true
+    wait "$lp" 2>/dev/null || true
+    return "$rc"
+}
+data_path_setup() {   # $1 host, $2 host address as the target should reach it
+    local host="$1" hostip="$2"
+    DATA_HOSTIP_OVERRIDE=""
+    if data_path_ok "$host" "$hostip"; then
+        log "The target reaches the data listener at ${hostip}:${OPT_PORT}."
+        return 0
+    fi
+    log "The target cannot reach ${hostip}:${OPT_PORT}: opening a reverse tunnel over the OTA session."
+    ota_auth_for "$host"
+    _ota_ssh_exec -n -N -o ExitOnForwardFailure=yes -R "${OPT_PORT}:127.0.0.1:${OPT_PORT}" "$OTA_AUTH_TARGET" >/dev/null 2>&1 &
+    DATA_TUNNEL_PID=$!
+    sleep 3
+    if ! kill -0 "$DATA_TUNNEL_PID" 2>/dev/null || ! data_path_ok "$host" 127.0.0.1; then
+        data_tunnel_stop
+        die "the target cannot reach this host for the data channel, neither directly nor through a reverse tunnel"
+    fi
+    DATA_HOSTIP_OVERRIDE=127.0.0.1
+    log "Reverse tunnel up: the target reads the data from its own 127.0.0.1:${OPT_PORT}."
 }
 
 run_ota_sequence() {
@@ -601,6 +641,11 @@ run_ota_sequence() {
     else
         [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ "$OPT_WIPE_DATA" != 1 ] || recreate_table=1
     fi
+
+    local dhost="${P[SSHCLIENT]:-}"
+    [ -n "$dhost" ] && [ "$dhost" != none ] || dhost=$(ip -o route get "${host}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+    [ -n "$dhost" ] || die "cannot determine the host IP towards the target"
+    data_path_setup "$host" "$dhost"
 
     log "Resolving the disk on the target (probe engine)..."
     local probe_out
@@ -682,6 +727,7 @@ run_ota_sequence() {
     local hostip="${P[SSHCLIENT]:-}"
     [ -n "$hostip" ] && [ "$hostip" != none ] || hostip=$(ip -o route get "${host}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
     [ -n "$hostip" ] || die "cannot determine the host IP towards the target"
+    [ -z "${DATA_HOSTIP_OVERRIDE:-}" ] || hostip="$DATA_HOSTIP_OVERRIDE"
 
     # Always populate the boot partition's file-level content (overlays/, bootcode.bin, README...), not only
     # when the table is recreated: without the .dtbo files in overlays/ no DRM device is created. Safe on an
