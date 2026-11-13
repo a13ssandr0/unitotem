@@ -155,6 +155,7 @@
 
 #### Viewer and CEF
 - Qt6 and CEF viewer replaces Electron; one window per screen, follows mode and rotation changes.
+- Mouse pointer hidden from the start of every document and shown only after the first mouse movement, for 10 s (the hiding style was mounted before the document had a root and threw).
 - A cookie written by a page in a frame without SameSite gets `SameSite=None; Secure` (a site keeping its language in such a cookie reloaded itself every 3.5 s).
 - Wayland-only kiosk under labwc; output names follow the compositor (HDMI-A-1).
 - Splash service shows the Plymouth wordmark and spinner until each window's first frame.
