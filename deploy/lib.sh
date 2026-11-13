@@ -122,7 +122,7 @@ setup_target_privilege() {
     fi
     if _sshpass ssh -n "${SSH_OPTS[@]}" "${TARGET_USERHOST}" "sudo -n true" >/dev/null 2>&1; then
         TARGET_SUDO="sudo -n"
-        log "Target: user '${user}', sudo without password."
+        log "Target: user '${user}', sudo without password." >&2   # stderr: ssh_t runs inside pipelines whose stdout is data (backup streams)
     else
         # Key mode never escalates with a password: sudo -n only.
         [ "$OTA_AUTH" = password ] || die "cannot run 'sudo -n' on the target as '${user}': key mode needs passwordless sudo"
@@ -135,7 +135,7 @@ EOF
         TARGET_SUDO="SUDO_ASKPASS=${OTA_ASKPASS_REMOTE} sudo -A"
         _sshpass ssh -n "${SSH_OPTS[@]}" "${TARGET_USERHOST}" "${TARGET_SUDO} true" >/dev/null 2>&1 \
             || die "cannot obtain root on the target as '${user}': sudo missing, denied, or wrong password"
-        log "Target: user '${user}', escalation via sudo with password."
+        log "Target: user '${user}', escalation via sudo with password." >&2
     fi
     TARGET_PRIV_READY=1
 }

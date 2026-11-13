@@ -182,6 +182,7 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 ## Tests
 
 - `python3 tools/release/test_deploy_backup.py`: `backup_stream`, `backup_running_system`.
+- `tools/release/test_ssh_t_stdout.sh`: the sudo set-up of `ssh_t` writes nothing to stdout (its messages go to stderr: a backup stream is the stdout of an `ssh_t` pipeline).
 - `python3 tools/release/test_tryboot_firmware.py`: `ensure_tryboot_firmware` with fake ssh, backup and probe (15 checks: no-ops, refusals, order, apt failure, confirmation).
 - `python3 tools/release/test_secure_boot_gate.py`: SecureBoot parsing, gate branches (a non-A/B parts set is refused in `load_parts`, before the gate).
 - `python3 tools/release/test_deploy_bios.py`: BIOS parts set through `load_parts`, the manifest loop and the `restore-part` dd branch (no partclone).
