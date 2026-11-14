@@ -277,6 +277,8 @@ SBEOF
         sync
         # shim last, through a temporary name: the firmware never sees a half chain
         cp "${IMG_MNT}/usr/lib/shim/shimx64.efi.signed" "$BTDIR/BOOTX64.EFI.new" && mv -f "$BTDIR/BOOTX64.EFI.new" "$BTDIR/BOOTX64.EFI"
+        # grub-install leaves two more copies of the plain GRUB in the module directory; nothing loads them and they are unsigned
+        rm -f -- "${IMG_MNT}${GRUB_BOOTDIR}/grub/x86_64-efi/core.efi" "${IMG_MNT}${GRUB_BOOTDIR}/grub/x86_64-efi/grub.efi"
         for f in BOOTX64.EFI mmx64.efi grubx64.efi grub.cfg; do
             [ -s "$BTDIR/$f" ] || boot_assert_fail "Secure Boot chain: $f missing in EFI/BOOT"
         done
