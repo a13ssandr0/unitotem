@@ -1,0 +1,11 @@
+[Unit]
+Description=UniTotem - name the firmware boot entry
+ConditionPathExists=/sys/firmware/efi/efivars
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-boot-entry
+
+[Install]
+WantedBy=multi-user.target

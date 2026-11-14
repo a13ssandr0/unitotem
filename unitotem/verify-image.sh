@@ -239,6 +239,8 @@ chk "rescue mode reboots instead of waiting forever" file_has "$R/etc/systemd/sy
 chk "persistent-paths service installed" test -x "$R/usr/sbin/unitotem-persist-paths"
 chk "the browser profile (cookies, logins) is persisted on DATA, shared by both slots" grep -q "^persist browser  /var/lib/unitotem/browser  700 root" "$R/usr/sbin/unitotem-persist-paths"
 chk "boot-ok service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-boot-ok.service"
+chk "boot-entry service enabled and installed" bash -c "test -L $R/etc/systemd/system/multi-user.target.wants/unitotem-boot-entry.service && test -x $R/usr/sbin/unitotem-boot-entry"
+chk "slot titles read the version file" test -s "$R/usr/share/unitotem/grub-version"
 chk "DATA overlay hook is in the image" test -e "$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays"
 
 echo "== Splash"

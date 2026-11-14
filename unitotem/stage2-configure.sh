@@ -194,6 +194,9 @@ install -m 755 /unitotem/files/unitotem-ota-arm "${ROOTFS}/usr/sbin/unitotem-ota
 # Needs dpkg, which the fallback initrd does not carry: runs on the booted system only.
 install -m 755 /unitotem/files/unitotem-ota-changes "${ROOTFS}/usr/sbin/unitotem-ota-changes"
 install -m 755 /unitotem/files/unitotem-boot-ok "${ROOTFS}/usr/sbin/unitotem-boot-ok"
+install -m 755 /unitotem/files/unitotem-boot-entry "${ROOTFS}/usr/sbin/unitotem-boot-entry"
+install -m 644 /unitotem/files/unitotem-boot-entry.service \
+    "${ROOTFS}/etc/systemd/system/unitotem-boot-entry.service"
 install -m 644 /unitotem/files/unitotem-boot-ok.service \
     "${ROOTFS}/etc/systemd/system/unitotem-boot-ok.service"
 
@@ -314,6 +317,7 @@ chroot "${ROOTFS}" systemctl enable \
     unitotem-maintenance-mode \
     unitotem-compositor \
     unitotem-boot-ok \
+    unitotem-boot-entry \
     unitotem-ssh-hostkey \
     unitotem-persist-paths \
     unitotem-first-boot-cert \
