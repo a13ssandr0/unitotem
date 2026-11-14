@@ -850,7 +850,7 @@ class MachineKeyTests(ServerCase):
 
     def test_next_command_printed_after_approval(self):
         self.approve()
-        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' deploy/remote-deploy.sh recover 127.0.0.1 --parts ' + (self.ctx.find_parts('uefi') or '<parts>') + ' --yes',
+        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' deploy/script/remote-deploy.sh recover 127.0.0.1 --parts ' + (self.ctx.find_parts('uefi') or '<parts>') + ' --yes',
                       self.output())
 
     def test_second_inventory_reuses_the_key(self):

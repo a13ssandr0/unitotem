@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared host-side helpers for deploy/remote-deploy.sh and deploy/make-parts.sh.
+# Shared host-side helpers for deploy/script/remote-deploy.sh and deploy/script/make-parts.sh.
 # Not meant to be executed directly.
 # Auth modes of the REAL system's ssh/scp, fixed when this file is sourced (set OTA_AUTH before sourcing):
 #   OTA_AUTH=password (default): sshpass with OTA_PASSWORD, password options only.

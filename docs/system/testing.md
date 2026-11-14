@@ -16,18 +16,19 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_first_boot_layout_dos.sh` | First-boot layout on DOS (MBR) disks (`layout_mbr`, power cuts, GPT unchanged), Docker `--privileged`: 46 checks |
 | `tools/release/test_overlay_status.sh` | Overlay hook under dash, mocked tools: 38 checks |
 | `tools/release/test_overlay_volatile.sh` | Volatile overlays without DATA (`volatile_overlays`), Docker `--privileged`: 47 checks |
-| `tools/release/test_deploy_backup.py` | `backup_stream` (`deploy/lib.sh`), `backup_running_system` (`deploy/remote-deploy.sh`) |
-| `tools/release/test_deploy_recovery_source.py` | `recovery_from_parts` (`deploy/remote-deploy.sh`): resident fallback source of a deploy, 29 checks |
+| `tools/release/test_deploy_backup.py` | `backup_stream` (`deploy/script/lib.sh`), `backup_running_system` (`deploy/script/remote-deploy.sh`) |
+| `tools/release/test_deploy_recovery_source.py` | `recovery_from_parts` (`deploy/script/remote-deploy.sh`): resident fallback source of a deploy, 29 checks |
 | `tools/release/test_identity_merge.py` | `unitotem_identity.py` account merge |
 | `tools/release/test_pkglock.py` | `tools/pkglock.py` freeze/verify/prefs/snapshot/classification, offline |
 | `tools/release/test_repair.py` | Self-repair without block devices: boot-file clone, failover guard, repair decision, `patch_label`, `clone_into_slot` on a file, `slot_dev` with fake sysfs: 60 checks |
 | `tools/release/test_slot_pick.sh` | Engine `slot_pick`, `heal_dup_label`, `pin_root_dev` and boot stubs (`ota-engine.sh`): 44 checks |
 | `tools/release/test_slot_dup.sh` (+ `test_slot_dup_inside.sh`) | Duplicate labels and interrupted repair writes (`clone_into_slot`, `slot_dev`, `cmd_init_premount`), Docker `--privileged`, GPT and DOS, `metadata_csum` on and off: 548 checks; reproduces the old write order and interrupts after invalidate, mid-write (SIGKILL at 30 %), before and after the superblock |
 | `tools/release/test_rpi_backend.py` | Raspberry backend end to end on a synthetic GPT image |
-| `tools/release/test_secure_boot_gate.py` | `secure_boot_note`, the SecureBoot probe and the absence of the old option, cut from `deploy/remote-deploy.sh` |
+| `tools/release/test_secure_boot_gate.py` | `secure_boot_note`, the SecureBoot probe and the absence of the old option, cut from `deploy/script/remote-deploy.sh` |
 | `tools/release/test_wifi_roam.py` | `unitotem-wifi-roam` scan parsing and candidate choice |
 | `tools/release/fake-github.py` | GitHub Releases stub over HTTP |
 | `unitotem/verify-image.sh` | Rule checks on a mounted image; run by stage 3 |
+| `tools/release/test_write_sd.sh` | `deploy/script/write-sd.sh` on loop disks: table, filesystems, files, only used blocks written |
 | `work/loopback-test/run.sh`, `inside.sh` | Loopback deploy (fresh target, table recreate, DATA mkfs), amd64 |
 | `work/loopback-test/run-ab.sh`, `inside-ab.sh` | Loopback A/B first deploy (layout 2, UEFI); leaves `scratch-ab/target.img` |
 | `work/loopback-test/run-arm64.sh`, `inside-arm64.sh` | arm64 path (`populate-real-kernel`) |
@@ -102,12 +103,12 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 | Loopback, A/B, arm64, bootcount | docker, root-capable host, `debian:bookworm` |
 | Volatile overlays, DOS layout | docker, `--privileged`, local `debian:trixie` image (`--pull never`) |
 | Real SD card | docker, the card attached to the host |
-| Power cut | qemu-system-x86_64 with KVM, qemu-img, OVMF, sgdisk, sshpass, `deploy/lib.sh` |
+| Power cut | qemu-system-x86_64 with KVM, qemu-img, OVMF, sgdisk, sshpass, `deploy/script/lib.sh` |
 | Low-resolution OTA | qemu-system-x86_64, OVMF, mtools, sfdisk, xz |
 | Frame layout | python3, PIL optional |
 
 ## Recovery set sync on the test Pi
-`work/agents/agent-M/pi-recovery-sync-test.sh before|after|recovery-entry` (host side, `deploy/lib.sh` helpers only).
+`work/agents/agent-M/pi-recovery-sync-test.sh before|after|recovery-entry` (host side, `deploy/script/lib.sh` helpers only).
 - `before`: read-only snapshot of the FIRMWARE FAT (sha of recovery files, `config.txt`, slot `cmdline.txt`, `start4.elf`, `fixup4.dat`, dtbs), level, `boot_recovery`, SD write counter.
 - Ship a release whose root carries a newer recovery set (`unitotem-update fetch`, `apply --reboot`; about 3 GB of SD writes: ask first), then `NEW_VERSION=<v> ... after`: files equal the image manifest, level raised, `sha256sum -c recovery.sha256` passes, no `*.new`, firmware blobs and top-level `cmdline.txt` unchanged, `config.txt` equal except `os_prefix`.
 - `recovery-entry`: `unitotem-ota.request` (no data wipe), reboot, dropbear on 2222 answers (key or administrator login), return to the normal slot.

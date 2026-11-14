@@ -1,4 +1,4 @@
-# UniTotem Windows probe (read-only): prints "KEY: value" lines, like do_probe() in deploy/remote-deploy.sh.
+# UniTotem Windows probe (read-only): prints "KEY: value" lines, like do_probe() in deploy/script/remote-deploy.sh.
 # PowerShell 5.1, run as Administrator.  Changes nothing (the ESP is mounted read-only-in-practice on a temp letter
 # only if -MountEsp is given, and unmounted again).
 #   powershell -ep bypass -File probe-windows.ps1 [-MountEsp]

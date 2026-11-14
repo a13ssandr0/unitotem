@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side test of the Secure Boot logic of deploy/remote-deploy.sh, with no target: the functions/snippets are cut out of the
+"""Host-side test of the Secure Boot logic of deploy/script/remote-deploy.sh, with no target: the functions/snippets are cut out of the
 real script text (so the test follows the code), run in a bash harness with fake inputs, and judged on exit status and the text
 printed. Covers: the od-based parsing of the SecureBoot EFI variable (probe snippet), secure_boot_note (the image carries the signed
 chain as its loader, so there is nothing to choose: only the state is reported) and the wiring (no --secure-boot option, no SB_MODE).
@@ -11,7 +11,7 @@ import os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-SCRIPT = open(os.path.join(ROOT, "deploy/remote-deploy.sh")).read()
+SCRIPT = open(os.path.join(ROOT, "deploy/script/remote-deploy.sh")).read()
 ok = fail = 0
 
 
@@ -28,10 +28,10 @@ def has(text, pattern):
 
 # ---- cut the code under test out of the script -------------------------------------------------------------------------
 m = re.search(r"^secure_boot_note\(\) \{\n.*?^\}\n", SCRIPT, re.S | re.M)
-assert m, "secure_boot_note not found in deploy/remote-deploy.sh"
+assert m, "secure_boot_note not found in deploy/script/remote-deploy.sh"
 NOTE = m.group(0)
 m = re.search(r"^SBV=.*?^echo \"SECUREBOOT: \$SB\"\n", SCRIPT, re.S | re.M)
-assert m, "the SecureBoot probe snippet not found in deploy/remote-deploy.sh"
+assert m, "the SecureBoot probe snippet not found in deploy/script/remote-deploy.sh"
 PROBE = m.group(0)
 
 
@@ -80,7 +80,7 @@ check("amd64/legacy BIOS: a no-op", rc == 0 and out == "" and err == "", (rc, ou
 # ---- D3: wiring ----------------------------------------------------------------------------------------------------------
 check("no --secure-boot option and no shim/noshim mode left in the deploy script", "--secure-boot" not in SCRIPT and "SB_MODE" not in SCRIPT and "OPT_SECURE_BOOT" not in SCRIPT and "secure_boot_gate" not in SCRIPT)
 check("the note runs before the changes gate", SCRIPT.index("\n    secure_boot_note\n") < SCRIPT.index("\n    changes_gate\n"))
-check("the engine has no activation step either (the chain is part of the ESP content)", "secure-boot" not in open(os.path.join(ROOT, "deploy/ota-engine.sh")).read())
+check("the engine has no activation step either (the chain is part of the ESP content)", "secure-boot" not in open(os.path.join(ROOT, "deploy/script/ota-engine.sh")).read())
 
 print(f"== {ok + fail} checks, {fail} failed")
 sys.exit(1 if fail else 0)

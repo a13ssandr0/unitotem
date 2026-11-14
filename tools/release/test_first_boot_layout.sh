@@ -14,7 +14,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMG="${1:?usage: test_first_boot_layout.sh FLASH_IMG[.xz] [uefi|bios|both]}"; MODES="${2:-both}"
 DISK_GIB="${DISK_GIB:-20}"; PORT="${PORT:-2290}"; ADMIN_PW="${ADMIN_PW:-Qw3rty-Test-2026}"; WORK="${WORK:-$DIR/work/grow-test/qemu-layout}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"; FILL_TIMEOUT="${FILL_TIMEOUT:-900}"
-source "$DIR/deploy/lib.sh"
+source "$DIR/deploy/script/lib.sh"
 for c in qemu-system-x86_64 sshpass sgdisk curl; do require_cmd "$c"; done
 OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd; OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
 [ -f "$IMG" ] || die "flash image not found: $IMG"

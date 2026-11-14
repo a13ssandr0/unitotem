@@ -279,7 +279,7 @@ mount_overlays() {
 
     # Now that /var carries the overlay, put ROOT's dpkg database back on top of
     # it. The stash is unmounted straight after (the two binds share the same superblock), so no
-    # orphaned mount is left over switch_root (see the /boot-ota note in deploy/ota-engine.sh).
+    # orphaned mount is left over switch_root (see the /boot-ota note in deploy/script/ota-engine.sh).
     if [ "$dpkg_pin" = stashed ]; then
         if mount --bind "$DPKG_STASH" "${rootmnt}/var/lib/dpkg" 2>/dev/null; then
             dpkg_pin=yes

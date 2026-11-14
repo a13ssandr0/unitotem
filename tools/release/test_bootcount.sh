@@ -1,12 +1,12 @@
 #!/bin/bash
-# Tests of the boot counter gate (bootcount_gate, deploy/ota-engine.sh) and of the fallback credentials without DATA
+# Tests of the boot counter gate (bootcount_gate, deploy/script/ota-engine.sh) and of the fallback credentials without DATA
 # (fallback_auth_setup). Fixtures only: every path is a tmp dir; mount, umount, mountpoint, blkid, sync, the log
 # functions and cmd_serve_fallback are stubs. The cmdline is read from a fixture file.
 #   bash tools/release/test_bootcount.sh
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ENGINE="$HERE/../../deploy/ota-engine.sh"
+ENGINE="$HERE/../../deploy/script/ota-engine.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/unitotem-bootcount-test.XXXXXX")
 trap 'rm -rf -- "$TMP"' EXIT
 

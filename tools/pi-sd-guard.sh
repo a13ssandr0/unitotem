@@ -1,11 +1,11 @@
 #!/bin/bash
-# SD wear guard for the real test Pi: every 30 s read the kernel's sectors-written counter of mmcblk0 (over the deploy/lib.sh ssh helper).
+# SD wear guard for the real test Pi: every 30 s read the kernel's sectors-written counter of mmcblk0 (over the deploy/script/lib.sh ssh helper).
 # If more than LIMIT_MIB_PER_MIN is written in a minute (default 300) it stops the test load units (pwr-writer and any unit named
 # *-testload.service) and logs "SDGUARD" in work/pi-test/STATE.md; it logs a heartbeat line every 10 minutes. Run it detached next to ANY job that writes on the Pi:
 #   (setsid nohup tools/pi-sd-guard.sh 21600 > /dev/null 2>&1 &)      # duration in seconds
 cd "$(dirname "$0")/.." || exit 1
-OTA_AUTH=key   # key login to the real system (SSH_OPTS in key mode), see deploy/lib.sh
-source deploy/lib.sh
+OTA_AUTH=key   # key login to the real system (SSH_OPTS in key mode), see deploy/script/lib.sh
+source deploy/script/lib.sh
 : "${PI_IP:?usage: PI_IP=<test Pi address> tools/pi-sd-guard.sh SECONDS}"
 SSHO=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 Q() { _sshpass ssh -n "${SSH_OPTS[@]}" "${SSHO[@]}" "root@$PI_IP" "$@"; }   # key login, no password

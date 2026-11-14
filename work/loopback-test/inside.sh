@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs INSIDE a privileged throwaway container as root. Exercises the real
-# deploy/ota-engine.sh subcommand sequence as run_ota_sequence in deploy/remote-deploy.sh
+# deploy/script/ota-engine.sh subcommand sequence as run_ota_sequence in deploy/script/remote-deploy.sh
 # drives it over SSH, against a loop device standing in for the target disk. It simulates a
 # fresh (non-UniTotem) target, so the full table-recreate + DATA-mkfs path runs, not just a
 # same-layout restore.
@@ -19,7 +19,7 @@ apt-get install -y -qq --no-install-recommends \
 REPO=/repo
 PARTS=/work/parts
 TARGET_IMG=/work/target.img
-ENGINE=(bash "$REPO/deploy/ota-engine.sh")
+ENGINE=(bash "$REPO/deploy/script/ota-engine.sh")
 RESULTS=/work/results.txt
 : > "$RESULTS"
 
@@ -107,9 +107,9 @@ ensure_partition_nodes "$LOOP"
 
 log "Writing the recovery kernel/initrd..."
 "${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-vmlinuz --subdir unitotem \
-    < "$REPO/deploy/amd64/recovery-vmlinuz-amd64"
+    < "$REPO/build/amd64/recovery/recovery-vmlinuz-amd64"
 "${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-initrd.img --subdir unitotem \
-    < "$REPO/deploy/amd64/recovery-initrd-amd64.img"
+    < "$REPO/build/amd64/recovery/recovery-initrd-amd64.img"
 
 "${ENGINE[@]}" set-default-recovery --disk "$LOOP" --firmware uefi --bootfs-part "$BOOTFS_PART"
 log "Stage 1 complete (barrier passed: from here on a failure must not reboot into a half-written disk)."
@@ -271,8 +271,8 @@ check "recovery-vmlinuz still present" test -f "$BOOTFS_MNT/unitotem/recovery-vm
 check "recovery-initrd.img still present" test -f "$BOOTFS_MNT/unitotem/recovery-initrd.img"
 got_vmlinuz_sha=$(sha256sum "$BOOTFS_MNT/unitotem/recovery-vmlinuz" | cut -d' ' -f1)
 got_initrd_sha=$(sha256sum "$BOOTFS_MNT/unitotem/recovery-initrd.img" | cut -d' ' -f1)
-exp_vmlinuz_sha=$(awk -F= '/UNITOTEM_RECOVERY_VMLINUZ_SHA256/{print $2}' "$REPO/deploy/amd64/recovery.manifest")
-exp_initrd_sha=$(awk -F= '/UNITOTEM_RECOVERY_INITRD_SHA256/{print $2}' "$REPO/deploy/amd64/recovery.manifest")
+exp_vmlinuz_sha=$(awk -F= '/UNITOTEM_RECOVERY_VMLINUZ_SHA256/{print $2}' "$REPO/build/amd64/recovery/recovery.manifest")
+exp_initrd_sha=$(awk -F= '/UNITOTEM_RECOVERY_INITRD_SHA256/{print $2}' "$REPO/build/amd64/recovery/recovery.manifest")
 record "recovery-vmlinuz sha256: got=${got_vmlinuz_sha} expected=${exp_vmlinuz_sha}"
 check "recovery-vmlinuz sha256 correct (re-read from disk)" bash -c "[ '$got_vmlinuz_sha' = '$exp_vmlinuz_sha' ]"
 record "recovery-initrd.img sha256: got=${got_initrd_sha} expected=${exp_initrd_sha}"
@@ -295,7 +295,7 @@ check "DATA label correct" bash -c "[ \"\$(blkid -s LABEL -o value ${LOOP}p${DAT
 # confirmed boot of the real system.
 log "=== promote-default (simulating a confirmed boot) ==="
 "${ENGINE[@]}" mount-target "${MOUNT_ARGS[@]}"
-cp "$REPO/deploy/ota-engine.sh" /mnt/newroot/tmp/ota-engine.sh
+cp "$REPO/deploy/script/ota-engine.sh" /mnt/newroot/tmp/ota-engine.sh
 mount --bind /dev  /mnt/newroot/dev
 mount --bind /proc /mnt/newroot/proc
 mount --bind /sys  /mnt/newroot/sys

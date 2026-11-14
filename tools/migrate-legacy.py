@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Migrates the settings of an earlier single-root UniTotem (2.x) onto the system just deployed.
 
-The input is the archive that `deploy/remote-deploy.sh` wrote before it replaced the disk (`unitotem-legacy-*.tar.zst`). From it the settings
+The input is the archive that `deploy/script/remote-deploy.sh` wrote before it replaced the disk (`unitotem-legacy-*.tar.zst`). From it the settings
 file, the uploaded media, the hostname, the time zone and the marked lines of root's crontab are put in the layout of `import-unitotem2.py`,
 which does the import. When the new system has no administrator yet, the one named here is created through the setup page first.
 

@@ -175,8 +175,8 @@ loader.exec_module(uu)
 print(f"a={uu.slot_dev('a')} b={uu.slot_dev('b')}")
 PY
 
-# ---- deploy/ota-engine.sh: sourced, its ERR trap cleared; log/warn to a file; the boot stubs of test_slot_pick ----
-. /repo/deploy/ota-engine.sh
+# ---- deploy/script/ota-engine.sh: sourced, its ERR trap cleared; log/warn to a file; the boot stubs of test_slot_pick ----
+. /repo/deploy/script/ota-engine.sh
 set +Eeuo pipefail
 trap - ERR
 WARNLOG="$SCR/warn.log"; : > "$WARNLOG"

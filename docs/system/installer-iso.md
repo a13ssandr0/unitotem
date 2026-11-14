@@ -17,7 +17,7 @@ Paths: relative to the repository root.
 
 ## How it works
 
-Build: `tools/build-installer-iso.sh --flash work/flash-images/unitotem-<date>-amd64-flash.img.xz [--out DIR] [--kernel F --initrd F]`. About 90 s, output `DIR/unitotem-installer-<date>-amd64.iso` + `.sha256` (default `work/installer-iso`).
+Build: `tools/build-installer-iso.sh --flash deploy/amd64/unitotem-<date>-amd64-flash.img.xz [--out DIR] [--kernel F --initrd F]`. About 90 s, output `DIR/unitotem-installer-<date>-amd64.iso` + `.sha256` (default `work/installer-iso`).
 
 ISO layout (volume label `UNITOTEM_ISO`):
 
@@ -46,7 +46,7 @@ ISO: 1,898,881,024 bytes against 2,085,875,712 with the unreduced initramfs. The
 
 Boot and screen (`unitotem-installer-start`, replaces `scripts/init-premount/zz-unitotem-ota`):
 
-1. Network: `configure_networking_ota` of `deploy/ota-engine.sh` (sourced; DHCP on wired interfaces, retried for 5 minutes in the background).
+1. Network: `configure_networking_ota` of `deploy/script/ota-engine.sh` (sourced; DHCP on wired interfaces, retried for 5 minutes in the background).
 2. ssh: dropbear in open mode (root without password, `-B`, port 22), as the open mode of the OTA fallback (`deploy-and-recovery.md#fallback-authentication`); `/etc/profile` prints `UniTotem installer` / `To install UniTotem run: install` for login shells.
 3. Console (tty1, or the serial port with `unitotem.installer.tty=`): the OTA recovery look (logo, rounded frame, 72x14 whiptail dialog), text `Remote install: ssh root@<ip>` per address (at most two) or `Remote install: waiting for network`, menu `Install UniTotem`, `Restart`, `Power off`. The screen is redrawn when an address appears or the installation state changes.
 4. Security: media for installation. Anyone on the network reaches a root shell without a password while the ISO runs; writing a disk still needs both answers `y` or an explicit `install --disk DEV -y`.

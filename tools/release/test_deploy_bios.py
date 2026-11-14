@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Host-side test of the legacy BIOS-boot partition path (GPT ef02, cloner dd, action raw) of the deploy:
-  1. load_parts (deploy/remote-deploy.sh) accepts an A/B (layout 2) parts set and resolves the partition numbers from it;
+  1. load_parts (deploy/script/remote-deploy.sh) accepts an A/B (layout 2) parts set and resolves the partition numbers from it;
      a layout 1 set is refused.
-  2. the parts.manifest loop of run_ota_sequence (deploy/remote-deploy.sh) routes the raw/dd block to restore-part with
+  2. the parts.manifest loop of run_ota_sequence (deploy/script/remote-deploy.sh) routes the raw/dd block to restore-part with
      --cloner dd, with ota_ssh and the data channel replaced by local recorders.
-  3. cmd_restore_part (deploy/ota-engine.sh), dd branch, against a regular file standing for the partition: the data comes
+  3. cmd_restore_part (deploy/script/ota-engine.sh), dd branch, against a regular file standing for the partition: the data comes
      over a local TCP socket, the result is byte-identical to the xz-decompressed stream, and no partclone binary runs
      (a PATH with a failing partclone.restore shim).
 Functions are cut out of the real script text. Temporary directories only; no device, no /etc, no /run.
@@ -15,9 +15,9 @@ import lzma, os, random, re, socket, subprocess, sys, tempfile, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-RD_TEXT = open(os.path.join(ROOT, "deploy/remote-deploy.sh")).read()
-ENG_TEXT = open(os.path.join(ROOT, "deploy/ota-engine.sh")).read()
-LIB_TEXT = open(os.path.join(ROOT, "deploy/lib.sh")).read()
+RD_TEXT = open(os.path.join(ROOT, "deploy/script/remote-deploy.sh")).read()
+ENG_TEXT = open(os.path.join(ROOT, "deploy/script/ota-engine.sh")).read()
+LIB_TEXT = open(os.path.join(ROOT, "deploy/script/lib.sh")).read()
 ok = fail = 0
 
 
@@ -78,7 +78,7 @@ def write_set(td, name, text):
 LOAD_PARTS = fn(RD_TEXT, "load_parts")
 READ_KV = fn(LIB_TEXT, "read_kv_block")
 LOOP_M = re.search(r"^    local -A block\n.*?^    done 9< \"\$\{OPT_PARTS\}/parts\.manifest\"\n", RD_TEXT, re.S | re.M)
-check("harness: the manifest loop of run_ota_sequence is found in deploy/remote-deploy.sh", LOOP_M is not None)
+check("harness: the manifest loop of run_ota_sequence is found in deploy/script/remote-deploy.sh", LOOP_M is not None)
 LOOP_FN = "loop_fn() {\n" + (LOOP_M.group(0) if LOOP_M else "") + "}\n"
 
 with tempfile.TemporaryDirectory() as td:

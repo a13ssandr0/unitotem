@@ -1,7 +1,7 @@
 #!/bin/bash
 # Power-cut tests for the A/B update path (amd64/UEFI, QEMU). Each scenario starts from a qcow2 overlay of a base
 # disk, freezes unitotem-update at a named crashpoint (UPDATE_CRASHPOINT), kills QEMU with SIGKILL, boots the same
-# disk again and checks that the system comes up and the update can be completed. SSH goes through deploy/lib.sh.
+# disk again and checks that the system comes up and the update can be completed. SSH goes through deploy/script/lib.sh.
 # kill -9 drops what the guest had not submitted to its virtual disk (page cache), as a power cut does; it does not
 # model a physical disk's volatile cache or write reordering, nor a cut inside a single block write.
 #
@@ -10,7 +10,7 @@
 #   powercut-ab.sh run NAME [NAME...]            # scenarios (below); `all` runs every one
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-source "$DIR/deploy/lib.sh" 2>/dev/null
+source "$DIR/deploy/script/lib.sh" 2>/dev/null
 # Base disks and releases are shared (read-only backing files); every job gets its own directory, SSH port and
 # serial log, so scenarios can run side by side (`par N ...`) - the VMs are what use the CPU.
 ROOTW="$DIR/work/powercut"; PC_ID="${PC_ID:-0}"

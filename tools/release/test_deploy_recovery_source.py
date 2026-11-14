@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side test of the recovery-file source of the deploy write-bootfile step (deploy/remote-deploy.sh):
+"""Host-side test of the recovery-file source of the deploy write-bootfile step (deploy/script/remote-deploy.sh):
 recovery_from_parts takes the recovery kernel, initrd and recovery.sha256 from the parts set's boot tarball, verifies
 them against the tarball's recovery.sha256, and falls back to the host copies in deploy/<arch>/ with a warning when the
 tarball lacks a member. Functions are cut out of the real script text and run under bash. Temporary directories only;
@@ -11,7 +11,7 @@ import hashlib, io, lzma, os, re, subprocess, sys, tarfile, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-RD_TEXT = open(os.path.join(ROOT, "deploy/remote-deploy.sh")).read()
+RD_TEXT = open(os.path.join(ROOT, "deploy/script/remote-deploy.sh")).read()
 ok = fail = 0
 
 
@@ -25,7 +25,7 @@ def fn(text, name):
     """Source text of the shell function NAME (block form, closing brace in column 0)."""
     m = re.search(r"^%s\(\) \{\n.*?^\}\n" % re.escape(name), text, re.S | re.M)
     if not m:
-        raise SystemExit("FAIL: function %s not found in deploy/remote-deploy.sh" % name)
+        raise SystemExit("FAIL: function %s not found in deploy/script/remote-deploy.sh" % name)
     return m.group(0)
 
 
@@ -58,7 +58,7 @@ def run_case(td, tag, arch, members, tar_at=True, host=True):
     base = os.path.join(td, tag)
     parts = os.path.join(base, "parts")
     out = os.path.join(base, "out")
-    dep = os.path.join(base, "deploy", arch)
+    dep = os.path.join(base, "build", arch, "recovery")
     os.makedirs(parts); os.makedirs(out); os.makedirs(dep)
     stream_name = "p1-EFI.bootfs.tar.xz" if arch == "amd64" else "p1-FIRMWARE.bootfs.tar.xz"
     manifest_stream = stream_name
@@ -186,8 +186,8 @@ with tempfile.TemporaryDirectory() as td:
     harness = f'''set -euo pipefail
 warn() {{ echo "WARN: $*" >&2; }}
 DIR="{os.path.join(td, 'absent')}"
-mkdir -p "$DIR/deploy/amd64" "{os.path.join(td, 'absent-out')}"
-printf k > "$DIR/deploy/amd64/recovery-vmlinuz-amd64"; printf i > "$DIR/deploy/amd64/recovery-initrd-amd64.img"
+mkdir -p "$DIR/build/amd64/recovery" "{os.path.join(td, 'absent-out')}"
+printf k > "$DIR/build/amd64/recovery/recovery-vmlinuz-amd64"; printf i > "$DIR/build/amd64/recovery/recovery-initrd-amd64.img"
 {fn(RD_TEXT, "recovery_member")}
 {fn(RD_TEXT, "recovery_extract")}
 {fn(RD_TEXT, "recovery_from_parts")}

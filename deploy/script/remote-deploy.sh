@@ -1,25 +1,25 @@
 #!/bin/bash
-# Two-stage OTA deploy orchestrator (host side). Drives deploy/ota-engine.sh on the target over SSH (the system's
+# Two-stage OTA deploy orchestrator (host side). Drives deploy/script/ota-engine.sh on the target over SSH (the system's
 # sshd, then dropbear on port 2222 in the fallback initramfs, see ota_ssh() in lib.sh); bulk partition data goes
 # over a separate netcat connection (serve_file_once/wait_port_bound in lib.sh), never through SSH.
 #
 # Usage:
-#   ./deploy/remote-deploy.sh probe   root@host
-#   ./deploy/remote-deploy.sh changes root@host [--json]
-#   ./deploy/remote-deploy.sh deploy  root@host [--parts DIR] [--disk BYID]
+#   ./deploy/script/remote-deploy.sh probe   root@host
+#   ./deploy/script/remote-deploy.sh changes root@host [--json]
+#   ./deploy/script/remote-deploy.sh deploy  root@host [--parts DIR] [--disk BYID]
 #                                     [--port N] [--wipe-data] [--backup-dir DIR] [--no-backup]
 #                                     [--admin-user NAME --admin-password-file FILE [--timezone ZONE]]
 #                                     [--no-firmware-update]
-#   ./deploy/remote-deploy.sh recover HOST[:PORT] ... [--net-dns "A;B;C"]
+#   ./deploy/script/remote-deploy.sh recover HOST[:PORT] ... [--net-dns "A;B;C"]
 #                                     [--console STR] [--yes]
 #                                     [--accept-changes DIGEST]
-#   ./deploy/remote-deploy.sh disarm  root@host
+#   ./deploy/script/remote-deploy.sh disarm  root@host
 #
-#   ./deploy/remote-deploy.sh recover HOST[:PORT] [--fallback-user NAME] [--parts DIR] ...
+#   ./deploy/script/remote-deploy.sh recover HOST[:PORT] [--fallback-user NAME] [--parts DIR] ...
 #
 # Exit codes of `changes`: 0 no changes, 1 changes found, 2 check failed on the target, 3 target has no unitotem-ota-changes.
 #
-# OTA fallback credentials (port 2222), read from the environment only (deploy/lib.sh, ota_auth_for):
+# OTA fallback credentials (port 2222), read from the environment only (deploy/script/lib.sh, ota_auth_for):
 #   OTA_FALLBACK_KEY=PATH       private key (default: the per-target key of the host, created when arming)
 #   OTA_FALLBACK_USER=NAME      login user (default root); --fallback-user NAME sets it
 #   OTA_FALLBACK_PASSWORD=...   password, when no key is available
@@ -28,8 +28,8 @@
 # Machine-readable contract for `changes` and `--accept-changes` (used by the web interface): docs/system/deploy-and-recovery.md.
 set -euo pipefail
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "${DIR}/deploy/lib.sh"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${DIR}/deploy/script/lib.sh"
 
 require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip base64 curl
 
@@ -96,7 +96,7 @@ done
 
 # ---------------------------------------------------------------------------
 # Probe: one SSH round-trip, parseable KEY: value / DISK: ... lines: UniTotem/DATA detection, tryboot
-# capability, and the network hints deploy/ota-engine.sh's recovery environment needs to reach back out.
+# capability, and the network hints deploy/script/ota-engine.sh's recovery environment needs to reach back out.
 # ---------------------------------------------------------------------------
 declare -A P
 DISKS=()
@@ -382,8 +382,8 @@ recovery_from_parts() {
 
     if [ -z "$m_k" ] || [ -z "$m_i" ] || [ -z "$m_s" ]; then
         warn "the parts set's boot tarball has no recovery kernel/initrd/recovery.sha256: using the host copies in deploy/${arch}"
-        cp -- "${DIR}/deploy/${arch}/recovery-vmlinuz-${arch}" "${out}/${kname}" 2>/dev/null \
-            && cp -- "${DIR}/deploy/${arch}/recovery-initrd-${arch}.img" "${out}/${iname}" 2>/dev/null \
+        cp -- "${DIR}/build/${arch}/recovery/recovery-vmlinuz-${arch}" "${out}/${kname}" 2>/dev/null \
+            && cp -- "${DIR}/build/${arch}/recovery/recovery-initrd-${arch}.img" "${out}/${iname}" 2>/dev/null \
             || { echo missing; return 1; }
         # The host copies carry no level: the sums describe the files written, level 0 (next confirmed boot refreshes).
         hk=$(sha256sum "${out}/${kname}" | awk '{print $1}')
@@ -419,8 +419,8 @@ recovery_from_parts() {
 # ---------------------------------------------------------------------------
 push_recovery_kernel() {
     # No parts set is in hand before the target is armed, so the host copies are the only source here.
-    local vmlinuz="${DIR}/deploy/${ARCH}/recovery-vmlinuz-${ARCH}"
-    local initrd="${DIR}/deploy/${ARCH}/recovery-initrd-${ARCH}.img"
+    local vmlinuz="${DIR}/build/${ARCH}/recovery/recovery-vmlinuz-${ARCH}"
+    local initrd="${DIR}/build/${ARCH}/recovery/recovery-initrd-${ARCH}.img"
     [ -f "$vmlinuz" ] && [ -f "$initrd" ] \
         || die "recovery kernel/initrd missing for ${ARCH}: run ./build-unitotem.sh first (it also produces stage 1b)"
 
@@ -841,7 +841,7 @@ run_ota_sequence() {
 load_parts() {
     OPT_PARTS="${OPT_PARTS:-$(ls -td "${DIR}/deploy/${ARCH}/"*.parts 2>/dev/null | head -1)}"
     [ -n "$OPT_PARTS" ] && [ -d "$OPT_PARTS" ] \
-        || die "no parts set found for ${ARCH} (use --parts or run deploy/make-parts.sh first)"
+        || die "no parts set found for ${ARCH} (use --parts or run deploy/script/make-parts.sh first)"
 
     P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${OPT_PARTS}/parts.manifest")
     P_BOOTFS_PART=$(awk -F= '/^UNITOTEM_BOOTFS_PART=/{print $2}' "${OPT_PARTS}/parts.manifest")
@@ -1100,7 +1100,7 @@ cmd_recover() {
         || die "recover: invalid address '${RECOVER_HOSTPORT}' (HOST or HOST:PORT)"
     host="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[3]:-${OTA_PORT:-2222}}"
     (( 10#$port >= 1 && 10#$port <= 65535 )) || die "recover: port out of range: ${port}"
-    # OTA_SSH_OPTS (deploy/lib.sh) is built at source time: replace the port value after its -p flag.
+    # OTA_SSH_OPTS (deploy/script/lib.sh) is built at source time: replace the port value after its -p flag.
     local i
     for i in "${!OTA_SSH_OPTS[@]}"; do
         [ "${OTA_SSH_OPTS[i]}" = -p ] && OTA_SSH_OPTS[i+1]="$((10#$port))"

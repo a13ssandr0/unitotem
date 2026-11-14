@@ -1,6 +1,6 @@
+build/
 deploy/*
-!deploy/*.sh
-!deploy/flasher/
+!deploy/script/
 work/*
 !work/loopback-test/
 work/loopback-test/*

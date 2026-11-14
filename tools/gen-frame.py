@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pre-render the pieces of the rounded frame drawn around the OTA progress dialog (see ota_frame in deploy/ota-engine.sh).
+"""Pre-render the pieces of the rounded frame drawn around the OTA progress dialog (see ota_frame in deploy/script/ota-engine.sh).
 The frame itself is laid out at runtime for WHATEVER resolution the screen has (the dialog is centered by whiptail, so its pixel
 position follows from the console size); only the pieces that are expensive to compute in a shell are pre-rendered:
   unitotem-frame-corners-<R>.<fmt>   the four anti-aliased corners TL, TR, BL, BR, each R x R pixels, back to back

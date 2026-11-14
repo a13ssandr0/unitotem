@@ -1,6 +1,6 @@
 #!/bin/bash
-# A/B first-deploy harness (amd64/UEFI). Runs INSIDE a privileged container, drives deploy/ota-engine.sh
-# in exactly the order deploy/remote-deploy.sh's run_ota_sequence uses for a layout-2 parts set, against a
+# A/B first-deploy harness (amd64/UEFI). Runs INSIDE a privileged container, drives deploy/script/ota-engine.sh
+# in exactly the order deploy/script/remote-deploy.sh's run_ota_sequence uses for a layout-2 parts set, against a
 # loop device, and leaves the resulting disk (/work/target.img) for a QEMU boot test on the host.
 # Differences from inside.sh: GRUB state is a plain file write (no chroot/grub tools), the boot partition is
 # populated BEFORE set-default-recovery, ROOT_B is only formatted, overlay state is per-slot.
@@ -13,7 +13,7 @@ apt-get install -y -qq --no-install-recommends partclone xz-utils util-linux fdi
 
 REPO=/repo; PARTS=/work/parts; TARGET_IMG=/work/target.img
 ARCH="${ARCH:-amd64}"   # amd64 (UEFI, GRUB) or arm64 (Raspberry, tryboot)
-ENGINE=(bash "$REPO/deploy/ota-engine.sh")
+ENGINE=(bash "$REPO/deploy/script/ota-engine.sh")
 RESULTS=/work/results.txt; : > "$RESULTS"
 record() { echo "$1" | tee -a "$RESULTS"; }
 check() { local d="$1"; shift; if "$@" >/tmp/check.out 2>&1; then record "PASS: $d"; else record "FAIL: $d -- $(tail -5 /tmp/check.out | tr '\n' '|')"; fi; }
@@ -70,8 +70,8 @@ check "prepare-bootfs released /boot-ota before formatting" bash -c '! mountpoin
 check "the FAT volid was preserved (GRUB looks it up by UUID)" bash -c "[ \"\$(blkid -s UUID -o value ${LOOP}p${BOOTFS_PART})\" = '$VOLID' ]"
 
 if [ "$ARCH" = arm64 ]; then RNAME=recovery8.img; RSUB=(); else RNAME=recovery-vmlinuz; RSUB=(--subdir unitotem); fi
-"${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name "$RNAME" "${RSUB[@]}" < "$REPO/deploy/$ARCH/recovery-vmlinuz-$ARCH"
-"${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-initrd.img "${RSUB[@]}" < "$REPO/deploy/$ARCH/recovery-initrd-$ARCH.img"
+"${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name "$RNAME" "${RSUB[@]}" < "$REPO/build/$ARCH/recovery/recovery-vmlinuz-$ARCH"
+"${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-initrd.img "${RSUB[@]}" < "$REPO/build/$ARCH/recovery/recovery-initrd-$ARCH.img"
 
 STREAM=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "$PARTS/parts.manifest")
 socat -u "FILE:$PARTS/$STREAM" "TCP-LISTEN:9700,reuseaddr" & NC=$!; sleep 0.5

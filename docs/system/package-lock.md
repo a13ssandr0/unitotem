@@ -27,7 +27,7 @@ Per-arch build flow:
    - exit 10: updates reported only.
 2. Stage 1 with lock: apt sources become `snapshot.debian.org/archive/debian/<ts>/` (`trixie`, `trixie-updates`, `trixie-backports`) and `debian-security/<ts>/`, `Check-Valid-Until` false; `pkglock.py prefs` writes `/etc/apt/preferences.d/99-unitotem-lock` (`Pin-Priority: 1001`); `apt-get dist-upgrade --allow-downgrades`. The NVIDIA repository (amd64) is not snapshotted: it stays live, also with a lock.
 3. Stage 1 end with lock: `pkglock.py verify` must pass; the lock pins and snapshot sources are removed; `sources.list` is rewritten to live `deb.debian.org` / `security.debian.org` (with `trixie-backports`). The Raspberry Pi archive stays live in `sources.list.d/raspi.list`. The NVIDIA source, keyring and `96-unitotem-nvidia` pin are removed in every build. `97-unitotem-backports` stays.
-4. Stage 1 end without lock: `pkglock.py freeze` writes `work/<arch>/<arch>.lock.new`; `adopt_lock()` moves it to `unitotem/locks/<arch>.lock` only when that file does not exist.
+4. Stage 1 end without lock: `pkglock.py freeze` writes `build/<arch>/<arch>.lock.new`; `adopt_lock()` moves it to `unitotem/locks/<arch>.lock` only when that file does not exist.
 5. `check` (read-only): `apt-get update` on live archives, `apt-cache policy` per pinned package, classify updates:
    - SECURITY when the origin contains `-security` or the changelog between locked and new version cites a CVE.
    - Urgency from the changelog `urgency=` (highest in range); `n/a` for the Raspberry Pi archive and NVIDIA's repository (no changelog).
@@ -73,7 +73,7 @@ Build errors:
 - Urgency alone never blocks.
 - `PKGLOCK=off` builds use live archives and write no lock.
 - `unitotem/locks/<arch>.lock.prev` is a local artefact; do not commit it.
-- Native arm64 build: lock files travel with the tree; the freeze runs on the device and is fetched back with `work/arm64/` after success.
+- Native arm64 build: lock files travel with the tree; the freeze runs on the device and is fetched back with `build/arm64/` after success.
 
 ## Tests
 

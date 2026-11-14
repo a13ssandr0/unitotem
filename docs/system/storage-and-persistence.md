@@ -23,8 +23,8 @@ Immutable Debian root on two A/B slots (ROOT_A, ROOT_B). Mutable state lives on 
 | `unitotem/files/unitotem-ssh-hostkey` (+ `.service`) | SSH host keys on DATA |
 | `unitotem/files/unitotem-maintenance` (+ `-mode.service`) | Writable root for apt and manual changes |
 | `unitotem/files/unitotem-ota-changes` | Baseline and diff of ROOT (scope `usr boot opt srv media mnt`) |
-| `deploy/ota-engine.sh` | Fallback path: `data-op`, `migrate-etc-overlay`, `init-premount`, `local-bottom-verify` |
-| `deploy/remote-deploy.sh` | DATA backup before disk replacement; preserve/format choice |
+| `deploy/script/ota-engine.sh` | Fallback path: `data-op`, `migrate-etc-overlay`, `init-premount`, `local-bottom-verify` |
+| `deploy/script/remote-deploy.sh` | DATA backup before disk replacement; preserve/format choice |
 
 ## Layout
 

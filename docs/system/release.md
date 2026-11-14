@@ -37,7 +37,7 @@ Keys:
 
 Output `<out>/v<version>/`; it is published as GitHub release tag `v<version>`.
 
-`build` (layout 1, from a parts set such as `deploy/parts-lib.sh` writes):
+`build` (layout 1, from a parts set such as `deploy/script/parts-lib.sh` writes):
 
 - Every file of `--parts DIR` is copied as a part, sorted by name, except `SHA256SUMS`. Parts-set files such as `parts.manifest` are shipped too.
 - Part entries are `{file, size, sha256}` (no `role`). `--arch` is read from `UNITOTEM_ARCH` in `parts.manifest`.

@@ -17,7 +17,7 @@ install_policy_rc
 # Build-time only: dpkg fsync()s every file it unpacks, which dominates the install on the
 # container's overlay filesystem. The result is tarred and re-checked, so a crash costs a rerun.
 # Removed again before the tarball is made (see "Clean up").
-# Downloaded .debs persist across builds in work/apt-cache (mounted at /aptcache).
+# Downloaded .debs persist across builds in build/apt-cache (mounted at /aptcache).
 if [ -d /aptcache ]; then
     mkdir -p "/aptcache/${ARCH}/partial" "${ROOTFS}/var/cache/apt/archives"
     mount --bind "/aptcache/${ARCH}" "${ROOTFS}/var/cache/apt/archives"
@@ -229,7 +229,7 @@ elif [ "$ARCH" = "arm64" ]; then
         raspi-firmware
 fi
 
-# ---------- OTA payload (deploy/ota-engine.sh, unitotem/files/ota-hook) ----------
+# ---------- OTA payload (deploy/script/ota-engine.sh, unitotem/files/ota-hook) ----------
 # Installed in stage1 so one package list covers both the resident fallback
 # (unitotem/stage1-recovery-initrd.sh builds it from this rootfs) and the real
 # system's initramfs (stage2). gdisk/parted are kept for manual disaster recovery.
@@ -368,26 +368,26 @@ apt_install \
     openssl mediainfo rfkill alsa-utils cron libxcb-icccm4 libxcb-shape0
 
 # The packages come from the manager's own build (its tools/build-debs.sh), one directory per architecture:
-#   work/extra-debs/<arch>/  unitotem (metapackage), unitotem-manager, unitotem-node, unitotem-viewer, plymouth-theme-unitotem (all arch-all,
+#   build/extra-debs/<arch>/  unitotem (metapackage), unitotem-manager, unitotem-node, unitotem-viewer, plymouth-theme-unitotem (all arch-all,
 #   identical on both architectures), python3-cefpython3 (the only binary one: amd64 or arm64), and the two libraries Debian does not ship
 #   (python3-fastapi-login, python3-sdbus-networkmanager). apt resolves everything else from Debian trixie (and the Raspberry Pi repository).
-LOCAL_DEB_DIR=/work/extra-debs/${ARCH}
+LOCAL_DEB_DIR=/build/extra-debs/${ARCH}
 # There is no image without the 3.x manager: the repository's 2.x package is not a
 # substitute. Fail here, early, instead of finding out on the device.
 if ! ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
-    echo "ERROR: no unitotem 3.x package supplied (work/extra-debs/${ARCH}/)." >&2
+    echo "ERROR: no unitotem 3.x package supplied (build/extra-debs/${ARCH}/)." >&2
     echo "       An image without the 3.x manager must not be built." >&2
     exit 1
 fi
 # ...and the SET must be complete: a missing binary package would otherwise surface as an apt dependency error far from the cause.
 for pkg in unitotem_ unitotem-manager_ unitotem-node_ unitotem-viewer_ plymouth-theme-unitotem_ "python3-cefpython3_" python3-fastapi-login_ python3-sdbus-networkmanager_; do
     ls "$LOCAL_DEB_DIR"/${pkg}*.deb >/dev/null 2>&1 \
-        || { echo "ERROR: ${pkg}*.deb missing in work/extra-debs/${ARCH}/ (the complete manager set is required, see the comment above)" >&2; exit 1; }
+        || { echo "ERROR: ${pkg}*.deb missing in build/extra-debs/${ARCH}/ (the complete manager set is required, see the comment above)" >&2; exit 1; }
 done
 ls "$LOCAL_DEB_DIR"/python3-cefpython3_*_${ARCH}.deb >/dev/null 2>&1 \
-    || { echo "ERROR: python3-cefpython3 for ${ARCH} is not in work/extra-debs/${ARCH}/ (a .deb of another architecture cannot be installed)" >&2; exit 1; }
+    || { echo "ERROR: python3-cefpython3 for ${ARCH} is not in build/extra-debs/${ARCH}/ (a .deb of another architecture cannot be installed)" >&2; exit 1; }
 
-# Every .deb in work/extra-debs/<arch>/ is installed over what the apt repository provided,
+# Every .deb in build/extra-debs/<arch>/ is installed over what the apt repository provided,
 # so an image can carry a manager build that is not published.
 if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
     mkdir -p "${ROOTFS}/tmp/extra-debs"
@@ -536,7 +536,7 @@ EOF
 elif [ "${PKGLOCK:-on}" != off ]; then
     mkdir -p "${WORK_DIR}"
     python3 /unitotem/pkglock.py freeze "${ROOTFS}" --arch "${ARCH}" --release "${RELEASE}" --snapshot "${PKGLOCK_FROZEN_AT}" --out "${WORK_DIR}/${ARCH}.lock.new"
-    echo ">>> NEW package lock in work/${ARCH}/${ARCH}.lock.new: copy it to unitotem/locks/${ARCH}.lock and commit it"
+    echo ">>> NEW package lock in build/${ARCH}/${ARCH}.lock.new: copy it to unitotem/locks/${ARCH}.lock and commit it"
 fi
 # The NVIDIA repository is a build-time source, like the snapshot sources above: the image carries none of its files (amd64 only, no-op elsewhere).
 rm -f "${ROOTFS}/etc/apt/sources.list.d/unitotem-nvidia.list" "${ROOTFS}/usr/share/keyrings/unitotem-nvidia.gpg" "${ROOTFS}/etc/apt/preferences.d/96-unitotem-nvidia"

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Host-side test of the static address that reaches the OTA fallback on the kernel command line: `ota_net_from_cmdline` of deploy/ota-engine.sh
-(the fallback side) and `build_legacy_cmdline` of deploy/remote-deploy.sh (the arming side), both cut out of the real script text and run in bash.
+"""Host-side test of the static address that reaches the OTA fallback on the kernel command line: `ota_net_from_cmdline` of deploy/script/ota-engine.sh
+(the fallback side) and `build_legacy_cmdline` of deploy/script/remote-deploy.sh (the arming side), both cut out of the real script text and run in bash.
 
   python3 tools/release/test_ota_net_cmdline.py
 """
 import os, re, subprocess
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-ENGINE = open(os.path.join(ROOT, "deploy/ota-engine.sh")).read()
-DEPLOY = open(os.path.join(ROOT, "deploy/remote-deploy.sh")).read()
+ENGINE = open(os.path.join(ROOT, "deploy/script/ota-engine.sh")).read()
+DEPLOY = open(os.path.join(ROOT, "deploy/script/remote-deploy.sh")).read()
 ok = fail = 0
 
 

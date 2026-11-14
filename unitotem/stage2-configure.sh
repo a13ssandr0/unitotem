@@ -369,7 +369,7 @@ mkdir -p "${ROOTFS}/var/lib/systemd/linger"
 # ---------- Regenerate initramfs ----------
 
 # The initramfs carries a copy of the OTA engine and its deploy/recovery screen is that copy's.
-# The stage1 tarball can be older than deploy/ota-engine.sh, so it is refreshed here, right before
+# The stage1 tarball can be older than deploy/script/ota-engine.sh, so it is refreshed here, right before
 # the initramfs is regenerated.
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 chroot "${ROOTFS}" update-initramfs -u -k all

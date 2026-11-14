@@ -1,13 +1,13 @@
 #!/bin/bash
 # Host wrapper: turns a built unitotem-*-$ARCH.img.xz into a parts set (deploy/$ARCH/<name>.parts/) via the
-# unitotem-parts-builder container (Dockerfile.parts, deploy/make-parts-image.sh). It prepares the scratch
+# unitotem-parts-builder container (Dockerfile.parts, deploy/script/make-parts-image.sh). It prepares the scratch
 # decompressed image and drives docker. unitotem/stage3-image.sh has its own optional MAKE_PARTS hook using the
 # same library; this path regenerates a parts set from an existing .img.xz without rebuilding.
-# Usage: ./deploy/make-parts.sh [--arch amd64|arm64] [--image PATH] [--out DIR] [--keep-scratch]
+# Usage: ./deploy/script/make-parts.sh [--arch amd64|arm64] [--image PATH] [--out DIR] [--keep-scratch]
 set -euo pipefail
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "${DIR}/deploy/lib.sh"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${DIR}/deploy/script/lib.sh"
 
 require_cmd docker xz sha256sum
 
@@ -45,7 +45,7 @@ OUTDIR="${OPT_OUT:-${DIR}/deploy/${ARCH}/${SETNAME}.parts}"
 log "Building the unitotem-parts-builder container image..."
 ${DOCKER} build -f "${DIR}/Dockerfile.parts" -t unitotem-parts-builder "${DIR}"
 
-SCRATCH_DIR="${DIR}/work/parts-scratch.$$"
+SCRATCH_DIR="${DIR}/build/parts-scratch.$$"
 mkdir -p "$SCRATCH_DIR"
 cleanup_scratch() {
     [ "$OPT_KEEP_SCRATCH" = 1 ] || rm -rf "$SCRATCH_DIR"

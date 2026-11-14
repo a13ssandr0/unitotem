@@ -359,7 +359,7 @@ HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]*')
 
 
 def deploy_key_path(host):
-    # Same per-target key location as ota_key_path in deploy/lib.sh.
+    # Same per-target key location as ota_key_path in deploy/script/lib.sh.
     if HOST_RE.fullmatch(host) is None:
         raise ValueError('invalid host for the OTA key')
     base = os.environ.get('XDG_STATE_HOME') or os.path.join(os.path.expanduser('~'), '.local', 'state')
@@ -891,7 +891,7 @@ class Context:
         if parts is None:
             self.emit('no parts set found under deploy/amd64', logging.WARNING, rec['hostname'])
             parts = '<parts>'
-        return 'OTA_FALLBACK_KEY=%s deploy/remote-deploy.sh recover %s --parts %s --yes' % (
+        return 'OTA_FALLBACK_KEY=%s deploy/script/remote-deploy.sh recover %s --parts %s --yes' % (
             k['priv'] or '<private key>', rec['client_ip'], parts)
 
     def add_status(self, data, client_ip=''):

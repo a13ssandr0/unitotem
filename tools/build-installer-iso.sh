@@ -2,7 +2,7 @@
 # Builds the amd64 installer ISO (hybrid: BIOS El Torito + EFI, also writable raw to a USB stick) from a flash image.
 # Usage: tools/build-installer-iso.sh --flash unitotem-<date>-amd64-flash.img.xz [--out DIR] [--date YYYY-MM-DD]
 #          [--kernel FILE --initrd FILE]
-# Output: DIR/unitotem-installer-<date>-amd64.iso and .sha256 (default DIR: work/installer-iso).
+# Output: DIR/unitotem-installer-<date>-amd64.iso and .sha256 (default DIR: deploy/amd64).
 # Kernel, initrd and the signed Secure Boot chain (shim, MokManager, GRUB) come from the flash image's EFI partition
 # (unitotem/recovery-vmlinuz, unitotem/recovery-initrd.img, EFI/BOOT/: signed shim, MokManager, signed GRUB); --kernel/--initrd override the first two.
 # Runs in a debian:trixie container (docker) unless the tools are present and INSTALLER_ISO_INNER=1.
@@ -10,7 +10,7 @@
 set -Eeuo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-FLASH='' OUT="$HERE/work/installer-iso" DATE='' KERNEL='' INITRD=''
+FLASH='' OUT="$HERE/deploy/amd64" DATE='' KERNEL='' INITRD=''
 while [ $# -gt 0 ]; do
     case $1 in
         --flash)  FLASH=$2; shift 2 ;;

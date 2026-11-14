@@ -1,6 +1,6 @@
 #!/bin/bash
 # Tests of the slot lookup with duplicate labels (slot_pick, heal_dup_label, pin_root_dev and their use in
-# cmd_init_premount and ab_failover, deploy/ota-engine.sh). Fixtures only: the sysfs block tree, the blkid database,
+# cmd_init_premount and ab_failover, deploy/script/ota-engine.sh). Fixtures only: the sysfs block tree, the blkid database,
 # /proc/mounts and the initramfs param.conf are tmp files (OTA_SYS_BLOCK, OTA_PROC_MOUNTS, OTA_CONF_PARAM). blkid,
 # e2label, mount, umount, mountpoint, sync, sleep, udevadm, modprobe, the log functions, bootcount_gate,
 # cmd_serve_fallback, check_flag_file and check_root_readonly are stubs.
@@ -8,7 +8,7 @@
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ENGINE="$HERE/../../deploy/ota-engine.sh"
+ENGINE="$HERE/../../deploy/script/ota-engine.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/unitotem-slot-pick-test.XXXXXX")
 trap 'rm -rf -- "$TMP"' EXIT
 

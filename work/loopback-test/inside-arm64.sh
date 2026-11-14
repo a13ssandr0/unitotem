@@ -18,7 +18,7 @@ apt-get install -y -qq --no-install-recommends \
 REPO=/repo
 PARTS=/work/parts
 TARGET_IMG=/work/target.img
-ENGINE=(bash "$REPO/deploy/ota-engine.sh")
+ENGINE=(bash "$REPO/deploy/script/ota-engine.sh")
 RESULTS=/work/results.txt
 : > "$RESULTS"
 
@@ -97,9 +97,9 @@ ensure_partition_nodes "$LOOP"
 
 log "Writing the recovery kernel/initrd (arm64: recovery8.img/recovery-initrd.img, no subdir)..."
 "${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery8.img \
-    < "$REPO/deploy/arm64/recovery-vmlinuz-arm64"
+    < "$REPO/build/arm64/recovery/recovery-vmlinuz-arm64"
 "${ENGINE[@]}" write-bootfile --disk "$LOOP" --bootfs-part "$BOOTFS_PART" --name recovery-initrd.img \
-    < "$REPO/deploy/arm64/recovery-initrd-arm64.img"
+    < "$REPO/build/arm64/recovery/recovery-initrd-arm64.img"
 
 "${ENGINE[@]}" set-default-recovery --disk "$LOOP" --firmware rpi --bootfs-part "$BOOTFS_PART"
 log "Stage 1 complete."
@@ -257,8 +257,8 @@ check "recovery8.img still present" test -f "$BOOTFS_MNT/recovery8.img"
 check "recovery-initrd.img still present" test -f "$BOOTFS_MNT/recovery-initrd.img"
 got_vmlinuz_sha=$(sha256sum "$BOOTFS_MNT/recovery8.img" | cut -d' ' -f1)
 got_initrd_sha=$(sha256sum "$BOOTFS_MNT/recovery-initrd.img" | cut -d' ' -f1)
-exp_vmlinuz_sha=$(awk -F= '/UNITOTEM_RECOVERY_VMLINUZ_SHA256/{print $2}' "$REPO/deploy/arm64/recovery.manifest")
-exp_initrd_sha=$(awk -F= '/UNITOTEM_RECOVERY_INITRD_SHA256/{print $2}' "$REPO/deploy/arm64/recovery.manifest")
+exp_vmlinuz_sha=$(awk -F= '/UNITOTEM_RECOVERY_VMLINUZ_SHA256/{print $2}' "$REPO/build/arm64/recovery/recovery.manifest")
+exp_initrd_sha=$(awk -F= '/UNITOTEM_RECOVERY_INITRD_SHA256/{print $2}' "$REPO/build/arm64/recovery/recovery.manifest")
 record "recovery8.img sha256: got=${got_vmlinuz_sha} expected=${exp_vmlinuz_sha}"
 check "recovery8.img sha256 correct (re-read from disk)" bash -c "[ '$got_vmlinuz_sha' = '$exp_vmlinuz_sha' ]"
 record "recovery-initrd.img sha256: got=${got_initrd_sha} expected=${exp_initrd_sha}"
@@ -270,7 +270,7 @@ check "cmdline-trial.txt written" test -f "$BOOTFS_MNT/cmdline-trial.txt"
 # the mini-UART on the GPIO header. A wrong value fails silently (nothing on serial).
 check "trial cmdline uses ttyS0 (Raspberry DTBs), not ttyS1" \
     grep -q "console=ttyS0,115200" "$BOOTFS_MNT/cmdline-trial.txt"
-# Check of the config-extra.txt splice (append_config_extra in deploy/ota-engine.sh):
+# Check of the config-extra.txt splice (append_config_extra in deploy/script/ota-engine.sh):
 # set-trial-boot's rpi-tryboot branch reads /mnt/newroot/etc/unitotem/config-extra.txt (real
 # content on the restored ROOT, installed by unitotem/stage2-configure.sh), and
 # dtoverlay=vc4-kms-v3d must end up in tryboot.txt, otherwise KMS is never enabled.
@@ -314,11 +314,11 @@ umount /mnt/ota-promote-check
 
 log "=== ROUND 2: redeploy onto an ALREADY provisioned target (recreate_table=0) ==="
 # Round 1 above provisions an empty disk (recreate_table=1) by calling ota-engine.sh
-# subcommands directly; it never drives the orchestration in deploy/remote-deploy.sh
+# subcommands directly; it never drives the orchestration in deploy/script/remote-deploy.sh
 # (run_ota_sequence), which decides which subcommands to call and when. This round covers the
 # recreate_table=0 path, the everyday update of an already-provisioned device: it reuses the
 # same loop device, already provisioned and promoted by round 1, and drives the REAL
-# run_ota_sequence(), extracted from the current deploy/remote-deploy.sh on every run.
+# run_ota_sequence(), extracted from the current deploy/script/remote-deploy.sh on every run.
 
 log "Emptying overlays/ before round 2 (otherwise the check would pass on round 1 leftovers)..."
 mkdir -p /mnt/round2-bootfs-check
@@ -327,19 +327,19 @@ rm -rf /mnt/round2-bootfs-check/overlays
 sync
 umount /mnt/round2-bootfs-check
 
-# run_ota_sequence calls die/serve_file_once/wait_port_bound/read_kv_block from deploy/lib.sh,
+# run_ota_sequence calls die/serve_file_once/wait_port_bound/read_kv_block from deploy/script/lib.sh,
 # which round 1 does not need.
-source "$REPO/deploy/lib.sh"
-sed -n '/^run_ota_sequence()/,/^}/p' "$REPO/deploy/remote-deploy.sh" > /tmp/run_ota_sequence.sh
+source "$REPO/deploy/script/lib.sh"
+sed -n '/^run_ota_sequence()/,/^}/p' "$REPO/deploy/script/remote-deploy.sh" > /tmp/run_ota_sequence.sh
 check "run_ota_sequence() extracted from remote-deploy.sh" test -s /tmp/run_ota_sequence.sh
 source /tmp/run_ota_sequence.sh
 
-# run_ota_sequence reaches "the target" only through ota_ssh/ota_ssh_send (deploy/lib.sh, SSH
+# run_ota_sequence reaches "the target" only through ota_ssh/ota_ssh_send (deploy/script/lib.sh, SSH
 # normally). Here the target is this container, so the command is eval'd directly. A real system
 # resolves "unitotem-ota-engine" via PATH; a shell function of that name does the same without a
 # writable PATH directory. The final `reboot -f` is intercepted: a --privileged container could
 # really reboot the Docker host, and the test only verifies what was written to disk.
-unitotem-ota-engine() { bash "$REPO/deploy/ota-engine.sh" "$@"; }
+unitotem-ota-engine() { bash "$REPO/deploy/script/ota-engine.sh" "$@"; }
 ota_ssh() {
     local _h="$1"; shift
     case "$1" in
@@ -391,7 +391,7 @@ check "round2: fsck.ext4 clean on DATA (preserved, not reformatted)" e2fsck -fn 
 check "guard: run_ota_sequence reads the manifest on fd 9, not stdin" \
     grep -qF 'done 9< "${OPT_PARTS}/parts.manifest"' /tmp/run_ota_sequence.sh
 check "guard: ota_ssh passes -n (does not consume the caller's stdin)" \
-    grep -qF '_ota_ssh_exec -n "$OTA_AUTH_TARGET"' "$REPO/deploy/lib.sh"
+    grep -qF '_ota_ssh_exec -n "$OTA_AUTH_TARGET"' "$REPO/deploy/script/lib.sh"
 
 log "=== round2: promote-default (second confirmed boot) ==="
 cp "$REPO/unitotem/files/config-extra.txt" /etc/unitotem/config-extra.txt

@@ -144,11 +144,11 @@ sync
 # ---------- Recovery (fallback) kernel+initrd ----------
 # Built by unitotem/stage1-recovery-initrd.sh from the stage1 rootfs; must exist before stage3 runs.
 # Copied onto the boot FAT partition at the FILE level (never with partclone), so a later
-# per-partition OTA restore of this partition (deploy/make-parts.sh) can update the real
+# per-partition OTA restore of this partition (deploy/script/make-parts.sh) can update the real
 # system's kernel/dtb/initramfs entries without touching these files.
-RECOVERY_VMLINUZ="/deploy/${ARCH}/recovery-vmlinuz-${ARCH}"
-RECOVERY_INITRD="/deploy/${ARCH}/recovery-initrd-${ARCH}.img"
-RECOVERY_MANIFEST="/deploy/${ARCH}/recovery.manifest"
+RECOVERY_VMLINUZ="${WORK_DIR}/recovery/recovery-vmlinuz-${ARCH}"
+RECOVERY_INITRD="${WORK_DIR}/recovery/recovery-initrd-${ARCH}.img"
+RECOVERY_MANIFEST="${WORK_DIR}/recovery/recovery.manifest"
 for f in "$RECOVERY_VMLINUZ" "$RECOVERY_INITRD" "$RECOVERY_MANIFEST"; do
     [ -f "$f" ] || { echo "Missing $f - run unitotem/stage1-recovery-initrd.sh first" >&2; exit 1; }
 done
@@ -437,7 +437,7 @@ losetup -d "${LOOP}"
 trap - EXIT
 
 # ---------- Optional: parts set from this same build ----------
-# Off by default; deploy/make-parts.sh is the usual path. With MAKE_PARTS=1 a parts set is made
+# Off by default; deploy/script/make-parts.sh is the usual path. With MAKE_PARTS=1 a parts set is made
 # from the still-uncompressed ${IMG_FILE}, through its own read-only loop device.
 if [ "${MAKE_PARTS:-0}" = 1 ]; then
     echo "Generating parts set (MAKE_PARTS=1)..."
