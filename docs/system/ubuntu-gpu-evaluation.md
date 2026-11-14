@@ -7,7 +7,9 @@ Paths: relative to the repository root. Scripts: `tools/ubuntu-proto/` (build-se
 - NVIDIA kernel modules come precompiled and signed by `Canonical Ltd. Kernel Module Signing`; the kernel accepts them under lockdown, no MOK.
 - A driver can ship as a systemd-sysext image over a base without any NVIDIA file.
 - Verified on a GTX 1060 3GB (Pascal), passed through to a Secure Boot VM, driver 580.178.04 (proprietary modules): `nvidia-smi`, `nvidia-drm` modeset with `fb0`, labwc (headless backend, GLES2) rendering with `GL renderer: NVIDIA GeForce GTX 1060 3GB/PCIe/SSE2`.
-- Not verified: 595 open modules on a Turing or newer GPU (only the signature check and module load in QEMU: `NVRM: No NVIDIA GPU found`); a connected monitor; video decode; real firmware with Secure Boot (the amd64 test PC); Ubuntu loader on A/B with the OTA fallback.
+- Verified on an RTX 2060 SUPER (Turing), passed through to a Secure Boot VM, driver 595.99.02 (open modules from the 469 MB extension, signer Canonical): `nvidia-smi`, nvidia-drm modeset with fbdev, labwc DRM backend enabling the connected LG UltraFine on DP-1.
+- Verified: UniTotem image 2026.11.53 (kernel 7.2.12, NVIDIA 620 open DKMS, Secure Boot off) on the same GPU with three monitors: nvidia-drm modeset, viewer `compositing=enabled rasterization=enabled gl=egl-angle`, labwc outputs DP-1 and HDMI-A-1 at 3840x2160 60 Hz and DVI-D-1 at 1920x1080 60 Hz. The viewer logs a benign Vulkan error (`--ozone-platform=wayland` is not compatible with Vulkan).
+- Not verified: video decode; real firmware with Secure Boot (the amd64 test PC); Ubuntu loader on A/B with the OTA fallback; Radeon.
 
 ## Versions (archive indexes of the build host)
 | | Ubuntu 26.04 | image now |
@@ -28,6 +30,11 @@ Paths: relative to the repository root. Scripts: `tools/ubuntu-proto/` (build-se
 - Merging before `systemd-udevd` deadlocks the boot (sysext waits for `local-fs.target`, which needs the EFI device, which needs udev). Working order: default sysext order, `nouveau` blacklisted in the base, then `udevadm trigger --action=add --subsystem-match=pci` after the merge (4 s boot, driver bound).
 - dpkg cannot run while the extension is merged (`/usr` read-only): unmerge first.
 - The repository's initramfs hook (`unitotem/files/ota-hook`, engine, partclone, dropbear, whiptail) builds on Ubuntu's initramfs-tools (125 MB initrd) and the system boots with it.
+
+## Passthrough of the boot GPU
+- Free every holder of `/dev/nvidia*` first: the unbind of the driver waits on the usage count (`NVRM: Attempting to remove device ... with non-zero usage count!`) and blocks libvirt and every later bind on the device lock. The holder here was a fan-control daemon; `fuser -v /dev/nvidia*` names it.
+- The audio function needs PipeWire stopped; all four functions of the group are passed.
+- A flash image needs at least 5 GiB + 256 MiB free after ROOT_A for its first-boot layout: create the overlay at 32G or the DATA mount fails and the first-access account creation errors with `groupadd: cannot lock /etc/group`.
 
 ## Sizes
 | item | installed | squashfs (zstd 19) |
