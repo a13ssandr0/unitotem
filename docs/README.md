@@ -14,6 +14,7 @@ Component documentation of the UniTotem repository. System docs describe the ima
 - [release.md](system/release.md): release tooling and signing keys.
 - [deploy-and-recovery.md](system/deploy-and-recovery.md): network install, OTA fallback and recovery of a target.
 - [windows-install-research.md](system/windows-install-research.md): research on installing from Windows.
+- [ubuntu-gpu-evaluation.md](system/ubuntu-gpu-evaluation.md): Ubuntu base and NVIDIA driver extensions, measurements.
 - [legacy-pi-gen.md](system/legacy-pi-gen.md): the pi-gen based tree kept for reference.
 - [testing.md](system/testing.md): system tests and harnesses.
 

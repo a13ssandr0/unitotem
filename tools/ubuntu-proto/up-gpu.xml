@@ -1,0 +1,54 @@
+<domain type='kvm'>
+  <name>unitotem-up-gpu</name>
+  <uuid>3d23833f-db72-4803-a338-ac47f0637809</uuid>
+  <memory unit='MiB'>8192</memory>
+  <vcpu placement='static'>4</vcpu>
+  <os>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <loader readonly='yes' secure='yes' type='pflash'>/usr/share/OVMF/OVMF_CODE_4M.secboot.fd</loader>
+    <nvram template='/usr/share/OVMF/OVMF_VARS_4M.ms.fd'>/var/tmp/unitotem-up/up-vars.fd</nvram>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+    <smm state='on'/>
+  </features>
+  <cpu mode='host-passthrough'/>
+  <clock offset='utc'/>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>destroy</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='writeback'/>
+      <source file='/var/tmp/unitotem-up/up-overlay.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <interface type='network'>
+      <source network='default'/>
+      <mac address='52:54:00:11:70:61'/>
+      <model type='virtio'/>
+    </interface>
+    <video>
+      <model type='none'/>
+    </video>
+    <hostdev mode='subsystem' type='pci' managed='yes'>
+      <source>
+        <address domain='0x0000' bus='0x17' slot='0x00' function='0x0'/>
+      </source>
+    </hostdev>
+    <hostdev mode='subsystem' type='pci' managed='yes'>
+      <source>
+        <address domain='0x0000' bus='0x17' slot='0x00' function='0x1'/>
+      </source>
+    </hostdev>
+    <serial type='pty'>
+      <target port='0'/>
+    </serial>
+    <console type='pty'>
+      <target type='serial' port='0'/>
+    </console>
+    <memballoon model='virtio'/>
+  </devices>
+</domain>
