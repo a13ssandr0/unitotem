@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared host-side helpers for deploy/script/remote-deploy.sh and deploy/script/make-parts.sh.
+# Shared host-side helpers for deploy/script/remote-deploy.sh.
 # Not meant to be executed directly.
 # Auth modes of the REAL system's ssh/scp, fixed when this file is sourced (set OTA_AUTH before sourcing):
 #   OTA_AUTH=password (default): sshpass with OTA_PASSWORD, password options only.
@@ -199,6 +199,9 @@ scp_root() {
 # With it the dead peer is noticed in ~15s.
 OTA_SSH_OPTS=(-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
               -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p "${OTA_PORT:-2222}")
+# Started through sudo (remote-deploy.sh), ssh would refuse a ~/.ssh/config owned by the user; the options of this file are complete
+# without it (the identity files of the user's home are still tried).
+if [ -n "${SUDO_UID:-}" ]; then SSH_OPTS+=(-F /dev/null); SCP_OPTS+=(-F /dev/null); OTA_SSH_OPTS+=(-F /dev/null); fi
 
 # Per-target key of the OTA fallback, kept in the operator's state directory (never in the repository). The
 # fallback accepts it once its public line is armed (unitotem-ota-arm --authkey-file, or the kernel cmdline).

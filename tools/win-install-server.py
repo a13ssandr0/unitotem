@@ -868,18 +868,15 @@ class Context:
             k = self.keys.get(machine)
         return k['line'] if (ok and k) else None
 
-    def find_parts(self, firmware):
-        # Newest parts set under deploy/amd64; for a BIOS PC one that carries the BIOS stream (p5-BIOS.*).
+    def find_image(self):
+        # Newest full A/B image under deploy/amd64 (every amd64 image carries the BIOS boot partition, so it serves UEFI and BIOS PCs).
         base = os.path.join(REPO_ROOT, 'deploy', 'amd64')
         try:
-            sets = sorted((d for d in os.listdir(base) if d.endswith('.parts') and os.path.isdir(os.path.join(base, d))), reverse=True)
+            names = sorted((n for n in os.listdir(base)
+                            if re.fullmatch(r'unitotem-[0-9-]+-amd64\.img(\.xz)?', n) and os.path.isfile(os.path.join(base, n))), reverse=True)
         except OSError:
-            sets = []
-        for d in sets:
-            names = os.listdir(os.path.join(base, d))
-            if firmware != 'bios' or any(n.startswith('p5-BIOS') for n in names):
-                return os.path.join('deploy', 'amd64', d)
-        return None
+            names = []
+        return os.path.join('deploy', 'amd64', names[0]) if names else None
 
     def next_command(self, machine):
         with self.lock:
@@ -887,12 +884,12 @@ class Context:
             k = self.keys.get(machine)
         if not rec or not k:
             return ''
-        parts = self.find_parts(rec['firmware'])
-        if parts is None:
-            self.emit('no parts set found under deploy/amd64', logging.WARNING, rec['hostname'])
-            parts = '<parts>'
-        return 'OTA_FALLBACK_KEY=%s deploy/script/remote-deploy.sh recover %s --parts %s --yes' % (
-            k['priv'] or '<private key>', rec['client_ip'], parts)
+        image = self.find_image()
+        if image is None:
+            self.emit('no image found under deploy/amd64', logging.WARNING, rec['hostname'])
+            image = '<image>'
+        return 'OTA_FALLBACK_KEY=%s deploy/script/remote-deploy.sh recover %s --image %s --yes' % (
+            k['priv'] or '<private key>', rec['client_ip'], image)
 
     def add_status(self, data, client_ip=''):
         st = parse_status(data)

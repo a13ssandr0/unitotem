@@ -10,13 +10,12 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 |---|---|
 | `build-unitotem.sh` | Entry point: builder image, binfmt, per-arch loop, package-lock gate, stage caching, native arm64 path, Docker path |
 | `Dockerfile.unitotem` | Builder image (debian:bookworm): debootstrap, qemu-user-static, aria2, zstd, partclone, initramfs-tools-core, python3. Copies `unitotem/`, `deploy/script/ota-engine.sh`, `deploy/script/parts-lib.sh`, `tools/pkglock.py` to `/unitotem/` |
-| `Dockerfile.parts` | Parts-set image (bookworm, partclone), used by `deploy/script/make-parts.sh` |
 | `unitotem/common.sh` | Defaults, A/B sizes, chroot mount helpers, `apt_install` (aria2 prefetch, then apt) |
 | `unitotem/stage0-bootstrap.sh` | debootstrap base to `build/<arch>/stage0.tar.gz` |
 | `unitotem/stage1-packages.sh` | Apt sources, package lock, kernel, firmware, bootloader, GPU, Wayland, manager .debs, purge, lock verify/freeze -> `stage1.tar.gz` |
 | `unitotem/stage1-recovery-initrd.sh` | Resident OTA fallback kernel+initrd and `recovery.manifest` |
 | `unitotem/stage2-configure.sh` | Hostname, locale, timezone, root first-access state, boot config, fstab, NetworkManager, services, initramfs, arm64 FIRMWARE files -> `stage2.tar.gz` |
-| `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, optional parts set, flash image, xz |
+| `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, flash image, xz |
 | `unitotem/make-flash-image.sh` | Flash image from the full image |
 | `unitotem/verify-image.sh` | Static rule checks on the mounted image (PASS/FAIL) |
 | `unitotem/check-recovery-commands.sh` | Every external command of `ota-engine.sh` exists in the recovery initrd |
@@ -32,7 +31,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 - Several arches: one child per arch (`BUILD_CHILD=1`, output prefixed `[arch]`), in parallel.
 - Per arch: package-lock gate (`package-lock.md`), then native or Docker path.
 - arm64 native path (why: `mkinitramfs` runs `ldd` of the target and apt postinst/trigger scripts run arm64 code, which qemu-aarch64 emulates slowly): used when `PI_NATIVE_BUILD=1` (default), `sshpass` exists and the device answers within 5 s. A native failure falls back to Docker + qemu-aarch64.
-  - rsyncs `unitotem/`, `ota-engine.sh`, `parts-lib.sh`, `pkglock.py`, `build/extra-debs/` to the device, installs build deps, runs stage 0-3 in one SSH session, rsyncs `build/arm64` and `deploy/arm64` back, adopts the new lock. No stage caching.
+  - rsyncs `unitotem/`, `ota-engine.sh`, `pkglock.py`, `build/extra-debs/` to the device, installs build deps, runs stage 0-3 in one SSH session, rsyncs `build/arm64` and `deploy/arm64` back, adopts the new lock. No stage caching.
 - Docker path: one `docker run --rm --privileged` per stage.
   - arm64 on an amd64 build server (Docker + `qemu-aarch64` registered in `binfmt_misc`; check with `docker run --rm --platform linux/arm64 debian:trixie uname -m`): `FORCE_STAGE=1 ARCHES=arm64 ./build-unitotem.sh` with `PI_HOST` unset. Measured on a 144-core server building amd64 in parallel: stage 0 about 15 min, stage 1 about 50 min (package configuration under emulation), stages 2-3 about 15 min; about 65 min to the image, `verify-image` 190 checks, 0 failed. The resulting image booted on a Raspberry Pi 4 and passed the A/B update, so it is equivalent to a native build. The native path needs the test Pi for 1.5-2 h and blocks it; the server path does not.
   - Stage 0 and 1: run when the tarball is missing or stale.
@@ -102,7 +101,6 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - arm64 A/B: kernel, initramfs, cmdline move to `slota/`; `config.txt` gets `os_prefix=slota/`; dtbs and overlays copied into `slota/`.
   - amd64: `grub-install` for EFI and BIOS (`--removable --no-uefi-secure-boot`), the signed Secure Boot chain installed in `EFI/BOOT` (shim as `BOOTX64.EFI`), `grub-mkconfig` (A/B: `grub.cfg` and `grubenv` in `unitotem-grub/` on the ESP).
   - Boot assertions (kernel magic, dtb parse, initramfs `/init`, `config.txt` references), release-version, change baseline, `verify-image.sh`, fsck of all partitions.
-  - Optional parts set (`MAKE_PARTS=1`).
   - A/B: `unitotem/make-flash-image.sh` writes the flash image from the full one (fresh GPT, partitions except ROOT_B and DATA copied unchanged, sgdisk/sha256/fsck verification), `xz -T0`; then `xz -T0` of the full image. The raw `.img` files are removed.
 
 ## Interfaces
@@ -127,7 +125,7 @@ Environment of `build-unitotem.sh`:
 | `PKGLOCK` | `on` | `off`: skip all lock logic |
 | `PKGLOCK_KEEP` | `0` | `1`: keep the lock on security updates |
 
-Forwarded to the stages (Docker and native): `RELEASE`, `MIRROR`, `UNITOTEM_HOSTNAME`, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, `IMAGE_SIZE`, `AB_LAYOUT`, `ROOT_SLOT_SIZE`, `RELEASE_VERSION`, `MAKE_PARTS`, `EFI_SIZE`, `ROOT_SIZE`. `BOOT_SIZE`, `FIRMWARE_SIZE` are read by the stages but not forwarded.
+Forwarded to the stages (Docker and native): `RELEASE`, `MIRROR`, `UNITOTEM_HOSTNAME`, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, `IMAGE_SIZE`, `AB_LAYOUT`, `ROOT_SLOT_SIZE`, `RELEASE_VERSION`, `EFI_SIZE`, `ROOT_SIZE`. `BOOT_SIZE`, `FIRMWARE_SIZE` are read by the stages but not forwarded.
 
 Defaults (`unitotem/common.sh`, env-overridable):
 
@@ -145,9 +143,8 @@ Outputs:
 - `deploy/<arch>/unitotem-<date>-<arch>.img.xz` (build date, not `RELEASE_VERSION`): full image.
 - `deploy/<arch>/unitotem-<date>-<arch>-flash.img.xz` (A/B): flash image, `storage-and-persistence.md#layout`.
 - `build/<arch>/recovery/recovery-vmlinuz-<arch>`, `recovery-initrd-<arch>.img`, `recovery.manifest` (keys `UNITOTEM_RECOVERY_{ARCH,KERNEL_VERSION,VMLINUZ_SHA256,INITRD_SHA256,PARTCLONE_VERSION,BUILD_DATE}`). Deploys read the set from the parts set; these host files are the fallback only (`deploy-and-recovery.md`).
-- Optional `deploy/<arch>/unitotem-<date>-<arch>.parts`.
 - `build/<arch>/`: `stage{0,1,2}.tar.gz`, `stage2.layout`, `<arch>.lock.new`, `recovery/` (the stage 1b kernel and initrd).
-- `deploy/<arch>/`: what is ready to use, nothing intermediate: `unitotem-<date>-<arch>.img.xz`, `...-flash.img.xz`, parts sets, preboot image, installer ISO and Windows installer; `deploy/script/`: the deploy tooling (`remote-deploy.sh`, `write-sd.sh`, `make-parts.sh`, ...).
+- `deploy/<arch>/`: what is ready to use, nothing intermediate: `unitotem-<date>-<arch>.img.xz`, `...-flash.img.xz`, preboot image, installer ISO and Windows installer; `deploy/script/`: the deploy tooling (`remote-deploy.sh`, `write-sd.sh`, `make-parts.sh`, ...).
 
 Partition layouts:
 
@@ -165,7 +162,7 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 - Stage 1 needs the full manager set in `build/extra-debs/<arch>/`: `unitotem`, `unitotem-manager`, `unitotem-node`, `unitotem-viewer`, `plymouth-theme-unitotem`, `python3-cefpython3` (for the arch), `python3-fastapi-login`, `python3-sdbus-networkmanager`.
 - Native arm64: device root is read-only; the build remounts `/` and `/var/lib/dpkg` rw and restores ro in an EXIT trap. Stale chroot mounts under the build tree are unmounted first.
 - Native arm64: `ROOTFS` and `IMG_MNT` live in the build tree (`/tmp` is nodev tmpfs, `/mnt` holds DATA). `qemu-aarch64-static` is copied by stage 0 unconditionally, so the package is required.
-- Builder is bookworm, target is trixie. partclone in `Dockerfile.parts` must match the version `ota-engine.sh` restores with.
+- Builder is bookworm, target is trixie. The deploy streams are written by the host's partclone and restored by the target's (trixie): measured compatible between 0.3.44 and 0.3.36 (`deploy-and-recovery.md`).
 - Image content (enforced by `verify-image.sh`): no TLS key, no SSH host key, no DKMS signing key, no device identity. All are generated on the device.
 - Secure Boot (amd64): the signed chain is the boot loader from the first boot (`EFI/BOOT`, stub `grub.cfg` also in `EFI/debian`). `--no-uefi-secure-boot --removable` keeps `grub-install` from placing a half chain; stage 3 then replaces the plain GRUB.
 - arm64 A/B: dtbs and overlays are copied, not moved: the fallback (no `os_prefix`) reads `bcm2711-rpi-4-b.dtb` from the FAT top level.

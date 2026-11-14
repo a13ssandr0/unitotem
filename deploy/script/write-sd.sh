@@ -5,7 +5,7 @@
 #
 #   write-sd.sh [--yes] [--no-eject] IMAGE DEVICE
 #
-#   IMAGE   deploy/<arch>/unitotem-*.img or .img.xz (an .xz is expanded once into build/, or into $WRITE_SD_TMP)
+#   IMAGE   deploy/<arch>/unitotem-*.img or .img.xz (an .xz is expanded once, in tmpfs only)
 #   DEVICE  whole disk, e.g. /dev/sdb or /dev/mmcblk0; every partition on it is lost
 #
 # At the end a removable device is flushed and ejected (--no-eject keeps it). Needs root. Refuses a device with mounted partitions, the disk holding / or /boot, and a device smaller than the image's
@@ -13,7 +13,7 @@
 #
 # Table: the dump of the image's table, without last-lba (the backup table goes to the real end of the disk), with the same
 # GUIDs, labels and start sectors; the MBR boot code is copied. Filesystems keep their UUID and label (partclone clones
-# them). The last partition is not grown: DATA grows to the disk end at the first boot (docs/system/storage-and-persistence.md).
+# them). The expanded image lives only in tmpfs (/dev/shm); the copy is refused when it does not fit there. The last partition is not grown: DATA grows to the disk end at the first boot (docs/system/storage-and-persistence.md).
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -35,7 +35,7 @@ done
 IMAGE=$1 DEVICE=$2
 
 [ "$(id -u)" = 0 ] || die "must run as root"
-for t in sfdisk lsblk blkid losetup partprobe partclone.extfs partclone.fat dumpe2fs e2fsck fsck.fat wipefs dd xz pv; do
+for t in findmnt sfdisk lsblk blkid losetup partprobe partclone.extfs partclone.fat dumpe2fs e2fsck fsck.fat wipefs dd xz pv; do
     command -v "$t" >/dev/null 2>&1 || die "missing tool: $t"
 done
 [ -f "$IMAGE" ] || die "image not found: $IMAGE"
@@ -53,26 +53,13 @@ for mp in / /boot /boot/efi; do
     [ "/dev/${parent}" = "$DEVICE" ] && die "$DEVICE holds $mp"
 done
 
-TMP="" LOOP=""
-cleanup() {
-    [ -z "$LOOP" ] || losetup -d "$LOOP" 2>/dev/null || true
-    if [ -n "$TMP" ]; then rm -f -- "$TMP/image.img" "$TMP/table.sfdisk" "$TMP/partclone.log"; rmdir -- "$TMP" 2>/dev/null || true; fi
-}
+# shellcheck source=deploy/script/image-lib.sh
+source "${DIR}/deploy/script/image-lib.sh"
+cleanup() { [ -z "$IMG_TMP" ] || rm -f -- "$IMG_TMP/table.sfdisk" "$IMG_TMP/partclone.log"; image_close; }
 trap cleanup EXIT
-
-SRC_IMG=$IMAGE
-case "$IMAGE" in
-    *.xz)
-        mkdir -p -- "${WRITE_SD_TMP:-$DIR/build}"
-        TMP=$(mktemp -d "${WRITE_SD_TMP:-$DIR/build}/write-sd.XXXXXX")
-        log INFO "expanding $IMAGE"
-        raw=$(xz --robot --list -- "$IMAGE" | awk -F'\t' '$1=="totals"{print $5}')
-        xz -dc -T0 -- "$IMAGE" | pv -N expand ${raw:+-s "$raw"} | dd of="$TMP/image.img" bs=4M conv=sparse status=none
-        SRC_IMG=$TMP/image.img ;;
-    *)  TMP=$(mktemp -d "${TMPDIR:-/tmp}/write-sd.XXXXXX") ;;
-esac
-
-LOOP=$(losetup --find --show --read-only --partscan -- "$SRC_IMG")
+image_open "$IMAGE" || die "cannot open $IMAGE"
+LOOP=$IMG_LOOP
+TMP=$IMG_TMP
 udevadm settle --timeout=10 2>/dev/null || true
 
 TABLE=$(sfdisk -d -- "$LOOP" | grep -v '^last-lba:' | grep -v '^device:')
@@ -100,7 +87,7 @@ START=$(date +%s)
 log INFO "partition table ($LABEL) on $DEVICE"
 wipefs -a -- "$DEVICE" >/dev/null
 sfdisk --force --no-reread --quiet -- "$DEVICE" < "$TMP/table.sfdisk"
-dd if="$SRC_IMG" of="$DEVICE" bs=440 count=1 conv=notrunc status=none     # MBR boot code (BIOS GRUB, protective MBR)
+dd if="$LOOP" of="$DEVICE" bs=440 count=1 conv=notrunc status=none     # MBR boot code (BIOS GRUB, protective MBR)
 partprobe "$DEVICE" 2>/dev/null || true
 partx -u "$DEVICE" 2>/dev/null || true
 udevadm settle --timeout=10 2>/dev/null || true

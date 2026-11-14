@@ -1,0 +1,6 @@
+# Tools of the image tests (test_image_lib.sh, test_write_sd.sh): trixie, the release the target restores with.
+FROM debian:trixie
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        partclone xz-utils util-linux fdisk gdisk parted e2fsprogs dosfstools coreutils pv ca-certificates \
+    && rm -rf /var/lib/apt/lists/*

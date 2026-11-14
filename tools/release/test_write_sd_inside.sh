@@ -5,8 +5,7 @@ W=/work; SCRIPT=/repo/deploy/script/write-sd.sh
 ok=0; fail=0
 check() { local name=$1; shift; if "$@" >/dev/null 2>&1; then ok=$((ok + 1)); echo "PASS: $name"; else fail=$((fail + 1)); echo "FAIL: $name"; fi; }
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || { echo "cannot mount devtmpfs"; exit 1; }
-export WRITE_SD_TMP=/work/tmp; mkdir -p $WRITE_SD_TMP
-apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends pv >/dev/null 2>&1 || { echo 'cannot install pv'; exit 1; }
+mkdir -p /work/tmp /tmpfs; mount -t tmpfs -o size=3g tmpfs /tmpfs; export UNITOTEM_TMPFS=/tmpfs
 mkdir -p /m
 attach() { losetup --find --show --partscan "$1"; }
 settle() { sleep 1; partprobe "$1" 2>/dev/null || true; sleep 1; }
@@ -22,7 +21,7 @@ sgdisk -n 4:0:+400M -t 4:8300 -c 4:DATA $W/src.img >/dev/null
 sgdisk -n 5:34:2047 -t 5:ef02 -c 5:BIOS $W/src.img >/dev/null
 L=$(attach $W/src.img); settle "$L"
 mkfs.fat -F32 -n EFI "${L}p1" >/dev/null; mkfs.ext4 -q -L ROOT_A "${L}p2"; mkfs.ext4 -q -L ROOT_B "${L}p3"; mkfs.ext4 -q -L DATA "${L}p4"
-head -c 515584 /dev/urandom > /tmp/bios.bin; dd if=/tmp/bios.bin of="${L}p5" bs=1M conv=notrunc status=none
+head -c 1031168 /dev/urandom > /tmp/bios.bin; dd if=/tmp/bios.bin of="${L}p5" bs=1M conv=notrunc status=none
 printf 'GRUBBOOT' | dd of=$W/src.img bs=1 seek=0 conv=notrunc status=none
 mount "${L}p1" /m; mkdir -p /m/EFI/BOOT; head -c 2000000 /dev/urandom > /m/EFI/BOOT/BOOTX64.EFI; umount /m
 mount "${L}p2" /m; head -c 40000000 /dev/urandom > /m/system.bin; echo marker-a > /m/marker; umount /m
@@ -46,7 +45,7 @@ verify() {   # verify DEVICE-LOOP FILE
         check "$file: partition $p UUID equals the image's" [ "$(ID ${dev}p$p)" = "$u" ]
     done
     check "$file: labels EFI ROOT_A ROOT_B DATA" bash -c "[ \"\$(blkid -o value -s LABEL ${dev}p1) \$(blkid -o value -s LABEL ${dev}p2) \$(blkid -o value -s LABEL ${dev}p3) \$(blkid -o value -s LABEL ${dev}p4)\" = 'EFI ROOT_A ROOT_B DATA' ]"
-    check "$file: raw BIOS partition identical" cmp -n 515584 /tmp/bios.bin ${dev}p5
+    check "$file: raw BIOS partition identical" cmp -n 1031168 /tmp/bios.bin ${dev}p5
     check "$file: MBR boot code copied" bash -c "[ \"\$(dd if=$dev bs=8 count=1 status=none)\" = GRUBBOOT ]"
     for p in 1 2 4; do mkdir -p /d$p; mount -o ro ${dev}p$p /d$p; done
     check "$file: every file of EFI, ROOT_A and DATA identical (md5)" bash -c "diff <({ cd /d1 && find . -type f -exec md5sum {} +; cd /d2 && find . -type f -exec md5sum {} +; cd /d4 && find . -type f -exec md5sum {} +; } | sort) /tmp/src.md5"
@@ -67,7 +66,9 @@ losetup -d "$D1"
 truncate -s 2G $W/dst2.img; D2=$(attach $W/dst2.img)
 check "write-sd from .img.xz succeeds" bash -c "bash $SCRIPT --yes $W/src.img.xz $D2 2>/tmp/w2.log || { cat /tmp/w2.log >&2; exit 1; }"; cat /tmp/w2.log
 settle "$D2"; verify "$D2" dst2
-check "the expanded copy is removed" bash -c "[ -z \"\$(ls -A /work/tmp)\" ]"
+check "the expanded copy is removed from tmpfs" bash -c "[ -z \"\$(ls -A /tmpfs)\" ]"
+check "an image bigger than the free tmpfs is refused" bash -c "mount -o remount,size=100m /tmpfs && bash $SCRIPT --yes $W/src.img.xz $D2 2>&1 | grep -q 'the expanded image needs'"; mount -o remount,size=3g /tmpfs
+check "a directory that is not tmpfs is refused" bash -c "UNITOTEM_TMPFS=/work bash $SCRIPT --yes $W/src.img.xz $D2 2>&1 | grep -q 'is not tmpfs'"
 losetup -d "$D2"
 
 # --- refusals

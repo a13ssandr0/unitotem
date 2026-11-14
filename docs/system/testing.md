@@ -59,7 +59,7 @@ Image check: `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`; boot FAT un
 
 | Command | Input | Output |
 |---|---|---|
-| `run.sh PARTS_DIR` | `.parts` dir | `scratch/` |
+| `run.sh PARTS_DIR` | directory made by `tools/release/image-streams.sh IMAGE DIR` (test fixture only: descriptor and one stream file per partition) | `scratch/` |
 | `run-ab.sh PARTS_DIR` | A/B `.parts`; env `ARCH` (amd64) | `scratch-ab/target.img` |
 | `run-arm64.sh PARTS_DIR` | arm64 `.parts` | `scratch-arm64/` |
 | `run-bootcount.sh` | none | `scratch-bootcount/results-bootcount.txt` |

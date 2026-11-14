@@ -5,6 +5,7 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Image and build
+- `remote-deploy.sh` reads the partitions straight from the full image (`--image`, default the newest `deploy/<arch>/unitotem-*-<arch>.img.xz`) and streams each one to the target while it pulls it: no parts files (`make-parts.sh`, `make-parts-image.sh`, `parts-lib.sh`, `Dockerfile.parts`, `MAKE_PARTS` removed). A compressed image is expanded only in tmpfs (`/dev/shm`) and refused when it does not fit; `deploy` and `recover` run as root through sudo (variables passed explicitly, sudo-rs ignores `-E`), `--help`/`probe`/`changes`/`disarm` need none. `write-sd.sh`, `make-preboot-image.sh` and the Windows install server use the same image reader (`deploy/script/image-lib.sh`).
 - Directory layout: `build/` for every compilation temporary (stage tarballs, apt cache, extra debs, recovery kernel and initrd), `deploy/<arch>/` for ready images only, `deploy/script/` for the deploy tooling (moved from `deploy/`); new `deploy/script/write-sd.sh` writes an image to a card or disk (partition table, partitions, `partclone` per partition, `pv` progress) with `tools/release/test_write_sd.sh`.
 - Graphics profile of the first-boot welcome page on three outputs and DevTools profiling tools (`tools/ubuntu-proto/`, `docs/manager/viewer.md`).
 - Ubuntu 26.04 base and NVIDIA 580/595 driver extensions evaluated under Secure Boot (`docs/system/ubuntu-gpu-evaluation.md`, `tools/ubuntu-proto/`).
