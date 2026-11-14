@@ -5,6 +5,7 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Image and build
+- Graphics profile of the first-boot welcome page on three outputs and DevTools profiling tools (`tools/ubuntu-proto/`, `docs/manager/viewer.md`).
 - Ubuntu 26.04 base and NVIDIA 580/595 driver extensions evaluated under Secure Boot (`docs/system/ubuntu-gpu-evaluation.md`, `tools/ubuntu-proto/`).
 - GRUB slot titles `UniTotem <version> (Slot A|B)` (version read from each slot's `grub-version`); `unitotem-boot-entry` names the firmware entry that booted the system `UniTotem` (loader entries only).
 - The recovery initrd gets the current `ota-engine.sh` (stage 1b refreshes it from the repository, not the stage 1 tarball); verify-image compares the engine copy of the recovery initrd and of the slot initramfs with the repository's.

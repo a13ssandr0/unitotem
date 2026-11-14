@@ -165,3 +165,19 @@ Commands from the manager (`target`, `window_id`):
 - `python -m pytest manager/tests/test_viewer_profile.py manager/tests/test_viewer_lockdown.py manager/tests/test_viewer_turn.py manager/tests/test_output_transform.py manager/tests/test_identify_pages.py` (repository root).
 - `manager/tests/test_touch_panel.py` also imports viewer code. `debian/tests/unit` runs the whole suite.
 - Not unit tested: `app.py`, `window.py`, `cdp.py`, `bootsplash.py`, `splash.py`. These need a board with a compositor (`tools/cef-wayland-tests/`, `tools/ui-panes.py` for the page).
+
+## Welcome page graphics profile (measured 2026-11-14)
+
+Image 2026.11.53, NVIDIA 620 open on an RTX 2060 SUPER passed to a VM (4 vCPU), three outputs (2 x 3840x2160 at 60 Hz, 1 x 1920x1080 at 60 Hz), first-boot welcome page (`/unitotem-first-boot`, one OOPIF iframe per window). Tools: `tools/ubuntu-proto/kiosk-profile.py`, `tools/ubuntu-proto/welcome-ab.py` (DevTools on 9223: rAF cadence, browser trace, CPU of the display path), 10 s per phase.
+
+| phase | CPU of the path (gpu + renderer + labwc) | raster ops / 10 s | draw+swap / 10 s |
+|---|---|---|---|
+| page as shipped | 62-67 % of one core (gpu 25-27, renderer 20-23, labwc 13) | 7200 | 1800 |
+| `body` animation removed | 17 % (renderer 11, gpu 5) | 0 | 0 |
+| gradient as a `transform` of a 400vw x 400vh layer | 53 % (gpu 17, renderer 14, labwc 13) | 29 | 1800 |
+
+- Cause of the load: `body { background-size: 400% 400%; animation: gradient 5s ease infinite }` animates `background-position`, a paint property: every frame re-rasters the gradient (4 tiles per frame and window) and the compositor draws and swaps every output at 60 Hz for as long as the page is shown.
+- rAF cadence of the page stays 60 fps (p50 16.7 ms, p95 16.8 ms); a few frames of 33-40 ms per 10 s in the shipped page (1-8 per window), 0-2 once the load is lower. Every vsync is swapped (1800 swaps for 3 windows x 600 frames): no systematic frame loss at the page or the swap level. Presentation on the panel was not measured.
+- The compositor-only variant removes the raster but not the per-frame draw of a layer of 15360x8640 px; it saves about a fifth of the cost.
+- `ease` applies to each of the two keyframe segments, so the gradient slows to a stop at 0, 50 and 100 % (inference from the CSS, not measured on screen).
+- The wordmark ring of `boot-screen.html` rotates `steps(60)` over 3 s for 1080 degrees: 20 steps per second of 18 degrees each (stepped on purpose, see the comment in the page); on a GPU-composited output this is visibly coarse (inference from the CSS, not measured on screen).
