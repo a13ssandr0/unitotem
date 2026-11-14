@@ -850,7 +850,7 @@ class MachineKeyTests(ServerCase):
 
     def test_next_command_printed_after_approval(self):
         self.approve()
-        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' deploy/script/remote-deploy.sh recover 127.0.0.1 --parts ' + (self.ctx.find_parts('uefi') or '<parts>') + ' --yes',
+        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' deploy/script/remote-deploy.sh recover 127.0.0.1 --image ' + (self.ctx.find_image() or '<image>') + ' --yes',
                       self.output())
 
     def test_second_inventory_reuses_the_key(self):
@@ -1012,26 +1012,23 @@ class StateFileTests(ServerCase):
 
 
 class NextCommandTests(ServerCase):
-    def test_real_parts_path_when_present_and_warning_when_not(self):
+    def test_real_image_path_when_present_and_warning_when_not(self):
         base = os.path.join(self.tmp, 'repo')
-        for name, bios in (('unitotem-2026-11-07-amd64.parts', True), ('unitotem-2026-11-09-amd64.parts', False)):
-            d = os.path.join(base, 'deploy', 'amd64', name)
-            os.makedirs(d)
-            open(os.path.join(d, 'p1-EFI.bootfs.tar.xz'), 'w').close()
-            if bios:
-                open(os.path.join(d, 'p5-BIOS.raw.pc.xz'), 'w').close()
+        d = os.path.join(base, 'deploy', 'amd64')
+        os.makedirs(d)
+        for name in ('unitotem-2026-11-07-amd64.img.xz', 'unitotem-2026-11-09-amd64.img.xz', 'unitotem-2026-11-12-amd64-flash.img.xz'):
+            open(os.path.join(d, name), 'w').close()
         old = srv.REPO_ROOT
         srv.REPO_ROOT = base
         try:
             self.post_json('/inventory', inventory())
-            self.assertEqual(self.ctx.find_parts('uefi'), 'deploy/amd64/unitotem-2026-11-09-amd64.parts')
-            self.assertEqual(self.ctx.find_parts('bios'), 'deploy/amd64/unitotem-2026-11-07-amd64.parts')
-            self.assertIn('--parts deploy/amd64/unitotem-2026-11-09-amd64.parts --yes', self.ctx.next_command('MACHINE-AAAA'))
+            self.assertEqual(self.ctx.find_image(), 'deploy/amd64/unitotem-2026-11-09-amd64.img.xz')
+            self.assertIn('--image deploy/amd64/unitotem-2026-11-09-amd64.img.xz --yes', self.ctx.next_command('MACHINE-AAAA'))
             srv.REPO_ROOT = os.path.join(self.tmp, 'empty')
             cmd = self.ctx.next_command('MACHINE-AAAA')
-            self.assertIn('--parts <parts> --yes', cmd)
+            self.assertIn('--image <image> --yes', cmd)
             self.assertNotIn('DIR', cmd)
-            self.assertTrue(any(' WARNING ' in l and 'no parts set found under deploy/amd64' in l for l in self.lines))
+            self.assertTrue(any(' WARNING ' in l and 'no image found under deploy/amd64' in l for l in self.lines))
         finally:
             srv.REPO_ROOT = old
 

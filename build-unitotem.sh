@@ -74,7 +74,6 @@ build_natively_on_pi() {
     echo "[arm64] Syncing sources to the Pi..."
     _pi_rsync -r --delete "${DIR}/unitotem/" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/"
     _pi_rsync "${DIR}/deploy/script/ota-engine.sh" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/files/ota-engine.sh"
-    _pi_rsync "${DIR}/deploy/script/parts-lib.sh" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/deploy-parts-lib.sh" 2>/dev/null || true
     _pi_rsync "${DIR}/tools/pkglock.py" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/pkglock.py"
     # Locally supplied packages (build/extra-debs/<arch>/*.deb) - the manager package among them - are inputs of stage 1 and
     # must be on the Pi too; the arm64 manager package is generated there from the amd64 one.

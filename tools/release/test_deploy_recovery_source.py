@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Host-side test of the recovery-file source of the deploy write-bootfile step (deploy/script/remote-deploy.sh):
-recovery_from_parts takes the recovery kernel, initrd and recovery.sha256 from the parts set's boot tarball, verifies
+recovery_from_image takes the recovery kernel, initrd and recovery.sha256 from the image's boot tarball, verifies
 them against the tarball's recovery.sha256, and falls back to the host copies in deploy/<arch>/ with a warning when the
 tarball lacks a member. Functions are cut out of the real script text and run under bash. Temporary directories only;
 no device, no /etc, no /run, no network.
@@ -54,7 +54,7 @@ def sha_file(lines):
 
 
 def run_case(td, tag, arch, members, tar_at=True, host=True):
-    """Build a parts dir, a host deploy dir and an output dir; call recovery_from_parts; return (rc, stdout, stderr, out)."""
+    """Build a parts dir, a host deploy dir and an output dir; call recovery_from_image; return (rc, stdout, stderr, out)."""
     base = os.path.join(td, tag)
     parts = os.path.join(base, "parts")
     out = os.path.join(base, "out")
@@ -77,9 +77,9 @@ warn() {{ echo "WARN: $*" >&2; }}
 DIR="{base}"
 {fn(RD_TEXT, "recovery_member")}
 {fn(RD_TEXT, "recovery_extract")}
-{fn(RD_TEXT, "recovery_from_parts")}
+{fn(RD_TEXT, "recovery_from_image")}
 rc=0
-recovery_from_parts "{parts}" "{arch}" "{out}" || rc=$?
+recovery_from_image "{parts}" "{arch}" "{out}" || rc=$?
 echo "RC=$rc"
 '''
     r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=120)
@@ -101,26 +101,26 @@ with tempfile.TemporaryDirectory() as td:
     members = [("unitotem/recovery-vmlinuz", KERNEL_TB), ("unitotem/recovery-initrd.img", INITRD_TB),
                ("unitotem/recovery.sha256", sums_full), ("unitotem/other.bin", b"x")]
     r, st, rc, out, dep = run_case(td, "amd64-ok", "amd64", members)
-    check("amd64: tarball recovery files are used (status parts, rc 0)", st == "parts" and rc == "RC=0", (r.stdout, r.stderr))
+    check("amd64: tarball recovery files are used (status image, rc 0)", st == "image" and rc == "RC=0", (r.stdout, r.stderr))
     check("amd64: kernel written under the FAT name recovery-vmlinuz from the tarball",
           read(os.path.join(out, "recovery-vmlinuz")) == KERNEL_TB)
     check("amd64: initrd written as recovery-initrd.img from the tarball", read(os.path.join(out, "recovery-initrd.img")) == INITRD_TB)
     check("amd64: recovery.sha256 copied verbatim (level line kept)", read(os.path.join(out, "recovery.sha256")) == sums_full)
-    check("amd64: stdout is exactly the status word and rc line", r.stdout == "parts\nRC=0\n", r.stdout)
+    check("amd64: stdout is exactly the status word and rc line", r.stdout == "image\nRC=0\n", r.stdout)
     check("amd64: no warning on the success path", "WARN" not in r.stderr, r.stderr)
 
     # ---- 2. amd64 members stored with ./ prefix ----------------------------------------------------------------------------
     members_dot = [("./unitotem/recovery-vmlinuz", KERNEL_TB), ("./unitotem/recovery-initrd.img", INITRD_TB),
                    ("./unitotem/recovery.sha256", sums_full)]
     r, st, rc, out, dep = run_case(td, "amd64-dot", "amd64", members_dot)
-    check("amd64 ./ prefixed members: parts used and verified", st == "parts" and rc == "RC=0", (r.stdout, r.stderr))
+    check("amd64 ./ prefixed members: image used and verified", st == "image" and rc == "RC=0", (r.stdout, r.stderr))
     check("amd64 ./ prefixed members: kernel bytes are the tarball's", read(os.path.join(out, "recovery-vmlinuz")) == KERNEL_TB)
 
     # ---- 3. arm64, names at the top of the tarball (recovery8.img) ----------------------------------------------------------
     sums_a = sha_file([(sha(KERNEL_TB), "recovery8.img"), (sha(INITRD_TB), "recovery-initrd.img")])
     members_a = [("recovery8.img", KERNEL_TB), ("recovery-initrd.img", INITRD_TB), ("recovery.sha256", sums_a)]
     r, st, rc, out, dep = run_case(td, "arm64-ok", "arm64", members_a)
-    check("arm64: top-level members used (status parts, rc 0)", st == "parts" and rc == "RC=0", (r.stdout, r.stderr))
+    check("arm64: top-level members used (status image, rc 0)", st == "image" and rc == "RC=0", (r.stdout, r.stderr))
     check("arm64: kernel written as recovery8.img from the tarball", read(os.path.join(out, "recovery8.img")) == KERNEL_TB)
     check("arm64: initrd written as recovery-initrd.img", read(os.path.join(out, "recovery-initrd.img")) == INITRD_TB)
     check("arm64: no recovery-vmlinuz written", not os.path.exists(os.path.join(out, "recovery-vmlinuz")))
@@ -128,7 +128,7 @@ with tempfile.TemporaryDirectory() as td:
     # ---- 4. arm64 with ./ prefix ---------------------------------------------------------------------------------------------
     members_ad = [("./recovery8.img", KERNEL_TB), ("./recovery-initrd.img", INITRD_TB), ("./recovery.sha256", sums_a)]
     r, st, rc, out, dep = run_case(td, "arm64-dot", "arm64", members_ad)
-    check("arm64 ./ prefixed members: parts used and verified", st == "parts" and rc == "RC=0", (r.stdout, r.stderr))
+    check("arm64 ./ prefixed members: image used and verified", st == "image" and rc == "RC=0", (r.stdout, r.stderr))
 
     # ---- 5. sha mismatch: refused, rc 1, status refused -----------------------------------------------------------------------
     bad = sha_file([("0" * 64, "recovery-vmlinuz"), (sha(INITRD_TB), "recovery-initrd.img")])
@@ -156,7 +156,7 @@ with tempfile.TemporaryDirectory() as td:
     # ---- 6. tarball lacks the members: host fallback with a warning ----------------------------------------------------------
     r, st, rc, out, dep = run_case(td, "amd64-missing", "amd64", [("unitotem/other.bin", b"x")])
     check("tarball without recovery members: host fallback (status host, rc 0)", st == "host" and rc == "RC=0", (r.stdout, r.stderr))
-    check("host fallback: warning on stderr", "WARN: the parts set's boot tarball has no recovery" in r.stderr, r.stderr)
+    check("host fallback: warning on stderr", "WARN: the image's boot partition has no recovery" in r.stderr, r.stderr)
     check("host fallback: kernel and initrd are the host copies", read(os.path.join(out, "recovery-vmlinuz")) == KERNEL_HOST
           and read(os.path.join(out, "recovery-initrd.img")) == INITRD_HOST)
     hsum = sha_file([(sha(KERNEL_HOST), "recovery-vmlinuz"), (sha(INITRD_HOST), "recovery-initrd.img")])
@@ -190,8 +190,8 @@ mkdir -p "$DIR/build/amd64/recovery" "{os.path.join(td, 'absent-out')}"
 printf k > "$DIR/build/amd64/recovery/recovery-vmlinuz-amd64"; printf i > "$DIR/build/amd64/recovery/recovery-initrd-amd64.img"
 {fn(RD_TEXT, "recovery_member")}
 {fn(RD_TEXT, "recovery_extract")}
-{fn(RD_TEXT, "recovery_from_parts")}
-recovery_from_parts "{os.path.join(td, 'no-such-parts')}" amd64 "{os.path.join(td, 'absent-out')}"
+{fn(RD_TEXT, "recovery_from_image")}
+recovery_from_image "{os.path.join(td, 'no-such-parts')}" amd64 "{os.path.join(td, 'absent-out')}"
 '''
     r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
     check("parts dir absent: host fallback, status host", r.returncode == 0 and r.stdout == "host\n" and "WARN" in r.stderr,

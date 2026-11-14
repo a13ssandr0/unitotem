@@ -371,7 +371,7 @@ apt_install \
 #   build/extra-debs/<arch>/  unitotem (metapackage), unitotem-manager, unitotem-node, unitotem-viewer, plymouth-theme-unitotem (all arch-all,
 #   identical on both architectures), python3-cefpython3 (the only binary one: amd64 or arm64), and the two libraries Debian does not ship
 #   (python3-fastapi-login, python3-sdbus-networkmanager). apt resolves everything else from Debian trixie (and the Raspberry Pi repository).
-LOCAL_DEB_DIR=/build/extra-debs/${ARCH}
+LOCAL_DEB_DIR=/work/extra-debs/${ARCH}
 # There is no image without the 3.x manager: the repository's 2.x package is not a
 # substitute. Fail here, early, instead of finding out on the device.
 if ! ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then

@@ -1,12 +1,15 @@
 #!/bin/bash
 # Two-stage OTA deploy orchestrator (host side). Drives deploy/script/ota-engine.sh on the target over SSH (the system's
 # sshd, then dropbear on port 2222 in the fallback initramfs, see ota_ssh() in lib.sh); bulk partition data goes
-# over a separate netcat connection (serve_file_once/wait_port_bound in lib.sh), never through SSH.
+# over a separate netcat connection (serve_file_once/wait_port_bound in lib.sh), never through SSH. The partitions are read
+# straight from the disk image (deploy/<arch>/unitotem-<date>-<arch>.img.xz, a full A/B image): see image-lib.sh. The script
+# runs as root for deploy and recover (loop device, mount): started as a user it asks sudo and runs again with the same environment and
+# directory; probe, changes, disarm and --help need no root.
 #
 # Usage:
 #   ./deploy/script/remote-deploy.sh probe   root@host
 #   ./deploy/script/remote-deploy.sh changes root@host [--json]
-#   ./deploy/script/remote-deploy.sh deploy  root@host [--parts DIR] [--disk BYID]
+#   ./deploy/script/remote-deploy.sh deploy  root@host [--image FILE] [--disk BYID]
 #                                     [--port N] [--wipe-data] [--backup-dir DIR] [--no-backup]
 #                                     [--admin-user NAME --admin-password-file FILE [--timezone ZONE]]
 #                                     [--no-firmware-update]
@@ -14,8 +17,9 @@
 #                                     [--console STR] [--yes]
 #                                     [--accept-changes DIGEST]
 #   ./deploy/script/remote-deploy.sh disarm  root@host
+#   ./deploy/script/remote-deploy.sh --help
 #
-#   ./deploy/script/remote-deploy.sh recover HOST[:PORT] [--fallback-user NAME] [--parts DIR] ...
+#   ./deploy/script/remote-deploy.sh recover HOST[:PORT] [--fallback-user NAME] [--image FILE] ...
 #
 # Exit codes of `changes`: 0 no changes, 1 changes found, 2 check failed on the target, 3 target has no unitotem-ota-changes.
 #
@@ -29,13 +33,40 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Help needs nothing: no root, no tools.
+case "${1:-}" in
+    -h|--help|help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+esac
+# deploy and recover read the image through a loop device, so they need root. The script runs again through sudo with the variables it
+# reads (sudo-rs ignores -E): the OTA_* credentials, UNITOTEM_*, the state directory, the ssh agent and the locale; sudo keeps the
+# working directory.
+reexec_as_root() {
+    local v vars=("HOME=${HOME}")
+    for v in $(compgen -e); do
+        case "$v" in OTA_*|UNITOTEM_*|XDG_STATE_HOME|SSH_AUTH_SOCK|SSHPASS|TERM|LANG|LC_*|TMPDIR) vars+=("${v}=${!v}") ;; esac
+    done
+    exec sudo env "${vars[@]}" "${BASH}" "$@"
+}
+case "${1:-}" in
+    deploy|recover) [ "$(id -u)" = 0 ] || reexec_as_root "${BASH_SOURCE[0]}" "$@" ;;
+esac
 source "${DIR}/deploy/script/lib.sh"
+source "${DIR}/deploy/script/image-lib.sh"
 
 require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip base64 curl
+case "${1:-}" in deploy|recover) require_cmd losetup partclone.extfs partclone.fat dumpe2fs blkid sfdisk pv findmnt ;; esac
 
 # The sudo askpass helper holds the target password, so it must not outlive the run (including failure or
 # Ctrl-C). No-op when logged in as root or when sudo is passwordless.
-trap 'clear_target_privilege; [ -z "${RECOVERY_TMP:-}" ] || rm -rf -- "${RECOVERY_TMP}"' EXIT
+# Files the run created under the user's home or in the backup directory belong to the user, not to root.
+give_back_files() {
+    [ -n "${SUDO_UID:-}" ] || return 0
+    local d
+    for d in "${XDG_STATE_HOME:-$HOME/.local/state}/unitotem-deploy" "$OPT_BACKUP_DIR"; do
+        [ ! -d "$d" ] || chown -R "${SUDO_UID}:${SUDO_GID:-$SUDO_UID}" -- "$d" 2>/dev/null || true
+    done
+}
+trap 'clear_target_privilege; [ -z "${RECOVERY_TMP:-}" ] || rm -rf -- "${RECOVERY_TMP}"; image_close; [ -z "${IMG_DESC:-}" ] || rm -rf -- "${IMG_DESC}"; give_back_files' EXIT
 
 # ---------------------------------------------------------------------------
 SUBCMD="${1:-}"; shift || true
@@ -52,7 +83,7 @@ case "$SUBCMD" in
     *) echo "Usage: $0 {probe|deploy|changes|disarm|recover} ... [options]" >&2; exit 1 ;;
 esac
 
-OPT_PARTS="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
+OPT_IMAGE="" IMG_DESC="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
 # Backup of the UniTotem data of a target that already runs UniTotem, taken before anything is overwritten (default: backups/ in the repository).
 OPT_BACKUP_DIR="${UNITOTEM_BACKUP_DIR:-${DIR}/backups}" OPT_NO_BACKUP=0
 OPT_ADMIN_USER="" OPT_ADMIN_PWFILE="" OPT_TIMEZONE="" LEGACY_ARCHIVE=""
@@ -67,7 +98,7 @@ OPT_ACCEPT_CHANGES="" OPT_JSON=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --parts)      OPT_PARTS="$2"; shift 2 ;;
+        --image)      OPT_IMAGE="$2"; shift 2 ;;
         --disk)       OPT_DISK="$2"; shift 2 ;;
         --port)       OPT_PORT="$2"; shift 2 ;;
         --wipe-data)  OPT_WIPE_DATA=1; shift ;;
@@ -360,12 +391,12 @@ recovery_extract() {
 }
 
 # Source of the fallback kernel, initrd and level marker written to the boot partition (write-bootfile).
-# The parts set's boot tarball is the source (same build as the image); the host copies in deploy/<arch>/ are
-# used only when the tarball lacks a member. Usage: recovery_from_parts PARTS_DIR ARCH OUT_DIR.
+# The image's boot partition (its file-level tar in the descriptor) is the source; the host copies in build/<arch>/recovery/ are
+# used only when the tarball lacks a member. Usage: recovery_from_image DESCRIPTOR_DIR ARCH OUT_DIR.
 # Writes OUT_DIR/<FAT name> for the kernel, the initrd and recovery.sha256 and prints one word on stdout:
-# parts | host (fallback, warned on stderr) | refused (tarball checksum mismatch) | missing (no host copy).
+# image | host (fallback, warned on stderr) | refused (tarball checksum mismatch) | missing (no host copy).
 # Returns 1 for refused and missing.
-recovery_from_parts() {
+recovery_from_image() {
     local parts="$1" arch="$2" out="$3"
     local kname=recovery-vmlinuz prefix=unitotem/
     [ "$arch" = arm64 ] && { kname=recovery8.img; prefix=""; }
@@ -381,7 +412,7 @@ recovery_from_parts() {
     m_s=$(recovery_member "$list" "${prefix}recovery.sha256")
 
     if [ -z "$m_k" ] || [ -z "$m_i" ] || [ -z "$m_s" ]; then
-        warn "the parts set's boot tarball has no recovery kernel/initrd/recovery.sha256: using the host copies in deploy/${arch}"
+        warn "the image's boot partition has no recovery kernel/initrd/recovery.sha256: using the host copies in build/${arch}/recovery"
         cp -- "${DIR}/build/${arch}/recovery/recovery-vmlinuz-${arch}" "${out}/${kname}" 2>/dev/null \
             && cp -- "${DIR}/build/${arch}/recovery/recovery-initrd-${arch}.img" "${out}/${iname}" 2>/dev/null \
             || { echo missing; return 1; }
@@ -397,7 +428,7 @@ recovery_from_parts() {
     if ! recovery_extract "$tb" "$m_s" "${out}/recovery.sha256" \
         || ! recovery_extract "$tb" "$m_k" "${out}/${kname}" \
         || ! recovery_extract "$tb" "$m_i" "${out}/${iname}"; then
-        warn "reading the recovery files from the parts set's boot tarball failed"
+        warn "reading the recovery files from the image's boot partition failed"
         echo refused
         return 1
     fi
@@ -405,12 +436,12 @@ recovery_from_parts() {
         exp=$(awk -v n="$name" '{m=$2; sub(/^\.\//,"",m); if (m==n) {print $1; exit}}' "${out}/recovery.sha256")
         act=$(sha256sum "${out}/${name}" | awk '{print $1}')
         if [ -z "$exp" ] || [ "$exp" != "$act" ]; then
-            warn "${name} does not match the checksum in the parts set's recovery.sha256: refusing it"
+            warn "${name} does not match the checksum in the image's recovery.sha256: refusing it"
             echo refused
             return 1
         fi
     done
-    echo parts
+    echo image
 }
 
 # ---------------------------------------------------------------------------
@@ -418,7 +449,7 @@ recovery_from_parts() {
 # entry (GRUB) or a config.txt swap (Pi).
 # ---------------------------------------------------------------------------
 push_recovery_kernel() {
-    # No parts set is in hand before the target is armed, so the host copies are the only source here.
+    # No image is open before the target is armed, so the host copies are the only source here.
     local vmlinuz="${DIR}/build/${ARCH}/recovery/recovery-vmlinuz-${ARCH}"
     local initrd="${DIR}/build/${ARCH}/recovery/recovery-initrd-${ARCH}.img"
     [ -f "$vmlinuz" ] && [ -f "$initrd" ] \
@@ -571,16 +602,16 @@ wait_ota_reachable() {
 }
 
 # The two-stage sequence, driven by ota-engine.sh subcommands over the OTA SSH session.
-# populate-bootfs for the parts set's boot tarball: one place, as it runs in stage 1 for A/B parts and stage 2 otherwise.
+# populate-bootfs for the image's boot partition (its tar, in the descriptor): one place, as it runs in stage 1 for A/B parts and stage 2 otherwise.
 populate_bootfs_step() {
     local host="$1" disk="$2" bootfs_part="$3"
     local hostip="${P[SSHCLIENT]:-}"
     [ -n "$hostip" ] && [ "$hostip" != none ] || hostip=$(ip -o route get "${host}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
     [ -n "$hostip" ] || die "cannot determine the host IP towards the target"
     [ -z "${DATA_HOSTIP_OVERRIDE:-}" ] || hostip="$DATA_HOSTIP_OVERRIDE"
-    local bootfs_tar; bootfs_tar=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
+    local bootfs_tar; bootfs_tar=$(awk -F= '/^UNITOTEM_PART_LABEL=(EFI|FIRMWARE)/{f=1} f&&/^UNITOTEM_PART_STREAM_FILE=/{print $2; exit}' "${IMG_DESC}/parts.manifest")
     [ -n "$bootfs_tar" ] || return 0
-    local pid; pid=$(serve_data "$host" "${OPT_PARTS}/${bootfs_tar}")
+    local pid; pid=$(serve_data "$host" "${IMG_DESC}/${bootfs_tar}")
     wait_data_ready bootfs
     local lay="--layout ab"
     # shellcheck disable=SC2086
@@ -684,17 +715,17 @@ run_ota_sequence() {
     # The fallback files are judged before anything on the target is changed.
     RECOVERY_TMP=$(mktemp -d)
     local rsrc
-    rsrc=$(recovery_from_parts "$OPT_PARTS" "$ARCH" "$RECOVERY_TMP") \
-        || die "the recovery files of the parts set cannot be used (${rsrc:-error}): the target was not changed"
-    [ "$rsrc" = parts ] || log "Fallback files taken from the host copies (deploy/${ARCH}): the parts set has none."
+    rsrc=$(recovery_from_image "$IMG_DESC" "$ARCH" "$RECOVERY_TMP") \
+        || die "the recovery files of the image cannot be used (${rsrc:-error}): the target was not changed"
+    [ "$rsrc" = image ] || log "Fallback files taken from the host copies (build/${ARCH}/recovery): the image has none."
 
     log "=== Stage 1: installing the fallback ==="
     if [ "$recreate_table" = 1 ]; then
         log "Restoring the partition table..."
-        local table_b64; table_b64=$(base64 -w0 < "${OPT_PARTS}/layout.sfdisk")
+        local table_b64; table_b64=$(base64 -w0 < "${IMG_DESC}/layout.sfdisk")
         local bootcode_arg=""
-        if [ -f "${OPT_PARTS}/bootcode.bin" ]; then
-            bootcode_arg="--bootcode-b64 $(base64 -w0 < "${OPT_PARTS}/bootcode.bin")"
+        if [ -f "${IMG_DESC}/bootcode.bin" ]; then
+            bootcode_arg="--bootcode-b64 $(base64 -w0 < "${IMG_DESC}/bootcode.bin")"
         fi
         # shellcheck disable=SC2086
         ota_ssh "$host" "unitotem-ota-engine restore-table --disk '${disk}' --table-b64 '${table_b64}' --tail-part '${data_part}' ${bootcode_arg}"
@@ -760,7 +791,7 @@ run_ota_sequence() {
     fi
 
     local -A block
-    local partnum label cloner action used stream comp
+    local partnum label cloner action used comp
     # The manifest is fed on fd 9, not stdin, in addition to ota_ssh's -n: an ssh inheriting the loop's stdin
     # would eat the rest of the manifest and drop every partition after the first restore.
     while read_kv_block block <&9; do
@@ -772,13 +803,18 @@ run_ota_sequence() {
             restore|raw)
                 cloner="${block[UNITOTEM_PART_CLONER]}"
                 used="${block[UNITOTEM_PART_USED_BYTES]}"
-                stream="${block[UNITOTEM_PART_STREAM_FILE]}"
                 comp="${block[UNITOTEM_PART_COMP]:-xz}"
                 log "Restoring partition ${partnum} (${label}, ${cloner})..."
-                local pid; pid=$(serve_data "$host" "${OPT_PARTS}/${stream}")
+                # The partition is read from the image into a pipe while the target pulls it: nothing is stored.
+                local fifo="${IMG_DESC}/stream.${partnum}"; mkfifo -- "$fifo"
+                image_stream "$partnum" > "$fifo" &
+                local ppid=$!
+                local pid; pid=$(serve_data "$host" "$fifo")
                 wait_data_ready "partition ${partnum}"
                 ota_ssh "$host" "unitotem-ota-engine restore-part --disk '${disk}' --part '${partnum}' --cloner '${cloner}' --comp '${comp}' --used-bytes '${used}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
                 data_wait "$pid"
+                wait "$ppid" || die "reading partition ${partnum} from the image failed"
+                rm -f -- "$fifo"
                 ;;
             format)
                 ota_ssh "$host" "unitotem-ota-engine format-part --disk '${disk}' --part '${partnum}' --label '${label}'"
@@ -791,7 +827,7 @@ run_ota_sequence() {
                 fi
                 ;;
         esac
-    done 9< "${OPT_PARTS}/parts.manifest"
+    done 9< "${IMG_DESC}/parts.manifest"
 
     log "Mounting the restored system..."
     local mount_args="--disk '${disk}' --arch '${ARCH}' --root-part '${P_ROOT_PART}' --bootfs-part '${bootfs_part}' --data-part '${data_part}'"
@@ -838,27 +874,32 @@ run_ota_sequence() {
 }
 
 # ---------------------------------------------------------------------------
-load_parts() {
-    OPT_PARTS="${OPT_PARTS:-$(ls -td "${DIR}/deploy/${ARCH}/"*.parts 2>/dev/null | head -1)}"
-    [ -n "$OPT_PARTS" ] && [ -d "$OPT_PARTS" ] \
-        || die "no parts set found for ${ARCH} (use --parts or run deploy/script/make-parts.sh first)"
+load_image() {
+    [ -n "$OPT_IMAGE" ] || OPT_IMAGE=$(ls -t "${DIR}/deploy/${ARCH}/"unitotem-*-"${ARCH}".img.xz "${DIR}/deploy/${ARCH}/"unitotem-*-"${ARCH}".img 2>/dev/null | head -1)
+    [ -n "$OPT_IMAGE" ] && [ -f "$OPT_IMAGE" ] \
+        || die "no image found for ${ARCH} (use --image FILE: the full A/B image deploy/${ARCH}/unitotem-<date>-${ARCH}.img.xz)"
+    image_open "$OPT_IMAGE" || die "cannot open the image ${OPT_IMAGE}"
+    IMG_DESC=$(mktemp -d "${IMG_TMPFS}/unitotem-desc.XXXXXX")
+    log "Reading the partitions of $(basename "$OPT_IMAGE")..."
+    image_describe "$IMG_DESC" "$ARCH" || die "cannot read the partitions of ${OPT_IMAGE}"
 
-    P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${OPT_PARTS}/parts.manifest")
-    P_BOOTFS_PART=$(awk -F= '/^UNITOTEM_BOOTFS_PART=/{print $2}' "${OPT_PARTS}/parts.manifest")
+    P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
+    P_BOOTFS_PART=$(awk -F= '/^UNITOTEM_BOOTFS_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
     # Partition number for a label: remember the last UNITOTEM_PART= seen, print it at the matching label line.
     part_num_for_label() {
         awk -F= -v want="$1" '
             /^UNITOTEM_PART=/{n=$2}
             /^UNITOTEM_PART_LABEL=/{if($2==want){print n; exit}}
-        ' "${OPT_PARTS}/parts.manifest"
+        ' "${IMG_DESC}/parts.manifest"
     }
-    P_LAYOUT=$(awk -F= '/^UNITOTEM_LAYOUT=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
-    [ "$P_LAYOUT" = 2 ] || die "the parts set is not A/B (UNITOTEM_LAYOUT=${P_LAYOUT:-none}): only A/B parts sets (layout 2) are supported"
+    P_LAYOUT=$(awk -F= '/^UNITOTEM_LAYOUT=/{print $2; exit}' "${IMG_DESC}/parts.manifest")
+    [ "$P_LAYOUT" = 2 ] || die "the image is not A/B (no ROOT_A): only A/B images are supported"
+    [ "${P_DATA_PART:-0}" != 0 ] || die "the image has no DATA partition: use the full image (unitotem-<date>-${ARCH}.img.xz), not the flash image"
     [ "$ARCH" = amd64 ] || { [ "$ARCH" = arm64 ] && [ "$FIRMWARE" = rpi ] && [ "$TRYBOOT_CAPABLE" = 1 ]; } \
         || die "the A/B layout is supported on amd64 (UEFI and legacy BIOS) and on Raspberry with tryboot (target: ${ARCH}/${FIRMWARE}, tryboot=${TRYBOOT_CAPABLE:-0}); Raspberry without tryboot is not supported"
     P_ROOT_PART=$(part_num_for_label ROOT_A)
     P_BOOT_PART=$(part_num_for_label BOOT)
-    P_BOOTFS_VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "${OPT_PARTS}/parts.manifest")
+    P_BOOTFS_VOLID=$(awk -F= '/^UNITOTEM_PART_VOLID=/{print $2; exit}' "${IMG_DESC}/parts.manifest")
 }
 
 # A target that already runs UniTotem gets its data (everything on DATA: media, settings, accounts, update state) saved on this machine before
@@ -986,13 +1027,13 @@ cmd_deploy() {
     ensure_tryboot_firmware
     select_disk
 
-    load_parts
-    local min_disk; min_disk=$(awk -F= '/^UNITOTEM_MIN_DISK_BYTES=/{print $2}' "${OPT_PARTS}/parts.manifest")
+    load_image
+    local min_disk; min_disk=$(awk -F= '/^UNITOTEM_MIN_DISK_BYTES=/{print $2}' "${IMG_DESC}/parts.manifest")
     [ "$TARGET_DISK_SIZE" -ge "$min_disk" ] \
         || die "${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE")) is smaller than the required minimum ($(bytes_human "$min_disk"))"
 
     echo ""
-    echo "Parts set   : $(basename "$OPT_PARTS")"
+    echo "Image       : $(basename "$OPT_IMAGE")"
     echo "Target disk : ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE"))"
     echo "Target      : $([ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && echo 'already UniTotem (prepared path)' || { [ -n "${P[LEGACY_UNITOTEM]:-}" ] && [ "${P[LEGACY_UNITOTEM]}" != none ] && echo "UniTotem ${P[LEGACY_UNITOTEM]} on a single-root system (fallback push, data backed up first)" || echo 'other system (fallback push)'; })"
 
@@ -1135,13 +1176,13 @@ cmd_recover() {
         x86_64)  ARCH=amd64; FIRMWARE=$([ "${E[UNITOTEM_EFI]:-0}" = 1 ] && echo uefi || echo bios); TRYBOOT_CAPABLE=0 ;;
         *) die "unrecognised target architecture: ${E[UNITOTEM_ARCH_HOST]:-?}" ;;
     esac
-    load_parts
+    load_image
 
-    # The table must still have the shape the parts set would write: same number of partitions, DATA on the expected
+    # The table must still have the shape the image would write: same number of partitions, DATA on the expected
     # number and start sector (otherwise restore-part would write the slots over a different geometry than DATA's).
     local nparts_exp data_start_exp
-    nparts_exp=$(grep -c ' : start=' "${OPT_PARTS}/layout.sfdisk" || true)
-    data_start_exp=$(grep -E "(^|[^0-9])${P_DATA_PART}[[:space:]]*:" "${OPT_PARTS}/layout.sfdisk" | head -1 | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+' || true)
+    nparts_exp=$(grep -c ' : start=' "${IMG_DESC}/layout.sfdisk" || true)
+    data_start_exp=$(grep -E "(^|[^0-9])${P_DATA_PART}[[:space:]]*:" "${IMG_DESC}/layout.sfdisk" | head -1 | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+' || true)
     # asked here, not of the engine: the recovery initrd on the target may be older than this script
     E[UNITOTEM_DATA_START]=$(ota_ssh "$host" 'd=$(blkid -L DATA 2>/dev/null) && cat /sys/class/block/${d##*/}/start' 2>/dev/null || true)
     local keep=1 why=""
@@ -1162,7 +1203,7 @@ cmd_recover() {
 
     echo ""
     echo "Recovery    : ${host}  disk ${disk}  (${ARCH}/${FIRMWARE})"
-    echo "Parts set   : $(basename "$OPT_PARTS")"
+    echo "Image       : $(basename "$OPT_IMAGE")"
     if [ "$keep" = 1 ]; then
         echo "DATA        : INTACT, will be PRESERVED (table unchanged)"
         [ "$RECOVER_BOOTFS_FRESH" = 1 ] && echo "Boot        : boot partition damaged, will be reformatted"

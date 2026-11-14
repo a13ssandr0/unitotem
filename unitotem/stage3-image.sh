@@ -144,7 +144,7 @@ sync
 # ---------- Recovery (fallback) kernel+initrd ----------
 # Built by unitotem/stage1-recovery-initrd.sh from the stage1 rootfs; must exist before stage3 runs.
 # Copied onto the boot FAT partition at the FILE level (never with partclone), so a later
-# per-partition OTA restore of this partition (deploy/script/make-parts.sh) can update the real
+# per-partition OTA restore of this partition (deploy/script/remote-deploy.sh) can update the real
 # system's kernel/dtb/initramfs entries without touching these files.
 RECOVERY_VMLINUZ="${WORK_DIR}/recovery/recovery-vmlinuz-${ARCH}"
 RECOVERY_INITRD="${WORK_DIR}/recovery/recovery-initrd-${ARCH}.img"
@@ -436,23 +436,9 @@ fsck.ext4 -fn "${LOOP}p${P_DATA}" || boot_assert_fail "fsck.ext4 on DATA (${LOOP
 losetup -d "${LOOP}"
 trap - EXIT
 
-# ---------- Optional: parts set from this same build ----------
-# Off by default; deploy/script/make-parts.sh is the usual path. With MAKE_PARTS=1 a parts set is made
-# from the still-uncompressed ${IMG_FILE}, through its own read-only loop device.
-if [ "${MAKE_PARTS:-0}" = 1 ]; then
-    echo "Generating parts set (MAKE_PARTS=1)..."
-    source /unitotem/deploy-parts-lib.sh
-    PARTS_LOOP=$(losetup --find --show --partscan --read-only "${IMG_FILE}")
-    trap "losetup -d '${PARTS_LOOP}' 2>/dev/null || true" EXIT
-    make_parts "${PARTS_LOOP}" "/deploy/${ARCH}/unitotem-${IMG_DATE}-${ARCH}.parts" \
-        "${ARCH}" "unitotem-${IMG_DATE}-${ARCH}" "${IMG_FILE}"
-    losetup -d "${PARTS_LOOP}"
-    trap - EXIT
-fi
-
 # ---------- Flash image (A/B): boot partition(s) + ROOT_A only ----------
 # The first boot creates ROOT_B and DATA (layout_complete in unitotem/files/overlayfs-hook.sh). The full image above
-# stays the source of the parts set, the release assets and the network deploy.
+# stays the source of the release assets and the network deploy.
 if [ "$AB_LAYOUT" = 1 ]; then
     FLASH_IMG="/deploy/${ARCH}/unitotem-${IMG_DATE}-${ARCH}-flash.img"
     bash /unitotem/make-flash-image.sh "${IMG_FILE}" "${FLASH_IMG}"

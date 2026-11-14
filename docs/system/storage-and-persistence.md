@@ -42,7 +42,7 @@ amd64 A/B has no BOOT partition: each slot carries its kernel and initrd in `/bo
 
 Images:
 
-- Full image (`unitotem-<date>-<arch>.img.xz`, 14 GiB): the layout above. Source of the parts set (network deploy), the release assets and `build-ab`.
+- Full image (`unitotem-<date>-<arch>.img.xz`, 14 GiB): the layout above. Source of the network deploy (`remote-deploy.sh` reads it in place), the release assets and `build-ab`.
 - Flash image (`unitotem-<date>-<arch>-flash.img.xz`, A/B only, ~5.6 GiB): written to a card or disk with Imager or `dd`. `unitotem/make-flash-image.sh` builds it from the full image: fresh GPT (same disk GUID) with every partition except ROOT_B and DATA (same numbers, GUIDs, names, attributes, start sectors; bytes copied unchanged; on amd64 the MBR boot code too), then 1 MiB. Checked at build: `sgdisk -v`, sha256 of every kept partition, fsck of boot and ROOT_A.
 - The BIOS-boot partition (amd64) sits at sectors 34-2047, before partition 1, so it is part of the flash image and never in the way of the space that is cut off.
 

@@ -12,7 +12,7 @@ Paths: relative to the repository root. Lab findings behind the UEFI method: [wi
 
 On a terminal the question is the prompt: a log line that arrives while it waits is printed above it (the prompt line is erased first) and the prompt is drawn again below with what the operator had typed (Backspace and Ctrl-U edit; input is read in cbreak mode). Without a terminal the question is a plain log line and input is read line by line.
 4. The PC polls every 5 s (`waiting for approval minutes_left=N` on its console at the start and then every 5 minutes) (`-TimeoutMinutes`, default 60). Without approval it exits with code 8 having changed nothing. After approval it downloads `/payload.zip`, verifies size and SHA-256 (both embedded in the bootstrap), extracts it to `%ProgramData%\UniTotem-install`, prepares the boot files and the one-shot boot entry (sections below), and restarts (`shutdown /r /t 10`). Every step is posted to the server and printed live as `[HOSTNAME] text`.
-5. Host: the server prints the full command after the approval: `OTA_FALLBACK_KEY=<per-PC key> deploy/script/remote-deploy.sh recover <ip> --parts DIR --yes`; run it once the environment answers (see After the restart).
+5. Host: the server prints the full command after the approval: `OTA_FALLBACK_KEY=<per-PC key> deploy/script/remote-deploy.sh recover <ip> --image FILE --yes`; run it once the environment answers (see After the restart).
 
 Authenticity: HTTP on the local network, no TLS. The bootstrap carries the payload hash, but the bootstrap itself is not authenticated: anyone able to spoof the host's address on the LAN could serve a different script. Run the server on a trusted network. Inventories from other machines are only shown; nothing runs without the operator's word.
 
@@ -124,7 +124,7 @@ Proof (emulated, not on Windows; QEMU/SeaBIOS with TCG): disk with a bootmgr sta
 2. From the host (key mode; open mode: `OTA_FALLBACK_OPEN=1`):
 
 ```
-OTA_FALLBACK_KEY=<private key> deploy/script/remote-deploy.sh recover <ip> --parts deploy/amd64/unitotem-<version>-amd64.parts --disk <by-id or name>
+OTA_FALLBACK_KEY=<private key> deploy/script/remote-deploy.sh recover <ip> --image deploy/amd64/unitotem-<date>-amd64.img.xz --disk <by-id or name>
 ```
 
 `--disk` selects the disk to erase (by-id contains the model and serial shown by the script). Details, backups and options: [deploy-and-recovery.md](deploy-and-recovery.md). Add `--yes` for an unattended run.
@@ -173,5 +173,5 @@ Server (Python `logging`, logger `winserver`) and client use `YYYY-MM-DD HH:MM:S
 - A PC that resets or drops a connection (restart, `ConnectionResetError`, `BrokenPipeError`, timeout) gives one `INFO (server) client disconnected addr=... reason=...` line; any other request error is logged with its traceback in the standard format (`ERROR (server) request failed ...`). `Server.handle_error` replaces socketserver's raw dump, so nothing goes to stderr.
 - The prompt switches the terminal to cbreak; the saved attributes are restored with `TCSAFLUSH` on every exit path: `finally` around the input loop, `atexit`, and handlers for SIGINT, SIGTERM, SIGHUP and SIGQUIT that restore and end the process through `SystemExit` (exit code 128 + signal), then a new line is printed. Nothing is touched when stdin is not a terminal. Tested on a pty with each signal and with a crash in the prompt thread (ECHO, ICANON, ISIG, ICRNL equal to the initial values).
 - State files that cannot be used are deleted with a reason: `state file discarded name=... reason=corrupt|schema|stale` (`stale`: older than 7 days; `schema`: not valid for this version).
-- The command printed after an approval names the newest `deploy/amd64/*.parts` (for a BIOS PC one that holds `p5-BIOS.*`); without one it prints `--parts <parts>` and `WARNING no parts set found under deploy/amd64`.
+- The command printed after an approval names the newest `deploy/amd64/unitotem-*-amd64.img.xz` (it serves UEFI and BIOS PCs); without one it prints `--parts <parts>` and `WARNING no parts set found under deploy/amd64`.
 - The client writes numbers with the invariant culture (decimal point under any Windows language) and the same partition type labels as the server; facts are printed once, in the inventory (the plan after the approval holds only the new steps).
