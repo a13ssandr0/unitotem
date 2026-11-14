@@ -19,7 +19,7 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
 | `unitotem/files/ota-preserve.list` | `/etc` whitelist |
 | `unitotem/files/unitotem-boot-orientation` | Panel orientation on both slots |
 | `unitotem/stage3-image.sh` | Ships `/usr/share/unitotem/esp-grub.cfg` and the recovery set `/usr/share/unitotem/recovery/` |
-| `deploy/ota-engine.sh` `slot_pick()`, `heal_dup_label()`, `pin_root_dev()`, `cmd_init_premount()`, `ab_failover()` | initramfs half of self-healing and of duplicate labels ([boot.md](boot.md#boot-decision-initramfs-both-backends)) |
+| `deploy/script/ota-engine.sh` `slot_pick()`, `heal_dup_label()`, `pin_root_dev()`, `cmd_init_premount()`, `ab_failover()` | initramfs half of self-healing and of duplicate labels ([boot.md](boot.md#boot-decision-initramfs-both-backends)) |
 | `tools/release/unitotem-release` | Builds slot images and manifest (`release.md`) |
 
 ## How it works

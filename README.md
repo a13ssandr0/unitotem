@@ -53,7 +53,7 @@ Disk images are built from this repository (see Build from source): `unitotem-<d
 
 **Network deploy**
 
-`deploy/remote-deploy.sh` installs or recovers a node over the network from a host, through the resident OTA fallback. See [docs/system/deploy-and-recovery.md](docs/system/deploy-and-recovery.md).
+`deploy/script/remote-deploy.sh` installs or recovers a node over the network from a host, through the resident OTA fallback. `deploy/script/write-sd.sh IMAGE DEVICE` writes an image to an SD card or disk (partition table, partitions, `partclone` per partition, `pv` progress). See [docs/system/deploy-and-recovery.md](docs/system/deploy-and-recovery.md).
 
 ## First login
 

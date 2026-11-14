@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side test of ensure_tryboot_firmware() of deploy/remote-deploy.sh, with no target: the function is cut out of the real script text and run
+"""Host-side test of ensure_tryboot_firmware() of deploy/script/remote-deploy.sh, with no target: the function is cut out of the real script text and run
 in a bash harness whose ssh_t, backup_stream, do_probe and sleep are fakes that log every call. Judged on the exit status, the calls made and the
 text printed. What it does NOT prove: the behaviour of apt or of a real board (the update was run on a real Pi 4 by hand, see the deploy doc).
 
@@ -8,9 +8,9 @@ text printed. What it does NOT prove: the behaviour of apt or of a real board (t
 import os, re, subprocess, tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-SCRIPT = open(os.path.join(ROOT, "deploy/remote-deploy.sh")).read()
+SCRIPT = open(os.path.join(ROOT, "deploy/script/remote-deploy.sh")).read()
 m = re.search(r"^ensure_tryboot_firmware\(\) \{\n.*?^\}\n", SCRIPT, re.S | re.M)
-assert m, "ensure_tryboot_firmware not found in deploy/remote-deploy.sh"
+assert m, "ensure_tryboot_firmware not found in deploy/script/remote-deploy.sh"
 FUNC = m.group(0)
 ok = fail = 0
 

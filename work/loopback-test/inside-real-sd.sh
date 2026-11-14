@@ -17,7 +17,7 @@ apt-get install -y -qq --no-install-recommends \
 REPO=/repo
 PARTS=/work/parts
 DISK=/dev/sdb
-ENGINE=(bash "$REPO/deploy/ota-engine.sh")
+ENGINE=(bash "$REPO/deploy/script/ota-engine.sh")
 RESULTS=/work/results.txt
 : > "$RESULTS"
 
@@ -85,9 +85,9 @@ ls -la "${DISK}"* || true
 
 log "Writing the recovery kernel/initrd (arm64: recovery8.img/recovery-initrd.img, no subdir)..."
 "${ENGINE[@]}" write-bootfile --disk "$DISK" --bootfs-part "$BOOTFS_PART" --name recovery8.img \
-    < "$REPO/deploy/arm64/recovery-vmlinuz-arm64"
+    < "$REPO/build/arm64/recovery/recovery-vmlinuz-arm64"
 "${ENGINE[@]}" write-bootfile --disk "$DISK" --bootfs-part "$BOOTFS_PART" --name recovery-initrd.img \
-    < "$REPO/deploy/arm64/recovery-initrd-arm64.img"
+    < "$REPO/build/arm64/recovery/recovery-initrd-arm64.img"
 
 "${ENGINE[@]}" set-default-recovery --disk "$DISK" --firmware rpi --bootfs-part "$BOOTFS_PART"
 log "Stage 1 complete: from here a power loss reboots into the fallback."
@@ -174,8 +174,8 @@ check "recovery8.img still present" test -f "$BOOTFS_MNT/recovery8.img"
 check "recovery-initrd.img still present" test -f "$BOOTFS_MNT/recovery-initrd.img"
 got_vmlinuz_sha=$(sha256sum "$BOOTFS_MNT/recovery8.img" | cut -d' ' -f1)
 got_initrd_sha=$(sha256sum "$BOOTFS_MNT/recovery-initrd.img" | cut -d' ' -f1)
-exp_vmlinuz_sha=$(awk -F= '/UNITOTEM_RECOVERY_VMLINUZ_SHA256/{print $2}' "$REPO/deploy/arm64/recovery.manifest")
-exp_initrd_sha=$(awk -F= '/UNITOTEM_RECOVERY_INITRD_SHA256/{print $2}' "$REPO/deploy/arm64/recovery.manifest")
+exp_vmlinuz_sha=$(awk -F= '/UNITOTEM_RECOVERY_VMLINUZ_SHA256/{print $2}' "$REPO/build/arm64/recovery/recovery.manifest")
+exp_initrd_sha=$(awk -F= '/UNITOTEM_RECOVERY_INITRD_SHA256/{print $2}' "$REPO/build/arm64/recovery/recovery.manifest")
 record "recovery8.img sha256: got=${got_vmlinuz_sha} expected=${exp_vmlinuz_sha}"
 check "recovery8.img sha256 correct (re-read from disk)" bash -c "[ '$got_vmlinuz_sha' = '$exp_vmlinuz_sha' ]"
 record "recovery-initrd.img sha256: got=${got_initrd_sha} expected=${exp_initrd_sha}"

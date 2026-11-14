@@ -31,8 +31,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY unitotem/ /unitotem/
-COPY deploy/ota-engine.sh /unitotem/files/ota-engine.sh
-COPY deploy/parts-lib.sh /unitotem/deploy-parts-lib.sh
+COPY deploy/script/ota-engine.sh /unitotem/files/ota-engine.sh
+COPY deploy/script/parts-lib.sh /unitotem/deploy-parts-lib.sh
 COPY tools/pkglock.py /unitotem/pkglock.py
 RUN chmod +x /unitotem/*.sh /unitotem/files/ota-engine.sh /unitotem/deploy-parts-lib.sh /unitotem/pkglock.py
 

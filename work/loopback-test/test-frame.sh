@@ -10,7 +10,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$DIR/work/loopback-test/scratch-frame"; mkdir -p "$OUT"
 export OTA_LOGO_DIR="$DIR/unitotem/files"
 # pull in only the functions under test
-src=$(sed -n '/^OTA_LOGO_DIR=/,/^ota_splash() {/p' "$DIR/deploy/ota-engine.sh" | sed '$d')
+src=$(sed -n '/^OTA_LOGO_DIR=/,/^ota_splash() {/p' "$DIR/deploy/script/ota-engine.sh" | sed '$d')
 pass=0; fail=0
 # W H bpp cellw cellh stridepad
 CASES=("640 480 16 8 16 0" "640 480 32 8 16 0" "800 600 32 8 16 0" "1024 768 24 8 16 0" "1280 720 32 8 16 0" "1366 768 16 8 16 0" \

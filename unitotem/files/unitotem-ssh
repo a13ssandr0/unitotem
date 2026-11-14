@@ -1,7 +1,7 @@
 #!/bin/bash
 # unitotem-ssh start|stop: dropbear of the installer initramfs in open mode (root, empty password), port 22.
 # stop ends the listener and every open session (their shells included). Inspired by the open mode of the OTA fallback
-# (deploy/ota-engine.sh, fallback_auth_setup).
+# (deploy/script/ota-engine.sh, fallback_auth_setup).
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 PIDF=/run/dropbear.pid
 KEY=/run/dropbear_ed25519_host_key

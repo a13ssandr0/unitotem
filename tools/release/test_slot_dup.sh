@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test of the duplicate-label recovery: unitotem-update clone_into_slot / slot_dev and deploy/ota-engine.sh slot_pick,
+# Test of the duplicate-label recovery: unitotem-update clone_into_slot / slot_dev and deploy/script/ota-engine.sh slot_pick,
 # heal_dup_label, pin_root_dev, cmd_init_premount. Needs docker with --privileged (loop devices, partitions and mounts
 # happen only INSIDE the container). Scratch: work/slot-dup-test/ (sparse files, removed at the end by a disposable container).
 #   tools/release/test_slot_dup.sh

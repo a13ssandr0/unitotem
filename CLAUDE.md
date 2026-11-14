@@ -20,7 +20,7 @@ Developer machines, devices, credentials and procedures: `CLAUDE.local.md` (not 
 - Shared scratchpad: prefix every file with the agent/task name.
 
 ## Safety
-- Every ssh/scp/rsync to a target goes through the `deploy/lib.sh` helpers (`ssh_t`, `ota_ssh`, `scp_t`, `_sshpass`): `SSH_ASKPASS_REQUIRE=never`, no `DISPLAY`/`SSH_ASKPASS`; `BatchMode=yes` for key hosts; `sudo -n` only. Never a graphical password prompt. Repeat this in every subagent brief.
+- Every ssh/scp/rsync to a target goes through the `deploy/script/lib.sh` helpers (`ssh_t`, `ota_ssh`, `scp_t`, `_sshpass`): `SSH_ASKPASS_REQUIRE=never`, no `DISPLAY`/`SSH_ASKPASS`; `BatchMode=yes` for key hosts; `sudo -n` only. Never a graphical password prompt. Repeat this in every subagent brief.
 - `rm`/`rmdir` only with literal full paths (no globs, variables or `cd X; rm *`), checked with `ls` first. Root-owned Docker output: delete with a disposable container (`docker run --rm -v <parent>:/w <image> rm -rf -- /w/<name>`), never sudo.
 - Never `pkill -f`/`pgrep -f` with a pattern contained in the own command line.
 - Never edit a build script while a build runs it.
@@ -57,4 +57,5 @@ Developer machines, devices, credentials and procedures: `CLAUDE.local.md` (not 
 - Packages always from the online repositories; only exact versions are locked (`tools/pkglock.py`); no vendored debs or caches; security updates renew the lock.
 - Cross-compile whenever possible; emulation only for code that must run on the target, with the reason stated. arm64 images build natively on a Raspberry Pi.
 - During a build: build at top priority, UniTotem services at lowest, previous values restored in a `trap … EXIT`.
+- Directories: `build/` holds every compilation temporary (stage tarballs, apt cache, locally supplied packages, the recovery kernel and initrd, the lock before adoption); `deploy/<arch>/` only what is ready (images, flash images, parts sets), `deploy/script/` the deploy tooling; `work/` the tests and experiments (git-ignored).
 - Disk hygiene: one test = one folder `work/<name>/`; keep only the latest useful result; clean up at the end of each test.

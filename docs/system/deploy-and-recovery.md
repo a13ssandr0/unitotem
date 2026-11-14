@@ -8,17 +8,18 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
 
 | Path | Role |
 |---|---|
-| `deploy/remote-deploy.sh` | Orchestrator: `probe`, `changes`, `deploy`, `recover`, `disarm` |
-| `deploy/ota-engine.sh` | Target engine, `/usr/sbin/unitotem-ota-engine`; one subcommand per step |
-| `deploy/lib.sh` | SSH/SCP wrappers, sudo escalation, data channel, `backup_stream` |
-| `deploy/make-parts.sh` | `.img.xz` -> parts set via container `unitotem-parts-builder` (`Dockerfile.parts`) |
-| `deploy/make-parts-image.sh` | In the container: attaches the scratch image, calls `make_parts` |
-| `deploy/parts-lib.sh` | `make_parts()`: manifest, table, streams, checksums |
-| `deploy/make-preboot-image.sh` | Fallback-only SD image (default 128 MiB) |
+| `deploy/script/remote-deploy.sh` | Orchestrator: `probe`, `changes`, `deploy`, `recover`, `disarm` |
+| `deploy/script/ota-engine.sh` | Target engine, `/usr/sbin/unitotem-ota-engine`; one subcommand per step |
+| `deploy/script/lib.sh` | SSH/SCP wrappers, sudo escalation, data channel, `backup_stream` |
+| `deploy/script/write-sd.sh` | Image -> SD card or disk: partition table, partitions, `partclone` per partition, `pv` progress |
+| `deploy/script/make-parts.sh` | `.img.xz` -> parts set via container `unitotem-parts-builder` (`Dockerfile.parts`) |
+| `deploy/script/make-parts-image.sh` | In the container: attaches the scratch image, calls `make_parts` |
+| `deploy/script/parts-lib.sh` | `make_parts()`: manifest, table, streams, checksums |
+| `deploy/script/make-preboot-image.sh` | Fallback-only SD image (default 128 MiB) |
 | `unitotem/files/unitotem-ota-arm` | On-target arming of an installed UniTotem |
 | `unitotem/files/unitotem-ota-changes` | On-target scan behind `changes` |
 | `unitotem/files/ota-hook`, `ota-init-premount`, `ota-local-bottom-verify`, `ota-recovery-init-premount` | Initramfs integration |
-| `unitotem/stage1-recovery-initrd.sh` | Builds `deploy/<arch>/recovery-*` |
+| `unitotem/stage1-recovery-initrd.sh` | Builds `build/<arch>/recovery/recovery-*` |
 | `unitotem/check-recovery-commands.sh` | Recovery initrd carries every engine command |
 
 ## How it works
@@ -66,9 +67,17 @@ Parts set (`deploy/<arch>/<name>.parts/`): `parts.manifest` (KEY=VALUE header, o
 
 Preboot SD image: one FAT32 partition from 1 MiB (MBR type 0c) with Pi firmware, `recovery8.img`, `recovery-initrd.img`, `config.txt` (640x480), `cmdline.txt` with `unitotem.ota=recover`. Waits with no idle timeout; `recover` lays out the whole card.
 
+## Writing a card or disk from an image
+
+`deploy/script/write-sd.sh [--yes] IMAGE DEVICE` (root; IMAGE is a full, flash or Raspberry Pi `.img` or `.img.xz` of `deploy/<arch>/`; DEVICE a whole disk). It reads the table of the image (`sfdisk -d` without `last-lba`: same disk GUID, partition GUIDs, names and start sectors, backup table at the real disk end), copies the first 440 bytes (MBR boot code), creates the partitions, then clones each one: ext2/3/4 with `partclone.extfs`, FAT with `partclone.fat` (both through a pipe `clone | pv | restore`, progress against the used bytes), anything else with `pv | dd`. Only the used blocks are read and written, so a 14 GiB image with a few GiB of data takes the time of that data. An `.xz` is expanded once (sparse) into `build/` (or `$WRITE_SD_TMP`) and removed at the end.
+- Checks: root, tools, whole disk, nothing mounted on it, not the disk of `/`, `/boot`, `/boot/efi`, the device at least as large as the end of the last partition; without `--yes` the device is listed and `(y/n)` is asked.
+- After the copy every partition keeps label and UUID (compared with the image) and `e2fsck -fn` / `fsck.fat -n` must be clean.
+- The last partition is not grown: DATA grows at the first boot ([storage](storage-and-persistence.md)); a flash image gets ROOT_B and DATA laid out in the free space at the first boot.
+- Test: `tools/release/test_write_sd.sh` (privileged container, loop devices): table, GUIDs, labels, UUIDs, files by md5, raw partition, MBR boot code, allocation of the target (only used blocks), `.img` and `.img.xz`, refusals.
+
 ## Interfaces
 
-`deploy/remote-deploy.sh`:
+`deploy/script/remote-deploy.sh`:
 
 | Command | Options |
 |---|---|
@@ -109,7 +118,7 @@ Boot signals: `unitotem.ota=1|recover`, `unitotem.slot=a|b`, `unitotem.ota.authk
 
 Entered on a failed boot (root checks, or the boot counter: three boots without a healthy manager, see [Boot counter](boot.md#boot-counter)), or on an update request.
 
-The fallback dropbear (port 2222) has no fixed password. `fallback_auth_setup` (`deploy/ota-engine.sh`) writes `/etc/passwd`, `/etc/shadow` and `/root/.ssh/authorized_keys` into the initramfs tmpfs before dropbear starts. Sources, in order:
+The fallback dropbear (port 2222) has no fixed password. `fallback_auth_setup` (`deploy/script/ota-engine.sh`) writes `/etc/passwd`, `/etc/shadow` and `/root/.ssh/authorized_keys` into the initramfs tmpfs before dropbear starts. Sources, in order:
 
 1. Armed public key:
    - kernel command line token `unitotem.ota.authkey=<base64 of one ssh-ed25519 line>` (foreign OS, `arm_rpi`/`arm_grub`);
@@ -123,7 +132,7 @@ Each administrator becomes a uid 0 account `<user>` (shell `/bin/sh`, home `/roo
 
 dropbear: `-F -E -p 2222 -r <host key> -T 3 -j -k` (3 auth tries, no local or remote forwarding); `-B` only in open mode.
 
-Tool side (`deploy/lib.sh`, `ota_auth_for`):
+Tool side (`deploy/script/lib.sh`, `ota_auth_for`):
 - Selection order: `OTA_FALLBACK_KEY`, the per-target key, `OTA_FALLBACK_OPEN=1`, `OTA_FALLBACK_PASSWORD`. None set: error naming the variables.
 - Per-target key: `${XDG_STATE_HOME:-$HOME/.local/state}/unitotem-deploy/<host>/id_ed25519` (directory 0700, key 0600). Created at arming; `recover` reuses it for that host from the same PC.
 - Key auth: `BatchMode=yes`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`. Password: `sshpass -e` (environment only).
@@ -145,7 +154,7 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 
 ## Rules and gotchas
 
-- All SSH/SCP to targets goes through `deploy/lib.sh`: `ssh_t`, `scp_t`, `scp_root`, `ota_ssh`, `ota_ssh_send`, `_sshpass`. They set `SSH_ASKPASS_REQUIRE=never` and unset `DISPLAY`/`SSH_ASKPASS`; a raw `ssh`/`scp` makes OpenSSH try a graphical askpass when no password is ready, then fail with repeated `Permission denied` and no clear error. Check: `grep -n '\bssh \|\bscp \b' deploy/*.sh | grep -v '_sshpass\|ssh_t\|ota_ssh\|scp_t\|command -v\|ssh-keyscan'`.
+- All SSH/SCP to targets goes through `deploy/script/lib.sh`: `ssh_t`, `scp_t`, `scp_root`, `ota_ssh`, `ota_ssh_send`, `_sshpass`. They set `SSH_ASKPASS_REQUIRE=never` and unset `DISPLAY`/`SSH_ASKPASS`; a raw `ssh`/`scp` makes OpenSSH try a graphical askpass when no password is ready, then fail with repeated `Permission denied` and no clear error. Check: `grep -n '\bssh \|\bscp \b' deploy/script/*.sh | grep -v '_sshpass\|ssh_t\|ota_ssh\|scp_t\|command -v\|ssh-keyscan'`.
 - `ota_ssh` keeps `-n` (loops read `parts.manifest` on fd 9); `ota_ssh_send` keeps stdin.
 - Fallback host key changes every boot: `StrictHostKeyChecking=accept-new`, `UserKnownHostsFile=/dev/null`.
 - Limitation, host key not pinned: the fallback key is generated in the initramfs at each boot (`dropbearkey` in serve-fallback) and the tool keeps no copy, so nothing verifies it. Pinning needs the host to create the key at arming and deliver the private part the way the authorized key is delivered (boot FAT or cmdline), a change across `unitotem-ota-arm`, `remote-deploy.sh` and the initramfs. Effect: a man-in-the-middle on the LAN during the fallback session cannot log in with the key, but receives the password in password mode (`OTA_FALLBACK_PASSWORD`).
@@ -170,13 +179,13 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 - Legacy BIOS (amd64): `restore-table` writes `bootcode.bin` into the MBR area, the `BIOS` partition (ef02) is restored raw. Proven in a SeaBIOS q35 VM: empty disk -> `recover` -> reboot -> slot A trial -> automatic confirm; fetch + apply of a newer release; trial rollback to the other slot; power cuts after arming, in the trial boot and during the write of the other slot; `repair`; `ota-recovery` entry with key, administrator password and open mode.
 - `make-parts.sh` input is the FULL image (`unitotem-*-<arch>.img.xz`: EFI, ROOT_A, ROOT_B, DATA, BIOS), never the flash image (its table lacks ROOT_B and DATA). `--out DIR` is honoured (the container writes below `/out`). Generation takes about 20 min on 20 cores, mostly the single-threaded `xz -d` of a 14 GiB sparse image (about 20 MB/s) and the xz compression of ROOT_A. The BIOS stream is the raw partition (1 MiB) as `xz` of `dd`: `partclone.dd -c` writes nothing and `partclone.restore` crashes on a raw stream; `restore-part` restores it with `dd of=PART conv=fsync`. `sfdisk --part-type` prints the GPT GUID `21686148-6449-6E6F-744E-656564454649`, not `ef02`.
 - Resident fallback source of a deploy: `recovery_from_parts` takes the kernel, initrd and `recovery.sha256` from the boot tarball of the parts set (`UNITOTEM_PART_STREAM_FILE` of the EFI or FIRMWARE block; members `unitotem/recovery-vmlinuz`, `unitotem/recovery-initrd.img`, `unitotem/recovery.sha256` on amd64, `recovery8.img`, `recovery-initrd.img`, `recovery.sha256` on arm64, `./` prefix allowed). They are extracted to a temp dir before stage 1 touches the target. Kernel and initrd are checked against the tarball's `recovery.sha256`; a mismatch or unreadable tarball refuses the deploy with the target unchanged. `recovery.sha256` is sent to the target after the pair, so the target's boot partition carries the level of the set it was given.
-- The host copies `deploy/<arch>/recovery-*` are a fallback only: used when the tarball lacks a member (warning on stderr, level 0 until the next confirmed boot). `push_recovery_kernel` (arming a non-UniTotem target, before any parts set is used) still reads them. Rebuild them with every release (`unitotem/stage1-recovery-initrd.sh`); an older initrd ships an older engine (an initrd from before open mode refused the empty password on a first-access device). `remote-deploy.sh recover` also runs the engine of the initrd it is connected to.
+- The host copies `build/<arch>/recovery/recovery-*` are a fallback only: used when the tarball lacks a member (warning on stderr, level 0 until the next confirmed boot). `push_recovery_kernel` (arming a non-UniTotem target, before any parts set is used) still reads them. Rebuild them with every release (`unitotem/stage1-recovery-initrd.sh`); an older initrd ships an older engine (an initrd from before open mode refused the empty password on a first-access device). `remote-deploy.sh recover` also runs the engine of the initrd it is connected to.
 - `/boot/efi` is mounted read-only on the running system: remount it read-write before `grub-editenv ... next_entry=ota-recovery` and the like, and read-only again afterwards.
 - Measured in a SeaBIOS q35 KVM VM (4 vCPU, 4 GiB): `recover` of a 3.7 GB system about 3 min; the restarted VM reaches `/setup` about 1 min after the reboot.
 - `unitotem-update repair` on GRUB treats a slot as sound only with `vmlinuz` and `initrd.img` present (relative symlinks into `boot/`): the entries `slot-a`/`slot-b` load those paths.
 - `/health` answers on loopback only (404 from outside): a host-side post-deploy check uses `/login` or `/setup`.
 - Post-restore addressing uses `blkid -L` labels (`ROOT_A`, `ROOT_B`, `DATA`, `FIRMWARE`/`EFI`): two UniTotem disks in one machine make the lookup ambiguous; no duplicate-label check exists.
-- `make-parts.sh`: arch from the `-amd64.img.xz`/`-arm64.img.xz` suffix or `--arch`; scratch `work/parts-scratch.<pid>` removed unless `--keep-scratch`.
+- `make-parts.sh`: arch from the `-amd64.img.xz`/`-arm64.img.xz` suffix or `--arch`; scratch `build/parts-scratch.<pid>` removed unless `--keep-scratch`.
 - `make-preboot-image.sh`: default parts set is the newest `deploy/arm64/*.parts`; needs `recovery-*` and `p1-FIRMWARE.bootfs.tar.*`; output `deploy/arm64/unitotem-preboot-arm64.img` (+ `.xz`).
 - The OTA environment has no fixed password. Logins are the armed public key, the administrators of the installed system, or open mode on a never-configured device (see [Fallback authentication](#fallback-authentication)). Open mode accepts any network peer: use it only on trusted networks.
 

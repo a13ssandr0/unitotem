@@ -9,10 +9,10 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | Path | Role |
 |---|---|
 | `build-unitotem.sh` | Entry point: builder image, binfmt, per-arch loop, package-lock gate, stage caching, native arm64 path, Docker path |
-| `Dockerfile.unitotem` | Builder image (debian:bookworm): debootstrap, qemu-user-static, aria2, zstd, partclone, initramfs-tools-core, python3. Copies `unitotem/`, `deploy/ota-engine.sh`, `deploy/parts-lib.sh`, `tools/pkglock.py` to `/unitotem/` |
-| `Dockerfile.parts` | Parts-set image (bookworm, partclone), used by `deploy/make-parts.sh` |
+| `Dockerfile.unitotem` | Builder image (debian:bookworm): debootstrap, qemu-user-static, aria2, zstd, partclone, initramfs-tools-core, python3. Copies `unitotem/`, `deploy/script/ota-engine.sh`, `deploy/script/parts-lib.sh`, `tools/pkglock.py` to `/unitotem/` |
+| `Dockerfile.parts` | Parts-set image (bookworm, partclone), used by `deploy/script/make-parts.sh` |
 | `unitotem/common.sh` | Defaults, A/B sizes, chroot mount helpers, `apt_install` (aria2 prefetch, then apt) |
-| `unitotem/stage0-bootstrap.sh` | debootstrap base to `work/<arch>/stage0.tar.gz` |
+| `unitotem/stage0-bootstrap.sh` | debootstrap base to `build/<arch>/stage0.tar.gz` |
 | `unitotem/stage1-packages.sh` | Apt sources, package lock, kernel, firmware, bootloader, GPU, Wayland, manager .debs, purge, lock verify/freeze -> `stage1.tar.gz` |
 | `unitotem/stage1-recovery-initrd.sh` | Resident OTA fallback kernel+initrd and `recovery.manifest` |
 | `unitotem/stage2-configure.sh` | Hostname, locale, timezone, root first-access state, boot config, fstab, NetworkManager, services, initramfs, arm64 FIRMWARE files -> `stage2.tar.gz` |
@@ -32,15 +32,15 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 - Several arches: one child per arch (`BUILD_CHILD=1`, output prefixed `[arch]`), in parallel.
 - Per arch: package-lock gate (`package-lock.md`), then native or Docker path.
 - arm64 native path (why: `mkinitramfs` runs `ldd` of the target and apt postinst/trigger scripts run arm64 code, which qemu-aarch64 emulates slowly): used when `PI_NATIVE_BUILD=1` (default), `sshpass` exists and the device answers within 5 s. A native failure falls back to Docker + qemu-aarch64.
-  - rsyncs `unitotem/`, `ota-engine.sh`, `parts-lib.sh`, `pkglock.py`, `work/extra-debs/` to the device, installs build deps, runs stage 0-3 in one SSH session, rsyncs `work/arm64` and `deploy/arm64` back, adopts the new lock. No stage caching.
+  - rsyncs `unitotem/`, `ota-engine.sh`, `parts-lib.sh`, `pkglock.py`, `build/extra-debs/` to the device, installs build deps, runs stage 0-3 in one SSH session, rsyncs `build/arm64` and `deploy/arm64` back, adopts the new lock. No stage caching.
 - Docker path: one `docker run --rm --privileged` per stage.
   - arm64 on an amd64 build server (Docker + `qemu-aarch64` registered in `binfmt_misc`; check with `docker run --rm --platform linux/arm64 debian:trixie uname -m`): `FORCE_STAGE=1 ARCHES=arm64 ./build-unitotem.sh` with `PI_HOST` unset. Measured on a 144-core server building amd64 in parallel: stage 0 about 15 min, stage 1 about 50 min (package configuration under emulation), stages 2-3 about 15 min; about 65 min to the image, `verify-image` 190 checks, 0 failed. The resulting image booted on a Raspberry Pi 4 and passed the A/B update, so it is equivalent to a native build. The native path needs the test Pi for 1.5-2 h and blocks it; the server path does not.
   - Stage 0 and 1: run when the tarball is missing or stale.
-  - Stage 1b (recovery initrd): runs when stage 1 ran or `recovery.manifest` is missing.
-  - Stage 1b installs `deploy/ota-engine.sh` into its rootfs after extracting `stage1.tar.gz` (as stage 2 does for the slot initramfs): the tarball can hold an older engine. Rebuild after a change of the engine alone, without redoing stage 1 (about an hour per architecture): on the build server set the mtime of `deploy/ota-engine.sh` before the stage 1 tarball (`touch -d`), delete `deploy/<arch>/recovery.manifest`, run with `FORCE_STAGE=2`; stage 1 is skipped, 1b, 2 and 3 run (about 25 minutes). A later full rebuild reads the real file.
-  - Stage 2: runs when stale or when `AB_LAYOUT` differs from `work/<arch>/stage2.layout`.
+  - Stage 1b (recovery initrd): runs when stage 1 ran or `build/<arch>/recovery/recovery.manifest` is missing.
+  - Stage 1b installs `deploy/script/ota-engine.sh` into its rootfs after extracting `stage1.tar.gz` (as stage 2 does for the slot initramfs): the tarball can hold an older engine. Rebuild after a change of the engine alone, without redoing stage 1 (about an hour per architecture): on the build server set the mtime of `deploy/script/ota-engine.sh` before the stage 1 tarball (`touch -d`), delete `deploy/<arch>/recovery.manifest`, run with `FORCE_STAGE=2`; stage 1 is skipped, 1b, 2 and 3 run (about 25 minutes). A later full rebuild reads the real file.
+  - Stage 2: runs when stale or when `AB_LAYOUT` differs from `build/<arch>/stage2.layout`.
   - Stage 3: always runs.
-- Staleness: a tarball is rebuilt when `unitotem/stage<N>*.sh`, `unitotem/common.sh`, `Dockerfile.unitotem` or the previous tarball is newer. Stages 1 and 2 also depend on `unitotem/files/*` and `deploy/ota-engine.sh`. `FORCE_STAGE=N` deletes tarballs N and up.
+- Staleness: a tarball is rebuilt when `unitotem/stage<N>*.sh`, `unitotem/common.sh`, `Dockerfile.unitotem` or the previous tarball is newer. Stages 1 and 2 also depend on `unitotem/files/*` and `deploy/script/ota-engine.sh`. `FORCE_STAGE=N` deletes tarballs N and up.
 
 ### Stages
 
@@ -79,10 +79,10 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Both: base set (`unitotem/stage1-packages.sh`, installed with Recommends): `locales`, `sudo`, `openssh-server`, `htop`, `btop`, `nano`, `less`, network and Python packages. `htop` is in the base set; `btop` adds `btop` and `libncursesw6`, and `libgpm2` through its Recommends.
   - Both: plymouth (no text plugin), `labwc wlr-randr wlopm wayvnc xwayland qt6-wayland kbd`, pipewire, ddcutil. `xwayland` is present only because labwc starts it lazily and logs an error without it; no X client runs.
   - Both: `libpam-pwquality` with `--no-install-recommends` (Recommends would add `cracklib-runtime`, `wamerican`, `file`). Pulls `libpam-pwquality`, `libpwquality1`, `libpwquality-common`, `libcrack2`. See [image-runtime](image-runtime.md#password-policy).
-  - Manager .debs from `work/extra-debs/<arch>/` installed over the apt set; every unitotem package must be 3.x.
+  - Manager .debs from `build/extra-debs/<arch>/` installed over the apt set; every unitotem package must be 3.x.
   - Purge: arm64 Chromium (apt); compilers (`dpkg --force-depends`, keeps DKMS modules: `build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 gcc-14-for-host cpp-14-for-host` and the `x86-64-linux-gnu` cross variants; the 7.2 headers depend on `gcc-14-for-host`/`cpp-14-for-host`); `mesa-vulkan-drivers` (apt; the viewer renders through ANGLE-GL, llvmpipe/radeonsi stay in `mesa-libgallium` + `libllvm19`); `libclang1-19` (`dpkg --force-depends`: `libshiboken6` declares it, no shared object loads it); amd64 X server packages. No NVIDIA library is purged: the NVIDIA set is installed with `--no-install-recommends` and pulls no CUDA, NVDEC or Vulkan library.
   - Asserts labwc, wlr-randr, wlopm, wayvnc, mesa-libgallium, libllvm19, libneatvnc and libavcodec61 survive and the NVIDIA module `nvidia.ko*` exists in the single kernel directory (amd64, after each purge). Removes `/var/lib/dkms/mok.key`.
-  - Lock: verify (exact match) or freeze to `work/<arch>/<arch>.lock.new`.
+  - Lock: verify (exact match) or freeze to `build/<arch>/<arch>.lock.new`.
 - Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values. `UNITOTEM_RECOVERY_BUILD_DATE` is the set's level (14 digits, `boot.md#recovery-set`).
 - Stage 2:
   - Hostname, root first-access state (`passwd -d`, login shell, marker group), sshd_config, packages `sudo` and `adduser`.
@@ -138,15 +138,16 @@ Defaults (`unitotem/common.sh`, env-overridable):
 - `RELEASE_VERSION` default `date +%Y.%m.%d`; written to `/usr/share/unitotem/release-version`; must match `^[0-9]+(\.[0-9]+)+$`.
 - `ROOTFS` /tmp/rootfs, `IMG_MNT` /mnt (both overridden on the native path).
 
-Container mounts: `/dev`, `work` -> `/work`, `deploy` -> `/deploy`, `work/apt-cache` -> `/aptcache`, `unitotem/locks` -> `/unitotem/locks` (ro).
+Container mounts: `/dev`, `build` -> `/work`, `deploy` -> `/deploy`, `build/apt-cache` -> `/aptcache`, `unitotem/locks` -> `/unitotem/locks` (ro).
 
 Outputs:
 
 - `deploy/<arch>/unitotem-<date>-<arch>.img.xz` (build date, not `RELEASE_VERSION`): full image.
 - `deploy/<arch>/unitotem-<date>-<arch>-flash.img.xz` (A/B): flash image, `storage-and-persistence.md#layout`.
-- `deploy/<arch>/recovery-vmlinuz-<arch>`, `recovery-initrd-<arch>.img`, `recovery.manifest` (keys `UNITOTEM_RECOVERY_{ARCH,KERNEL_VERSION,VMLINUZ_SHA256,INITRD_SHA256,PARTCLONE_VERSION,BUILD_DATE}`). Deploys read the set from the parts set; these host files are the fallback only (`deploy-and-recovery.md`).
+- `build/<arch>/recovery/recovery-vmlinuz-<arch>`, `recovery-initrd-<arch>.img`, `recovery.manifest` (keys `UNITOTEM_RECOVERY_{ARCH,KERNEL_VERSION,VMLINUZ_SHA256,INITRD_SHA256,PARTCLONE_VERSION,BUILD_DATE}`). Deploys read the set from the parts set; these host files are the fallback only (`deploy-and-recovery.md`).
 - Optional `deploy/<arch>/unitotem-<date>-<arch>.parts`.
-- `work/<arch>/`: `stage{0,1,2}.tar.gz`, `stage2.layout`, `<arch>.lock.new`.
+- `build/<arch>/`: `stage{0,1,2}.tar.gz`, `stage2.layout`, `<arch>.lock.new`, `recovery/` (the stage 1b kernel and initrd).
+- `deploy/<arch>/`: what is ready to use, nothing intermediate: `unitotem-<date>-<arch>.img.xz`, `...-flash.img.xz`, parts sets, preboot image, installer ISO and Windows installer; `deploy/script/`: the deploy tooling (`remote-deploy.sh`, `write-sd.sh`, `make-parts.sh`, ...).
 
 Partition layouts:
 
@@ -161,7 +162,7 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 
 ## Rules and gotchas
 
-- Stage 1 needs the full manager set in `work/extra-debs/<arch>/`: `unitotem`, `unitotem-manager`, `unitotem-node`, `unitotem-viewer`, `plymouth-theme-unitotem`, `python3-cefpython3` (for the arch), `python3-fastapi-login`, `python3-sdbus-networkmanager`.
+- Stage 1 needs the full manager set in `build/extra-debs/<arch>/`: `unitotem`, `unitotem-manager`, `unitotem-node`, `unitotem-viewer`, `plymouth-theme-unitotem`, `python3-cefpython3` (for the arch), `python3-fastapi-login`, `python3-sdbus-networkmanager`.
 - Native arm64: device root is read-only; the build remounts `/` and `/var/lib/dpkg` rw and restores ro in an EXIT trap. Stale chroot mounts under the build tree are unmounted first.
 - Native arm64: `ROOTFS` and `IMG_MNT` live in the build tree (`/tmp` is nodev tmpfs, `/mnt` holds DATA). `qemu-aarch64-static` is copied by stage 0 unconditionally, so the package is required.
 - Builder is bookworm, target is trixie. partclone in `Dockerfile.parts` must match the version `ota-engine.sh` restores with.
@@ -179,7 +180,7 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 - Editing a stage script or `Dockerfile.unitotem` while a build runs breaks that build; the newer mtime also makes the next run rebuild from stage 0.
 - `purge_list` in stage 1 must end with `return 0` or `set -e` aborts the stage.
 - Build priority (parent process, Docker and native): the build runs with nice -20 (needs root; otherwise a warning); the UniTotem units of `BUILD_PRIO_UNITS` (default `unitotem-manager unitotem-splash start-xorg`, loaded ones only) get `CPUWeight=1` at runtime. The EXIT trap restores the previous nice value and CPUWeight (`[not set]` is restored as a reset).
-- Native arm64 ssh and rsync go through `deploy/lib.sh` (`OTA_AUTH` defaults to `key` here: BatchMode, publickey). The host key is checked as lib.sh's `SSH_OPTS` do: a reflashed Pi with a new host key fails the native path (warning, then Docker + qemu-aarch64) until its old entry is removed from `known_hosts`. A failed rsync fails the native path with a message.
+- Native arm64 ssh and rsync go through `deploy/script/lib.sh` (`OTA_AUTH` defaults to `key` here: BatchMode, publickey). The host key is checked as lib.sh's `SSH_OPTS` do: a reflashed Pi with a new host key fails the native path (warning, then Docker + qemu-aarch64) until its old entry is removed from `known_hosts`. A failed rsync fails the native path with a message.
 - `docker-compose.yml` (apt-cacher-ng) is not used by the build; stage 1 uses the `/aptcache` mount.
 
 ## Image size

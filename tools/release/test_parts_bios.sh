@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test of make_parts (deploy/parts-lib.sh) for the legacy-BIOS partition (GPT type ef02, labelled BIOS):
+# Test of make_parts (deploy/script/parts-lib.sh) for the legacy-BIOS partition (GPT type ef02, labelled BIOS):
 # raw dd stream (cloner dd, action raw), manifest fields, stream integrity and content, and no BIOS block
 # when the image has no ef02 partition.
 # Needs docker with --privileged (loop devices and mounts happen only INSIDE the container). The repo is
@@ -66,14 +66,14 @@ populate() {
     losetup -d "$loop" || return 1
 }
 
-# run_parts IMG OUTDIR: make_parts on a read-only loop device, as deploy/make-parts-image.sh does
+# run_parts IMG OUTDIR: make_parts on a read-only loop device, as deploy/script/make-parts-image.sh does
 run_parts() {
     local img=$1 out=$2 loop rc
     loop=$(losetup --find --show --partscan --read-only "$img") || return 1
     LOOPS+=("$loop")
     partprobe "$loop" 2>/dev/null || true
     udevadm settle --timeout=5 2>/dev/null || true
-    ( source /repo/deploy/parts-lib.sh; make_parts "$loop" "$out" amd64 testset "$img" ) > "$out.log" 2>&1
+    ( source /repo/deploy/script/parts-lib.sh; make_parts "$loop" "$out" amd64 testset "$img" ) > "$out.log" 2>&1
     rc=$?
     losetup -d "$loop" 2>/dev/null || true
     return $rc

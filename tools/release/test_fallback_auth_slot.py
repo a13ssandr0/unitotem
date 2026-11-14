@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test of the slot whose DATA state the OTA fallback reads for its logins (fallback_auth_setup in deploy/ota-engine.sh):
+"""Test of the slot whose DATA state the OTA fallback reads for its logins (fallback_auth_setup in deploy/script/ota-engine.sh):
 unitotem.slot on the command line, else saved_entry of the boot FAT grubenv, else slot a. Fixtures only, nothing real is read.
 
   python3 tools/release/test_fallback_auth_slot.py
@@ -7,7 +7,7 @@ unitotem.slot on the command line, else saved_entry of the boot FAT grubenv, els
 import os, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = os.path.abspath(os.path.join(HERE, "..", "..", "deploy", "ota-engine.sh"))
+ENGINE = os.path.abspath(os.path.join(HERE, "..", "..", "deploy", "script", "ota-engine.sh"))
 ok = fail = 0
 KEY_A = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 KEY_B = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"

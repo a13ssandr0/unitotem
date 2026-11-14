@@ -51,7 +51,7 @@ Re-running updates in place without duplicates. The end of every run reads the p
 
 ## Migration by the deploy
 
-`deploy/remote-deploy.sh deploy` writes the archive `unitotem-legacy-<host>-<version>-<time>.tar.zst` before the disk is replaced (settings, uploaded media, root crontab, netplan, hostname, time zone). With `--admin-user NAME --admin-password-file FILE [--timezone ZONE]` it then runs `tools/migrate-legacy.py` on the new system:
+`deploy/script/remote-deploy.sh deploy` writes the archive `unitotem-legacy-<host>-<version>-<time>.tar.zst` before the disk is replaced (settings, uploaded media, root crontab, netplan, hostname, time zone). With `--admin-user NAME --admin-password-file FILE [--timezone ZONE]` it then runs `tools/migrate-legacy.py` on the new system:
 
 - extracts only `etc/unitotem/unitotem.conf`, `etc/hostname`, `etc/timezone`, the uploaded media and root's crontab from the archive, into a temporary directory;
 - creates the first administrator through `POST /setup` when `/login` redirects to `/setup`; an existing administrator is left alone (the same password file must then log in);

@@ -15,7 +15,7 @@ apt-get install -y -qq --no-install-recommends \
     util-linux fdisk e2fsprogs dosfstools coreutils gdisk parted procps >/dev/null
 
 REPO=/repo
-ENGINE=(bash "$REPO/deploy/ota-engine.sh")
+ENGINE=(bash "$REPO/deploy/script/ota-engine.sh")
 IMG=/work/bootcount.img
 RESULTS=/work/results-bootcount.txt
 : > "$RESULTS"

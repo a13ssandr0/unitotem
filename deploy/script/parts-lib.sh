@@ -1,6 +1,6 @@
 #!/bin/bash
 # Parts-set generator library: make_parts() clones every restore-relevant partition of an attached loop
-# device into deploy/$ARCH/<setname>.parts/. Called by deploy/make-parts-image.sh (in the container,
+# device into deploy/$ARCH/<setname>.parts/. Called by deploy/script/make-parts-image.sh (in the container,
 # from a scratch image file) and by unitotem/stage3-image.sh's optional MAKE_PARTS hook.
 #
 # Not meant to be executed directly.

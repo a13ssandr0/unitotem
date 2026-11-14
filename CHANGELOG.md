@@ -5,6 +5,7 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Image and build
+- Directory layout: `build/` for every compilation temporary (stage tarballs, apt cache, extra debs, recovery kernel and initrd), `deploy/<arch>/` for ready images only, `deploy/script/` for the deploy tooling (moved from `deploy/`); new `deploy/script/write-sd.sh` writes an image to a card or disk (partition table, partitions, `partclone` per partition, `pv` progress) with `tools/release/test_write_sd.sh`.
 - Graphics profile of the first-boot welcome page on three outputs and DevTools profiling tools (`tools/ubuntu-proto/`, `docs/manager/viewer.md`).
 - Ubuntu 26.04 base and NVIDIA 580/595 driver extensions evaluated under Secure Boot (`docs/system/ubuntu-gpu-evaluation.md`, `tools/ubuntu-proto/`).
 - GRUB slot titles `UniTotem <version> (Slot A|B)` (version read from each slot's `grub-version`); `unitotem-boot-entry` names the firmware entry that booted the system `UniTotem` (loader entries only).
@@ -69,8 +70,8 @@
 - Recovery keeps DATA when a read-only fsck passes.
 - OTA screen: logo, phase and progress gauge, English text, adapts to any resolution.
 - Fallback: DHCP on every wired interface, low-resolution GRUB entries, brcmfmac Wi-Fi modules.
-- Deploy post-check probes the web interface instead of logging in as root; `OTA_AUTH=key` mode in `deploy/lib.sh` for hosts with an installed key (the fallback no longer has a fixed password, see below).
-- `deploy/lib.sh`: `OTA_FALLBACK_USER`, `OTA_FALLBACK_KEY`, `OTA_FALLBACK_PASSWORD` (environment only), `OTA_FALLBACK_OPEN`; per-target keys under `~/.local/state/unitotem-deploy/`; `recover --fallback-user`; `unitotem-ota-arm --authkey-file`.
+- Deploy post-check probes the web interface instead of logging in as root; `OTA_AUTH=key` mode in `deploy/script/lib.sh` for hosts with an installed key (the fallback no longer has a fixed password, see below).
+- `deploy/script/lib.sh`: `OTA_FALLBACK_USER`, `OTA_FALLBACK_KEY`, `OTA_FALLBACK_PASSWORD` (environment only), `OTA_FALLBACK_OPEN`; per-target keys under `~/.local/state/unitotem-deploy/`; `recover --fallback-user`; `unitotem-ota-arm --authkey-file`.
 - Legacy BIOS amd64 PCs are deployed and recovered like UEFI ones (BIOS-boot partition captured and restored raw); proven in a SeaBIOS VM: deploy, first boot, update with trial, fallback, power cuts, repair, recovery entry.
 - Single-root deploy branches removed (A/B only); fallback watchdog stands down only on an authenticated session; `remote-deploy.sh` `changes` exits 0/1/2/3; `make-parts.sh --out` honoured.
 - No DATA partition: `/etc`, `/root` and `/var` are tmpfs overlays (state lost on reboot) instead of a read-only root; the status shows `volatile:*`.

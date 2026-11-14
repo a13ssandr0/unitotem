@@ -1,10 +1,10 @@
 #!/bin/bash
 # Builds the Windows installer folder and zip from an amd64 flash image.
 #   tools/build-windows-installer.sh [--image FILE.img.xz] [--initrd FILE] [--out DIR]
-# Output: DIR/unitotem-windows-installer.zip and DIR/SHA256SUMS (default DIR: work/windows-installer).
+# Output: DIR/unitotem-windows-installer.zip and DIR/SHA256SUMS (default DIR: deploy/amd64).
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")/.." && pwd)
-IMAGE=""; INITRD=""; OUT="$DIR/work/windows-installer"
+IMAGE=""; INITRD=""; OUT="$DIR/deploy/amd64"
 while [ $# -gt 0 ]; do
     case "$1" in
         --image) IMAGE=${2:?}; shift 2 ;;
@@ -14,13 +14,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 if [ -z "$IMAGE" ]; then
-    IMAGE=$(ls -1 "$DIR"/work/flash-images/unitotem-*-amd64-flash.img.xz | sort | tail -n 1)
+    IMAGE=$(ls -1 "$DIR"/deploy/amd64/unitotem-*-amd64-flash.img.xz | sort | tail -n 1)
 fi
 [ -f "$IMAGE" ] || { echo "image not found: $IMAGE" >&2; exit 1; }
 for t in xz sfdisk mcopy zip sha256sum curl; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }; done
 
 SRC="$DIR/tools/windows-installer"
-WORK=$(mktemp -d "$DIR/work/winins.XXXXXX")
+mkdir -p "$DIR/build"
+WORK=$(mktemp -d "$DIR/build/winins.XXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT
 STAGE="$WORK/unitotem-windows-installer"
 mkdir -p "$STAGE/payload" "$OUT"

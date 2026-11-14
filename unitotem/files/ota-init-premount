@@ -1,7 +1,7 @@
 #!/bin/sh
 # initramfs-tools init-premount script: entry point of the OTA mechanism. It runs before mountroot,
 # so ROOT/DATA can be inspected unmounted, and when it enters OTA mode mountroot/local-bottom/
-# switch_root never happen (deploy/ota-engine.sh's serve-fallback blocks in the foreground on dropbear).
+# switch_root never happen (deploy/script/ota-engine.sh's serve-fallback blocks in the foreground on dropbear).
 # plymouth first: this step can take seconds (udev settle, fsck of the root slot) and the splash must
 # already be on screen while it runs.
 PREREQ="plymouth"

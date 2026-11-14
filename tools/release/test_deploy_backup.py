@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Test of the backup the deploy takes of a target that already runs UniTotem: backup_stream (deploy/lib.sh) and backup_running_system
-(deploy/remote-deploy.sh) with ssh_t replaced by a local command on a temporary directory standing for /mnt/data.
+"""Test of the backup the deploy takes of a target that already runs UniTotem: backup_stream (deploy/script/lib.sh) and backup_running_system
+(deploy/script/remote-deploy.sh) with ssh_t replaced by a local command on a temporary directory standing for /mnt/data.
 
   python3 tools/release/test_deploy_backup.py
 """
@@ -28,8 +28,8 @@ def func(path, name):
     return out
 
 
-LIB = os.path.join(ROOT, "deploy/lib.sh")
-RD = os.path.join(ROOT, "deploy/remote-deploy.sh")
+LIB = os.path.join(ROOT, "deploy/script/lib.sh")
+RD = os.path.join(ROOT, "deploy/script/remote-deploy.sh")
 
 with tempfile.TemporaryDirectory() as td:
     data = os.path.join(td, "data"); os.makedirs(data + "/upper/etc.a"); os.makedirs(data + "/unitotem")

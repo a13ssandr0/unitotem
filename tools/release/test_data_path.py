@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side test of the data path choice of deploy/remote-deploy.sh (data_path_ok, data_push_ok, data_path_setup, serve_data, data_wait), with no target:
+"""Host-side test of the data path choice of deploy/script/remote-deploy.sh (data_path_ok, data_push_ok, data_path_setup, serve_data, data_wait), with no target:
 the functions are cut out of the real script text and run in bash with fake ota_ssh, socat and ssh. Judged on the result, the calls made and the text printed.
 
   python3 tools/release/test_data_path.py
@@ -7,7 +7,7 @@ the functions are cut out of the real script text and run in bash with fake ota_
 import os, re, subprocess, tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-SCRIPT = open(os.path.join(ROOT, "deploy/remote-deploy.sh")).read()
+SCRIPT = open(os.path.join(ROOT, "deploy/script/remote-deploy.sh")).read()
 ok = fail = 0
 
 

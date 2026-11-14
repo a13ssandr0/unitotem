@@ -6,13 +6,13 @@ Paths: relative to the repository root. Lab findings behind the UEFI method: [wi
 
 ## Remote flow (`irm | iex`)
 
-1. Host: `tools/build-windows-installer.sh` (once per image), then `tools/win-install-server.py [--authorized-key FILE] [--advertise IP] [--port 8000] [--timeout-minutes 60]`. Python 3 stdlib, no root. The OTA login key is **per PC**, never a personal key: at the PC's first inventory the server creates an ed25519 pair (`ssh-keygen -t ed25519 -N ''`, comment `unitotem-deploy`) at `${XDG_STATE_HOME:-~/.local/state}/unitotem-deploy/<client-ip>/id_ed25519` (directory 0700, key 0600), the same layout as `ota_key_path` in `deploy/lib.sh`; `remote-deploy.sh recover <ip>` finds it by that address (the OTA environment gets the PC's Windows address from the same DHCP lease) and `OTA_FALLBACK_KEY` names it explicitly for any other address. Only the public line leaves the host, through `GET /key?machine=ID` after the approval (it is not in the payload zip, whose hash is fixed). `--authorized-key FILE` is an explicit public key shared by all PCs; nothing is read from `~/.ssh`. Open mode exists only for the local script without `-AuthorizedKey`.
+1. Host: `tools/build-windows-installer.sh` (once per image), then `tools/win-install-server.py [--authorized-key FILE] [--advertise IP] [--port 8000] [--timeout-minutes 60]`. Python 3 stdlib, no root. The OTA login key is **per PC**, never a personal key: at the PC's first inventory the server creates an ed25519 pair (`ssh-keygen -t ed25519 -N ''`, comment `unitotem-deploy`) at `${XDG_STATE_HOME:-~/.local/state}/unitotem-deploy/<client-ip>/id_ed25519` (directory 0700, key 0600), the same layout as `ota_key_path` in `deploy/script/lib.sh`; `remote-deploy.sh recover <ip>` finds it by that address (the OTA environment gets the PC's Windows address from the same DHCP lease) and `OTA_FALLBACK_KEY` names it explicitly for any other address. Only the public line leaves the host, through `GET /key?machine=ID` after the approval (it is not in the payload zip, whose hash is fixed). `--authorized-key FILE` is an explicit public key shared by all PCs; nothing is read from `~/.ssh`. Open mode exists only for the local script without `-AuthorizedKey`.
 2. Windows: paste the line. The bootstrap is text run in memory (`irm`, not `iwr`: `iwr` in PowerShell 5.1 needs the IE engine); no script file is written and the execution policy is not changed. It checks it is elevated (otherwise prints `Run as administrator`, exit code 3, changes nothing, no relaunch), then makes a **read-only inventory** and POSTs it: disks (model, size, serial, UniqueId, number, partitions), UEFI/BIOS, Secure Boot, free space of the ESP / active partition (the ESP is mounted on a free letter for a moment), BitLocker per volume, computer name, IPs, machine id (`MachineGuid`).
 3. Host terminal shows the PC and its disks, then asks in yellow `(<host>) disk=N model=... size=...GB serial=...: Erase this disk and install UniTotem? (y/n)`. The operator answers `y` (or `Y`); the server asks again `Last chance: erase this disk? (y/n)`; a second `y` approves. `n` cancels and nothing is changed. Any other answer prints `Invalid answer, type y or n` and the same question is asked again. The answers apply to the PC that reported last. From another terminal: `tools/win-install-server.py -y` (alias `--yes`) approves the PC that reported last without the two questions, `-y --machine ID` a specific one; it leaves a file in `~/.local/state/unitotem-winserver/approvals/` that the running server takes within 1 s and checks like the questions (known PC, plan not `none`, approval bound to its machine id, disk number and serial). Invalid arguments exit 2. Answers come only from the server's stdin and that directory, never from HTTP. The approval is bound to machine id + disk number + disk serial; the PC checks all three against itself and refuses a mismatch. A new inventory from the PC revokes an earlier approval.
 
 On a terminal the question is the prompt: a log line that arrives while it waits is printed above it (the prompt line is erased first) and the prompt is drawn again below with what the operator had typed (Backspace and Ctrl-U edit; input is read in cbreak mode). Without a terminal the question is a plain log line and input is read line by line.
 4. The PC polls every 5 s (`waiting for approval minutes_left=N` on its console at the start and then every 5 minutes) (`-TimeoutMinutes`, default 60). Without approval it exits with code 8 having changed nothing. After approval it downloads `/payload.zip`, verifies size and SHA-256 (both embedded in the bootstrap), extracts it to `%ProgramData%\UniTotem-install`, prepares the boot files and the one-shot boot entry (sections below), and restarts (`shutdown /r /t 10`). Every step is posted to the server and printed live as `[HOSTNAME] text`.
-5. Host: the server prints the full command after the approval: `OTA_FALLBACK_KEY=<per-PC key> deploy/remote-deploy.sh recover <ip> --parts DIR --yes`; run it once the environment answers (see After the restart).
+5. Host: the server prints the full command after the approval: `OTA_FALLBACK_KEY=<per-PC key> deploy/script/remote-deploy.sh recover <ip> --parts DIR --yes`; run it once the environment answers (see After the restart).
 
 Authenticity: HTTP on the local network, no TLS. The bootstrap carries the payload hash, but the bootstrap itself is not authenticated: anyone able to spoof the host's address on the LAN could serve a different script. Run the server on a trusted network. Inventories from other machines are only shown; nothing runs without the operator's word.
 
@@ -38,7 +38,7 @@ WinRE (the recovery command prompt) has no PowerShell, no `curl` and normally no
 
 ## Local flow (USB stick)
 
-`tools/windows-installer/Install-UniTotem.ps1` prepares a Windows 10/11 PC so that it starts the UniTotem OTA environment once. The host then runs the normal network recovery (`deploy/remote-deploy.sh recover`), which **erases the whole system disk**: Windows is not kept. The script itself destroys nothing; it adds boot files and one boot entry, and `-Undo` removes them.
+`tools/windows-installer/Install-UniTotem.ps1` prepares a Windows 10/11 PC so that it starts the UniTotem OTA environment once. The host then runs the normal network recovery (`deploy/script/remote-deploy.sh recover`), which **erases the whole system disk**: Windows is not kept. The script itself destroys nothing; it adds boot files and one boot entry, and `-Undo` removes them.
 
 ## Files
 
@@ -49,7 +49,7 @@ WinRE (the recovery command prompt) has no PowerShell, no `curl` and normally no
 | `tools/windows-installer/Install-UniTotem.Tests.ps1` | Pester tests of the pure functions and of a mocked dry run |
 | `tools/windows-installer/bootstrap.ps1.tmpl` | Bootstrap served by the server (the installer is embedded in it) |
 | `tools/win-install-server.py`, `tools/release/test_win_install_server.py` | Host server and its tests |
-| `tools/build-windows-installer.sh` | Builds `work/windows-installer/unitotem-windows-installer.zip` + `SHA256SUMS` from the newest amd64 flash image (`--image`, `--initrd`, `--out`) |
+| `tools/build-windows-installer.sh` | Builds `deploy/amd64/unitotem-windows-installer.zip` + `SHA256SUMS` from the newest amd64 flash image (`--image`, `--initrd`, `--out`) |
 
 Server output: the start prints `On the Windows machine press Win+R, type powershell, press Enter, type one of the following commands and press Enter` and one `irm http://<ip>:8000|iex` line per local IPv4 address, then `listening on ...` in green. The two questions are bold yellow. Log lines show `(hostname)` in a colour picked at random from a 10-colour 256-colour palette (blues, purples, reds, orange; no black, white, green or yellow) and kept per host name in memory only; no colour when stdout is not a terminal or `NO_COLOR` is set. Partition types are shown as `label (raw)`:
 
@@ -120,11 +120,11 @@ Proof (emulated, not on Windows; QEMU/SeaBIOS with TCG): disk with a bootmgr sta
 
 ## After the restart
 
-1. The environment starts, takes an address by DHCP (first wired port with a cable) and shows `OTA update mode ... Address: <ip> Port: 2222`. The address is also visible in the router's client list; `discover_fallback` in `deploy/remote-deploy.sh` scans the local /24 for dropbear on 2222.
+1. The environment starts, takes an address by DHCP (first wired port with a cable) and shows `OTA update mode ... Address: <ip> Port: 2222`. The address is also visible in the router's client list; `discover_fallback` in `deploy/script/remote-deploy.sh` scans the local /24 for dropbear on 2222.
 2. From the host (key mode; open mode: `OTA_FALLBACK_OPEN=1`):
 
 ```
-OTA_FALLBACK_KEY=<private key> deploy/remote-deploy.sh recover <ip> --parts deploy/amd64/unitotem-<version>-amd64.parts --disk <by-id or name>
+OTA_FALLBACK_KEY=<private key> deploy/script/remote-deploy.sh recover <ip> --parts deploy/amd64/unitotem-<version>-amd64.parts --disk <by-id or name>
 ```
 
 `--disk` selects the disk to erase (by-id contains the model and serial shown by the script). Details, backups and options: [deploy-and-recovery.md](deploy-and-recovery.md). Add `--yes` for an unattended run.

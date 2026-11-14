@@ -3,7 +3,7 @@
 # reboots into it: writes the self-clearing flag file the system's initramfs
 # (unitotem/files/ota-init-premount) checks for, plus the network hints the fallback needs to
 # reach back out. remote-deploy.sh's deploy of an already-UniTotem target is one
-# `ssh_t unitotem-ota-arm ...` call (other targets use arm_grub/arm_rpi in deploy/remote-deploy.sh).
+# `ssh_t unitotem-ota-arm ...` call (other targets use arm_grub/arm_rpi in deploy/script/remote-deploy.sh).
 # --authkey-file FILE ('-' = stdin) arms the public key line of the fallback's login key
 # (unitotem-ota.authorized_keys on the boot partition). Without it an existing key file is left as it is.
 set -euo pipefail
@@ -43,7 +43,7 @@ mnt=/run/unitotem-bootfs
 mkdir -p "$mnt"
 # Reuse the existing mount of $BOOTFS_DEV (normally /boot/firmware) instead of a second mount at
 # $mnt: a second vfat mount silently comes up read-only when the first one is read-only
-# (see ota_mount_bootfs_rw in deploy/ota-engine.sh).
+# (see ota_mount_bootfs_rw in deploy/script/ota-engine.sh).
 if mountpoint -q "$mnt"; then
     mount -o remount,rw "$mnt" 2>/dev/null || true
 else

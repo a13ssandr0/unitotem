@@ -1,9 +1,9 @@
 #!/bin/bash
-# Builds the resident OTA fallback: a standalone kernel+initrd from work/$ARCH/stage1.tar.gz, before the kiosk
+# Builds the resident OTA fallback: a standalone kernel+initrd from build/$ARCH/stage1.tar.gz, before the kiosk
 # configuration is added in stage2. It reuses unitotem/files/ota-hook, the same hook as the real system's
 # `update-initramfs`, so the two cannot drift apart.
-# Output: /deploy/$ARCH/recovery-vmlinuz-$ARCH, recovery-initrd-$ARCH.img, recovery.manifest (baked into every
-# image's boot FAT partition by stage3-image.sh, and used by deploy/remote-deploy.sh).
+# Output: /work/$ARCH/recovery/recovery-vmlinuz-$ARCH, recovery-initrd-$ARCH.img, recovery.manifest (baked into every
+# image's boot FAT partition by stage3-image.sh, and used by deploy/script/remote-deploy.sh).
 set -euo pipefail
 source /unitotem/common.sh
 
@@ -16,12 +16,12 @@ STAGE1="${WORK_DIR}/stage1.tar.gz"
 }
 
 rm -rf "${ROOTFS}"
-mkdir -p "${ROOTFS}" "/deploy/${ARCH}"
+mkdir -p "${ROOTFS}" "${WORK_DIR}/recovery"
 
 echo "Extracting stage 1..."
 tar -I pigz -C "${ROOTFS}" -xf "${STAGE1}"
 
-# The initrd carries a copy of the OTA engine. The stage1 tarball can be older than deploy/ota-engine.sh (a change of the engine alone does not
+# The initrd carries a copy of the OTA engine. The stage1 tarball can be older than deploy/script/ota-engine.sh (a change of the engine alone does not
 # rebuild stage 1), so the copy is refreshed here, as stage 2 does for the slot initramfs.
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 
@@ -52,14 +52,14 @@ echo "Kernel version: ${KVER}"
 
 chroot "${ROOTFS}" mkinitramfs -o "/tmp/recovery-initrd.img" "${KVER}"
 
-cp "${ROOTFS}/tmp/recovery-initrd.img" "/deploy/${ARCH}/recovery-initrd-${ARCH}.img"
-cp "${ROOTFS}/boot/vmlinuz-${KVER}"    "/deploy/${ARCH}/recovery-vmlinuz-${ARCH}"
+cp "${ROOTFS}/tmp/recovery-initrd.img" "${WORK_DIR}/recovery/recovery-initrd-${ARCH}.img"
+cp "${ROOTFS}/boot/vmlinuz-${KVER}"    "${WORK_DIR}/recovery/recovery-vmlinuz-${ARCH}"
 
-VMLINUZ_SHA=$(sha256sum "/deploy/${ARCH}/recovery-vmlinuz-${ARCH}"    | cut -d' ' -f1)
-INITRD_SHA=$(sha256sum  "/deploy/${ARCH}/recovery-initrd-${ARCH}.img" | cut -d' ' -f1)
+VMLINUZ_SHA=$(sha256sum "${WORK_DIR}/recovery/recovery-vmlinuz-${ARCH}"    | cut -d' ' -f1)
+INITRD_SHA=$(sha256sum  "${WORK_DIR}/recovery/recovery-initrd-${ARCH}.img" | cut -d' ' -f1)
 PARTCLONE_VER=$(chroot "${ROOTFS}" partclone.restore -v 2>&1 | head -1 | awk '{print $2}')
 
-cat > "/deploy/${ARCH}/recovery.manifest" << EOF
+cat > "${WORK_DIR}/recovery/recovery.manifest" << EOF
 UNITOTEM_RECOVERY_ARCH=${ARCH}
 UNITOTEM_RECOVERY_KERNEL_VERSION=${KVER}
 UNITOTEM_RECOVERY_VMLINUZ_SHA256=${VMLINUZ_SHA}
@@ -71,4 +71,4 @@ EOF
 remove_policy_rc
 umount_chroot
 
-echo "=== Stage 1b complete: /deploy/${ARCH}/recovery-{vmlinuz,initrd-}${ARCH}.img ==="
+echo "=== Stage 1b complete: ${WORK_DIR}/recovery/recovery-{vmlinuz,initrd-}${ARCH}.img ==="

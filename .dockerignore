@@ -1,7 +1,7 @@
 output/
 work/
+build/
 deploy/*
-!deploy/*.sh
-!deploy/flasher/
+!deploy/script/
 apt-cacher-ng/
 .git/objects/*

@@ -34,12 +34,12 @@ probe_pi() {
 
 # Builds the arm64 images by running the unitotem/stageN-*.sh scripts directly
 # on the Pi over SSH. Root is read-only on the Pi; the build tree lives on DATA
-# (ample space) and /unitotem, /work, /deploy are symlinks to it, the paths the
+# (ample space) and /unitotem, /work (the build/ directory), /deploy are symlinks to it, the paths the
 # stage scripts hardcode. Always runs the full stage0-3 pass (no should_run
 # caching on this path).
-# A stage 1 that ran without a lock leaves work/<arch>/<arch>.lock.new: it becomes the lock (commit it).
+# A stage 1 that ran without a lock leaves build/<arch>/<arch>.lock.new: it becomes the lock (commit it).
 adopt_lock() {
-    local f="${DIR}/work/${ARCH}/${ARCH}.lock.new"
+    local f="${DIR}/build/${ARCH}/${ARCH}.lock.new"
     if [ -f "$f" ] && [ ! -f "${DIR}/unitotem/locks/${ARCH}.lock" ]; then
         mkdir -p "${DIR}/unitotem/locks"
         mv "$f" "${DIR}/unitotem/locks/${ARCH}.lock"
@@ -57,11 +57,11 @@ build_natively_on_pi() {
     # /var/lib/dpkg, /usr, /etc) and returns to ro in a trap, however the
     # session ends.
     _pi_ssh "trap 'mount -o remount,ro / 2>/dev/null || true' EXIT; \
-        mkdir -p '${PI_BUILD_BASE}/unitotem' '${PI_BUILD_BASE}/work' '${PI_BUILD_BASE}/deploy' && \
+        mkdir -p '${PI_BUILD_BASE}/unitotem' '${PI_BUILD_BASE}/build' '${PI_BUILD_BASE}/deploy' && \
         mount -o remount,rw / && \
         { mountpoint -q /var/lib/dpkg && mount -o remount,rw /var/lib/dpkg || true; } && \
         ln -sfn '${PI_BUILD_BASE}/unitotem' /unitotem && \
-        ln -sfn '${PI_BUILD_BASE}/work' /work && \
+        ln -sfn '${PI_BUILD_BASE}/build' /work && \
         ln -sfn '${PI_BUILD_BASE}/deploy' /deploy" \
         || { echo "[arm64] cannot prepare the build tree on the Pi" >&2; return 1; }
 
@@ -73,14 +73,14 @@ build_natively_on_pi() {
 
     echo "[arm64] Syncing sources to the Pi..."
     _pi_rsync -r --delete "${DIR}/unitotem/" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/"
-    _pi_rsync "${DIR}/deploy/ota-engine.sh" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/files/ota-engine.sh"
-    _pi_rsync "${DIR}/deploy/parts-lib.sh" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/deploy-parts-lib.sh" 2>/dev/null || true
+    _pi_rsync "${DIR}/deploy/script/ota-engine.sh" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/files/ota-engine.sh"
+    _pi_rsync "${DIR}/deploy/script/parts-lib.sh" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/deploy-parts-lib.sh" 2>/dev/null || true
     _pi_rsync "${DIR}/tools/pkglock.py" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/pkglock.py"
-    # Locally supplied packages (work/extra-debs/<arch>/*.deb) - the manager package among them - are inputs of stage 1 and
+    # Locally supplied packages (build/extra-debs/<arch>/*.deb) - the manager package among them - are inputs of stage 1 and
     # must be on the Pi too; the arm64 manager package is generated there from the amd64 one.
-    if [ -d "${DIR}/work/extra-debs" ]; then
-        _pi_ssh "mkdir -p '${PI_BUILD_BASE}/work/extra-debs'" && \
-            _pi_rsync -r --delete "${DIR}/work/extra-debs/" "${PI_HOST}:${PI_BUILD_BASE}/work/extra-debs/"
+    if [ -d "${DIR}/build/extra-debs" ]; then
+        _pi_ssh "mkdir -p '${PI_BUILD_BASE}/build/extra-debs'" && \
+            _pi_rsync -r --delete "${DIR}/build/extra-debs/" "${PI_HOST}:${PI_BUILD_BASE}/build/extra-debs/"
     fi
 
     # ROOTFS and IMG_MNT are moved off their container defaults: /tmp on the Pi
@@ -111,8 +111,8 @@ build_natively_on_pi() {
         || { echo "[arm64] native build failed on the Pi" >&2; return 1; }
 
     echo "[arm64] Fetching results from the Pi..."
-    mkdir -p "${DIR}/work/arm64" "${DIR}/deploy/arm64"
-    _pi_rsync "${PI_HOST}:${PI_BUILD_BASE}/work/arm64/" "${DIR}/work/arm64/"
+    mkdir -p "${DIR}/build/arm64" "${DIR}/deploy/arm64"
+    _pi_rsync "${PI_HOST}:${PI_BUILD_BASE}/build/arm64/" "${DIR}/build/arm64/"
     _pi_rsync "${PI_HOST}:${PI_BUILD_BASE}/deploy/arm64/" "${DIR}/deploy/arm64/"
     adopt_lock
     echo "[arm64] Native build complete."
@@ -133,9 +133,9 @@ ${DOCKER} run --rm --privileged tonistiigi/binfmt --install arm64 2>/dev/null \
 echo ">>> Building unitotem builder image..."
 ${DOCKER} build -f "${DIR}/Dockerfile.unitotem" -t unitotem-builder "${DIR}"
 
-mkdir -p "${DIR}/work" "${DIR}/deploy"
+mkdir -p "${DIR}/build" "${DIR}/deploy"
 
-# The architectures share nothing (own work/<arch>, deploy/<arch>, apt cache subdirectory), so with more than one
+# The architectures share nothing (own build/<arch>, deploy/<arch>, apt cache subdirectory), so with more than one
 # they are built side by side, each in a child of this script with its output prefixed. A sequential loop left the
 # machine ~90% idle: most of a build is waiting on the network or on dpkg, and waiting overlaps well.
 # BUILD_CHILD marks the children; ARCHES=<one> runs them through the ordinary loop below.
@@ -186,15 +186,15 @@ for ARCH in ${ARCHES}; do
         echo "[arm64] Native build failed, falling back to Docker+qemu-aarch64..." >&2
     fi
 
-    mkdir -p "${DIR}/work/${ARCH}" "${DIR}/deploy/${ARCH}" "${DIR}/work/apt-cache" "${DIR}/unitotem/locks"
+    mkdir -p "${DIR}/build/${ARCH}" "${DIR}/deploy/${ARCH}" "${DIR}/build/apt-cache" "${DIR}/unitotem/locks"
 
     RUN_OPTS=(
         --rm
         --privileged
         -v /dev:/dev
-        -v "${DIR}/work:/work"
+        -v "${DIR}/build:/work"
         -v "${DIR}/deploy:/deploy"
-        -v "${DIR}/work/apt-cache:/aptcache"
+        -v "${DIR}/build/apt-cache:/aptcache"
         -v "${DIR}/unitotem/locks:/unitotem/locks:ro"
         -e "ARCH=${ARCH}"
     )
@@ -210,7 +210,7 @@ for ARCH in ${ARCHES}; do
     # the previous stage's tarball).
     should_run() {
         local stage_num=$1
-        local tarball="${DIR}/work/${ARCH}/stage${stage_num}.tar.gz"
+        local tarball="${DIR}/build/${ARCH}/stage${stage_num}.tar.gz"
         if [ -n "${FORCE_STAGE}" ] && [ "${stage_num}" -ge "${FORCE_STAGE}" ]; then
             echo "[${ARCH}] Stage ${stage_num}: forced rebuild"
             rm -f "${tarball}"
@@ -219,24 +219,24 @@ for ARCH in ${ARCHES}; do
         if [ ! -f "${tarball}" ]; then
             return 0
         fi
-        # unitotem/files/* and deploy/ota-engine.sh only matter to stages 1 and 2;
+        # unitotem/files/* and deploy/script/ota-engine.sh only matter to stages 1 and 2;
         # stage0 and stage3 do not consume them.
         # stage2 bakes the layout in (root= on the cmdline, fstab, GRUB entries) and a
         # timestamp comparison cannot see an environment variable change.
-        if [ "$stage_num" = 2 ] && [ "$(cat "${DIR}/work/${ARCH}/stage2.layout" 2>/dev/null || echo 0)" != "${AB_LAYOUT:-1}" ]; then
+        if [ "$stage_num" = 2 ] && [ "$(cat "${DIR}/build/${ARCH}/stage2.layout" 2>/dev/null || echo 0)" != "${AB_LAYOUT:-1}" ]; then
             echo "[${ARCH}] Stage 2: rebuild (AB_LAYOUT differs from the cached tarball)"
             rm -f "${tarball}"
             return 0
         fi
         local extra_deps=()
         case "$stage_num" in
-            1|2) extra_deps=("${DIR}/unitotem/files"/* "${DIR}/deploy/ota-engine.sh") ;;
+            1|2) extra_deps=("${DIR}/unitotem/files"/* "${DIR}/deploy/script/ota-engine.sh") ;;
         esac
         # The previous stage's tarball is this stage's input: without it a rebuilt
         # stage1 would leave a stale stage2 tarball in use.
         local prev_tarball=""
         if [ "$stage_num" -gt 0 ]; then
-            prev_tarball="${DIR}/work/${ARCH}/stage$((stage_num - 1)).tar.gz"
+            prev_tarball="${DIR}/build/${ARCH}/stage$((stage_num - 1)).tar.gz"
         fi
         local dep newest_dep=""
         for dep in "${DIR}/unitotem/stage${stage_num}"*.sh "${DIR}/unitotem/common.sh" \
@@ -271,7 +271,7 @@ for ARCH in ${ARCHES}; do
     # Stage 1b: recovery (OTA fallback) kernel+initrd, built from stage1 before
     # stage2 adds the kiosk configuration. Rebuilt when stage1 just ran or its
     # artifacts are missing.
-    if [ "${STAGE1_RAN}" = 1 ] || [ ! -f "${DIR}/deploy/${ARCH}/recovery.manifest" ]; then
+    if [ "${STAGE1_RAN}" = 1 ] || [ ! -f "${DIR}/build/${ARCH}/recovery/recovery.manifest" ]; then
         echo "[${ARCH}] Stage 1b: Building recovery (fallback) kernel+initrd..."
         ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage1-recovery-initrd.sh
     else
@@ -282,7 +282,7 @@ for ARCH in ${ARCHES}; do
     if should_run 2; then
         echo "[${ARCH}] Stage 2: Configuring system..."
         ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage2-configure.sh
-        echo "${AB_LAYOUT:-1}" > "${DIR}/work/${ARCH}/stage2.layout"
+        echo "${AB_LAYOUT:-1}" > "${DIR}/build/${ARCH}/stage2.layout"
     fi
 
     # Stage 3: Create disk image (always runs to produce fresh image)

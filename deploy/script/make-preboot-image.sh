@@ -1,23 +1,23 @@
 #!/bin/bash
 # Minimal "preboot" SD image for a Raspberry Pi (arm64): the resident OTA fallback and nothing else.
 #
-#   deploy/make-preboot-image.sh [--parts DIR] [--recovery-dir DIR] [--out FILE] [--size-mib N] [--no-xz]
+#   deploy/script/make-preboot-image.sh [--parts DIR] [--recovery-dir DIR] [--out FILE] [--size-mib N] [--no-xz]
 #
 # Write the result to an SD card and power on the Pi: it boots the fallback kernel + initramfs from RAM, gets an
 # address by DHCP on every wired interface, shows it on screen and waits (no idle timeout) for the host:
 #
-#   deploy/remote-deploy.sh recover <address-shown-on-screen> --parts deploy/arm64/<parts set> --yes
+#   deploy/script/remote-deploy.sh recover <address-shown-on-screen> --parts deploy/arm64/<parts set> --yes
 #
 # `recover` finds no UniTotem partitions, so it lays out the whole card (partition table, boot partition, slots A
 # and B, DATA) and reboots into the real system.
 #
 # The single FAT partition (MBR, type 0c, from 1 MiB) holds the firmware (start*.elf, fixup*.dat, bootcode.bin,
-# device trees) from the parts set's boot partition, the fallback kernel + initramfs from deploy/arm64/recovery-*,
+# device trees) from the parts set's boot partition, the fallback kernel + initramfs from build/arm64/recovery/,
 # config.txt and cmdline.txt; no overlays or slot directories. About 60 MiB; the default image is 128 MiB.
 set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ARCH=arm64
-PARTS="" REC="${DIR}/deploy/arm64" OUT="" SIZE_MIB=128 XZ=1
+PARTS="" REC="${DIR}/build/arm64/recovery" OUT="" SIZE_MIB=128 XZ=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --parts) PARTS="$2"; shift 2 ;;

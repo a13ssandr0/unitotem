@@ -1,5 +1,5 @@
-# Devices deployed through deploy/remote-deploy.sh get their boot-partition config.txt written at runtime
-# by deploy/ota-engine.sh (cmd_set_default_recovery/cmd_set_trial_boot/cmd_promote_default); this file
+# Devices deployed through deploy/script/remote-deploy.sh get their boot-partition config.txt written at runtime
+# by deploy/script/ota-engine.sh (cmd_set_default_recovery/cmd_set_trial_boot/cmd_promote_default); this file
 # ships as-is only in the built .img. unitotem/files/config-extra.txt is the source of the [pi4]/[pi5]
 # dtoverlay/dtparam content (ota-engine.sh appends it onto the boot-selection lines it owns); keep the
 # two in sync by hand.

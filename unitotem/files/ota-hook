@@ -13,7 +13,7 @@ case "$1" in prereqs) prereqs; exit 0 ;; esac
 # resolves its shared libs too.
 copy_exec /bin/bash /bin
 
-# /etc/passwd and /etc/shadow are generated at run time by fallback_auth_setup (deploy/ota-engine.sh): no password
+# /etc/passwd and /etc/shadow are generated at run time by fallback_auth_setup (deploy/script/ota-engine.sh): no password
 # hash is baked into the initrd.
 mkdir -p "${DESTDIR}/etc" "${DESTDIR}/root/.ssh"
 chmod 700 "${DESTDIR}/root/.ssh"
