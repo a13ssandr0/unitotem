@@ -67,11 +67,26 @@ check "a partition without a stream is refused" [ "$NOSTREAM" != 0 ]
 image_close
 check "image_close removes the expansion from tmpfs" bash -c "[ -z \"\$(ls -A /tmpfs | grep -v '^desc\$')\" ]"
 check "image_close detaches the loop device" bash -c "! losetup -a | grep -q src.img"
-mount -o remount,size=100m /tmpfs
-check "an image bigger than the free tmpfs is refused" bash -c "source /repo/deploy/script/image-lib.sh; image_open $W/src.img.xz 2>&1 | grep -q 'the expanded image needs'"
+mount -o remount,size=20m /tmpfs
+check "an image bigger than the free tmpfs is refused" bash -c "source /repo/deploy/script/image-lib.sh; image_open $W/src.img.xz 2>&1 | grep -q 'does not fit in'"
 mount -o remount,size=3g /tmpfs
 check "a directory that is not tmpfs is refused" bash -c "source /repo/deploy/script/image-lib.sh; IMG_TMPFS=/work image_open $W/src.img.xz 2>&1 | grep -q 'is not tmpfs'"
 check "a plain image is used where it is" bash -c "source /repo/deploy/script/image-lib.sh; image_open $W/src.img && [ \"\$IMG_FILE\" = $W/src.img ] && [ -b \"\$(image_node 1)\" ]; image_close"
+# --- MBR conversion (Pi 3 targets): four primaries from the GPT layout, applied to a blank disk
+source /repo/deploy/script/image-lib.sh
+rm -rf /tmpfs/dos5; mkdir -p /tmpfs/dos5; cp $D/layout.sfdisk $D/bootcode.bin /tmpfs/dos5/
+image_table_dos /tmpfs/dos5 2>/dev/null; DOS5=$?
+check "a table of five partitions is refused as MBR" [ "$DOS5" != 0 ]
+rm -rf /tmpfs/dos; mkdir -p /tmpfs/dos; grep -v 'name="BIOS"' $D/layout.sfdisk > /tmpfs/dos/layout.sfdisk; cp $D/bootcode.bin /tmpfs/dos/
+image_table_dos /tmpfs/dos; DOSRC=$?
+check "four partitions convert" [ "$DOSRC" = 0 ]
+check "the converted table is dos, boot code dropped" bash -c "grep -qx 'label: dos' /tmpfs/dos/layout.sfdisk && [ ! -e /tmpfs/dos/bootcode.bin ]"
+truncate -s 2G $W/tgt.img; sfdisk -q $W/tgt.img < /tmpfs/dos/layout.sfdisk 2>/dev/null
+sfdisk -d $W/tgt.img | grep ' : start=' | sed -E 's#^[^ ]+ : start= *([0-9]+), size= *([0-9]+),? *type=([0-9a-f]+).*#\1 \2 \3#' > /tmp/dos.got
+grep '^/dev' $D/layout.sfdisk | grep -v BIOS | sed -E 's#^[^ ]+ : start= *([0-9]+), size= *([0-9]+),.*name="([^"]*)".*#\1 \2 \3#; s# (FIRMWARE|EFI)$# c#; s# (ROOT_A|ROOT_B|DATA)$# 83#' > /tmp/dos.exp
+check "sfdisk applies it: label dos, same starts and sizes, FAT type c, Linux 83" bash -c "sfdisk -d $W/tgt.img | grep -qx 'label: dos' && diff /tmp/dos.got /tmp/dos.exp"
+check "the disk id is the first 32 bits of the GPT disk GUID" bash -c "[ \"\$(sfdisk -d $W/tgt.img | awk -F': *' '/^label-id:/{print \$2}')\" = 0x\$(awk -F': *' '/^label-id:/{print \$2}' $D/layout.sfdisk | tr -d '-' | cut -c1-8 | tr A-F a-f) ]"
+
 # --- the fixture dump for the loopback harness
 bash /repo/tools/release/image-streams.sh $W/src.img /tmpfs/dump amd64 >/dev/null 2>&1
 check "image-streams.sh writes the descriptor and the ROOT_A and BIOS streams" bash -c "ls /tmpfs/dump/p2-ROOT_A.pc.xz /tmpfs/dump/p5-BIOS.pc.xz /tmpfs/dump/parts.manifest && grep -qx 'UNITOTEM_PART_STREAM_FILE=p2-ROOT_A.pc.xz' /tmpfs/dump/parts.manifest"

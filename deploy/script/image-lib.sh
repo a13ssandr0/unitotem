@@ -3,7 +3,7 @@
 # (loop device, mount).
 #
 #   image_open IMAGE       a compressed image (.xz) is expanded once, sparse, into tmpfs (/dev/shm, or $UNITOTEM_TMPFS when that is
-#                          tmpfs too) and refused when the free space there is smaller than the uncompressed size; a plain image
+#                          tmpfs too) and refused when the data in use does not fit there; a plain image
 #                          is used where it is. Then a read-only loop device with its partitions: IMG_LOOP.
 #   image_close            detaches the loop device and removes what image_open wrote
 #   image_node N           device node of partition N of the image
@@ -32,17 +32,15 @@ image_open() {
             image_tmpfs_ok "$IMG_TMPFS" || { _img_err "$IMG_TMPFS is not tmpfs: the image is expanded only in memory"; return 1; }
             raw=$(xz --robot --list -- "$image" | awk -F'\t' '$1=="totals"{print $5}')
             [ -n "$raw" ] || { _img_err "cannot read the size of $image"; return 1; }
+            # The expansion is sparse: only the data in use takes memory, so the free space is not compared with the uncompressed size; a
+            # full tmpfs stops the copy (ENOSPC) and the image is refused below.
             avail=$(df -B1 --output=avail "$IMG_TMPFS" | tail -n 1 | tr -d ' ')
-            if [ "$avail" -lt "$raw" ]; then
-                _img_err "the expanded image needs $((raw / 1048576)) MiB, $IMG_TMPFS has $((avail / 1048576)) MiB free"
-                return 1
-            fi
             IMG_TMP=$(mktemp -d "$IMG_TMPFS/unitotem-image.XXXXXX")
             IMG_FILE="$IMG_TMP/image.img"
             echo "$(date +%Y-%m-%dT%H:%M:%S) INFO expanding $(basename -- "$image") into $IMG_TMPFS" >&2
             xz -dc -T0 -- "$image" | pv -N expand -s "$raw" | dd of="$IMG_FILE" bs=4M conv=sparse status=none
             local st=("${PIPESTATUS[@]}")
-            [ "${st[0]}" = 0 ] && [ "${st[2]}" = 0 ] || { _img_err "expanding $image failed"; image_close; return 1; }
+            [ "${st[0]}" = 0 ] && [ "${st[2]}" = 0 ] || { _img_err "the expanded image does not fit in $IMG_TMPFS ($((avail / 1048576)) MiB free) or $image is damaged"; image_close; return 1; }
             ;;
         *)
             IMG_TMP=$(mktemp -d "$IMG_TMPFS/unitotem-image.XXXXXX")
@@ -159,6 +157,26 @@ image_describe() {   # $1 directory, $2 arch
         cat "$out/parts.manifest.partial"
     } > "$out/parts.manifest"
     rm -f -- "$out/parts.manifest.partial"
+}
+
+# The table of the descriptor as an MBR (a GPT image for a board whose ROM reads MBR only): same start and size of every partition, type c
+# for the FAT firmware partition, 83 for the others, disk id taken from the GPT disk GUID; the MBR boot code of a GPT disk is empty, so
+# bootcode.bin is dropped. Four primaries at most.
+image_table_dos() {   # $1 descriptor directory
+    local d="$1" f="$1/layout.sfdisk" id n=0 line st sz name t out
+    [ "$(awk -F': *' '/^label:/{print $2}' "$f")" = gpt ] || return 0
+    id=$(awk -F': *' '/^label-id:/{print $2}' "$f" | tr -d '-' | cut -c1-8 | tr 'A-F' 'a-f')
+    out="label: dos"$'\n'"label-id: 0x${id}"$'\n'"unit: sectors"$'\n\n'
+    while IFS= read -r line; do
+        case "$line" in /dev/*" : "*) ;; *) continue ;; esac
+        n=$((n + 1)); [ "$n" -le 4 ] || { _img_err "an MBR holds four primary partitions, the image has more"; return 1; }
+        st=$(sed -nE 's/.*start= *([0-9]+),.*/\1/p' <<<"$line"); sz=$(sed -nE 's/.*size= *([0-9]+),.*/\1/p' <<<"$line")
+        name=$(sed -nE 's/.*name="([^"]*)".*/\1/p' <<<"$line")
+        case "$name" in FIRMWARE|EFI) t=c ;; *) t=83 ;; esac
+        out+="${line%% : *} : start=${st}, size=${sz}, type=${t}"$'\n'
+    done < "$f"
+    printf '%s' "$out" > "$f"
+    rm -f -- "$d/bootcode.bin"
 }
 
 # One partition on stdout. extfs and fat: partclone's stream; dd: the raw partition. Compressed with xz (the engine's default

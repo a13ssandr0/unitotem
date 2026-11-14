@@ -1,7 +1,7 @@
 #!/bin/bash
 # Minimal "preboot" SD image for a Raspberry Pi (arm64): the resident OTA fallback and nothing else.
 #
-#   deploy/script/make-preboot-image.sh [--image FILE] [--recovery-dir DIR] [--out FILE] [--size-mib N] [--no-xz]
+#   deploy/script/make-preboot-image.sh [--image FILE] [--recovery-dir DIR] [--engine FILE] [--out FILE] [--size-mib N] [--no-xz]
 #
 # Write the result to an SD card and power on the Pi: it boots the fallback kernel + initramfs from RAM, gets an
 # address by DHCP on every wired interface, shows it on screen and waits (no idle timeout) for the host:
@@ -28,21 +28,24 @@ reexec_as_root() {
 }
 [ "$(id -u)" = 0 ] || reexec_as_root "${BASH_SOURCE[0]}" "$@"
 ARCH=arm64
-IMAGE="" REC="${DIR}/build/arm64/recovery" OUT="" SIZE_MIB=128 XZ=1
+IMAGE="" REC="${DIR}/build/arm64/recovery" ENGINE="${DIR}/deploy/script/ota-engine.sh" OUT="" SIZE_MIB=128 XZ=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --image) IMAGE="$2"; shift 2 ;;
         --recovery-dir) REC="$2"; shift 2 ;;
+        --engine) ENGINE="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --size-mib) SIZE_MIB="$2"; shift 2 ;;
         --no-xz) XZ=0; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
-for c in sfdisk mkfs.fat mcopy dd tar xz truncate; do command -v "$c" >/dev/null || { echo "missing command $c" >&2; exit 1; }; done
+for c in sfdisk mkfs.fat mcopy dd tar xz truncate cpio install; do command -v "$c" >/dev/null || { echo "missing command $c" >&2; exit 1; }; done
 source "${DIR}/deploy/script/image-lib.sh"
-[ -n "$IMAGE" ] || IMAGE=$(ls -t "${DIR}/deploy/${ARCH}/"unitotem-*-"${ARCH}".img.xz "${DIR}/deploy/${ARCH}/"unitotem-*-"${ARCH}".img 2>/dev/null | head -1)
+# any arm64 image has the firmware partition, the flash image too
+[ -n "$IMAGE" ] || IMAGE=$(ls -t "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}".img.xz "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}"-flash.img.xz "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}".img 2>/dev/null | head -1 || true)
 [ -f "$IMAGE" ] || { echo "no arm64 image (use --image)" >&2; exit 1; }
+[ -f "$ENGINE" ] || { echo "engine not found: $ENGINE" >&2; exit 1; }
 VMLINUZ="${REC}/recovery-vmlinuz-${ARCH}"; INITRD="${REC}/recovery-initrd-${ARCH}.img"
 [ -s "$VMLINUZ" ] && [ -s "$INITRD" ] || { echo "missing ${VMLINUZ} or ${INITRD}" >&2; exit 1; }
 [ -n "$OUT" ] || OUT="${DIR}/deploy/${ARCH}/unitotem-preboot-${ARCH}.img"
@@ -56,15 +59,20 @@ image_open "$IMAGE" || { echo "cannot open $IMAGE" >&2; exit 1; }
 FWNODE=""; for n in 1 2; do d=$(image_node "$n") && [ "$(blkid -s LABEL -o value "$d")" = FIRMWARE ] && FWNODE=$d && break; done
 [ -n "$FWNODE" ] || { echo "the image has no FIRMWARE partition" >&2; exit 1; }
 SRC="$WORK/src"; mkdir -p "$SRC"; mount -t vfat -o ro "$FWNODE" "$SRC"
-for f in bootcode.bin start*.elf fixup*.dat *.dtb LICENCE.broadcom; do [ -f "$SRC/$f" ] && cp -- "$SRC/$f" "$FW/" || true; done
+( shopt -s nullglob; cd "$SRC" && for f in bootcode.bin start*.elf fixup*.dat *.dtb LICENCE.broadcom; do [ -f "$f" ] && cp -- "$f" "$FW/"; done; true )
 umount "$SRC"
 # the Pi 3/4 firmware and the device trees are what the boards that run arm64 UniTotem need; drop the extra start*_x/_db variants
 rm -f "$FW"/start_x.elf "$FW"/start4x.elf "$FW"/start_db.elf "$FW"/start4db.elf "$FW"/fixup_x.dat "$FW"/fixup4x.dat "$FW"/fixup_db.dat "$FW"/fixup4db.dat
-for need in start4.elf fixup4.dat bcm2711-rpi-4-b.dtb; do
+for need in start.elf fixup.dat bcm2710-rpi-3-b.dtb start4.elf fixup4.dat bcm2711-rpi-4-b.dtb; do
     [ -s "$FW/$need" ] || { echo "the image does not contain $need" >&2; exit 1; }
 done
 cp -- "$VMLINUZ" "$FW/recovery8.img"
 cp -- "$INITRD" "$FW/recovery-initrd.img"
+# The engine of the preboot image is the repository's, whatever engine the stored recovery initrd was built with: a second cpio archive
+# with just that file is appended; the kernel unpacks the archives in order and a later entry replaces an earlier one.
+OV="$WORK/ov"; mkdir -p "$OV/usr/lib/unitotem"
+install -m 755 -- "$ENGINE" "$OV/usr/lib/unitotem/ota-engine.sh"
+( cd "$OV" && printf 'usr/lib/unitotem/ota-engine.sh\n' | cpio -o -H newc --quiet --owner=0:0 ) >> "$FW/recovery-initrd.img"
 # Same settings as the resident fallback of a deployed device (ota-engine.sh set-default-recovery): 640x480 DMT mode so the
 # text is readable from a distance. ttyS0 is the header UART.
 cat > "$FW/config.txt" <<'EOF'

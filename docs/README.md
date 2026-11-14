@@ -10,6 +10,7 @@ Component documentation of the UniTotem repository. System docs describe the ima
 - [boot.md](system/boot.md): bootloaders, A/B slot choice, trial boot, splash, Secure Boot chain.
 - [storage-and-persistence.md](system/storage-and-persistence.md): partitions, read-only root, DATA overlays.
 - [image-runtime.md](system/image-runtime.md): services, timers, network, Wayland session, maintenance mode on a deployed image.
+- [states-and-access.md](system/states-and-access.md): every state a node can be in (running, first access, volatile, trial, rolled back, maintenance, fallback kinds) and how to reach each.
 - [ab-updates.md](system/ab-updates.md): whole-image A/B updates, health-gated confirm, rollback, automatic policy.
 - [release.md](system/release.md): release tooling and signing keys.
 - [deploy-and-recovery.md](system/deploy-and-recovery.md): network install, OTA fallback and recovery of a target.
