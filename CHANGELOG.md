@@ -78,6 +78,7 @@
 - `/home` is a size-capped tmpfs when there is no DATA, so the first administrator can be created.
 
 #### Boot and display
+- Secure Boot: the image's boot loader is the Debian-signed shim chain from the first boot (`EFI/BOOT`: shim as `BOOTX64.EFI`, MokManager, signed GRUB, stubs in `EFI/BOOT` and `EFI/debian`), no other `.efi` file; it boots with Secure Boot on or off, so nothing is activated or chosen at deploy: `--secure-boot`, `secure_boot_gate` and the engine's activation step are gone; the ISO, Windows payload and installer follow.
 - Secure Boot chain (shim, signed GRUB, signed kernel) booted again under QEMU/OVMF with the Microsoft keys on build 2026.11.66, kernel locked down; the plain image is refused.
 - Plymouth UniTotem theme starts before the OTA check; held until the compositor starts.
 - Black gap at boot cut to about 0.5 s on Raspberry Pi 4.

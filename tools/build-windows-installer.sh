@@ -52,7 +52,7 @@ xz -dc -- "$IMAGE" | head -c "$END" > "$WORK/esp.img" || true
 M="$WORK/esp.img@@$((START * 512))"
 mcopy -n -i "$M" ::unitotem/recovery-vmlinuz "$STAGE/payload/vmlinuz"
 mcopy -n -i "$M" ::unitotem/recovery-initrd.img "$STAGE/payload/initrd.img"
-for f in shimx64.efi mmx64.efi grubx64.efi; do mcopy -n -i "$M" "::EFI/unitotem-sb/$f" "$STAGE/payload/$f"; done
+mcopy -n -i "$M" ::EFI/BOOT/BOOTX64.EFI "$STAGE/payload/shimx64.efi"; for f in mmx64.efi grubx64.efi; do mcopy -n -i "$M" "::EFI/BOOT/$f" "$STAGE/payload/$f"; done
 rm -f -- "$WORK/esp.img" "$WORK/head.img"
 [ -z "$INITRD" ] || cp -- "$INITRD" "$STAGE/payload/initrd.img"
 

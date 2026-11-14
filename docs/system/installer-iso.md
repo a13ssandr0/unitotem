@@ -27,7 +27,7 @@ ISO layout (volume label `UNITOTEM_ISO`):
 | `boot/unitotem/initrd.img` | The recovery initramfs of that image, reduced and repacked (one xz cpio) |
 | `unitotem/<flash image>.xz`, `payload.info` | Payload and `image`, `xz_sha256`, `xz_bytes`, `raw_sha256`, `raw_bytes` (read as data, every value fullmatch-validated) |
 | `boot/grub/` | `grub.cfg`, BIOS modules, `eltorito.img` (cdboot + core image with iso9660, part_gpt, normal, linux, search) |
-| `EFI/BOOT/` (also in the appended 24 MiB EFI partition) | `BOOTX64.EFI` = Debian-signed shim, `mmx64.efi`, `grubx64.efi` (Debian-signed GRUB), `grub.cfg` stub (`search --file /boot/grub/unitotem-iso`, `configfile /boot/grub/grub.cfg`); shim, MokManager and GRUB are the files of the image's `EFI/unitotem-sb/` |
+| `EFI/BOOT/` (also in the appended 24 MiB EFI partition) | `BOOTX64.EFI` = Debian-signed shim, `mmx64.efi`, `grubx64.efi` (Debian-signed GRUB), `grub.cfg` stub (`search --file /boot/grub/unitotem-iso`, `configfile /boot/grub/grub.cfg`); shim, MokManager and GRUB are the files of the image's `EFI/BOOT/` (`BOOTX64.EFI` there) |
 
 GRUB entries: `Install UniTotem` (tty1), `Install UniTotem (serial console)` (`unitotem.installer.tty=ttyS0`, 115200), `Install UniTotem (safe graphics)` (`nomodeset`); timeout 5 s. When the machine has a first serial port the menu is also shown there.
 
@@ -70,7 +70,7 @@ Flow:
 4. Candidate disks: `sd*`, `hd*`, `vd*`, `xvd*`, `nvme*n*`, `mmcblk*` whole disks, not read-only, not the disk of the media. One candidate goes straight to the questions; several give a numbered picker (`Select the disk (1-N, q to quit)`; `(too small)` when smaller than the image).
 5. Questions in plain console text: `target=<disk> model=<model> size=<GiB>` INFO line, the partitions the disk holds, `Erase <disk> and install UniTotem? (y/n)` and, in yellow, `Last chance: erase this disk? (y/n)`. Only `y` or `n` plus Enter; anything else prints `Invalid answer, type y or n` and asks again. `n` (or end of input) prints `INFO cancelled disk=<disk> changes=none`.
 6. Checking: sha256 of the xz file against `xz_sha256`. Writing: the last 1 MiB of the disk and 16 MiB after the image are zeroed (stale backup GPT and signatures), then `xz -dc | dd bs=4M conv=fsync` (`vm.dirty_bytes` 256 MiB, so `pv` follows the disk). Verifying: read-back of `raw_bytes` (cache dropped), sha256 against `raw_sha256`.
-7. Secure Boot on (`SecureBoot` efivar, `efivarfs` mounted by the installer): the staged chain is activated on the new EFI partition with the steps of `ota-engine populate-bootfs --secure-boot shim` (chain first, shim renamed over `BOOTX64.EFI` last, `EFI/unitotem-sb/active`), else the installed system would not boot. Off: the written bytes stay identical to the image.
+7. Nothing is activated: the image's ESP already carries the signed chain, so the written bytes are identical to the image with Secure Boot on or off.
 8. `INFO install ok disk=<disk>`, `Remove the installation media, then press Enter to restart`, `reboot -f`.
 
 The first boot of the installed disk creates ROOT_B and DATA and grows DATA (`storage-and-persistence.md#layout`); the disk must hold at least the image (5.5 GiB), the A/B layout needs image + 5.25 GiB.

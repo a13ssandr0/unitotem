@@ -8,7 +8,7 @@ Scenarios (default: bios,uefi,multi,sb,screen):
           y y installs, disk-only boot
   uefi    OVMF, ISO on a USB stick, default entry: ssh only; boot media refused, no terminal refused, ssh -t install y y
   multi   OVMF, two disks (virtio, NVMe): picker over ssh, install --disk DEV -y, the other disk untouched
-  sb      OVMF with Secure Boot enforcing: console install, installer activates the shim chain
+  sb      OVMF with Secure Boot enforcing: console install, the written image boots through its own signed chain
   screen  BIOS, default entry (tty1): screenshots of the screen to DIR/screen-*.png
 Checks: written bytes equal the decompressed flash image (chunk by chunk), the 16 MiB after the image and the last MiB are
 zero, hashes of untouched disks unchanged, the disk boots alone and the web interface answers, first boot created ROOT_B
@@ -231,9 +231,9 @@ def full_answers(c, timeout=1800):
 
 
 def verify_written(name, mode, flash, disks, chosen, before, others=()):
-    skip = (1 << 20, 513 << 20) if mode == 'sb' else None
+    skip = None
     length, mism = compare_image(flash, chosen, skip)
-    check(f'{name}: {length} written bytes equal the flash image' + (' (ESP skipped)' if skip else ''), mism is None)
+    check(f'{name}: {length} written bytes equal the flash image', mism is None)
     size = os.path.getsize(chosen)
     z = (sha_range(chosen, length, 16 << 20) == hashlib.sha256(bytes(16 << 20)).hexdigest()
          and sha_range(chosen, size - (1 << 20), 1 << 20) == hashlib.sha256(bytes(1 << 20)).hexdigest())
@@ -241,9 +241,6 @@ def verify_written(name, mode, flash, disks, chosen, before, others=()):
     for o in others:
         i = [p for p, _ in disks].index(o)
         check(f'{name}: the other disk is untouched', hashes([(o, '')])[0] == before[i])
-    if mode == 'sb':
-        r = subprocess.run(f'MTOOLS_SKIP_CHECK=1 mtype -i {chosen}@@1048576 ::EFI/unitotem-sb/active', shell=True, capture_output=True, text=True)
-        check(f'{name}: shim chain activated', r.stdout.strip() == 'shim')
 
 
 def boot_installed(work, name, mode, disk, port, timeout=None):

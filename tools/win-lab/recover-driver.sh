@@ -1,14 +1,14 @@
 #!/bin/bash
 # Lab driver: runs the REAL run_ota_sequence()/populate_bootfs_step() of deploy/remote-deploy.sh against a target that is
-# already in the OTA environment (the same steps as the `recover` subcommand), for an amd64/UEFI A-B parts set,
-# with --secure-boot shim. Usage: recover-driver.sh HOST DISK_BYID PARTS_DIR
+# already in the OTA environment (the same steps as the `recover` subcommand), for an amd64/UEFI A-B parts set.
+# Usage: recover-driver.sh HOST DISK_BYID PARTS_DIR
 # Fallback credentials come from the environment (deploy/lib.sh, ota_auth_for): OTA_FALLBACK_KEY, or
 # OTA_FALLBACK_USER with OTA_FALLBACK_PASSWORD, or OTA_FALLBACK_OPEN=1. The per-target key is used when it exists.
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")/../.." && pwd)
 source "$DIR/deploy/lib.sh"
 HOST="$1"; DISK_BYID="$2"; OPT_PARTS="$3"
-ARCH=amd64 FIRMWARE=uefi TRYBOOT_CAPABLE=0 SB_MODE=shim OPT_PORT=9700 OPT_WIPE_DATA=1 OPT_DEBUG=0 OPT_YES=1
+ARCH=amd64 FIRMWARE=uefi TRYBOOT_CAPABLE=0 OPT_PORT=9700 OPT_WIPE_DATA=1 OPT_DEBUG=0 OPT_YES=1
 declare -A P; P[HAVE_UNITOTEM]=0; P[HAVE_DATA]=0; P[SSHCLIENT]=none; P[NETLINK]=wired; P[NETMODE]=dhcp
 M="$OPT_PARTS/parts.manifest"
 P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "$M")
