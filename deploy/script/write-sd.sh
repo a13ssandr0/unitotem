@@ -3,12 +3,12 @@
 # partitions, then clones every partition with partclone, so only the blocks in use are copied (an image of 14 GiB with a few
 # GiB of data takes the time of those few GiB, not of the whole file).
 #
-#   write-sd.sh [--yes] IMAGE DEVICE
+#   write-sd.sh [--yes] [--no-eject] IMAGE DEVICE
 #
 #   IMAGE   deploy/<arch>/unitotem-*.img or .img.xz (an .xz is expanded once into build/, or into $WRITE_SD_TMP)
 #   DEVICE  whole disk, e.g. /dev/sdb or /dev/mmcblk0; every partition on it is lost
 #
-# Needs root. Refuses a device with mounted partitions, the disk holding / or /boot, and a device smaller than the image's
+# At the end a removable device is flushed and ejected (--no-eject keeps it). Needs root. Refuses a device with mounted partitions, the disk holding / or /boot, and a device smaller than the image's
 # partitions. Without --yes the device is shown and a (y/n) confirmation is read from the terminal.
 #
 # Table: the dump of the image's table, without last-lba (the backup table goes to the real end of the disk), with the same
@@ -20,17 +20,18 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 log() { printf '%s %s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$1" "$2" >&2; }
 die() { log ERROR "$1"; exit 1; }
 
-YES=0
+YES=0 EJECT=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --yes) YES=1; shift ;;
+        --no-eject) EJECT=0; shift ;;
         -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 0 ;;
         --) shift; break ;;
         -*) die "unknown option $1" ;;
         *) break ;;
     esac
 done
-[ $# -eq 2 ] || die "usage: $0 [--yes] IMAGE DEVICE"
+[ $# -eq 2 ] || die "usage: $0 [--yes] [--no-eject] IMAGE DEVICE"
 IMAGE=$1 DEVICE=$2
 
 [ "$(id -u)" = 0 ] || die "must run as root"
@@ -179,3 +180,8 @@ for n in $NUMS; do
 done
 [ "$bad" = 0 ] || die "verification failed"
 log INFO "done in $(( $(date +%s) - START )) s: $DEVICE"
+if [ "$EJECT" = 1 ] && [ "$(lsblk -dno RM -- "$DEVICE" | tr -d ' ')" = 1 ] && [ "$(lsblk -dno TYPE -- "$DEVICE")" = disk ]; then
+    sync
+    if command -v eject >/dev/null 2>&1 && eject -- "$DEVICE" 2>/dev/null; then log INFO "ejected $DEVICE: the card can be removed"
+    else log WARN "cannot eject $DEVICE: unmount it from the desktop before removing it"; fi
+fi
