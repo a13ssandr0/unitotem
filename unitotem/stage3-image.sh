@@ -260,7 +260,7 @@ if [ "$ARCH" = "amd64" ]; then
     # Secure Boot chain, active from the first boot: EFI/BOOT holds the Debian-signed shim as BOOTX64.EFI (the file every firmware
     # loads), MokManager, the Debian-signed GRUB and the stubs that hand over to the real configuration (grub.cfg + grubenv in
     # unitotem-grub/ on this partition). The signed GRUB has a fixed prefix and finds only grub.cfg stubs: EFI/BOOT and EFI/debian.
-    # The chain boots with and without Secure Boot, so a machine is ready for Secure Boot with no step. No other .efi file is shipped.
+    # The chain boots with and without Secure Boot, so a machine is ready for Secure Boot with no step. The loader has no alternative version on the ESP (no staged copy, no plain GRUB).
     # (--no-uefi-secure-boot above keeps grub-install from placing a half chain: the plain GRUB it writes is replaced here.)
     if [ "$AB_LAYOUT" = 1 ]; then
         BTDIR=${IMG_MNT}/boot/efi/EFI/BOOT
