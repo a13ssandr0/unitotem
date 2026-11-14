@@ -354,7 +354,7 @@ echo "== amd64 boot"
     chk "recovery kernel and initrd on the ESP" bash -c "test -s $FAT/unitotem/recovery-vmlinuz && test -s $FAT/unitotem/recovery-initrd.img"
     chk "Secure Boot chain active on the ESP: BOOTX64.EFI is the Debian-signed shim, with the signed GRUB and MokManager beside it" bash -c "cmp -s $FAT/EFI/BOOT/BOOTX64.EFI $R/usr/lib/shim/shimx64.efi.signed && cmp -s $FAT/EFI/BOOT/grubx64.efi $R/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed && cmp -s $FAT/EFI/BOOT/mmx64.efi $R/usr/lib/shim/mmx64.efi.signed"
     chk "the stubs hand over to the real grub.cfg on the ESP (EFI/BOOT and EFI/debian, the signed GRUB has a fixed prefix)" bash -c "grep -q 'unitotem-grub/grub/grub.cfg' $FAT/EFI/BOOT/grub.cfg && cmp -s $FAT/EFI/BOOT/grub.cfg $FAT/EFI/debian/grub.cfg"
-    chk "no other .efi file on the ESP (no staged copy, no plain GRUB)" bash -c "[ \"\$(find $FAT -iname '*.efi' | sed 's|.*/||' | tr A-Z a-z | sort | tr '\\n' ' ')\" = 'bootx64.efi grubx64.efi mmx64.efi ' ] && ! test -e $FAT/EFI/unitotem-sb"
+    chk "the loader has no alternative version on the ESP (no staged copy, no plain GRUB): the .efi files of the build are the shim, the signed GRUB and MokManager" bash -c "[ \"\$(find $FAT -iname '*.efi' | sed 's|.*/||' | tr A-Z a-z | sort | tr '\\n' ' ')\" = 'bootx64.efi grubx64.efi mmx64.efi ' ] && ! test -e $FAT/EFI/unitotem-sb"
     chk "the OTA entries are low resolution (unitotem_lowres + nomodeset)" bash -c "grep -q 'unitotem_lowres' $FAT/unitotem-grub/grub/grub.cfg && grep -c nomodeset $FAT/unitotem-grub/grub/grub.cfg | grep -q '^4\$'"
 fi
 
