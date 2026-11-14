@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Names the firmware boot entry that started this system "UniTotem" (UEFI only).
+
+The entry in BootCurrent is renamed when its file path is the UniTotem loader (\\EFI\\BOOT\\BOOTX64.EFI or
+\\EFI\\debian\\shimx64.efi); entries of other systems are never touched. Only the description of the variable changes, written
+in one write. The entry is neither created, deleted nor reordered.
+
+    unitotem-boot-entry [--efivars DIR] [--name NAME]
+"""
+import argparse
+import os
+import re
+import struct
+import subprocess
+import sys
+
+GLOBAL = '8be4df61-93ca-11d2-aa0d-00e098032b8c'
+LOADERS = ('\\efi\\boot\\bootx64.efi', '\\efi\\debian\\shimx64.efi')
+NAME = 'UniTotem'
+
+
+def file_paths(path_list):
+    """File path strings (device path type 4, subtype 4) of a device path list."""
+    out, i = [], 0
+    while i + 4 <= len(path_list):
+        kind, sub, n = struct.unpack_from('<BBH', path_list, i)
+        if n < 4 or i + n > len(path_list):
+            break
+        if kind == 0x7f:
+            break
+        if kind == 4 and sub == 4:
+            out.append(path_list[i + 4:i + n].decode('utf-16-le').rstrip('\0'))
+        i += n
+    return out
+
+
+def parse(blob):
+    """Splits an efivarfs file into (variable attributes, load attributes, description, path list, optional data)."""
+    if len(blob) < 10:
+        raise ValueError('load option too short')
+    var_attr, = struct.unpack_from('<I', blob, 0)
+    attr, plen = struct.unpack_from('<IH', blob, 4)
+    i = 10
+    while i + 2 <= len(blob) and blob[i:i + 2] != b'\0\0':
+        i += 2
+    if i + 2 > len(blob):
+        raise ValueError('unterminated description')
+    desc = blob[10:i].decode('utf-16-le')
+    start = i + 2
+    if start + plen > len(blob):
+        raise ValueError('file path list beyond the end')
+    return var_attr, attr, desc, blob[start:start + plen], blob[start + plen:]
+
+
+def build(var_attr, attr, desc, paths, data):
+    return struct.pack('<IIH', var_attr, attr, len(paths)) + desc.encode('utf-16-le') + b'\0\0' + paths + data
+
+
+def current_entry(efivars):
+    with open(os.path.join(efivars, 'BootCurrent-%s' % GLOBAL), 'rb') as f:
+        blob = f.read()
+    if len(blob) != 6:
+        raise ValueError('BootCurrent has an unexpected size')
+    return 'Boot%04X-%s' % (struct.unpack_from('<H', blob, 4)[0], GLOBAL)
+
+
+def rename(efivars, name=NAME, immutable=True):
+    """Returns 'renamed', 'named' (already right) or 'foreign' (not the UniTotem loader)."""
+    path = os.path.join(efivars, current_entry(efivars))
+    with open(path, 'rb') as f:
+        var_attr, attr, desc, paths, data = parse(f.read())
+    if not any(p.lower() in LOADERS for p in file_paths(paths)):
+        return 'foreign'
+    if desc == name:
+        return 'named'
+    blob = build(var_attr, attr, name, paths, data)
+    if immutable:
+        subprocess.run(['chattr', '-i', '--', path], check=True)
+    with open(path, 'wb', buffering=0) as f:
+        f.write(blob)
+    return 'renamed'
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    p.add_argument('--efivars', default='/sys/firmware/efi/efivars')
+    p.add_argument('--name', default=NAME)
+    a = p.parse_args(argv)
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}', a.name):
+        print('unitotem-boot-entry: invalid name', file=sys.stderr)
+        return 2
+    if not os.path.isdir(a.efivars):
+        return 0
+    try:
+        result = rename(a.efivars, a.name, immutable=a.efivars == '/sys/firmware/efi/efivars')
+    except (OSError, ValueError, subprocess.CalledProcessError) as e:
+        print('unitotem-boot-entry: %s' % e, file=sys.stderr)
+        return 1
+    print('unitotem-boot-entry: %s' % result)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

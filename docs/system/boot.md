@@ -47,6 +47,8 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 - Slot kernel and initrd: `/vmlinuz`, `/initrd.img` in each ROOT slot, found by `search --label ROOT_A|ROOT_B`.
 - grubenv keys: `saved_entry`, `next_entry` (one-shot, cleared by GRUB), `unitotem_video`.
 - Entries: 0 `slot-a`, 1 `slot-b`, 2 `slot-a-recover`, 3 `slot-b-recover`, 4 `ota-recovery`.
+- Titles: `UniTotem <version> (Slot A|B)` for the two slots, `UniTotem (Slot X, OTA recovery)` for the recover entries. The version comes from `/usr/share/unitotem/grub-version` (`set unitotem_ver="..."`, written by stage 3 beside `release-version`), sourced from each slot's filesystem by `unitotem_slot_title` while the config loads; an empty slot shows `UniTotem (Slot X)`. Ids are unchanged. `unitotem-grub-level` is 4.
+- Firmware entry: `unitotem-boot-entry` (service, UEFI only, every boot) renames the `BootCurrent` entry to `UniTotem` when its file path is `\EFI\BOOT\BOOTX64.EFI` or `\EFI\debian\shimx64.efi`; only the description changes (one write after `chattr -i`), entries are never created, deleted or reordered, foreign entries are left alone. Test: `tools/release/test_boot_entry.py`.
 - Failover order: `slot-a` -> `fallback="1 4"`; `slot-b` -> `"0 4"`; else `"4"`.
 - Slot kernel line: `root=LABEL=ROOT_x ro quiet splash ... unitotem.slot=x ${unitotem_video}`.
 

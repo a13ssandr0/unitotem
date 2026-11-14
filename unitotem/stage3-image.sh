@@ -394,6 +394,7 @@ fi
 # is part of the pristine image rather than reported as a modification.
 mkdir -p ${IMG_MNT}/usr/share/unitotem
 echo "${RELEASE_VERSION:-$(date +%Y.%m.%d)}" > ${IMG_MNT}/usr/share/unitotem/release-version
+echo "set unitotem_ver=\"$(cat ${IMG_MNT}/usr/share/unitotem/release-version)\"" > ${IMG_MNT}/usr/share/unitotem/grub-version
 
 # ---------- Change-detection baseline ----------
 # The last thing done to the image: it records what a pristine install looks like, so anything
