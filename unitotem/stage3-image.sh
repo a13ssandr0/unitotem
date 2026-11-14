@@ -257,27 +257,30 @@ if [ "$ARCH" = "amd64" ]; then
         --boot-directory="${GRUB_BOOTDIR}" \
         "${LOOP}"
 
-    # (--no-uefi-secure-boot above matters: otherwise grub-install would put shim at EFI/BOOT/BOOTX64.EFI itself.)
-    # Secure Boot chain, staged but not active: BOOTX64.EFI stays the unsigned GRUB, which machines without Secure Boot
-    # need. The deploy swaps in shim only when the target has Secure Boot on and the operator chose "install with shim"
-    # (ota-engine populate-bootfs --secure-boot shim). The signed GRUB has a fixed prefix and finds only grub.cfg
-    # stubs, which hand over to the real configuration (grub.cfg + grubenv in unitotem-grub/ on this partition).
+    # Secure Boot chain, active from the first boot: EFI/BOOT holds the Debian-signed shim as BOOTX64.EFI (the file every firmware
+    # loads), MokManager, the Debian-signed GRUB and the stubs that hand over to the real configuration (grub.cfg + grubenv in
+    # unitotem-grub/ on this partition). The signed GRUB has a fixed prefix and finds only grub.cfg stubs: EFI/BOOT and EFI/debian.
+    # The chain boots with and without Secure Boot, so a machine is ready for Secure Boot with no step. No other .efi file is shipped.
+    # (--no-uefi-secure-boot above keeps grub-install from placing a half chain: the plain GRUB it writes is replaced here.)
     if [ "$AB_LAYOUT" = 1 ]; then
-        SBDIR=${IMG_MNT}/boot/efi/EFI/unitotem-sb
-        mkdir -p "$SBDIR"
-        cp "${IMG_MNT}/usr/lib/shim/shimx64.efi.signed"                      "$SBDIR/shimx64.efi"
-        cp "${IMG_MNT}/usr/lib/shim/mmx64.efi.signed"                        "$SBDIR/mmx64.efi"
-        cp "${IMG_MNT}/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"    "$SBDIR/grubx64.efi"
-        cp "${IMG_MNT}/boot/efi/EFI/BOOT/BOOTX64.EFI"                        "$SBDIR/grub-unsigned.efi"
-        cat > "$SBDIR/grub.cfg" << 'SBEOF'
+        BTDIR=${IMG_MNT}/boot/efi/EFI/BOOT
+        mkdir -p "$BTDIR" "${IMG_MNT}/boot/efi/EFI/debian"
+        cp "${IMG_MNT}/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed" "$BTDIR/grubx64.efi"
+        cp "${IMG_MNT}/usr/lib/shim/mmx64.efi.signed"                     "$BTDIR/mmx64.efi"
+        cat > "$BTDIR/grub.cfg" << 'SBEOF'
 # UniTotem Secure Boot stub: hands over to the real GRUB configuration on this ESP.
 search --no-floppy --label --set=root EFI
 set prefix=($root)/unitotem-grub/grub
 configfile ($root)/unitotem-grub/grub/grub.cfg
 SBEOF
-        for f in shimx64.efi mmx64.efi grubx64.efi grub-unsigned.efi grub.cfg; do
-            [ -s "$SBDIR/$f" ] || boot_assert_fail "Secure Boot chain: $f missing in EFI/unitotem-sb"
+        cp "$BTDIR/grub.cfg" "${IMG_MNT}/boot/efi/EFI/debian/grub.cfg"
+        sync
+        # shim last, through a temporary name: the firmware never sees a half chain
+        cp "${IMG_MNT}/usr/lib/shim/shimx64.efi.signed" "$BTDIR/BOOTX64.EFI.new" && mv -f "$BTDIR/BOOTX64.EFI.new" "$BTDIR/BOOTX64.EFI"
+        for f in BOOTX64.EFI mmx64.efi grubx64.efi grub.cfg; do
+            [ -s "$BTDIR/$f" ] || boot_assert_fail "Secure Boot chain: $f missing in EFI/BOOT"
         done
+        cmp -s "$BTDIR/BOOTX64.EFI" "${IMG_MNT}/usr/lib/shim/shimx64.efi.signed" || boot_assert_fail "EFI/BOOT/BOOTX64.EFI is not the signed shim"
     fi
 
     if [ "$AB_LAYOUT" = 1 ]; then

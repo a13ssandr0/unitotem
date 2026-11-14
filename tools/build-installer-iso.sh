@@ -4,7 +4,7 @@
 #          [--kernel FILE --initrd FILE]
 # Output: DIR/unitotem-installer-<date>-amd64.iso and .sha256 (default DIR: work/installer-iso).
 # Kernel, initrd and the signed Secure Boot chain (shim, MokManager, GRUB) come from the flash image's EFI partition
-# (unitotem/recovery-vmlinuz, unitotem/recovery-initrd.img, EFI/unitotem-sb/); --kernel/--initrd override the first two.
+# (unitotem/recovery-vmlinuz, unitotem/recovery-initrd.img, EFI/BOOT/: signed shim, MokManager, signed GRUB); --kernel/--initrd override the first two.
 # Runs in a debian:trixie container (docker) unless the tools are present and INSTALLER_ISO_INNER=1.
 # Design and tests: docs/system/installer-iso.md.
 set -Eeuo pipefail
@@ -64,7 +64,7 @@ IMGP="$W/esp-region.img@@$((ESP_START * 512))"
 export MTOOLS_SKIP_CHECK=1
 mkdir -p "$W/x"
 mcopy -i "$IMGP" ::unitotem/recovery-vmlinuz ::unitotem/recovery-initrd.img ::unitotem/recovery.sha256 "$W/x/"
-for f in shimx64.efi mmx64.efi grubx64.efi; do mcopy -i "$IMGP" "::EFI/unitotem-sb/$f" "$ESPDIR/$f"; done
+mcopy -i "$IMGP" ::EFI/BOOT/BOOTX64.EFI "$ESPDIR/shimx64.efi"; for f in mmx64.efi grubx64.efi; do mcopy -i "$IMGP" "::EFI/BOOT/$f" "$ESPDIR/$f"; done
 [ -z "$KERNEL" ] || cp -- "$KERNEL" "$W/x/recovery-vmlinuz"
 [ -z "$INITRD" ] || cp -- "$INITRD" "$W/x/recovery-initrd.img"
 if [ -z "$KERNEL$INITRD" ]; then

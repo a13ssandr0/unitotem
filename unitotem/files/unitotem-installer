@@ -234,36 +234,11 @@ stage_verify() {
     [ "$rc" = "0 0 0 0" ] && [ "$sum" = "$RAW_SHA" ]
 }
 
-# stage_shim: with Secure Boot on, activates the staged signed chain on the new EFI partition (same steps as
-# `ota-engine populate-bootfs --secure-boot shim`: chain first, shim renamed over BOOTX64.EFI last)
-stage_shim() {
-    local sbv=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c part m=$T/esp i f
-    [ -d /sys/firmware/efi/efivars ] && mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null
-    [ "$(od -An -tu1 -j4 -N1 "$sbv" 2>/dev/null | tr -d ' ')" = 1 ] || return 0
-    log INFO "secure boot on, activating the shim chain"
-    blockdev --rereadpt "$DISK" 2>/dev/null
-    case $DISK in *[0-9]) part=${DISK}p1 ;; *) part=${DISK}1 ;; esac
-    for ((i = 0; i < 20; i++)); do udevadm settle --timeout=2 2>/dev/null; [ -b "$part" ] && break; sleep 1; done
-    mkdir -p "$m"
-    mount -t vfat -o rw -- "$part" "$m" 2>>"$LOG" || return 1
-    local sb=$m/EFI/unitotem-sb bt=$m/EFI/BOOT
-    for f in shimx64.efi mmx64.efi grubx64.efi grub.cfg; do [ -s "$sb/$f" ] || { umount "$m"; return 1; }; done
-    mkdir -p "$bt" "$m/EFI/debian"
-    { cp "$sb/grubx64.efi" "$bt/grubx64.efi" && cp "$sb/mmx64.efi" "$bt/mmx64.efi" \
-        && cp "$sb/grub.cfg" "$bt/grub.cfg" && cp "$sb/grub.cfg" "$m/EFI/debian/grub.cfg" && sync \
-        && cp "$sb/shimx64.efi" "$bt/BOOTX64.EFI.new" && sync && mv -f "$bt/BOOTX64.EFI.new" "$bt/BOOTX64.EFI" \
-        && cmp -s "$sb/shimx64.efi" "$bt/BOOTX64.EFI" && echo shim > "$sb/active" && sync; } 2>>"$LOG"
-    i=$?
-    umount "$m"
-    return $i
-}
-
 install_disk() {
     log INFO "writing disk=$DISK bytes=$DISK_BYTES"
     stage_check  || { say ERROR "media check failed"; return 1; }
     stage_write  || { say ERROR "write failed disk=$DISK"; return 1; }
     stage_verify || { say ERROR "verify failed disk=$DISK"; return 1; }
-    stage_shim   || { say ERROR "secure boot activation failed disk=$DISK"; return 1; }
     say INFO "install ok disk=$DISK"
 }
 

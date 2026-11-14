@@ -100,7 +100,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Recovery kernel and initrd copied to the boot FAT under the names of `boot.md#recovery-set`, with `recovery.sha256` (level line, then sha256 per file). The level must be 14 digits or the build stops.
   - The same set goes to `usr/share/unitotem/recovery/` in the root (`vmlinuz`, `initrd.img`, `manifest`; arm64 also `dtb/*.dtb` copied from the top-level FIRMWARE dtbs). Written into the mounted root after the rootfs rsync and before the partitions are cut, so ROOT_A carries it.
   - arm64 A/B: kernel, initramfs, cmdline move to `slota/`; `config.txt` gets `os_prefix=slota/`; dtbs and overlays copied into `slota/`.
-  - amd64: `grub-install` for EFI and BIOS (`--removable --no-uefi-secure-boot`), Secure Boot chain staged in `EFI/unitotem-sb/`, `grub-mkconfig` (A/B: `grub.cfg` and `grubenv` in `unitotem-grub/` on the ESP).
+  - amd64: `grub-install` for EFI and BIOS (`--removable --no-uefi-secure-boot`), the signed Secure Boot chain installed in `EFI/BOOT` (shim as `BOOTX64.EFI`), `grub-mkconfig` (A/B: `grub.cfg` and `grubenv` in `unitotem-grub/` on the ESP).
   - Boot assertions (kernel magic, dtb parse, initramfs `/init`, `config.txt` references), release-version, change baseline, `verify-image.sh`, fsck of all partitions.
   - Optional parts set (`MAKE_PARTS=1`).
   - A/B: `unitotem/make-flash-image.sh` writes the flash image from the full one (fresh GPT, partitions except ROOT_B and DATA copied unchanged, sgdisk/sha256/fsck verification), `xz -T0`; then `xz -T0` of the full image. The raw `.img` files are removed.
@@ -166,7 +166,7 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 - Native arm64: `ROOTFS` and `IMG_MNT` live in the build tree (`/tmp` is nodev tmpfs, `/mnt` holds DATA). `qemu-aarch64-static` is copied by stage 0 unconditionally, so the package is required.
 - Builder is bookworm, target is trixie. partclone in `Dockerfile.parts` must match the version `ota-engine.sh` restores with.
 - Image content (enforced by `verify-image.sh`): no TLS key, no SSH host key, no DKMS signing key, no device identity. All are generated on the device.
-- Secure Boot (amd64): chain staged in `EFI/unitotem-sb/`; `EFI/BOOT/BOOTX64.EFI` stays plain GRUB; activation happens at deploy. `--no-uefi-secure-boot --removable` is required, otherwise shim lands at `BOOTX64.EFI`.
+- Secure Boot (amd64): the signed chain is the boot loader from the first boot (`EFI/BOOT`, stub `grub.cfg` also in `EFI/debian`). `--no-uefi-secure-boot --removable` keeps `grub-install` from placing a half chain; stage 3 then replaces the plain GRUB.
 - arm64 A/B: dtbs and overlays are copied, not moved: the fallback (no `os_prefix`) reads `bcm2711-rpi-4-b.dtb` from the FAT top level.
 - Recovery initrd needs `MODULES=most`: `dep` probes the root device, absent in a container.
 - Console: arm64 `console=ttyS0,115200` needs `enable_uart=1`. ttyS0 follows the Raspberry Pi DTB alias `serial0=&uart1`.

@@ -13,7 +13,6 @@
 #   ./deploy/remote-deploy.sh recover HOST[:PORT] ... [--net-dns "A;B;C"]
 #                                     [--console STR] [--yes]
 #                                     [--accept-changes DIGEST]
-#                                     [--secure-boot shim|noshim|abort]
 #   ./deploy/remote-deploy.sh disarm  root@host
 #
 #   ./deploy/remote-deploy.sh recover HOST[:PORT] [--fallback-user NAME] [--parts DIR] ...
@@ -62,9 +61,6 @@ OPT_NET_DNS=""
 # Empty by default: build_legacy_cmdline() picks the console per architecture (tty0 for amd64, tty1 +
 # serial for arm64) unless --console is given.
 OPT_CONSOLE="" OPT_YES=0 OPT_FALLBACK_ONLY=0
-# What to do when the target has Secure Boot enabled (amd64/UEFI): shim | noshim | abort. Empty = ask (or
-# refuse, when non-interactive). See secure_boot_gate.
-OPT_SECURE_BOOT="" SB_MODE=""
 # Non-interactive confirmation of a known change set. Carries the digest the operator was shown, so a
 # UI-driven deploy cannot proceed over a different set of changes - see cmd_changes.
 OPT_ACCEPT_CHANGES="" OPT_JSON=0
@@ -89,8 +85,6 @@ while [ $# -gt 0 ]; do
                          OTA_FALLBACK_USER="$2"; shift 2 ;;
         --accept-changes) OPT_ACCEPT_CHANGES="$2"; shift 2 ;;
         --json)       OPT_JSON=1; shift ;;
-        --secure-boot) OPT_SECURE_BOOT="$2"; shift 2
-                       case "$OPT_SECURE_BOOT" in shim|noshim|abort) ;; *) die "--secure-boot: allowed values are shim, noshim, abort" ;; esac ;;
         *) die "Unknown option: $1" ;;
     esac
 done
@@ -285,7 +279,7 @@ print_probe() {
     fi
     if [ "${FIRMWARE}" = uefi ]; then
         case "${P[SECUREBOOT]:-unknown}" in
-            1) echo "Secure Boot                  : enabled (deploy will ask how to proceed: see --secure-boot)" ;;
+            1) echo "Secure Boot                  : enabled (the image boots through the Microsoft-signed shim, no step needed)" ;;
             0) echo "Secure Boot                  : disabled" ;;
             *) echo "Secure Boot                  : cannot be detected" ;;
         esac
@@ -589,7 +583,6 @@ populate_bootfs_step() {
     local pid; pid=$(serve_data "$host" "${OPT_PARTS}/${bootfs_tar}")
     wait_data_ready bootfs
     local lay="--layout ab"
-    [ "$SB_MODE" = shim ] && lay="$lay --secure-boot shim"
     # shellcheck disable=SC2086
     ota_ssh "$host" "unitotem-ota-engine populate-bootfs --disk '${disk}' --bootfs-part '${bootfs_part}' --data-host '${hostip}' --data-port '${OPT_PORT}' ${lay}"
     data_wait "$pid"
@@ -1003,7 +996,7 @@ cmd_deploy() {
     echo "Target disk : ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE"))"
     echo "Target      : $([ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && echo 'already UniTotem (prepared path)' || { [ -n "${P[LEGACY_UNITOTEM]:-}" ] && [ "${P[LEGACY_UNITOTEM]}" != none ] && echo "UniTotem ${P[LEGACY_UNITOTEM]} on a single-root system (fallback push, data backed up first)" || echo 'other system (fallback push)'; })"
 
-    secure_boot_gate
+    secure_boot_note
     changes_gate
 
     if [ "$OPT_YES" != 1 ]; then
@@ -1050,17 +1043,6 @@ cmd_deploy() {
         return 0
     fi
     run_ota_sequence "$target_ip" "$TARGET_DISK_BYID"
-
-    if [ "$SB_MODE" = noshim ]; then
-        echo ""
-        echo "=============================================================="
-        echo " INSTALLATION COMPLETE, BUT THE SYSTEM WILL NOT BOOT BY ITSELF"
-        echo "=============================================================="
-        echo " Secure Boot is active and you chose to install without shim: at reboot the firmware shows 'Security Violation'."
-        echo " A PHYSICAL INTERVENTION is needed: enter the firmware setup, disable Secure Boot, then reboot."
-        echo "=============================================================="
-        return 0
-    fi
 
     log "OTA sequence sent. Waiting for ${target_ip} to answer on the new system (up to 10 minutes)..."
     local waited=0 answer
@@ -1177,8 +1159,6 @@ cmd_recover() {
     P[HAVE_DATA]=$keep
     P[HAVE_UNITOTEM]=$keep
     P[SSHCLIENT]="${OTA_HOSTIP:-none}"   # OTA_HOSTIP: the address the target reaches this machine at, when it is not the one routing to it (QEMU NAT, tests)
-    # Secure Boot on: only the signed chain (shim) can boot; without it the recovered machine would stop at "Security Violation"
-    [ "${E[UNITOTEM_SECUREBOOT]:-}" = 1 ] && SB_MODE=shim
 
     echo ""
     echo "Recovery    : ${host}  disk ${disk}  (${ARCH}/${FIRMWARE})"
@@ -1231,66 +1211,15 @@ cmd_changes() {
     return "$CHANGES_RC"
 }
 
-# Secure Boot (amd64/UEFI). The firmware refuses anything not signed by a key it trusts, and UniTotem's own GRUB is
-# unsigned. The operator must pick explicitly: boot through Debian's Microsoft-signed shim (the chain is staged in the
-# image and activated by populate-bootfs --secure-boot shim), or install as-is and fix the firmware afterwards. Both
-# can need someone at the machine, so the choice is never made silently.
-secure_boot_gate() {
+# Secure Boot (amd64/UEFI). The image carries the Debian-signed shim chain as its boot loader (EFI/BOOT, signed by the Microsoft UEFI CA
+# that firmware trusts), and that chain boots with and without Secure Boot: nothing to choose and nothing to activate. Only the
+# state is reported; the NVIDIA module (signed by the image's own key) needs the MOK enrolment from the console, the one step left.
+secure_boot_note() {
     [ "$ARCH" = amd64 ] && [ "$FIRMWARE" = uefi ] || return 0
     case "${P[SECUREBOOT]:-unknown}" in
-        0) [ -z "$OPT_SECURE_BOOT" ] || warn "--secure-boot ${OPT_SECURE_BOOT}: ignored, Secure Boot is not active on the target"; return 0 ;;
-        1) ;;
-        *) warn "Secure Boot state cannot be detected on the target: proceeding as if it were off (if it is on, the installed system will not boot)"; return 0 ;;
-    esac
-
-    # A UniTotem already running with Secure Boot on boots through a trusted path: keep the shim chain (only with an
-    # A/B parts set, the only one that stages it; otherwise fall through to the choice).
-    if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ -z "$OPT_SECURE_BOOT" ]; then
-        log "Secure Boot is active and the target is already UniTotem: keeping the shim chain"
-        SB_MODE=shim; return 0
-    fi
-
-    if [ -z "$OPT_SECURE_BOOT" ]; then
-        [ "$OPT_YES" != 1 ] \
-            || die "Secure Boot is ACTIVE on the target: choose explicitly with --secure-boot shim | noshim (or disable it in the firmware and run again)"
-        echo ""
-        echo "=============================================================="
-        echo " SECURE BOOT is ACTIVE on the target"
-        echo "=============================================================="
-        echo " The firmware only accepts boot programs signed with a key it knows."
-        echo " UniTotem's GRUB is not signed. How should I proceed?"
-        echo ""
-        echo "  1) INSTALL WITH SHIM"
-        echo "     Boot goes through shim (Microsoft-signed) -> Debian-signed GRUB and kernel: no change to the firmware needed."
-        echo "     WARNING, a PHYSICAL INTERVENTION on the machine may be needed:"
-        echo "       - with an NVIDIA GPU the proprietary driver is an unsigned module: a key (MOK) must be enrolled"
-        echo "         from the console at first boot, otherwise there is no accelerated video driver;"
-        echo "       - if the firmware does not trust the Microsoft UEFI CA (custom Secure Boot), shim is rejected."
-        echo "     If the current system is not Debian, the first step (one-shot GRUB entry) may fail: its shim"
-        echo "     rejects the Debian kernel (\"bad shim signature\") and the machine stops at the GRUB prompt."
-        echo ""
-        echo "  2) INSTALL WITHOUT SHIM"
-        echo "     The install completes, but at reboot the firmware rejects the unsigned GRUB (\"Security Violation\")."
-        echo "     A PHYSICAL INTERVENTION is REQUIRED: disable Secure Boot in the firmware (or enroll the hash)."
-        echo ""
-        echo "  3) ABORT"
-        echo "     Nothing is touched. Disable Secure Boot in the firmware and run the deploy again."
-        echo "=============================================================="
-        local c
-        read -rp "Choice [1/2/3]: " c
-        case "$c" in 1) OPT_SECURE_BOOT=shim ;; 2) OPT_SECURE_BOOT=noshim ;; *) OPT_SECURE_BOOT=abort ;; esac
-    fi
-
-    case "$OPT_SECURE_BOOT" in
-        abort)  die "aborted: Secure Boot is active on the target. Disable it in the firmware (or choose --secure-boot shim|noshim) and run again" ;;
-        shim)
-            SB_MODE=shim
-            warn "Secure Boot: installing with shim. With an NVIDIA GPU the MOK key must be enrolled from the console (physical intervention)."
-            ;;
-        noshim)
-            SB_MODE=noshim
-            warn "Secure Boot: installing WITHOUT shim. At reboot the firmware will show 'Security Violation': a physical intervention is needed (disable Secure Boot)."
-            ;;
+        1) log "Secure Boot is active on the target: the image boots through the signed shim. With an NVIDIA GPU the MOK key must be enrolled from the console (physical intervention)." ;;
+        0) ;;
+        *) warn "Secure Boot state cannot be detected on the target: the signed chain boots with it on or off" ;;
     esac
 }
 

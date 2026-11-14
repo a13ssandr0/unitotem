@@ -24,7 +24,7 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_slot_pick.sh` | Engine `slot_pick`, `heal_dup_label`, `pin_root_dev` and boot stubs (`ota-engine.sh`): 44 checks |
 | `tools/release/test_slot_dup.sh` (+ `test_slot_dup_inside.sh`) | Duplicate labels and interrupted repair writes (`clone_into_slot`, `slot_dev`, `cmd_init_premount`), Docker `--privileged`, GPT and DOS, `metadata_csum` on and off: 548 checks; reproduces the old write order and interrupts after invalidate, mid-write (SIGKILL at 30 %), before and after the superblock |
 | `tools/release/test_rpi_backend.py` | Raspberry backend end to end on a synthetic GPT image |
-| `tools/release/test_secure_boot_gate.py` | `secure_boot_gate` and SecureBoot probe cut from `deploy/remote-deploy.sh` |
+| `tools/release/test_secure_boot_gate.py` | `secure_boot_note`, the SecureBoot probe and the absence of the old option, cut from `deploy/remote-deploy.sh` |
 | `tools/release/test_wifi_roam.py` | `unitotem-wifi-roam` scan parsing and candidate choice |
 | `tools/release/fake-github.py` | GitHub Releases stub over HTTP |
 | `unitotem/verify-image.sh` | Rule checks on a mounted image; run by stage 3 |

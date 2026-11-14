@@ -27,7 +27,7 @@ Host-side tooling that installs UniTotem on a target (Raspberry Pi arm64 or amd6
 - Disk: `--disk` (kernel name or by-id path) or interactive. A disk without a stable by-id/by-path is refused.
 - `deploy`, in order:
   0. `ensure_tryboot_firmware` (Pi 4/5 with the earlier system, `tryboot: 0`): refused while `vcgencmd get_throttled` shows under-voltage now (bit 0); `YES` unless `--yes`; the old `start*.elf`, `fixup*.dat` and `bootcode.bin` of `/boot` (or `/boot/firmware`) are saved as `unitotem-firmware-<host>-<ts>.tar.zst` and read back; `apt-get install --only-upgrade raspberrypi-bootloader` after `apt-get update` (nothing else is upgraded); the target restarts, is waited for (6 minutes) and probed again; no tryboot after that stops the deploy with the saved files named. A target without the package, or without network to its apt repository, stops before anything is written or at the update with the apt error.
-  1. `secure_boot_gate` (amd64 UEFI with Secure Boot active), `changes_gate` (installed UniTotem), confirmation `YES` unless `--yes` or `--accept-changes`.
+  1. `secure_boot_note` (amd64 UEFI: reports Secure Boot on, nothing to choose), `changes_gate` (installed UniTotem), confirmation `YES` unless `--yes` or `--accept-changes`.
   2. Backups before anything is armed (Backups).
   3. Arm. Installed UniTotem: `unitotem-ota-arm --port 2222 [--wipe-data] --authkey-file FILE` (`-` = stdin; the public key goes to `unitotem-ota.authorized_keys` on the boot partition), which reboots into the fallback. Other system: copy recovery kernel and initrd to the boot partition, one-shot boot with `unitotem.ota.authkey=<base64 of the key line>` on the kernel command line (Pi: `config.txt`/`cmdline.txt` swap, originals kept as `*.unitotem-bak`; x86: GRUB entry `UniTotem OTA` + `grub-reboot`), reboot. The per-target key is created here (see [Fallback authentication](#fallback-authentication)).
   4. `wait_ota_reachable`: polls `OTA_FALLBACK_USER@host:2222` (default `root`) up to 600 s; after 60 s without answer scans the local /24 for dropbear on 2222.
@@ -74,7 +74,7 @@ Preboot SD image: one FAT32 partition from 1 MiB (MBR type 0c) with Pi firmware,
 |---|---|
 | `probe user@host` | none |
 | `changes user@host` | `--json` |
-| `deploy user@host` | `--parts DIR`, `--disk NAME\|BYID`, `--port N` (data channel, default 9700), `--wipe-data`, `--backup-dir DIR`, `--no-backup`, `--fallback-only`, `--console STR`, `--yes`, `--accept-changes DIGEST`, `--secure-boot shim\|noshim\|abort`, `--fallback-user NAME` |
+| `deploy user@host` | `--parts DIR`, `--disk NAME\|BYID`, `--port N` (data channel, default 9700), `--wipe-data`, `--backup-dir DIR`, `--no-backup`, `--fallback-only`, `--console STR`, `--yes`, `--accept-changes DIGEST`, `--fallback-user NAME` |
 | `recover HOST[:PORT]` | `--disk`, `--wipe-data`, `--backup-dir`, `--no-backup`, `--yes`, `--fallback-user NAME` (`--parts` is not read by `recover`) |
 | `disarm user@host` | none |
 
@@ -93,7 +93,7 @@ Engine subcommands (`--name value`; `--disk` on disk operations):
 | `data-op` | `--part --op preserve\|mkfs` | `UNITOTEM_DATA_OP_DONE` |
 | `prepare-bootfs` | `--bootfs-part --fstype --fresh 1 --label [--volid]` | `UNITOTEM_BOOTFS_READY` |
 | `write-bootfile` | `--bootfs-part --name [--subdir]`, stdin | `UNITOTEM_BOOTFILE_SHA256` |
-| `populate-bootfs` | `--bootfs-part --data-host --data-port [--layout ab] [--secure-boot shim]` | `UNITOTEM_BOOTFS_POPULATED` |
+| `populate-bootfs` | `--bootfs-part --data-host --data-port [--layout ab]` | `UNITOTEM_BOOTFS_POPULATED` |
 | `set-default-recovery` | `--firmware rpi\|uefi\|bios --bootfs-part [--layout ab]` | `UNITOTEM_DEFAULT_RECOVERY` |
 | `set-trial-boot` | `--firmware rpi-tryboot\|rpi-legacy\|uefi\|bios --target DIR [--disk --bootfs-part --layout ab]` | `UNITOTEM_TRIAL_ARMED` |
 | `promote-default` | `--firmware [--disk --bootfs-part]` | `UNITOTEM_PROMOTED` |
@@ -160,7 +160,7 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 - `restore-part` uses `partclone -C` only if used bytes + 20% + 256 MiB fit the partition; `e2fsck -fy` after restore (not after `dd`).
 - `populate-bootfs` never overwrites `config.txt`, `cmdline.txt`, recovery files, `unitotem-ota.*`, `*.unitotem-bak`, `tryboot.txt`. Only `set-default-recovery` and `promote-default` write `config.txt`. `--layout ab` anchors tar excludes.
 - Pi: `enable_uart=1` in every fallback and trial config. Pi without tryboot (3, Zero 2) is refused.
-- Secure Boot (amd64 UEFI): non-interactive runs without `--secure-boot` refuse; unknown state is treated as off with a warning; `noshim` needs a firmware change on site.
+- Secure Boot (amd64 UEFI): the image's loader is the signed chain, which boots with it on or off: no option, no question; an unknown state only warns.
 - Secure Boot `shim` may need physical intervention: with an NVIDIA GPU the MOK key is enrolled from the console; firmware that does not trust the Microsoft UEFI CA rejects shim; a non-Debian running system may stop at the GRUB prompt (`bad shim signature`) on the first one-shot step. A target already UniTotem with Secure Boot active keeps the shim chain automatically (A/B parts set only).
 - Backups of an installed UniTotem exclude the target's `unitotem-native-build` scratch tree (deploy backup and `recover` DATA save).
 - `--accept-changes DIGEST` implies `--yes` and must equal the current digest. `--yes` overwrites changes without showing them.
@@ -188,7 +188,7 @@ Tool side (`deploy/lib.sh`, `ota_auth_for`):
 - `tools/release/test_check_engine_copy.sh`: `check-engine-copy.sh` on small cpio archives (identical, stale, absent, unreadable).
 - `python3 tools/release/test_ota_net_cmdline.py`: the static address on the kernel command line, both sides and `recover` (23 checks: validation, precedence, command line length).
 - `python3 tools/release/test_tryboot_firmware.py`: `ensure_tryboot_firmware` with fake ssh, backup and probe (15 checks: no-ops, refusals, order, apt failure, confirmation).
-- `python3 tools/release/test_secure_boot_gate.py`: SecureBoot parsing, gate branches (a non-A/B parts set is refused in `load_parts`, before the gate).
+- `python3 tools/release/test_secure_boot_gate.py`: SecureBoot parsing, `secure_boot_note` branches and the absence of the old option and mode (15 checks).
 - `python3 tools/release/test_deploy_bios.py`: BIOS parts set through `load_parts`, the manifest loop and the `restore-part` dd branch (no partclone).
 - `tools/release/test_parts_bios.sh`: `make_parts` on a loop image with an ef02 partition (Docker, privileged): raw `dd` stream, sha256, byte identity.
 - `python3 tools/release/test_fallback_auth_slot.py`: the slot the fallback reads for its logins.

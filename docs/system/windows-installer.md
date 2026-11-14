@@ -66,7 +66,7 @@ Other values are shown unchanged.
 
 Both build scripts (`build-windows-installer.sh`, `build-installer-iso.sh`) fail when a text file of the payload holds an SSH public key line (`ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp* <base64>`; no exceptions).
 
-Zip content: `Install-UniTotem.ps1`, `README.txt`, `payload/` (`vmlinuz`, `initrd.img`, `shimx64.efi`, `mmx64.efi`, `grubx64.efi` taken from the image's ESP `unitotem/recovery-*` and `EFI/unitotem-sb/`; `grldr`, `grldr.mbr`, `COPYING-grub4dos`; the templates; `SHA256SUMS`). The script verifies every payload file against `payload/SHA256SUMS` before use and again after copying.
+Zip content: `Install-UniTotem.ps1`, `README.txt`, `payload/` (`vmlinuz`, `initrd.img`, `shimx64.efi`, `mmx64.efi`, `grubx64.efi` taken from the image's ESP `unitotem/recovery-*` and `EFI/BOOT/` (`BOOTX64.EFI` is the shim); `grldr`, `grldr.mbr`, `COPYING-grub4dos`; the templates; `SHA256SUMS`). The script verifies every payload file against `payload/SHA256SUMS` before use and again after copying.
 
 ## Prerequisites
 
