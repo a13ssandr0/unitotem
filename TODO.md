@@ -11,7 +11,7 @@
 - [system] Real GitHub release test (redirects, API limits, 2 GiB asset limit, publish workflow) and whether images may be public once checked for secrets.
 - [system] Legacy pi-gen tree at the repo root (build.sh, stage0-2/, export-image/, Dockerfile...): remove or keep.
 - [system] Windows-source installer: build (8-12 days MVP, docs/system/windows-install-research.md) or delete the research.
-- [system] Secure Boot: the signed shim chain is the shipped loader since the next build (user decision 2026-11-14); to verify on the real firmware: venus (AMI, the chain is installed on its ESP, Secure Boot to be switched on by the user), the .8 (Intel NUC) after its deploy; the NVIDIA module still needs the MOK enrolment from the console; the exact text of the firmware's "security violation" screen is not recorded.
+- [system] Secure Boot: the signed shim chain is the shipped loader since the next build (user decision 2026-11-14); verified on the real firmware of the venus (AMI: Secure Boot on boots through the chain; an NVRAM entry for `EFI/debian/shimx64.efi` boots, also with a wrong size in its HD node; `boot.md#secure-boot-amd64`); still to verify: the .8 (Intel NUC) after its deploy; the NVIDIA module still needs the MOK enrolment from the console; the exact text of the firmware's "security violation" screen is not recorded.
 - [system] Pi 4K60 (hdmi_enable_4kp60) undecided; pin ~60 Raspberry packages and backports (kernel, Mesa, firmware) undecided.
 - [manager] Upstream CEF/cefpython issues and PRs are not opened (patches and docs/manager/cef/pr-*.md ready); user decides.
 - [manager] Lean CEF build (docs/manager/cef/lean-build.md section 6): decision open.
