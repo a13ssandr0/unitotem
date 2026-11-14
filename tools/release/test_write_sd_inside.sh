@@ -67,7 +67,7 @@ truncate -s 2G $W/dst2.img; D2=$(attach $W/dst2.img)
 check "write-sd from .img.xz succeeds" bash -c "bash $SCRIPT --yes $W/src.img.xz $D2 2>/tmp/w2.log || { cat /tmp/w2.log >&2; exit 1; }"; cat /tmp/w2.log
 settle "$D2"; verify "$D2" dst2
 check "the expanded copy is removed from tmpfs" bash -c "[ -z \"\$(ls -A /tmpfs)\" ]"
-check "an image bigger than the free tmpfs is refused" bash -c "mount -o remount,size=100m /tmpfs && bash $SCRIPT --yes $W/src.img.xz $D2 2>&1 | grep -q 'the expanded image needs'"; mount -o remount,size=3g /tmpfs
+check "an image bigger than the free tmpfs is refused" bash -c "mount -o remount,size=20m /tmpfs && bash $SCRIPT --yes $W/src.img.xz $D2 2>&1 | grep -q 'does not fit in'"; mount -o remount,size=3g /tmpfs
 check "a directory that is not tmpfs is refused" bash -c "UNITOTEM_TMPFS=/work bash $SCRIPT --yes $W/src.img.xz $D2 2>&1 | grep -q 'is not tmpfs'"
 losetup -d "$D2"
 

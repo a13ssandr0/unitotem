@@ -291,6 +291,10 @@ REMOTE_EOF
         # (built from linux-image-rpi-v8) issues the reboot, so that always holds. Boards failing (1) (Pi 3 / Zero 2)
         # use rpi-legacy: a direct config.txt swap protected by the initramfs checks and the boot counter.
         TRYBOOT_CAPABLE="${P[TRYBOOT]:-0}"
+        # Pi 3 and Zero 2 have no EEPROM bootloader and no firmware tryboot: their one-shot trial is implemented in the system, so the deploy treats
+        # them as capable. Their ROM reads an MBR only: the table of the image is converted (image_table_dos in load_image).
+        PI3=0
+        if echo "${P[MODEL]}" | grep -qiE "raspberry pi (3|.*zero 2)"; then PI3=1; TRYBOOT_CAPABLE=1; fi
     elif [ "${P[EFI]}" = 1 ]; then
         ARCH=amd64; FIRMWARE=uefi; TRYBOOT_CAPABLE=0
     else
@@ -303,6 +307,7 @@ print_probe() {
     if [ "${FIRMWARE}" = rpi ]; then
         local tb_why="EEPROM bootloader without tryboot support (or absent: Pi 3/Zero 2)"
         [ "${TRYBOOT_CAPABLE}" = 1 ] && tb_why="detected via device tree, SoC ${P[SOC]:-n/a}"
+        [ "${PI3:-0}" = 1 ] && tb_why="Raspberry Pi 3 / Zero 2: trial boot implemented in the system, MBR table"
         echo "Firmware                     : ${FIRMWARE}  (tryboot: ${TRYBOOT_CAPABLE} - ${tb_why})"
         echo "Trial boot mode              : $([ "${TRYBOOT_CAPABLE}" = 1 ] && echo 'rpi-tryboot (firmware-level protection)' || echo 'rpi-legacy (config.txt swap + boot counter)')"
     else
@@ -875,13 +880,18 @@ run_ota_sequence() {
 
 # ---------------------------------------------------------------------------
 load_image() {
-    [ -n "$OPT_IMAGE" ] || OPT_IMAGE=$(ls -t "${DIR}/deploy/${ARCH}/"unitotem-*-"${ARCH}".img.xz "${DIR}/deploy/${ARCH}/"unitotem-*-"${ARCH}".img 2>/dev/null | head -1)
+    [ -n "$OPT_IMAGE" ] || OPT_IMAGE=$(ls -t "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}".img.xz "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}".img 2>/dev/null | head -1 || true)
     [ -n "$OPT_IMAGE" ] && [ -f "$OPT_IMAGE" ] \
         || die "no image found for ${ARCH} (use --image FILE: the full A/B image deploy/${ARCH}/unitotem-<date>-${ARCH}.img.xz)"
     image_open "$OPT_IMAGE" || die "cannot open the image ${OPT_IMAGE}"
     IMG_DESC=$(mktemp -d "${IMG_TMPFS}/unitotem-desc.XXXXXX")
     log "Reading the partitions of $(basename "$OPT_IMAGE")..."
     image_describe "$IMG_DESC" "$ARCH" || die "cannot read the partitions of ${OPT_IMAGE}"
+    # The Pi 3 ROM does not read GPT: the same partitions, written as an MBR (primaries; FAT type c for the firmware, 83 for the rest).
+    if [ "${PI3:-0}" = 1 ]; then
+        image_table_dos "$IMG_DESC" || die "cannot convert the partition table of ${OPT_IMAGE} to MBR"
+        log "Target is a Raspberry Pi 3 / Zero 2: the partition table is written as MBR."
+    fi
 
     P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
     P_BOOTFS_PART=$(awk -F= '/^UNITOTEM_BOOTFS_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
@@ -1172,7 +1182,10 @@ cmd_recover() {
     [ -n "${E[UNITOTEM_DISK]:-}" ] || die "the target does not resolve the disk ${disk}"
 
     case "${E[UNITOTEM_ARCH_HOST]:-}" in
-        aarch64) ARCH=arm64; FIRMWARE=rpi; TRYBOOT_CAPABLE="${E[UNITOTEM_TRYBOOT]:-0}" ;;
+        aarch64) ARCH=arm64; FIRMWARE=rpi; TRYBOOT_CAPABLE="${E[UNITOTEM_TRYBOOT]:-0}"
+                 # Pi 3 / Zero 2 (see do_probe): the model is read here, not from the engine, which may be older than this script
+                 PI3=0
+                 if ota_ssh "$host" "tr -d '\\0' < /proc/device-tree/model 2>/dev/null" | grep -qiE "raspberry pi (3|.*zero 2)"; then PI3=1; TRYBOOT_CAPABLE=1; fi ;;
         x86_64)  ARCH=amd64; FIRMWARE=$([ "${E[UNITOTEM_EFI]:-0}" = 1 ] && echo uefi || echo bios); TRYBOOT_CAPABLE=0 ;;
         *) die "unrecognised target architecture: ${E[UNITOTEM_ARCH_HOST]:-?}" ;;
     esac
