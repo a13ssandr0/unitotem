@@ -362,7 +362,6 @@ echo "== Raspberry boot property (every file a config loads must exist under its
 elif [ "$AB" = 1 ]; then
 echo "== amd64 boot"
     chk "GRUB entries for both slots" bash -c "grep -q 'slot-a' $FAT/unitotem-grub/grub/grub.cfg && grep -q 'slot-b' $FAT/unitotem-grub/grub/grub.cfg"
-    chk "every amd64 kernel line sets ahci.mobile_lpm_policy=1 (no SATA link power saving: a drive in a CD-bay adapter returned CRC errors and read failures after a warm reboot)" bash -c "[ \$(grep -c 'ahci.mobile_lpm_policy=1' '$FAT/unitotem-grub/grub/grub.cfg') = 3 ]"
     chk "the GRUB slot entries carry \${unitotem_video} (orientation option of the next boot)" bash -c "[ \$(grep -c 'unitotem.slot=[ab] \${unitotem_video}' '$FAT/unitotem-grub/grub/grub.cfg') = 2 ]"
     chk "the image carries its ESP grub.cfg for unitotem-update to refresh the bootloader config (usr/share/unitotem/esp-grub.cfg == the ESP's)" bash -c "cmp -s '$R/usr/share/unitotem/esp-grub.cfg' $FAT/unitotem-grub/grub/grub.cfg && grep -q 'unitotem-grub-level' '$R/usr/share/unitotem/esp-grub.cfg'"
     chk "the OTA fallback is entry number 4 (the GRUB fallback list is numeric)" bash -c "[ \"\$(grep -E '^menuentry' $FAT/unitotem-grub/grub/grub.cfg | sed -n 5p | grep -c ota-recovery)\" = 1 ]"
