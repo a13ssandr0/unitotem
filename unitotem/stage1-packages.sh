@@ -239,11 +239,6 @@ apt_install --no-install-recommends \
 mkdir -p "${ROOTFS}/usr/lib/unitotem"
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
-# framebuffer frame of the deploy/recovery screen's progress dialog (pre-rendered by tools/gen-frame.py)
-for _f in /unitotem/files/unitotem-frame-line.* /unitotem/files/unitotem-frame-corners-*; do
-    [ -s "$_f" ] || { echo "ERROR: frame piece missing: $_f" >&2; exit 1; }
-    install -m 644 "$_f" "${ROOTFS}/usr/lib/unitotem/"
-done
 # framebuffer logo of the deploy/recovery screen (pre-rendered by tools/gen-logo.py)
 install -m 644 /unitotem/files/unitotem-logo-256x73.bgrx /unitotem/files/unitotem-logo-640x182.bgrx \
     /unitotem/files/unitotem-logo-256x73.rgb565 /unitotem/files/unitotem-logo-640x182.rgb565 \

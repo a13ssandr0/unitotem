@@ -1371,8 +1371,6 @@ ota_ui_start() {
     # uses O_NOCTTY and newt would fail. The initial --gauge text has five lines because whiptail sizes the text
     # area once and clips updates to it; five is what ota_ui_feed sends (3 header + blank + phase), change both together.
     local placeholder=$' \n \n \n \n '
-    # (NEWT_COLORS has no effect on this whiptail's own "+---+" border: ota_frame paints that ring of cells black on the
-    # framebuffer instead.)
     setsid -c sh -c "TERM=linux TERMINFO=/usr/share/terminfo exec whiptail \
             --backtitle 'UniTotem OTA' --gauge '$placeholder' 14 72 0 < '$OTA_UI_FIFO'" \
         < /dev/tty1 > /dev/tty1 2>/dev/null &
@@ -1617,85 +1615,6 @@ ota_logo() {
     return 0
 }
 
-# A rounded frame around the progress dialog, drawn on the framebuffer for any resolution.
-# Geometry: console columns/rows (stty), cell size = framebuffer / console size, dialog centered by newt (72x14
-# cells, fewer on small screens). whiptail's own border ring is painted black (it redraws only changed cells), then
-# the frame is laid out in the margin: pre-rendered anti-aliased corners sized from the cell height, straight edges
-# cut from a solid-colour line. Only the frame and blank ring are written, never the interior. Formats: 32/24/16 bpp.
-# Returns 1 (and says why on stderr) if there is no usable framebuffer.
-ota_frame() {
-    # OTA_FB_DEV / OTA_FB_SYS / OTA_CONSOLE_SIZE ("rows cols") replace the real devices, so the layout can be tested on
-    # fake framebuffers of many sizes and depths.
-    local fb=${OTA_FB_SYS:-/sys/class/graphics/fb0} fbdev=${OTA_FB_DEV:-/dev/fb0} W H bpp stride ext bytes rows cols cw ch
-    [ -w "$fbdev" ] && [ -r "$fb/virtual_size" ] || { echo "ota_frame: no framebuffer" >&2; return 1; }
-    IFS=, read -r W H < "$fb/virtual_size"; read -r bpp < "$fb/bits_per_pixel"; read -r stride < "$fb/stride"
-    case "$bpp" in
-        32) ext=bgrx; bytes=4 ;; 24) ext=bgr24; bytes=3 ;; 16) ext=rgb565; bytes=2 ;;
-        *) echo "ota_frame: unsupported framebuffer depth $bpp" >&2; return 1 ;;
-    esac
-    if read -r rows cols < <(if [ -n "${OTA_CONSOLE_SIZE:-}" ]; then echo "$OTA_CONSOLE_SIZE"; else stty -F /dev/tty1 size 2>/dev/null; fi) \
-        && [ "${cols:-0}" -gt 0 ] && [ "${rows:-0}" -gt 0 ]; then
-        cw=$((W / cols)); ch=$((H / rows))
-    else                                   # no stty: the usual fbcon fonts, 8x16 and 16x32 on large screens
-        cw=8; ch=16; [ "$W" -gt 1024 ] && { cw=16; ch=32; }
-        cols=$((W / cw)); rows=$((H / ch))
-    fi
-    [ "$cw" -ge 4 ] && [ "$ch" -ge 8 ] || { echo "ota_frame: implausible cell size ${cw}x${ch}" >&2; return 1; }
-
-    # the dialog (ota_ui_start asks for 72x14 cells; newt shrinks it on a small console and centers it)
-    local dw=72 dh=14 dx0 dy0 dx1 dy1
-    [ "$cols" -ge $((dw + 4)) ] || dw=$((cols - 4)); [ "$rows" -ge $((dh + 2)) ] || dh=$((rows - 2))
-    dx0=$(( (cols - dw) / 2 * cw )); dy0=$(( (rows - dh) / 2 * ch )); dx1=$((dx0 + dw * cw)); dy1=$((dy0 + dh * ch))
-
-    wr() { # wr SRC_FILE SKIP_BYTES X Y LEN_BYTES : copy LEN bytes of SRC (from SKIP) to pixel (X,Y)
-        dd if="$1" iflag=skip_bytes skip="$2" of="$fbdev" bs="$5" count=1 seek=$(( $4 * stride + $3 * bytes )) \
-           oflag=seek_bytes conv=notrunc status=none 2>/dev/null
-    }
-    local y
-    # 1. blank whiptail's own border: the ring of cells around the dialog
-    for ((y = dy0; y < dy0 + ch; y++)); do wr /dev/zero 0 "$dx0" "$y" $(( (dx1 - dx0) * bytes )) || return 1; done
-    for ((y = dy1 - ch; y < dy1; y++)); do wr /dev/zero 0 "$dx0" "$y" $(( (dx1 - dx0) * bytes )) || return 1; done
-    for ((y = dy0 + ch; y < dy1 - ch; y++)); do
-        wr /dev/zero 0 "$dx0" "$y" $((cw * bytes)) || return 1
-        wr /dev/zero 0 $((dx1 - cw)) "$y" $((cw * bytes)) || return 1
-    done
-
-    # 2. the frame, in the margin outside the dialog
-    local r t m fx0 fy0 fx1 fy1 d=$OTA_LOGO_DIR
-    r=12; t=2
-    local cand
-    for cand in 64:13 48:10 32:6 24:5 16:3 12:2; do
-        [ "${cand%%:*}" -le "$ch" ] && { r=${cand%%:*}; t=${cand##*:}; break; }
-    done
-    m=$(( cw * 3 / 4 )); [ "$m" -ge 4 ] || m=4
-    fx0=$((dx0 - m)); fy0=$((dy0 - m)); fx1=$((dx1 + m)); fy1=$((dy1 + m))
-    [ "$fx0" -ge 0 ] && [ "$fy0" -ge 0 ] && [ "$fx1" -le "$W" ] && [ "$fy1" -le "$H" ] \
-        || { echo "ota_frame: the frame does not fit the screen" >&2; return 1; }
-    local cf="$d/unitotem-frame-corners-$r.$ext" lf="$d/unitotem-frame-line.$ext" rb=$((r * bytes)) csz=$((r * r * bytes))
-    [ -r "$cf" ] && [ -r "$lf" ] || { echo "ota_frame: frame pieces missing in $d" >&2; return 1; }
-    for ((y = 0; y < r; y++)); do
-        wr "$cf" $((0 * csz + y * rb)) "$fx0"        $((fy0 + y))       "$rb" || return 1     # top-left
-        wr "$cf" $((1 * csz + y * rb)) $((fx1 - r))  $((fy0 + y))       "$rb" || return 1     # top-right
-        wr "$cf" $((2 * csz + y * rb)) "$fx0"        $((fy1 - r + y))   "$rb" || return 1     # bottom-left
-        wr "$cf" $((3 * csz + y * rb)) $((fx1 - r))  $((fy1 - r + y))   "$rb" || return 1     # bottom-right
-    done
-    local len=$((fx1 - fx0 - 2 * r)) x done_len chunk
-    for ((y = 0; y < t; y++)); do                      # top and bottom edges, in chunks of at most 4096 px (the line blob)
-        x=$((fx0 + r)); done_len=0
-        while [ "$done_len" -lt "$len" ]; do
-            chunk=$((len - done_len)); [ "$chunk" -le 4096 ] || chunk=4096
-            wr "$lf" 0 "$x" $((fy0 + y)) $((chunk * bytes)) || return 1
-            wr "$lf" 0 "$x" $((fy1 - t + y)) $((chunk * bytes)) || return 1
-            x=$((x + chunk)); done_len=$((done_len + chunk))
-        done
-    done
-    for ((y = fy0 + r; y < fy1 - r; y++)); do          # left and right edges
-        wr "$lf" 0 "$fx0" "$y" $((t * bytes)) || return 1
-        wr "$lf" 0 $((fx1 - t)) "$y" $((t * bytes)) || return 1
-    done
-    return 0
-}
-
 ota_splash() {
     [ -w /dev/tty1 ] || return 0
     printf '\033[2J\033[H\033[?25l' > /dev/tty1 2>/dev/null || true
@@ -1775,7 +1694,7 @@ cmd_serve_fallback() {
 Reason: ${reason}
 Address: ${myip:-none}   Port: 2222" || true
     # the progress screen clears the console when it starts: put the logo back above it once it is up
-    ( sleep 2; ota_logo; ota_frame ) </dev/null >/dev/null 2>&1 &
+    ( sleep 2; ota_logo ) </dev/null >/dev/null 2>&1 &
 
     # Fallback credentials and mode. The `||` context keeps a failed DATA or boot mount from aborting here: the
     # credentials then stay locked (FALLBACK_OPEN=0).
