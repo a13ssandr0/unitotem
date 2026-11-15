@@ -277,7 +277,7 @@ ota_auth_resolve() {
         OTA_RESOLVED_HOST="$host" OTA_RESOLVED_USER=root OTA_RESOLVED_MODE=open; return 0
     fi
     # a password: only from a person at a terminal, read the way ssh reads it (not echoed); root may accept one too
-    if [ -r /dev/tty ] && : < /dev/tty 2>/dev/null; then tty_in=/dev/tty; elif [ ! -t 0 ]; then return 1; fi
+    if [ -r /dev/tty ] && { : < /dev/tty; } 2>/dev/null; then tty_in=/dev/tty; elif [ ! -t 0 ]; then return 1; fi
     if [ -z "$user" ]; then
         printf 'Login of %s [root]: ' "$host" >&2; IFS= read -r user < "$tty_in" || return 1
         user=${user:-root}

@@ -992,7 +992,7 @@ post_deploy_probe() {
 ADMIN_NAME="" ADMIN_PW="" ADMIN_COPY_KEY=0
 ask_admin() {
     local tty_in pw2 a have_tty=0
-    if [ -r /dev/tty ] && : < /dev/tty 2>/dev/null; then tty_in=/dev/tty; have_tty=1; fi
+    if [ -r /dev/tty ] && { : < /dev/tty; } 2>/dev/null; then tty_in=/dev/tty; have_tty=1; fi
     if [ -n "$OPT_ADMIN" ]; then
         ADMIN_NAME=$OPT_ADMIN ADMIN_COPY_KEY=$OPT_COPY_KEY
         [[ "$ADMIN_NAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && [ "$ADMIN_NAME" != root ] || die "invalid administrator name '${ADMIN_NAME}'"
