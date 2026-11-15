@@ -13,23 +13,48 @@ tar -I pigz -C "${ROOTFS}" -xf "${WORK_DIR}/stage2.tar.gz"
 IMG_DATE="$(date +%Y-%m-%d)"
 IMG_FILE="/deploy/${ARCH}/unitotem-${IMG_DATE}-${ARCH}.img"
 
-echo "Creating image file: ${IMG_FILE} (${IMAGE_SIZE})"
+# size_to_mib: a size of the config (common.sh) in MiB; G and M only.
+size_to_mib() {
+    local s="$1" num unit
+    num="${s%[GgMm]}"
+    unit="${s: -1}"
+    case "$unit" in
+        G|g) echo $((num * 1024)) ;;
+        M|m) echo "$num" ;;
+        *) echo "size_to_mib: unrecognized unit in '$s'" >&2; exit 1 ;;
+    esac
+}
+
+# A/B image: 1 MiB before the boot partition (amd64: the BIOS boot partition; arm64: the GPT header), the boot
+# partition, ROOT_A at the slot size, 1 MiB after it (backup GPT). shrink-root-image.sh cuts ROOT_A to its
+# filesystem later, so the file is the layout only. Legacy: IMAGE_SIZE.
+if [ "$AB_LAYOUT" = 1 ]; then
+    if [ "$ARCH" = "amd64" ]; then BOOTFS_MIB=$(size_to_mib "$EFI_SIZE"); else BOOTFS_MIB=$(size_to_mib "$FIRMWARE_SIZE"); fi
+    SLOT_MIB=$(size_to_mib "$ROOT_SLOT_SIZE")
+    IMG_LEN="$((1 + BOOTFS_MIB + SLOT_MIB + 1))M"
+else
+    IMG_LEN="${IMAGE_SIZE}"
+fi
+
+echo "Creating image file: ${IMG_FILE} (${IMG_LEN})"
 # rm before truncate: truncate on an existing file of the same size (a same-day rebuild) is a
 # no-op, and rsync skips zero runs in the source, so stale bytes of the previous build would
 # survive into the new image.
 rm -f "${IMG_FILE}"
-truncate -s "${IMAGE_SIZE}" "${IMG_FILE}"
+truncate -s "${IMG_LEN}" "${IMG_FILE}"
 
 # ---------- Partition ----------
 
 # Partition numbers differ between layouts, so name them once and use the names below.
-# A/B (AB_LAYOUT=1): amd64 EFI/ROOT_A/ROOT_B/DATA (no BOOT: GRUB lives on the ESP and each
-# slot carries its own kernel), arm64 FIRMWARE/ROOT_A/ROOT_B/DATA.
+# A/B (AB_LAYOUT=1): amd64 EFI/ROOT_A (+BIOS), arm64 FIRMWARE/ROOT_A. No BOOT: GRUB lives on the ESP and each
+# slot carries its own kernel. ROOT_B and DATA do not exist in the image: the first boot creates them
+# (layout_complete, unitotem/files/overlayfs-hook.sh), so P_ROOTB and P_DATA are empty.
+# Legacy (AB_LAYOUT=0): amd64 BOOT/ROOT/DATA, arm64 ROOT/DATA.
 if [ "$ARCH" = "amd64" ]; then
-    if [ "$AB_LAYOUT" = 1 ]; then P_BOOTFS=1 P_ROOT=2 P_ROOTB=3 P_DATA=4 P_BOOT=
+    if [ "$AB_LAYOUT" = 1 ]; then P_BOOTFS=1 P_ROOT=2 P_ROOTB= P_DATA= P_BOOT=
     else P_BOOTFS=1 P_BOOT=2 P_ROOT=3 P_ROOTB= P_DATA=4; fi
 else
-    if [ "$AB_LAYOUT" = 1 ]; then P_BOOTFS=1 P_BOOT= P_ROOT=2 P_ROOTB=3 P_DATA=4
+    if [ "$AB_LAYOUT" = 1 ]; then P_BOOTFS=1 P_BOOT= P_ROOT=2 P_ROOTB= P_DATA=
     else P_BOOTFS=1 P_BOOT= P_ROOT=2 P_ROOTB= P_DATA=3; fi
 fi
 
@@ -38,12 +63,11 @@ if [ "$ARCH" = "amd64" ]; then
     sgdisk -n "1:0:+${EFI_SIZE}"  -t 1:ef00 -c 1:EFI  "${IMG_FILE}"
     if [ "$AB_LAYOUT" = 1 ]; then
         sgdisk -n "2:0:+${ROOT_SLOT_SIZE}" -t 2:8300 -c 2:ROOT_A "${IMG_FILE}"
-        sgdisk -n "3:0:+${ROOT_SLOT_SIZE}" -t 3:8300 -c 3:ROOT_B "${IMG_FILE}"
     else
         sgdisk -n "2:0:+${BOOT_SIZE}" -t 2:8300 -c 2:BOOT "${IMG_FILE}"
         sgdisk -n "3:0:+${ROOT_SIZE}" -t 3:8300 -c 3:ROOT "${IMG_FILE}"
+        sgdisk -n "4:0:0"             -t 4:8300 -c 4:DATA "${IMG_FILE}"
     fi
-    sgdisk -n "4:0:0"             -t 4:8300 -c 4:DATA "${IMG_FILE}"
     # BIOS boot partition in the gap before partition 1 (sector 2048), so no other partition
     # shifts. Holds GRUB's core.img for legacy BIOS (grub-install --target=i386-pc below).
     sgdisk -n "5:34:2047" -t 5:ef02 -c 5:BIOS "${IMG_FILE}"
@@ -51,28 +75,14 @@ if [ "$ARCH" = "amd64" ]; then
 elif [ "$ARCH" = "arm64" ]; then
     # FIRMWARE must hold both the resident fallback's kernel+initrd and the real system's,
     # without either overwriting the other. Sizes come from unitotem/common.sh.
-    size_to_mib() {
-        local s="$1" num unit
-        num="${s%[GgMm]}"
-        unit="${s: -1}"
-        case "$unit" in
-            G|g) echo $((num * 1024)) ;;
-            M|m) echo "$num" ;;
-            *) echo "size_to_mib: unrecognized unit in '$s'" >&2; exit 1 ;;
-        esac
-    }
     FW_START_MIB=1
     FW_END_MIB=$((FW_START_MIB + $(size_to_mib "$FIRMWARE_SIZE")))
     parted -s "${IMG_FILE}" mklabel gpt
     parted -s "${IMG_FILE}" mkpart FIRMWARE fat32  "${FW_START_MIB}M"  "${FW_END_MIB}M"
     if [ "$AB_LAYOUT" = 1 ]; then
-        SLOT_MIB=$(size_to_mib "$ROOT_SLOT_SIZE")
         A_END_MIB=$((FW_END_MIB + SLOT_MIB))
-        B_END_MIB=$((A_END_MIB + SLOT_MIB))
         # MiB, not M: parted's bare "M" is 10^6 bytes, which misaligns every boundary.
         parted -s "${IMG_FILE}" mkpart ROOT_A ext4 "${FW_END_MIB}MiB" "${A_END_MIB}MiB"
-        parted -s "${IMG_FILE}" mkpart ROOT_B ext4 "${A_END_MIB}MiB"  "${B_END_MIB}MiB"
-        parted -s "${IMG_FILE}" mkpart DATA   ext4 "${B_END_MIB}MiB"  100%
     else
         ROOT_END_MIB=$((FW_END_MIB + $(size_to_mib "$ROOT_SIZE")))
         parted -s "${IMG_FILE}" mkpart ROOT ext4 "${FW_END_MIB}M"   "${ROOT_END_MIB}M"
@@ -114,7 +124,7 @@ mkfs.ext4 -F -L "${ROOT_LABEL}" "${LOOP}p${P_ROOT}"
 [ -z "$P_ROOTB" ] || mkfs.ext4 -F -L ROOT_B "${LOOP}p${P_ROOTB}"
 # DATA keeps its journal (data=ordered): without one a power cut left state files as NULs and a
 # directory entry missing, with nothing to replay and no fsck at boot.
-mkfs.ext4 -F -L DATA "${LOOP}p${P_DATA}"
+[ -z "$P_DATA" ] || mkfs.ext4 -F -L DATA "${LOOP}p${P_DATA}"
 
 boot_assert_fail() { echo "BOOT-ABILITY CHECK FAILED: $*" >&2; exit 1; }
 
@@ -133,7 +143,8 @@ elif [ "$ARCH" = "arm64" ]; then
     mkdir -p ${IMG_MNT}/boot/firmware
     mount "${LOOP}p${P_BOOTFS}" ${IMG_MNT}/boot/firmware
 fi
-mount "${LOOP}p${P_DATA}" ${IMG_MNT}/mnt/data
+# A/B: no DATA in the image, /mnt/data stays an empty directory of ROOT_A
+[ -z "$P_DATA" ] || mount "${LOOP}p${P_DATA}" ${IMG_MNT}/mnt/data
 
 echo "Copying rootfs..."
 rsync -aHAXx --info=progress2 "${ROOTFS}/" ${IMG_MNT}/
@@ -206,6 +217,14 @@ done
     printf '%s\n' "${SET_SUMS[@]}"
 } > "$RECOVERY_SET/manifest"
 chmod 644 "$RECOVERY_SET/manifest"
+
+# ---------- Target layout (A/B) ----------
+# Root of the boot FAT: the slot size of the target layout that the first boot creates (ROOT_B and DATA are not in the
+# image). Sectors from the configured size; checked by verify-image.sh against the hook's LAYOUT_SLOT_SECTORS.
+if [ "$AB_LAYOUT" = 1 ]; then
+    if [ "$ARCH" = amd64 ]; then LAYOUT_FILE=${IMG_MNT}/boot/efi/unitotem-layout; else LAYOUT_FILE=${IMG_MNT}/boot/firmware/unitotem-layout; fi
+    echo "UNITOTEM_SLOT_SECTORS=$((SLOT_MIB * 1048576 / 512))" > "$LAYOUT_FILE"
+fi
 
 # ---------- A/B on arm64: kernel, initramfs, dtbs and cmdline go in a per-slot directory ----------
 # `os_prefix=slota/` in config.txt makes the firmware read kernel, initramfs, dtbs, overlays and
@@ -417,7 +436,7 @@ bash /unitotem/verify-image.sh "${IMG_MNT}" "${ARCH}" "${AB_LAYOUT}" \
 
 sync
 
-umount ${IMG_MNT}/mnt/data
+[ -z "$P_DATA" ] || umount ${IMG_MNT}/mnt/data
 if [ "$ARCH" = "amd64" ]; then
     umount ${IMG_MNT}/boot/efi
     [ -z "$P_BOOT" ] || umount ${IMG_MNT}/boot
@@ -431,14 +450,22 @@ fsck.vfat -n "${LOOP}p${P_BOOTFS}" || boot_assert_fail "fsck.vfat on the boot pa
 [ -z "$P_BOOT" ]  || fsck.ext4 -fn "${LOOP}p${P_BOOT}"  || boot_assert_fail "fsck.ext4 on BOOT is not clean"
 fsck.ext4 -fn "${LOOP}p${P_ROOT}" || boot_assert_fail "fsck.ext4 on ${ROOT_LABEL} (${LOOP}p${P_ROOT}) is not clean"
 [ -z "$P_ROOTB" ] || fsck.ext4 -fn "${LOOP}p${P_ROOTB}" || boot_assert_fail "fsck.ext4 on ROOT_B is not clean"
-fsck.ext4 -fn "${LOOP}p${P_DATA}" || boot_assert_fail "fsck.ext4 on DATA (${LOOP}p${P_DATA}) is not clean"
+[ -z "$P_DATA" ] || fsck.ext4 -fn "${LOOP}p${P_DATA}" || boot_assert_fail "fsck.ext4 on DATA (${LOOP}p${P_DATA}) is not clean"
 
 losetup -d "${LOOP}"
 trap - EXIT
 
+# ---------- Shrink ROOT_A (A/B) ----------
+# e2fsck, resize2fs -M, partition cut to the filesystem + 16 MiB, file cut 1 MiB after it. The image is now minimal;
+# the flash image and the xz archive are made from it.
+if [ "$AB_LAYOUT" = 1 ]; then
+    bash /unitotem/shrink-root-image.sh "${IMG_FILE}"
+fi
+
 # ---------- Flash image (A/B): boot partition(s) + ROOT_A only ----------
-# The first boot creates ROOT_B and DATA (layout_complete in unitotem/files/overlayfs-hook.sh). The full image above
-# stays the source of the release assets and the network deploy.
+# Built from the minimal image above, so the flash image is minimal too. The first boot creates ROOT_B and DATA
+# (layout_complete in unitotem/files/overlayfs-hook.sh) and grows ROOT_A to the slot size. The full image stays
+# the source of the release assets and the network deploy.
 if [ "$AB_LAYOUT" = 1 ]; then
     FLASH_IMG="/deploy/${ARCH}/unitotem-${IMG_DATE}-${ARCH}-flash.img"
     bash /unitotem/make-flash-image.sh "${IMG_FILE}" "${FLASH_IMG}"

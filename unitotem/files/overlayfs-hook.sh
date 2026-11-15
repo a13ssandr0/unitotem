@@ -88,6 +88,86 @@ grow_data() {
     log_success_msg "grow: DATA grown to $((gd_psz / 2048)) MiB"
     return 0
 }
+# grow_root DISK SYSDIR PARDIR PT: ROOT_A of a minimal image (ext4 shrunk, partition cut to the filesystem) is grown to
+# the slot size before the table is laid out. It runs from local-premount (root not mounted yet) through layout_complete;
+# when ROOT_A is mounted (init-bottom, later boots) it returns at once. DISK is the disk node, SYSDIR the sysfs node of
+# ROOT_A, PARDIR its parent, PT the table type. Every step is derived from the disk, no flag file:
+#   (a) partition, when ROOT_A is the last partition, smaller than LAYOUT_SLOT_SECTORS, and LAYOUT_MIN_FREE is left
+#       after the grown slot (room for ROOT_B and DATA): GPT sgdisk -e; sfdisk -N rewrites the size of ROOT_A only; sgdisk -v;
+#       partx -u. The kernel size is checked before the filesystem is touched; a stale size would place ROOT_B wrongly.
+#   (b) filesystem, when it is GROW_MIN_FS_GAP smaller than its partition (also finishes a growth cut by a power loss):
+#       e2fsck -fp (rc > 1: one e2fsck -fy, as grow_data), then resize2fs.
+# Returns 1 only when the table was written and the kernel does not show the new size: layout_complete then stops.
+# Other failures log one line and return 0 (nothing changed or the partition is already at the slot size).
+grow_root() {
+    gr_disk=$1; gr_sys=$2; gr_par=$3; gr_pt=$4
+    case "$gr_pt" in gpt|dos) ;; *) return 0 ;; esac
+    for gr_t in sgdisk sfdisk partx resize2fs e2fsck dumpe2fs blkid grep sed readlink; do
+        command -v "$gr_t" >/dev/null 2>&1 || return 0
+    done
+    [ -r /proc/mounts ] || return 0
+    gr_dev=/dev/${gr_sys##*/}
+    grep -qF -- "$gr_dev " /proc/mounts && return 0
+    [ -r "$gr_sys/partition" ] || return 0
+    gr_num=$(cat "$gr_sys/partition") || return 0
+    gr_start=$(cat "$gr_sys/start") || return 0
+    gr_psz=$(cat "$gr_sys/size") || return 0
+    gr_dsz=$(cat "/sys/block/${gr_disk##*/}/size") || return 0
+
+    # (a) the partition
+    if [ "$gr_psz" -lt "$LAYOUT_SLOT_SECTORS" ]; then
+        gr_lastp=yes
+        for gr_p in "$gr_par"/*/start; do
+            [ -r "$gr_p" ] || continue
+            [ "$(cat "$gr_p")" -gt "$gr_start" ] && gr_lastp=no
+        done
+        if [ "$gr_lastp" = yes ]; then
+            # the same bounds and 1 MiB alignment as the creation step, so ROOT_B and DATA fit after the grown slot
+            if [ "$gr_pt" = gpt ]; then gr_limit=$((gr_dsz - 34)); else gr_limit=$gr_dsz; fi
+            gr_bs=$(( (gr_start + LAYOUT_SLOT_SECTORS + 2047) / 2048 * 2048 ))
+            if [ "$gr_pt" = dos ] && [ "$gr_dsz" -gt "$LAYOUT_MBR_MAX_SECTORS" ]; then
+                log_warning_msg "layout: disk over 2 TiB, MBR cannot address it, skipping"; return 0
+            fi
+            if [ $((gr_limit - gr_bs)) -lt "$LAYOUT_MIN_FREE" ]; then
+                log_warning_msg "layout: not enough free space to grow ROOT_A, skipping"; return 0
+            fi
+            if [ "$gr_pt" = gpt ]; then
+                sgdisk -e "$gr_disk" >/dev/null 2>&1 || { log_warning_msg "grow: sgdisk -e failed, skipping"; return 0; }
+            fi
+            echo ", ${LAYOUT_SLOT_SECTORS}" | sfdisk --no-reread --no-tell-kernel --wipe never --wipe-partitions never -q -N "$gr_num" "$gr_disk" >/dev/null 2>&1 \
+                || { log_warning_msg "grow: partition table write failed, skipping"; return 0; }
+            if [ "$gr_pt" = gpt ]; then
+                sgdisk -v "$gr_disk" 2>&1 | grep -q "No problems found" \
+                    || { log_warning_msg "grow: GPT check failed after the write, skipping"; return 1; }
+            fi
+            partx -u --nr "$gr_num" "$gr_disk" >/dev/null 2>&1 || true
+            [ "$(cat "$gr_sys/size")" = "$LAYOUT_SLOT_SECTORS" ] \
+                || { log_warning_msg "grow: kernel did not take the new ROOT_A size, skipping"; return 1; }
+        fi
+    fi
+
+    # (b) the filesystem
+    gr_psz=$(cat "$gr_sys/size") || return 0
+    gr_info=$(dumpe2fs -h "$gr_dev" 2>/dev/null) || { log_warning_msg "grow: cannot read the ROOT_A superblock"; return 0; }
+    gr_bc=$(echo "$gr_info" | sed -n 's/^Block count: *//p')
+    gr_blk=$(echo "$gr_info" | sed -n 's/^Block size: *//p')
+    [ -n "$gr_bc" ] && [ -n "$gr_blk" ] || return 0
+    gr_fs=$((gr_bc * gr_blk / 512))
+    [ $((gr_psz - gr_fs)) -ge "$GROW_MIN_FS_GAP" ] || return 0
+    [ "$(blkid -s TYPE -o value "$gr_dev" 2>/dev/null)" = ext4 ] || { log_warning_msg "grow: ROOT_A is not ext4, skipping"; return 0; }
+    e2fsck -fp "$gr_dev" >/dev/null 2>&1
+    gr_rc=$?
+    if [ "$gr_rc" -gt 1 ]; then
+        # a resize2fs cut by a power loss leaves metadata that -p refuses (exit 4): one -fy repairs it
+        e2fsck -fy "$gr_dev" >/dev/null 2>&1
+        gr_rc=$?
+        [ "$gr_rc" -le 1 ] || { log_warning_msg "grow: e2fsck returned ${gr_rc}, ROOT_A not grown"; return 0; }
+        log_success_msg "grow: repaired ROOT_A after an interrupted resize"
+    fi
+    resize2fs "$gr_dev" >/dev/null 2>&1 || { log_warning_msg "grow: resize2fs failed"; return 0; }
+    log_success_msg "grow: ROOT_A grown to $((gr_psz / 2048)) MiB"
+    return 0
+}
 # layout_complete: a minimal image carries only the boot partition(s) and ROOT_A. On the first boot create ROOT_B (same
 # size as stage3's slots) and DATA (rest of the disk) in the free space after ROOT_A. State is derived from the disk
 # on every boot, no flag file. GPT disks:
@@ -119,6 +199,8 @@ layout_complete() {
     lc_disk=${lc_par##*/}
     lc_ddev=/dev/$lc_disk
     lc_pt=$(blkid -p -s PTTYPE -o value "$lc_ddev" 2>/dev/null)
+    # ROOT_A grown first: the creation below reads its size from sysfs
+    grow_root "$lc_ddev" "$lc_sys" "$lc_par" "$lc_pt" || return 0
     if [ "$lc_pt" = dos ]; then
         layout_mbr "$lc_ddev" "$lc_sys" "$lc_par"
         return 0
@@ -132,6 +214,7 @@ layout_complete() {
 
     if [ "$lc_hasb" = no ] && [ "$lc_hasd" = no ]; then
         lc_start=$(cat "$lc_sys/start"); lc_size=$(cat "$lc_sys/size")
+        [ "$lc_size" -ge "$LAYOUT_SLOT_SECTORS" ] || return 0    # ROOT_A not at the slot size: grow_root has logged why
         lc_dsz=$(cat "/sys/block/$lc_disk/size")
         for lc_p in "$lc_par"/*/start; do
             [ -r "$lc_p" ] || continue
@@ -182,6 +265,7 @@ layout_mbr() {
     lc_dump=$(sfdisk -d "$lc_ddev" 2>/dev/null) || return 0
     if ! echo "$lc_dump" | grep -Eq 'type=(da|db)(,|$)'; then
         lc_start=$(cat "$lc_sys/start"); lc_size=$(cat "$lc_sys/size"); lc_num=$(cat "$lc_sys/partition")
+        [ "$lc_size" -ge "$LAYOUT_SLOT_SECTORS" ] || return 0    # ROOT_A not at the slot size: grow_root has logged why
         for lc_p in "$lc_par"/*/start; do
             [ -r "$lc_p" ] || continue
             [ "$(cat "$lc_p")" -gt "$lc_start" ] && return 0     # ROOT_A is not the last partition
@@ -344,7 +428,12 @@ case "$1" in prereqs) prereqs; exit 0 ;; esac
 
 . /scripts/functions
 
+# Installed twice from this file: as local-premount/unitotem-layout (root not mounted: grow ROOT_A, create ROOT_B and
+# DATA) and as init-bottom/setup-overlays (the rest of the boot).
+case "${0##*/}" in unitotem-layout) layout_complete || true; exit 0 ;; esac
+
 # A minimal (flash) image has only the boot partition and ROOT_A: create ROOT_B and DATA first. Best-effort.
+# Retries what local-premount left flagged; grow_root returns at once (ROOT_A is mounted).
 layout_complete || true
 
 # blkid can run before udev has settled the DATA device node this early in boot

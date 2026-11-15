@@ -18,7 +18,8 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | `unitotem/ninitrd/` | Native builder package: `assemble.py` (staging, cpio), `stage.py` (copy_file, copy_exec, libraries), `modules.py` (modules, firmware), `stockhooks.py` (stock hooks), `otahook.py` (list directives), `lists.py` (list reader) |
 | `unitotem/files/ota-initrd.list` | Names the fallback initrd carries (directive table in [Native recovery initrd](#native-recovery-initrd)); read by `ota-hook` and by the native builder |
 | `unitotem/stage2-configure.sh` | Hostname, locale, timezone, root first-access state, boot config, fstab, NetworkManager, services, initramfs, arm64 FIRMWARE files -> `stage2.tar.gz` |
-| `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, flash image, xz |
+| `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, shrink, flash image, xz |
+| `unitotem/shrink-root-image.sh` | A/B: ROOT_A shrunk to its minimum, partition and file cut to fit (stage 3) |
 | `unitotem/make-flash-image.sh` | Flash image from the full image: DOS table on arm64, GPT on amd64 |
 | `unitotem/verify-image.sh` | Static rule checks on the mounted image (PASS/FAIL) |
 | `unitotem/check-recovery-commands.sh` | Every external command of `ota-engine.sh` exists in the recovery initrd |
@@ -100,13 +101,15 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Services enabled, `update-initramfs -u -k all`, arm64 slim initramfs, `kernel8.img`, `initramfs8`, `bcm27*.dtb` copied to FIRMWARE.
   - Removes the build-time TLS certificate (each device generates its own).
 - Stage 3:
-  - `truncate` to `IMAGE_SIZE`; partition (sgdisk amd64, parted arm64; GPT on both); `losetup --partscan`; `mkfs`; rsync rootfs into ROOT_A.
+  - Legacy: `truncate` to `IMAGE_SIZE`. A/B: `truncate` to the layout, 1 MiB + boot partition + `ROOT_SLOT_SIZE` + 1 MiB (the backup GPT). Partition (sgdisk amd64, parted arm64; GPT on both); A/B creates only the boot partition, ROOT_A (and the amd64 BIOS p5); ROOT_B and DATA are not created. `losetup --partscan`; `mkfs`; rsync rootfs into ROOT_A. A/B mounts no DATA: `/mnt/data` is an empty directory of ROOT_A.
   - Recovery kernel and initrd copied to the boot FAT under the names of `boot.md#recovery-set`, with `recovery.sha256` (level line, then sha256 per file). The level must be 14 digits or the build stops.
   - The same set goes to `usr/share/unitotem/recovery/` in the root (`vmlinuz`, `initrd.img`, `manifest`; arm64 also `dtb/*.dtb` copied from the top-level FIRMWARE dtbs). Written into the mounted root after the rootfs rsync and before the partitions are cut, so ROOT_A carries it.
   - arm64 A/B: kernel, initramfs, cmdline move to `slota/`; `config.txt` gets `os_prefix=slota/`; dtbs and overlays copied into `slota/`.
   - amd64: `grub-install` for EFI and BIOS (`--removable --no-uefi-secure-boot`), the signed Secure Boot chain installed in `EFI/BOOT` (shim as `BOOTX64.EFI`), `grub-mkconfig` (A/B: `grub.cfg` and `grubenv` in `unitotem-grub/` on the ESP).
+  - A/B: `unitotem-layout` in the root of the boot FAT (`UNITOTEM_SLOT_SECTORS=<ROOT_SLOT_SIZE in sectors>`, 10485760 for 5G), written before the unmount.
   - Boot assertions (kernel magic, dtb parse, initramfs `/init`, `config.txt` references), release-version, change baseline, `verify-image.sh`, fsck of all partitions.
-  - A/B: `unitotem/make-flash-image.sh` writes the flash image from the full one (partitions except ROOT_B and DATA copied unchanged; arm64 DOS table, amd64 GPT; sfdisk/sgdisk, sha256 and fsck verification), `xz -T0`; then `xz -T0` of the full image. The raw `.img` files are removed.
+  - A/B: `unitotem/shrink-root-image.sh IMG` after `losetup -d`: `e2fsck -fy`, `resize2fs -M` repeated until the block count is stable, partition rewritten to filesystem size + 16 MiB (rounded up to 1 MiB) with the same start, type, unique GUID, name and attributes; file truncated 1 MiB after the partition; backup GPT moved to the end (`sgdisk -v` must be clean). Idempotent. Refuses unless partition 2 is ROOT_A and the last data partition. Prints `ROOT_A fs <N> MiB, partition <M> MiB, image <K> MiB`. Measured on a 301 MB test tree in a 5 GiB ROOT_A: 4 resize passes, about 3 s, fs 647 MiB, partition 664 MiB; an empty ROOT_A shrinks to 86 MiB (the 64 MiB journal included). Checked with both layouts (arm64 and amd64): tree checksums, GUIDs and fsck unchanged; second run leaves the table and size unchanged.
+  - A/B: `unitotem/make-flash-image.sh` writes the flash image from the shrunk image (partitions except ROOT_B and DATA copied unchanged; arm64 DOS table, amd64 GPT; sfdisk (package `fdisk` in `Dockerfile.unitotem`)/sgdisk, sha256 and fsck verification), `xz -T0`; then `xz -T0` of the full image. The raw `.img` files are removed.
 
 ### Native arm64 build
 
@@ -223,7 +226,7 @@ Defaults (`unitotem/common.sh`, env-overridable):
 - `RELEASE` trixie; `MIRROR` https://deb.debian.org/debian.
 - Root first-access state (stage 2, no variable): empty password field, login shell `/usr/sbin/unitotem-first-admin`, member of group `unitotem-first-admin`. See [image-runtime](image-runtime.md#root-and-first-access).
 - `UNITOTEM_HOSTNAME` unitotem; `UNITOTEM_LOCALE` en_US.UTF-8; `UNITOTEM_TIMEZONE` UTC.
-- `AB_LAYOUT` 1 (0 = single ROOT). `IMAGE_SIZE` 14G (A/B; DATA 3 GiB in the image, fits 16 GB cards) or 11G. `ROOT_SLOT_SIZE` 5G; `ROOT_SIZE` 8G; `EFI_SIZE`, `FIRMWARE_SIZE` 512M; `BOOT_SIZE` 1G.
+- `AB_LAYOUT` 1 (0 = single ROOT). `IMAGE_SIZE` 11G (legacy only; A/B takes the file size from the layout, and the ROOT_A shrink sets the final size). `ROOT_SLOT_SIZE` 5G; `ROOT_SIZE` 8G; `EFI_SIZE`, `FIRMWARE_SIZE` 512M; `BOOT_SIZE` 1G.
 - `RELEASE_VERSION` default `date +%Y.%m.%d`; written to `/usr/share/unitotem/release-version`; must match `^[0-9]+(\.[0-9]+)+$`.
 - `ROOTFS` /tmp/rootfs, `IMG_MNT` /mnt (both overridden on the native path).
 
@@ -246,7 +249,7 @@ Partition layouts:
 | amd64 single | EFI | BOOT | ROOT | DATA | BIOS |
 | arm64 single | FIRMWARE | ROOT | DATA | - | - |
 
-The full image is GPT on both architectures. The arm64 flash image and every Raspberry Pi table that the deploy writes are MBR, primaries only; the partition numbers are the same ([storage](storage-and-persistence.md#layout)).
+The A/B table is the target layout. The image itself holds only p1, p2 and (amd64) p5: ROOT_B and DATA are created at deploy or first boot, and ROOT_A grows to the slot size there. The full image is GPT on both architectures. The arm64 flash image and every Raspberry Pi table that the deploy writes are MBR, primaries only; the partition numbers are the same ([storage](storage-and-persistence.md#layout)).
 
 Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. Stage scripts `set -e`. `verify-image.sh` 1 on any FAIL. `pkglock.py check` (lock gate): 0 nothing newer and 10 updates without security fixes continue with the lock; 20 renews the lock; 2 warns and continues; any other code (crash, missing python3) stops that arch with exit 1.
 

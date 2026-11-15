@@ -84,5 +84,75 @@ losetup -d "$E" 2>/dev/null; rm -f $W/empty.img
 check "refuses a regular file" bash -c "! bash $SCRIPT --yes $W/src.img $W/small.img"
 check "refuses a missing image" bash -c "! bash $SCRIPT --yes $W/none.img $D3"
 losetup -d "$D3"
+# --- minimal image (amd64: EFI with unitotem-layout, ROOT_A shrunk, no ROOT_B, no DATA): written to a disk, the target layout results
+make_min() {
+    local img=$1 code=$2 blab=$3 slot=$4 L fsbytes tsec A_END
+    rm -f -- "$img"; truncate -s 600M "$img"; sgdisk -Z "$img" >/dev/null
+    sgdisk -n 1:0:+64M -t 1:$code -c 1:$blab "$img" >/dev/null
+    sgdisk -n 2:0:+300M -t 2:8300 -c 2:ROOT_A "$img" >/dev/null
+    if [ "$5" = yes ]; then sgdisk -n 5:34:2047 -t 5:ef02 -c 5:BIOS "$img" >/dev/null; fi
+    L=$(losetup --find --show --partscan "$img"); sleep 1; partprobe "$L"; sleep 1
+    mkfs.fat -F32 -n "$blab" "${L}p1" >/dev/null; mkfs.ext4 -q -L ROOT_A "${L}p2"
+    mount "${L}p1" /m; mkdir -p /m/EFI/BOOT; head -c 1000000 /dev/urandom > /m/EFI/BOOT/BOOTX64.EFI
+    echo "UNITOTEM_SLOT_SECTORS=$slot" > /m/unitotem-layout; umount /m
+    mount "${L}p2" /m; head -c 30000000 /dev/urandom > /m/system.bin; echo marker > /m/marker
+    MIN_MD5=$(md5sum < /m/system.bin | cut -d' ' -f1); umount /m
+    e2fsck -fy "${L}p2" >/dev/null 2>&1; resize2fs -M "${L}p2" >/dev/null 2>&1
+    fsbytes=$(dumpe2fs -h "${L}p2" 2>/dev/null | awk -F': *' '/^Block count:/{b=$2}/^Block size:/{s=$2}END{print b*s}')
+    MIN_USED=$(dumpe2fs -h "${L}p2" 2>/dev/null | awk -F': *' '/^Block count:/{t=$2}/^Free blocks:/{f=$2}/^Block size:/{b=$2}END{print (t-f)*b}')
+    tsec=$(( (fsbytes + 16 * 1048576 + 1048575) / 1048576 * 1048576 / 512 ))
+    losetup -d "$L"
+    MIN_A_START=$(sgdisk -i 2 "$img" | awk '/First sector/{print $3}')
+    A_END=$((MIN_A_START + tsec - 1))
+    sgdisk -d 2 "$img" >/dev/null; sgdisk -n 2:$MIN_A_START:$A_END -t 2:8300 -c 2:ROOT_A "$img" >/dev/null
+    truncate -s $(( (A_END + 1 + 2048) * 512 )) "$img"; sgdisk -e "$img" >/dev/null 2>&1
+}
+make_min $W/min.img ef00 EFI 1048576 yes
+MA=$MIN_A_START; SL=1048576; MB=$(( (MA + SL + 2047) / 2048 * 2048 )); MDS=$(( (MB + SL + 2047) / 2048 * 2048 ))
+truncate -s 2G $W/dst3.img; D3=$(attach $W/dst3.img)
+check "write-sd from a minimal .img succeeds" bash -c "bash $SCRIPT --yes $W/min.img $D3 2>$W/w3.log || { cat $W/w3.log >&2; exit 1; }"; cat $W/w3.log
+settle "$D3"
+check "minimal: table is EFI, ROOT_A (slot), ROOT_B (slot), DATA (256 MiB), BIOS, in that place" \
+    [ "$(sfdisk -d $D3 | grep -c ' : start=')" = 5 ] && [ "$(sfdisk -d $D3 | awk -F': *' '/^label:/{print $2}')" = gpt ]
+GOTP=$(sfdisk -d $D3 | grep -E ' : start=' | sed -E 's/^[^ ]+ : start= *([0-9]+), size= *([0-9]+), type=.*name="([^"]*)".*/\1 \2 \3/' | sort -n | tr '\n' ';')
+check "minimal: partitions at the target starts and sizes" [ "$GOTP" = "34 2014 BIOS;2048 131072 EFI;$MA $SL ROOT_A;$MB $SL ROOT_B;$MDS 524288 DATA;" ]
+check "minimal: ROOT_B and DATA carry the Linux data GUID, BIOS the BIOS GUID" bash -c "sfdisk -d $D3 | grep 'name=\"ROOT_B\"' | grep -q 0FC63DAF-8483-4772-8E79-3D69D8477DE4 && sfdisk -d $D3 | grep 'name=\"DATA\"' | grep -q 0FC63DAF-8483-4772-8E79-3D69D8477DE4 && sfdisk -d $D3 | grep 'name=\"BIOS\"' | grep -q 21686148-6449-6E6F-744E-656564454649"
+check "minimal: labels EFI ROOT_A ROOT_B DATA" bash -c "[ \"\$(blkid -o value -s LABEL ${D3}p1 ${D3}p2 ${D3}p3 ${D3}p4 | tr '\n' ' ')\" = 'EFI ROOT_A ROOT_B DATA ' ]"
+mkdir -p /d1 /d2 /d3 /d4; mount -o ro ${D3}p3 /d3; mount -o ro ${D3}p4 /d4
+check "minimal: ROOT_B and DATA are empty ext4 (no files)" bash -c "[ \"\$(find /d3 /d4 -mindepth 1 -not -name lost+found | wc -l)\" = 0 ] && [ \"\$(blkid -o value -s TYPE ${D3}p3 ${D3}p4 | sort -u)\" = ext4 ]"
+umount /d3 /d4
+check "minimal: ROOT_A grown to the slot (filesystem size = partition size)" bash -c "[ \"\$(dumpe2fs -h ${D3}p2 2>/dev/null | awk -F': *' '/^Block count:/{b=\$2}/^Block size:/{s=\$2}END{print b*s}')\" = $(( SL * 512 )) ]"
+check "minimal: ext4 of ROOT_A, ROOT_B, DATA clean and FAT of EFI clean" bash -c "e2fsck -fn ${D3}p2 && e2fsck -fn ${D3}p3 && e2fsck -fn ${D3}p4 && fsck.fat -n ${D3}p1"
+mount -o ro ${D3}p2 /d2; check "minimal: ROOT_A files identical to the image (md5) and the marker" bash -c "[ \"\$(md5sum /d2/system.bin | cut -d' ' -f1)\" = '$MIN_MD5' ] && [ \"\$(cat /d2/marker)\" = marker ]"; umount /d2
+mount -o ro ${D3}p1 /d1; check "minimal: EFI keeps the image's files and unitotem-layout" bash -c "[ -f /d1/unitotem-layout ] && grep -qx 'UNITOTEM_SLOT_SECTORS=1048576' /d1/unitotem-layout && [ -f /d1/EFI/BOOT/BOOTX64.EFI ]"; umount /d1
+losetup -d "$D3"
+# --- minimal image with an MBR table (the arm64 flash image is MBR): written to a disk, the target layout results (MBR, four primaries)
+make_dos_min() {   # $1 image
+    local img=$1 L fsbytes tsec
+    rm -f -- "$img"; truncate -s 600M "$img"
+    printf 'label: dos\nstart=2048, size=131072, type=c, bootable\nstart=133120, size=614400, type=83\n' | sfdisk -q "$img"
+    L=$(losetup --find --show --partscan "$img"); sleep 1; partprobe "$L"; sleep 1
+    mkfs.fat -F32 -n FIRMWARE "${L}p1" >/dev/null; mkfs.ext4 -q -L ROOT_A "${L}p2"
+    mount "${L}p1" /m; echo "UNITOTEM_SLOT_SECTORS=1048576" > /m/unitotem-layout; umount /m
+    mount "${L}p2" /m; head -c 30000000 /dev/urandom > /m/system.bin; echo marker > /m/marker; MIN_MD5=$(md5sum < /m/system.bin | cut -d' ' -f1); umount /m
+    e2fsck -fy "${L}p2" >/dev/null 2>&1; resize2fs -M "${L}p2" >/dev/null 2>&1
+    fsbytes=$(dumpe2fs -h "${L}p2" 2>/dev/null | awk -F': *' '/^Block count:/{b=$2}/^Block size:/{s=$2}END{print b*s}')
+    tsec=$(( (fsbytes + 16 * 1048576 + 1048575) / 1048576 * 1048576 / 512 ))
+    losetup -d "$L"
+    printf 'label: dos\nstart=2048, size=131072, type=c, bootable\nstart=133120, size=%s, type=83\n' "$tsec" | sfdisk -q --force "$img"
+}
+make_dos_min $W/mindos.img
+SL=1048576; DB=1181696; DD=2230272
+truncate -s 2G $W/dst4.img; D4=$(attach $W/dst4.img)
+check "write-sd from a minimal MBR .img succeeds" bash -c "bash $SCRIPT --yes $W/mindos.img $D4 2>$W/w4.log || { cat $W/w4.log >&2; exit 1; }"; cat $W/w4.log
+settle "$D4"
+GOTD=$(sfdisk -d $D4 | grep ' : start=' | sed -E 's/^[^ ]+ : start= *([0-9]+), size= *([0-9]+), type=([0-9a-f]+).*/\1 \2 \3/' | sort -n | tr '\n' ';')
+check "minimal MBR: table is dos with 2048/c, ROOT_A, ROOT_B, DATA as 83 at the target starts" [ "$(sfdisk -d $D4 | awk -F': *' '/^label:/{print $2}')" = dos ] && [ "$GOTD" = "2048 131072 c;133120 $SL 83;$DB $SL 83;$DD 524288 83;" ]
+check "minimal MBR: labels FIRMWARE ROOT_A ROOT_B DATA" bash -c "[ \"\$(blkid -o value -s LABEL ${D4}p1 ${D4}p2 ${D4}p3 ${D4}p4 | tr '\n' ' ')\" = 'FIRMWARE ROOT_A ROOT_B DATA ' ]"
+check "minimal MBR: ROOT_A grown to the slot, ROOT_B and DATA empty ext4, all clean" bash -c "[ \"\$(dumpe2fs -h ${D4}p2 2>/dev/null | awk -F': *' '/^Block count:/{b=\$2}/^Block size:/{s=\$2}END{print b*s}')\" = $(( SL * 512 )) ] && e2fsck -fn ${D4}p2 && e2fsck -fn ${D4}p3 && e2fsck -fn ${D4}p4 && fsck.fat -n ${D4}p1"
+mkdir -p /d2 /d3 /d4; mount -o ro ${D4}p2 /d2; mount -o ro ${D4}p3 /d3; mount -o ro ${D4}p4 /d4
+check "minimal MBR: ROOT_A files identical (md5), ROOT_B and DATA empty" bash -c "[ \"\$(md5sum /d2/system.bin | cut -d' ' -f1)\" = '$MIN_MD5' ] && [ \"\$(find /d3 /d4 -mindepth 1 -not -name lost+found | wc -l)\" = 0 ]"
+umount /d2 /d3 /d4
+losetup -d "$D4"
 echo "$ok passed, $fail failed"
 [ "$fail" = 0 ]

@@ -14,6 +14,8 @@
 # Table: the dump of the image's table, without last-lba (the backup table goes to the real end of the disk), with the same
 # GUIDs, labels and start sectors; the MBR boot code is copied. Filesystems keep their UUID and label (partclone clones
 # them). The expanded image lives only in tmpfs (/dev/shm); the copy is refused when it does not fit there. The last partition is not grown: DATA grows to the disk end at the first boot (docs/system/storage-and-persistence.md).
+# Minimal image (boot partition and ROOT_A only): the layout of image_describe (unitotem-layout gives the slot): ROOT_A is cloned
+# into the slot and grown offline (e2fsck -fy, resize2fs), ROOT_B and DATA are created empty (mkfs.ext4).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() { cat <<'USAGE'
@@ -80,6 +82,14 @@ TABLE=$(sfdisk -d -- "$LOOP" | grep -v '^last-lba:' | grep -v '^device:')
 printf '%s\n' "$TABLE" > "$TMP/table.sfdisk"
 LABEL=$(awk -F': *' '/^label:/{print $2}' "$TMP/table.sfdisk")
 [ -n "$LABEL" ] || die "the image has no partition table"
+SYNTH=0
+if image_minimal "$TMP/table.sfdisk"; then
+    BOOTDEV=$(image_boot_node "$TMP/table.sfdisk") || die "minimal image: no boot partition (EFI or FIRMWARE)"
+    SLOT=$(image_slot_sectors "$BOOTDEV") || die "minimal image: unitotem-layout is not usable"
+    ANUM=$(image_part_number "$TMP/table.sfdisk" ROOT_A) || die "minimal image: no ROOT_A"
+    image_layout_synth "$TMP/table.sfdisk" "$SLOT" "$ANUM" || die "cannot synthesize the target layout"
+    SYNTH=1
+fi
 
 # end of the last partition, in bytes, against the device
 SECT=$(awk -F': *' '/^sector-size:/{print $2}' "$TMP/table.sfdisk"); SECT=${SECT:-512}
@@ -133,11 +143,22 @@ node_of() {
 }
 NUMS=$(sed -nE 's#^/dev/[^ ]*[^0-9]([0-9]+) *:.*#\1#p' "$TMP/table.sfdisk" | sort -n)
 for n in $NUMS; do
+    if [ "$SYNTH" = 1 ] && { [ "$n" = 3 ] || [ "$n" = 4 ]; }; then
+        # ROOT_B and DATA of a minimal image: no source, an empty ext4 (as the deploy makes them)
+        dst=""
+        for _ in $(seq 1 50); do dst=$(node_of "$DEVICE" "$n"); [ -n "$dst" ] && [ -b "$dst" ] && break; sleep 0.2; done
+        [ -b "$dst" ] || die "partition $n: device node missing (target '$dst')"
+        if [ "$n" = 3 ]; then label=ROOT_B; else label=DATA; fi
+        log INFO "partition $n ($label): empty ext4"
+        mkfs.ext4 -q -F -L "$label" "$dst" || die "mkfs.ext4 on partition $n failed"
+        continue
+    fi
     src=$(node_of "$LOOP" "$n"); dst=""
     for _ in $(seq 1 50); do dst=$(node_of "$DEVICE" "$n"); [ -n "$dst" ] && [ -b "$dst" ] && break; sleep 0.2; done
     { [ -b "$src" ] && [ -b "$dst" ]; } || die "partition $n: device node missing (source '$src', target '$dst')"
     fstype=$(blkid -o value -s TYPE -- "$src" 2>/dev/null || true)
-    name=$(lsblk -no PARTLABEL -- "$src" 2>/dev/null | head -1)
+    name=$(blkid -o value -s PARTLABEL -- "$src" 2>/dev/null | head -1 || true)
+    flabel=$(blkid -o value -s LABEL -- "$src" 2>/dev/null || true)
     t0=$(date +%s)
     case "$fstype" in
         ext2|ext3|ext4) tool=partclone.extfs ;;
@@ -161,6 +182,13 @@ for n in $NUMS; do
         fi
     fi
     log INFO "partition $n done in $(( $(date +%s) - t0 )) s"
+    if [ "$SYNTH" = 1 ] && [ "$flabel" = ROOT_A ]; then
+        # grown offline to the slot: the restored filesystem is checked, then resized to the partition
+        rc=0; e2fsck -fy "$dst" >/dev/null 2>&1 || rc=$?
+        [ "$rc" -le 1 ] || die "partition $n: e2fsck found uncorrected errors (rc=$rc)"
+        resize2fs "$dst" >/dev/null 2>&1 || die "partition $n: resize2fs failed"
+        log INFO "partition $n grown to the slot"
+    fi
 done
 sync
 partprobe "$DEVICE" 2>/dev/null || true
@@ -169,6 +197,12 @@ udevadm settle --timeout=10 2>/dev/null || true
 # --- check: label and UUID of every filesystem equal the image's, ext4 and FAT are consistent
 bad=0
 for n in $NUMS; do
+    if [ "$SYNTH" = 1 ] && { [ "$n" = 3 ] || [ "$n" = 4 ]; }; then
+        dst=$(node_of "$DEVICE" "$n"); want=ROOT_B; [ "$n" = 3 ] || want=DATA
+        [ "$(blkid -o value -s LABEL -- "$dst" 2>/dev/null || true)" = "$want" ] || { log ERROR "partition $n: label is not $want"; bad=1; }
+        e2fsck -fn "$dst" >/dev/null 2>&1 || { log ERROR "partition $n: e2fsck reports errors"; bad=1; }
+        continue
+    fi
     src=$(node_of "$LOOP" "$n"); dst=$(node_of "$DEVICE" "$n")
     for k in LABEL UUID; do
         a=$(blkid -o value -s "$k" -- "$src" 2>/dev/null || true); b=$(blkid -o value -s "$k" -- "$dst" 2>/dev/null || true)

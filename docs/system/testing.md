@@ -13,10 +13,10 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_boot_recovery.py` | Boot recovery set sync (`sync_boot_recovery`, `unitotem-update`): [Recovery set refresh](ab-updates.md#recovery-set-refresh) |
 | `tools/release/test_boot_guard.py` | `unitotem-update` boot health gate, boot counter, status fields, `slot_dev`: 42 checks |
 | `tools/release/test_bootcount.sh` | Initramfs boot counter gate and fallback credentials without DATA (`ota-engine.sh`): 55 checks |
-| `tools/release/test_first_boot_layout_dos.sh` | First-boot layout on DOS (MBR) disks (`layout_mbr`, power cuts, GPT unchanged), Docker `--privileged`: 46 checks |
-| `tools/release/test_make_flash_image.sh` (+ `test_make_flash_image_inside.sh`) | Flash image: arm64 DOS table (type, label-id, start, size, bootable, bytes), `layout_mbr` completion to four primaries, amd64 GPT; Docker `--privileged`: 30 checks |
+| `tools/release/test_first_boot_layout_dos.sh` | First-boot layout on DOS (MBR) disks (`layout_mbr`, power cuts, GPT unchanged, minimal image with `grow_root`), Docker `--privileged`: 56 checks |
+| `tools/release/test_make_flash_image.sh` (+ `test_make_flash_image_inside.sh`) | Flash image: arm64 DOS table (type, label-id, start, size, bootable, bytes), `layout_mbr` and `layout_complete` completion on 14G disks (ROOT_A grown to the slot, ROOT_B, DATA, tree digest), flash images of minimal full images (arm64 DOS, amd64 GPT); Docker `--privileged`: 77 checks |
 | `tools/release/test_deploy_table_mbr.py` | Deploy MBR conversion (`load_image`, `image_table_dos`) and `restore-table` tail on MBR and GPT: 16 checks |
-| `tools/release/test_grow_data.sh` (+ `test_grow_data_inside.sh`) | `layout_complete` and `grow_data` on GPT and DOS, flash images, interruptions (`resize2fs` kill, `e2fsck -fy`); Docker `--privileged` |
+| `tools/release/test_grow_data.sh` (+ `test_grow_data_inside.sh`) | `grow_root`, `layout_complete` and `grow_data` on GPT and DOS, flash and minimal images, interruptions (`resize2fs` kill, `e2fsck -fy`, cut after the table write), premount dispatch; Docker `--privileged`: 279 checks |
 | `tools/release/test_overlay_status.sh` | Overlay hook under dash, mocked tools: 38 checks |
 | `tools/release/test_overlay_volatile.sh` | Volatile overlays without DATA (`volatile_overlays`), Docker `--privileged`: 47 checks |
 | `tools/release/test_deploy_backup.py` | `backup_stream` (`deploy/script/lib.sh`), `backup_running_system` (`deploy/script/remote-deploy.sh`) |
