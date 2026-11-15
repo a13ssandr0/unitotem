@@ -1,21 +1,23 @@
 #!/bin/bash
 # Minimal "preboot" SD image for a Raspberry Pi (arm64): the OTA fallback and nothing else.
 #
-# One FAT partition (MBR, type 0c, from 1 MiB): the Pi firmware, the recovery kernel and initrd and the device trees, all read from the boot
-# partition of the arm64 image given with --image; config.txt and cmdline.txt (unitotem.ota=recover). The engine in the initrd is replaced by
-# --engine. The Pi boots it, gets an address by DHCP, shows it and waits for `remote-deploy.sh deploy <address> --image FILE`.
+# One FAT partition (MBR, type 0c, from 1 MiB) holding the boot tree (unitotem/make-boot-tree.sh): the Pi firmware, the recovery kernel
+# (recovery8.img) and initrd (with the repository's engine), the device trees, config.txt and cmdline.txt (unitotem.ota=recover). The
+# tree is built once per build (--tree, default build/arm64/boot-tree); --image FILE extracts the same files from the FIRMWARE partition
+# of an arm64 image. The Pi boots it, gets an address by DHCP, shows it and waits for `remote-deploy.sh deploy <address> --image FILE`.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() { cat <<'USAGE'
-Usage: make-preboot-image.sh --image FILE [options]
+Usage: make-preboot-image.sh [--tree DIR | --image FILE] [options]
 
-  --image FILE      arm64 image: firmware, recovery kernel and initrd
+  --tree DIR        boot tree of the arm64 build (default: build/arm64/boot-tree when it exists)
+  --image FILE      arm64 image: its FIRMWARE partition is turned into a boot tree (needs root)
   --out FILE        result (./unitotem-preboot-arm64.img)
-  --engine FILE     engine put in the initrd (ota-engine.sh beside this)
+  --engine FILE     engine put in the initrd of --image (ota-engine.sh beside this)
   --size-mib N      card image size (128)
   --no-xz           no .xz copy
 
-Needs root. Docs: docs/system/deploy-and-recovery.md
+Needs root. Docs: docs/system/build.md
 USAGE
 }
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
@@ -30,63 +32,59 @@ reexec_as_root() {
 }
 [ "$(id -u)" = 0 ] || reexec_as_root "${BASH_SOURCE[0]}" "$@"
 ARCH=arm64
-IMAGE="" ENGINE="${HERE}/ota-engine.sh" OUT="./unitotem-preboot-arm64.img" SIZE_MIB=128 XZ=1
+IMAGE="" TREE="" ENGINE="${HERE}/ota-engine.sh" ENGINE_SET=0 OUT="./unitotem-preboot-arm64.img" SIZE_MIB=128 XZ=1
+DEFAULT_TREE="${HERE}/../../build/arm64/boot-tree"
+die() { echo "$1" >&2; exit 1; }
 while [ $# -gt 0 ]; do
     case "$1" in
+        --tree) TREE="$2"; shift 2 ;;
         --image) IMAGE="$2"; shift 2 ;;
-        --engine) ENGINE="$2"; shift 2 ;;
+        --engine) ENGINE="$2"; ENGINE_SET=1; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --size-mib) SIZE_MIB="$2"; shift 2 ;;
         --no-xz) XZ=0; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
-for c in sfdisk mkfs.fat mcopy dd tar xz truncate cpio install; do command -v "$c" >/dev/null || { echo "missing command $c" >&2; exit 1; }; done
+for c in sfdisk mkfs.fat dd tar xz truncate install cpio sha256sum mount; do command -v "$c" >/dev/null || { echo "missing command $c" >&2; exit 1; }; done
 source "${HERE}/image-lib.sh"
-[ -f "$IMAGE" ] || { echo "--image FILE is required (an arm64 image)" >&2; exit 1; }
-[ -f "$ENGINE" ] || { echo "engine not found: $ENGINE" >&2; exit 1; }
+if [ -n "$IMAGE" ] && [ -n "$TREE" ]; then die "give --tree DIR or --image FILE, not both"; fi
+if [ -z "$IMAGE" ] && [ -z "$TREE" ]; then
+    [ -f "${DEFAULT_TREE}/boot-tree.sha256" ] || die "--tree DIR or --image FILE is required (no ${DEFAULT_TREE})"
+    TREE="$DEFAULT_TREE"
+fi
+if [ "$ENGINE_SET" = 1 ] && [ -z "$IMAGE" ]; then die "--engine applies to --image only: the tree carries its engine"; fi
+[ -z "$IMAGE" ] || [ -f "$IMAGE" ] || die "image not found: $IMAGE"
+[ -z "$IMAGE" ] || [ -f "$ENGINE" ] || die "engine not found: $ENGINE"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/preboot.XXXXXX")
-trap 'image_close; rm -rf -- "$WORK"' EXIT
+trap 'umount -l "$WORK/mnt" 2>/dev/null || true; image_close; rm -rf -- "$WORK"' EXIT
 FW="$WORK/fw"; mkdir -p "$FW"
 
-# firmware files only: not the slot directories, not the real kernel/initramfs, not the overlays
-image_open "$IMAGE" || { echo "cannot open $IMAGE" >&2; exit 1; }
-FWNODE=""; for n in 1 2; do d=$(image_node "$n") && [ "$(blkid -s LABEL -o value "$d")" = FIRMWARE ] && FWNODE=$d && break; done
-[ -n "$FWNODE" ] || { echo "the image has no FIRMWARE partition" >&2; exit 1; }
-SRC="$WORK/src"; mkdir -p "$SRC"; mount -t vfat -o ro "$FWNODE" "$SRC"
-( shopt -s nullglob; cd "$SRC" && for f in bootcode.bin start*.elf fixup*.dat *.dtb LICENCE.broadcom; do [ -f "$f" ] && cp -- "$f" "$FW/"; done; true )
-VMLINUZ="$WORK/recovery8.img"; INITRD="$WORK/recovery-initrd.img"
-cp -- "$SRC/recovery8.img" "$VMLINUZ" 2>/dev/null; cp -- "$SRC/recovery-initrd.img" "$INITRD" 2>/dev/null
-[ -s "$VMLINUZ" ] && [ -s "$INITRD" ] || { umount "$SRC"; echo "the image has no recovery8.img and recovery-initrd.img on its boot partition" >&2; exit 1; }
-umount "$SRC"
-# the Pi 3/4 firmware and the device trees are what the boards that run arm64 UniTotem need; drop the extra start*_x/_db variants
-rm -f "$FW"/start_x.elf "$FW"/start4x.elf "$FW"/start_db.elf "$FW"/start4db.elf "$FW"/fixup_x.dat "$FW"/fixup4x.dat "$FW"/fixup_db.dat "$FW"/fixup4db.dat
-for need in start.elf fixup.dat bcm2710-rpi-3-b.dtb start4.elf fixup4.dat bcm2711-rpi-4-b.dtb; do
-    [ -s "$FW/$need" ] || { echo "the image does not contain $need" >&2; exit 1; }
-done
-cp -- "$VMLINUZ" "$FW/recovery8.img"
-cp -- "$INITRD" "$FW/recovery-initrd.img"
-# The engine of the preboot image is the repository's, whatever engine the stored recovery initrd was built with: a second cpio archive
-# with just that file is appended; the kernel unpacks the archives in order and a later entry replaces an earlier one.
-OV="$WORK/ov"; mkdir -p "$OV/usr/lib/unitotem"
-install -m 755 -- "$ENGINE" "$OV/usr/lib/unitotem/ota-engine.sh"
-( cd "$OV" && printf 'usr/lib/unitotem/ota-engine.sh\n' | cpio -o -H newc --quiet --owner=0:0 ) >> "$FW/recovery-initrd.img"
-# Same settings as the resident fallback of a deployed device (ota-engine.sh set-default-recovery): 640x480 DMT mode so the
-# text is readable from a distance. ttyS0 is the header UART.
-cat > "$FW/config.txt" <<'EOF'
-arm_64bit=1
-enable_uart=1
-hdmi_group=2
-hdmi_mode=4
-kernel=recovery8.img
-initramfs recovery-initrd.img followkernel
-EOF
-# unitotem.ota=recover: wait for the host with NO idle timeout (unitotem.ota=1 reboots after 30 minutes without a host)
-echo "unitotem.ota=recover console=tty1 console=ttyS0,115200" > "$FW/cmdline.txt"
+if [ -n "$IMAGE" ]; then
+    # the FIRMWARE partition of the image: its top-level files are the input of the boot tree
+    image_open "$IMAGE" || die "cannot open $IMAGE"
+    FWNODE=""; for n in 1 2; do d=$(image_node "$n") && [ "$(blkid -s LABEL -o value "$d")" = FIRMWARE ] && FWNODE=$d && break; done
+    [ -n "$FWNODE" ] || die "the image has no FIRMWARE partition"
+    SRC="$WORK/src"; mkdir -p "$SRC" "$WORK/fwsrc"; mount -t vfat -o ro "$FWNODE" "$SRC"
+    find "$SRC" -mindepth 1 -maxdepth 1 -type f -exec cp -- {} "$WORK/fwsrc/" \;
+    LEVEL=$(sed -n 's/^# unitotem-recovery-level: //p' "$SRC/recovery.sha256" | head -n 1)
+    umount "$SRC"
+    image_close
+    [ -s "$WORK/fwsrc/recovery8.img" ] && [ -s "$WORK/fwsrc/recovery-initrd.img" ] \
+        || die "the image has no recovery8.img and recovery-initrd.img on its boot partition"
+    bash "${HERE}/../../unitotem/make-boot-tree.sh" --firmware "$WORK/fwsrc" \
+        --recovery-vmlinuz "$WORK/fwsrc/recovery8.img" --recovery-initrd "$WORK/fwsrc/recovery-initrd.img" \
+        --level "$LEVEL" --engine "$ENGINE" --out "$WORK/tree"
+    TREE="$WORK/tree"
+fi
 
+# The card carries the tree as it is: every file checked against its manifest first.
+[ -f "$TREE/boot-tree.sha256" ] || die "$TREE: no boot-tree.sha256 (build the tree with unitotem/make-boot-tree.sh)"
+( cd "$TREE" && sha256sum -c --quiet boot-tree.sha256 ) || die "$TREE: a file does not match boot-tree.sha256"
+cp -a -- "$TREE"/. "$FW"/
 CONTENT_KB=$(du -sk "$FW" | cut -f1)
-[ $((SIZE_MIB * 1024)) -gt $((CONTENT_KB + 8192)) ] || { echo "content is ${CONTENT_KB} KiB: a larger --size-mib is needed" >&2; exit 1; }
+[ $((SIZE_MIB * 1024)) -gt $((CONTENT_KB + 8192)) ] || die "content is ${CONTENT_KB} KiB: a larger --size-mib is needed"
 
 # FAT32 partition from 1 MiB to the end (MBR: the firmware of every Pi reads it; FAT32 needs >= ~33 MiB)
 FAT_MIB=$((SIZE_MIB - 1))
@@ -94,9 +92,13 @@ rm -f -- "$OUT"; truncate -s "${SIZE_MIB}M" "$OUT"
 printf 'label: dos\nunit: sectors\n\nstart=2048, size=%d, type=c, bootable\n' $((FAT_MIB * 2048)) | sfdisk -q "$OUT"
 truncate -s "${FAT_MIB}M" "$WORK/fat.img"
 mkfs.fat -F32 -n FIRMWARE -i 50524550 "$WORK/fat.img" >/dev/null
-MTOOLS_SKIP_CHECK=1 mcopy -i "$WORK/fat.img" -s "$FW"/* ::/
+mkdir -p "$WORK/mnt"
+mount -o loop -- "$WORK/fat.img" "$WORK/mnt"
+cp -r -- "$FW"/. "$WORK/mnt"/
+sync
+umount "$WORK/mnt"
 dd if="$WORK/fat.img" of="$OUT" bs=1M seek=1 conv=notrunc status=none
-echo ">>> ${OUT}: $(du -h --apparent-size "$OUT" | cut -f1), content ${CONTENT_KB} KiB, image $(basename "$IMAGE")"
+echo ">>> ${OUT}: $(du -h --apparent-size "$OUT" | cut -f1), content ${CONTENT_KB} KiB, tree ${TREE}"
 if [ "$XZ" = 1 ]; then
     xz -T0 -f -k -- "$OUT"
     echo ">>> ${OUT}.xz: $(du -h "${OUT}.xz" | cut -f1)"

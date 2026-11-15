@@ -44,7 +44,15 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
   - Staged pending on the other slot, no trial requested: no-op.
 - **confirm**: `confirm_now` without the health wait, then the same ESP `grub.cfg` and recovery set syncs as `boot-ok`.
 - **rollback [--reboot]**: needs `other` valid; default := other; pending removed; result `armed`; the next boot of the old slot turns it into `ok`.
-- **repair**: if `other` fails `slot_sound` (label, `e2fsck -fn`, mount, `release-version`, `systemd`, on GRUB `vmlinuz` and `initrd.img`, Pi boot files), copy `cur` over it (`partclone.extfs -c -F` into `clone_into_slot`, [write order](#slot-devices-and-repair-writes)), new UUID and label, `e2fsck -fy`, version check, Pi boot files cloned, overlays prepared. Under the lock, `RuntimeMaxSec=3600`. The ROOT_B that the first boot of a flash image creates is a formatted, labelled, empty slot: `slot_sound` returns `empty`, so the first confirmed boot fills it (`storage-and-persistence.md#layout`).
+- <a id="repair"></a>**repair**: if `other` fails `slot_sound`, copy `cur` over it (`partclone.extfs -c -F` into `clone_into_slot`, [write order](#slot-devices-and-repair-writes)), new UUID and label, `e2fsck -fy`, version check, Pi boot files cloned, overlays prepared. Under the lock, `RuntimeMaxSec=3600`.
+  - Causes (the `cause` of the event, `last-result` and the progress): `first-boot` (no label and no filesystem signature: a blank ROOT_B of the layout), `unprepared` (the slot passes `slot_sound` but `slots.json` has no `valid` and `prepared` entry for it), and the `slot_sound` causes `label`, `fsck`, `mount`, `empty` (no `release-version` or `systemd`; on GRUB also `vmlinuz` and `initrd.img`), `bootfile:<name>` (Pi boot files). Error codes are unchanged. `slot_sound` itself is unchanged: `fetch` and `status` read it as before; only the repair decision adds the state check.
+  - The ROOT_B that the first boot of a flash image creates is blank (`storage-and-persistence.md#layout`). The first confirmed boot (`boot-ok` with no pending update) starts the repair detached: `cause` `first-boot`, event `repair: slot b (first-boot) <- copy of slot a (<version>)`. Clone and verify take minutes; `status` shows the progress as `op` (`repair`, phase `write`).
+  - Interrupted clone: the copy clears the old identity first and writes the superblock with the label last, so a cut before that write leaves a blank partition (cause `first-boot`). Nothing is marked valid before the copy has verified. The next confirmed boot starts the repair again, from the disk, until `slot_sound` passes. No marker file is kept.
+  - A cut after the superblock write and before `prepare_overlays` leaves a slot that passes `slot_sound` but has no `valid` and `prepared` entry in `slots.json`: cause `unprepared`, so the next confirmed boot clones again.
+  - Update before the clone finishes (the same lock as the repair):
+    - `fetch`, `apply` while the clone runs: `busy` (rc 12). `auto` reports `busy` and does nothing.
+    - `rollback` before the clone: `no-rollback` (rc 13), since B holds no valid system yet.
+    - `fetch` after an interrupted clone: no clone is needed first. It writes the whole of B (`partclone.restore -o DEV`), then the label and UUID, then verifies, like a fetch onto any slot.
 - **failover** (initramfs): chosen root missing or failing the read-only check and the other slot sound: write guard `/boot-ota/unitotem-ota.failover` (`cur->other`), switch default (`saved_entry` / `os_prefix`), `reboot -f`. Refused while the guard exists. Cleared by the next plain boot.
 - **Overlay and counter status**: `status` reports `overlay`, `volatile` and `boot_attempts` (see the Status JSON below and [boot.md](boot.md#boot-counter)).
 - **Lock**: `/run/unitotem-update.lock` (flock); busy exits 12. The file is never unlinked: release closes the descriptor, so no waiter can lock a stale inode. Progress: `/run/unitotem-update.progress` (one JSON line, atomic rename).
@@ -66,7 +74,7 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
 1. GPT PARTLABEL `ROOT_A` / `ROOT_B`.
 2. One filesystem with the label.
 3. Two or more with the label: on the disk of the running root, A is the lowest partition number and B the highest. No candidate on that disk: not found.
-4. Neutral (`ROOT_NEW`) or blank label: the partition next to the other slot (B: +1, A: -1). Refused when it is the running root, labelled `DATA`, `FIRMWARE`, `EFI` or `BOOT`, or not ext4 or empty.
+4. Neutral (`ROOT_NEW`) or blank label: the partition next to the other slot (B: +1, A: -1). Refused when it is the running root, labelled `DATA`, `FIRMWARE`, `EFI` or `BOOT`, or not ext4 or empty. A blank ROOT_B (no filesystem yet, first boot) is accepted.
 
 Sysfs is `/sys/class/block`; `UNITOTEM_SYS_BLOCK` overrides it (tests). MBR disks (every Raspberry Pi whose table the deploy wrote) have no partition names, so rules 2 to 4 apply there.
 
@@ -218,6 +226,6 @@ Boot interfaces:
 
 Host (repo root, no device): `python3 tools/release/test_auto.py`, `test_repair.py`, `test_identity_merge.py`, `test_boot_orientation.py`, `test_io_friendly.py`, `test_release_build.py` (no root; sparse 5 GiB files), `test_rpi_backend.py` (needs mtools, e2fsprogs; served by `tools/release/fake-github.py`).
 
-Slot devices and repair writes: `python3 tools/release/test_repair.py` (60 checks, includes `clone_into_slot` on a file and `slot_dev` with fake sysfs), `bash tools/release/test_slot_pick.sh` (44 checks, engine `slot_pick`), `bash tools/release/test_slot_dup.sh` (privileged Docker, 548 checks: duplicate labels and interrupted writes, GPT and DOS, `metadata_csum` on and off). Details: [testing.md](testing.md).
+Slot devices and repair writes: `python3 tools/release/test_repair.py` (78 checks, includes `clone_into_slot` on a file and `slot_dev` with fake sysfs), `bash tools/release/test_slot_pick.sh` (44 checks, engine `slot_pick`), `bash tools/release/test_slot_dup.sh` (privileged Docker, 548 checks: duplicate labels and interrupted writes, GPT and DOS, `metadata_csum` on and off). Details: [testing.md](testing.md).
 
 Image: `unitotem/verify-image.sh` (boot-ok, auto timer, failover, grub.cfg). QEMU power-cut and loopback harnesses: `testing.md`.

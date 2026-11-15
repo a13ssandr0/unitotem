@@ -34,7 +34,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 ### Raspberry Pi (arm64, `backend=rpi`)
 
 - Partition table: MBR (DOS) on every Raspberry Pi model, primaries only: FIRMWARE (type `c`) is partition 1, ROOT_A 2, ROOT_B 3, DATA 4 ([storage](storage-and-persistence.md#layout)).
-- FIRMWARE (FAT): `config.txt`, shared firmware, `slota/` and `slotb/` (`kernel8.img`, `initramfs8`, `cmdline.txt`, dtbs, overlays), resident fallback `recovery8.img`, `recovery-initrd.img`, top-level `*.dtb`, `recovery.sha256`, `unitotem-ota.*`.
+- FIRMWARE (FAT): `config.txt`, shared firmware, `slota/` and `slotb/` (`kernel8.img`, `initramfs8`, `cmdline.txt`, dtbs, overlays), resident fallback `recovery8.img`, `recovery-initrd.img`, top-level `*.dtb`, `recovery.sha256`, `unitotem-ota.*`. Built from the boot tree (`build/arm64/boot-tree/`, [Recovery set](#recovery-set)); the preboot card carries the same files.
 - Default: `config.txt` `os_prefix=slota/` (or `slotb/`).
 - Trial: `tryboot.txt` holds the other slot's `os_prefix`; read by the firmware only on a reboot with `systemctl reboot --reboot-argument="0 tryboot"`. A plain reboot or power cut returns to the `config.txt` slot.
 - Promotion: `config.txt` rewritten from `tryboot.txt` with the new `os_prefix`; `tryboot.txt` removed.
@@ -88,6 +88,8 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 ### Recovery set
 
 The resident fallback on the boot partition (`recovery-vmlinuz` or `recovery8.img`, `recovery-initrd.img`, `recovery.sha256`, arm64 top-level `*.dtb`) is refreshed from the running image after a confirmed boot. Sync steps, power-cut analysis and the downgrade rule: [ab-updates](ab-updates.md#recovery-set-refresh).
+
+arm64 source: the boot tree (`build/arm64/boot-tree/`, `unitotem/make-boot-tree.sh`). Stage 3 copies `recovery8.img` and `recovery-initrd.img` from it, so the FIRMWARE set and the preboot card carry the same bytes. The tree's initrd carries the build's `ota-engine.sh`: stage 1b already puts it there, else it is appended (a second cpio entry); `recovery.sha256` and the image set hash that file.
 
 Image root, `/usr/share/unitotem/recovery/` (written by `stage3-image.sh`):
 

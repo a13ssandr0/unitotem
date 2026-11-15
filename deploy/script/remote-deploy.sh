@@ -839,8 +839,10 @@ run_ota_sequence() {
                 wait "$ppid" || die "reading partition ${partnum} from the image failed"
                 rm -f -- "$fifo"
                 ;;
-            format)
-                ota_ssh "$host" "unitotem-ota-engine format-part --disk '${disk}' --part '${partnum}' --label '${label}'"
+            blank)
+                # ROOT_B gets no filesystem (first MiB zeroed only): the first confirmed boot clones ROOT_A into it (unitotem-update repair).
+                log "Blanking partition ${partnum} (${label}): not written, cloned from ROOT_A at the first boot"
+                ota_ssh "$host" "unitotem-ota-engine blank-part --disk '${disk}' --part '${partnum}' --label '${label}'"
                 ;;
             data)
                 if [ "$OPT_WIPE_DATA" = 1 ] || [ "${P[HAVE_DATA]:-0}" != 1 ]; then
@@ -911,7 +913,7 @@ load_image() {
 
     P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
     P_BOOTFS_PART=$(awk -F= '/^UNITOTEM_BOOTFS_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
-    # 1 for a minimal image: ROOT_A is grown to the slot on the target, ROOT_B and DATA are made by the deploy
+    # 1 for a minimal image: ROOT_A is grown to the slot on the target, ROOT_B is blanked and DATA made by the deploy
     P_SYNTH=$(awk -F= '/^UNITOTEM_SYNTH=/{print $2; exit}' "${IMG_DESC}/parts.manifest")
     # Partition number for a label: remember the last UNITOTEM_PART= seen, print it at the matching label line.
     part_num_for_label() {
@@ -1040,7 +1042,7 @@ wait_new_system() {
         sleep 10; waited=$((waited + 10))
         [ "$waited" -lt 600 ] || { warn "${ip} did not answer on the new system within 10 minutes - check manually (it may still be in stage 2, or waiting in the fallback)"; return 1; }
     done
-    log "Deploy complete: ${ip} answers on the new system (HTTPS /login: ${answer})."
+    log "Deploy complete: ${ip} answers on the new system (HTTPS /login: ${answer}). ROOT_B is cloned from ROOT_A at the first boot."
 }
 
 # Creates the administrator asked for, imports the settings of the earlier system (migrate-legacy.py, which also creates the administrator when

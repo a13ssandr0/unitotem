@@ -42,7 +42,7 @@ mf() { awk -F= -v k="$1" '$1==k{print $2; exit}' $M; }
 blk() { awk -v n="$1" -F= '/^UNITOTEM_PART=/{cur=$2} cur==n && $1==k {print $2; exit}' k="$2" $M; }
 check "layout 2, arch amd64, five partitions" bash -c "[ '$(mf UNITOTEM_LAYOUT)' = 2 ] && [ '$(mf UNITOTEM_ARCH)' = amd64 ] && [ '$(mf UNITOTEM_NPARTS)' = 5 ]"
 check "DATA is partition 4, the boot partition 1" bash -c "[ '$(mf UNITOTEM_DATA_PART)' = 4 ] && [ '$(mf UNITOTEM_BOOTFS_PART)' = 1 ]"
-check "actions: filecopy restore format data raw" bash -c "[ \"$(blk 1 UNITOTEM_PART_ACTION) $(blk 2 UNITOTEM_PART_ACTION) $(blk 3 UNITOTEM_PART_ACTION) $(blk 4 UNITOTEM_PART_ACTION) $(blk 5 UNITOTEM_PART_ACTION)\" = 'filecopy restore format data raw' ]"
+check "actions: filecopy restore blank data raw" bash -c "[ \"$(blk 1 UNITOTEM_PART_ACTION) $(blk 2 UNITOTEM_PART_ACTION) $(blk 3 UNITOTEM_PART_ACTION) $(blk 4 UNITOTEM_PART_ACTION) $(blk 5 UNITOTEM_PART_ACTION)\" = 'filecopy restore blank data raw' ]"
 check "ROOT_A: cloner extfs, used bytes as dumpe2fs says" bash -c "[ '$(blk 2 UNITOTEM_PART_CLONER)' = extfs ] && [ '$(blk 2 UNITOTEM_PART_USED_BYTES)' = '$ROOT_USED' ]"
 check "BIOS partition: label from the GPT type, cloner dd" bash -c "[ '$(blk 5 UNITOTEM_PART_LABEL)' = BIOS ] && [ '$(blk 5 UNITOTEM_PART_CLONER)' = dd ]"
 check "the boot partition keeps its FAT serial" [ "$(blk 1 UNITOTEM_PART_VOLID)" = "$EFI_VOLID" ]
@@ -141,8 +141,8 @@ check "minimal amd64: ROOT_B and DATA carry the Linux data GUID" bash -c "grep '
 check "minimal amd64: manifest synth, layout 2, five partitions, DATA 4, boot 1, gpt" \
     [ "$(mmf UNITOTEM_SYNTH)" = 1 ] && [ "$(mmf UNITOTEM_LAYOUT)" = 2 ] && [ "$(mmf UNITOTEM_NPARTS)" = 5 ] && [ "$(mmf UNITOTEM_DATA_PART)" = 4 ] && [ "$(mmf UNITOTEM_BOOTFS_PART)" = 1 ] && [ "$(mmf UNITOTEM_TABLE)" = gpt ]
 check "minimal amd64: min disk from the synthesized DATA start" [ "$(mmf UNITOTEM_MIN_DISK_BYTES)" = $(( (MDS + 2048 + 33) * 512 )) ]
-check "minimal amd64: actions filecopy restore format data raw" \
-    [ "$(mblk 1 UNITOTEM_PART_ACTION) $(mblk 2 UNITOTEM_PART_ACTION) $(mblk 3 UNITOTEM_PART_ACTION) $(mblk 4 UNITOTEM_PART_ACTION) $(mblk 5 UNITOTEM_PART_ACTION)" = 'filecopy restore format data raw' ]
+check "minimal amd64: actions filecopy restore blank data raw" \
+    [ "$(mblk 1 UNITOTEM_PART_ACTION) $(mblk 2 UNITOTEM_PART_ACTION) $(mblk 3 UNITOTEM_PART_ACTION) $(mblk 4 UNITOTEM_PART_ACTION) $(mblk 5 UNITOTEM_PART_ACTION)" = 'filecopy restore blank data raw' ]
 check "minimal amd64: ROOT_A restore size is the slot, used bytes are the shrunk fs's" \
     [ "$(mblk 2 UNITOTEM_PART_SECTORS) $(mblk 2 UNITOTEM_PART_USED_BYTES) $(mblk 2 UNITOTEM_PART_START)" = "$SL $MU $MA" ]
 check "minimal amd64: ROOT_B and DATA blocks: labels, sizes, start, no cloner" \
@@ -222,7 +222,7 @@ check "minimal MBR image: manifest synth, dos, four partitions, DATA 4, ROOT_A r
 image_table_dos /tmpfs/ddesc 2>/dev/null; DDOS=$?
 check "minimal MBR image: image_table_dos leaves an MBR table as it is" bash -c "[ $DDOS = 0 ] && grep -q 'type=83' /tmpfs/ddesc/layout.sfdisk && grep -qx UNITOTEM_TABLE=dos /tmpfs/ddesc/parts.manifest"
 check "full-size image: the descriptor has no UNITOTEM_SYNTH key" [ -z "$(grep '^UNITOTEM_SYNTH=' $D/parts.manifest)" ]
-D4ACT=$(blk 4 UNITOTEM_PART_ACTION)
-check "full-size image: ROOT_B and DATA come from the image table (DATA is action data)" bash -c "grep -q 'name=\"ROOT_B\"' $D/layout.sfdisk && grep -q 'name=\"DATA\"' $D/layout.sfdisk && [ '$D4ACT' = data ]"
+D4ACT=$(blk 4 UNITOTEM_PART_ACTION); D3ACT=$(blk 3 UNITOTEM_PART_ACTION)
+check "full-size image: ROOT_B and DATA come from the image table (DATA is action data, ROOT_B is blanked, not streamed)" bash -c "grep -q 'name=\"ROOT_B\"' $D/layout.sfdisk && grep -q 'name=\"DATA\"' $D/layout.sfdisk && [ '$D4ACT' = data ] && [ '$D3ACT' = blank ]"
 echo "$ok passed, $fail failed"
 [ "$fail" = 0 ]

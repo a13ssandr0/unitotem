@@ -460,17 +460,18 @@ cmd_restore_part() {
 }
 
 # ---------------------------------------------------------------------------
-# format-part: an empty, labelled ext4 (A/B: the inactive ROOT_B slot, which a deploy leaves empty
-# for the first update to fill).
+# blank-part: the inactive ROOT_B slot is left blank. Its first MiB is zeroed, so a reused partition carries no stale
+# filesystem signature; nothing else is written. The first confirmed boot clones ROOT_A into it (unitotem-update repair).
 # ---------------------------------------------------------------------------
-cmd_format_part() {
+cmd_blank_part() {
     parse_args "$@"
     need disk; need part; need label
     local disk; disk=$(resolve_disk "${ARG[disk]}")
     local part_dev; part_dev=$(pdev_target "$disk" "${ARG[part]}")
-    log "Formatting ${ARG[label]} (${part_dev})..."
-    mkfs.ext4 -F -L "${ARG[label]}" "$part_dev" >/dev/null || fail "mkfs.ext4 on ${ARG[label]} failed"
-    echo "UNITOTEM_PART_FORMATTED=${ARG[part]}"
+    [ -b "$part_dev" ] || fail "partition not found: $part_dev"
+    log "Blanking ${ARG[label]} (${part_dev}): first MiB zeroed, cloned from ROOT_A at the first boot"
+    dd if=/dev/zero of="$part_dev" bs=1M count=1 conv=notrunc,fsync status=none || fail "zeroing ${ARG[label]} failed"
+    echo "UNITOTEM_PART_BLANKED=${ARG[part]}"
 }
 
 # grubenv_write FILE key=value... : rewrite a GRUB environment block (1024 bytes: header, one
@@ -937,7 +938,7 @@ cmd_migrate_etc_overlay() {
     need root-mnt; need data-mnt
     local root="${ARG[root-mnt]}" data="${ARG[data-mnt]}"
     # A/B: the new system is slot A and keeps its overlay state in upper/<d>.a (see unitotem/files/overlayfs-hook.sh).
-    # Slot B is about to be formatted empty, so what a previous install left for it and the update bookkeeping
+    # Slot B is about to be left blank, so what a previous install left for it and the update bookkeeping
     # describing it are stale and removed.
     local sfx=""
     if [ -n "${ARG[slot]:-}" ]; then
@@ -1967,7 +1968,7 @@ main() {
         restore-table)         cmd_restore_table "$@" ;;
         restore-part)          cmd_restore_part "$@" ;;
         data-op)                cmd_data_op "$@" ;;
-        format-part)            cmd_format_part "$@" ;;
+        blank-part)             cmd_blank_part "$@" ;;
         write-bootfile)         cmd_write_bootfile "$@" ;;
         read-bootfile)          cmd_read_bootfile "$@" ;;
         prepare-bootfs)         cmd_prepare_bootfs "$@" ;;

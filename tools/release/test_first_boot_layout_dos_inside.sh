@@ -105,9 +105,11 @@ mkdisk $BASE_A 16G 'start=2048, size=1048576, type=c\nstart=1050624, size=104857
 ROOTA_END=$((1050624 + 10485760))
 
 # ---------------------------------------------------------------- (a)
-t_a_log()    { [ "$(lines)" = 1 ] && grep -q '^I: layout: created DATA ROOT_B$' "$LOGF"; }
+t_a_log()    { [ "$(lines)" = 1 ] && grep -q '^I: layout: created ROOT_B (blank) DATA$' "$LOGF"; }
 t_a_types()  { [ "$(ptype 2)" = 83 ] && [ "$(ptype 3)" = 83 ] && [ "$(ptype 4)" = 83 ]; }
-t_a_labels() { [ "$(plabel 3)" = ROOT_B ] && [ "$(plabel 4)" = DATA ] && [ "$(pfs 3)" = ext4 ] && [ "$(pfs 4)" = ext4 ]; }
+t_a_labels() { [ "$(plabel 4)" = DATA ] && [ "$(pfs 4)" = ext4 ]; }
+t_a_blank()  { [ -z "$(plabel 3)" ] && [ -z "$(pfs 3)" ] && [ "$(ptype 3)" = 83 ] \
+               && [ "$(dd if=${LOOP}p3 bs=1M count=1 status=none | tr -d '\0' | wc -c)" = 0 ]; }
 t_a_geom()   { [ "$(pfield 3 start)" = "$ROOTA_END" ] && [ "$(pfield 3 size)" = 10485760 ] \
                && [ "$(pfield 4 start)" = $((ROOTA_END + 10485760)) ] \
                && [ $(( $(pfield 4 start) + $(pfield 4 size) )) = "$(dsz)" ] \
@@ -117,19 +119,20 @@ t_a_data_empty() { mkdir -p /mnt/d; mount ${LOOP}p4 /mnt/d && [ "$(ls -A /mnt/d)
 t_c_p1p2()   { [ "$(part_hash ${LOOP}p1)" = "$H1" ] && [ "$(part_hash ${LOOP}p2)" = "$H2" ] && [ "$(lid "$LOOP")" = "$LID0" ]; }
 t_a_p1p2()   { [ "$(part_hash ${LOOP}p1)" = "$H1" ] && [ "$(part_hash ${LOOP}p2)" = "$H2" ]; }
 t_lid0()     { [ "$(lid "$LOOP")" = "$LID0" ]; }
-t_fsck()     { e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1; }
+t_fsck()     { e2fsck -fn ${LOOP}p4 >/dev/null 2>&1; }      # DATA; ROOT_B is blank (no filesystem until the clone)
 
 echo "=== (a) 16 GB DOS disk, p1 FAT + p2 ROOT_A: ROOT_B and DATA created"
 attach $BASE_A 16G 2
 H1=$(part_hash ${LOOP}p1); H2=$(part_hash ${LOOP}p2); LID0=$(lid "$LOOP")
 runlay; sed 's/^/    log: /' "$LOGF"
 chk "(a) one 'created DATA ROOT_B' log line" t_a_log
-chk "(a) p2 stays 83, p3 and p4 type 83" t_a_types
-chk "(a) labels ROOT_B and DATA, ext4" t_a_labels
+chk "(a) p2 stays 83, p3 (ROOT_B) and p4 (DATA) type 83" t_a_types
+chk "(a) DATA labelled, ext4" t_a_labels
+chk "(a) ROOT_B blank: type 83, no label, no filesystem, first MiB zero" t_a_blank
 chk "(a) p3 = ROOT_B (size of ROOT_A, right after it, 1 MiB aligned), p4 = DATA to the last sector" t_a_geom
 chk "(a) no pending type (da/db) left" t_a_nopending
 chk "(a) label-id unchanged" t_lid0
-chk "(a) e2fsck -fn ROOT_B and DATA clean" t_fsck
+chk "(a) e2fsck -fn DATA clean" t_fsck
 chk "(a) DATA holds only lost+found (empty like stage3's)" t_a_data_empty
 chk "(a) p1 and p2 byte-identical" t_a_p1p2
 REF_NORM=$(dump_norm); echo "$REF_NORM" | sed 's/^/    table: /'
@@ -204,8 +207,8 @@ detach
 # cut_run NAME VAR=VALUE...: fresh copy of base A; the stub named by VAR cuts the first run; the clean run must finish
 # with exactly the state of (a).
 t_f_cut()   { ! grep -q '^rc=' "$LOGF"; }
-t_f_final() { [ "$(ptype 3)" = 83 ] && [ "$(ptype 4)" = 83 ] && [ "$(plabel 3)" = ROOT_B ] && [ "$(plabel 4)" = DATA ] \
-              && [ "$(pfs 3)" = ext4 ] && [ "$(pfs 4)" = ext4 ] && [ "$(lid "$LOOP")" = "$LID0" ] && t_a_p1p2 \
+t_f_final() { [ "$(ptype 3)" = 83 ] && [ "$(ptype 4)" = 83 ] && [ "$(plabel 4)" = DATA ] && [ "$(pfs 4)" = ext4 ] \
+              && [ -z "$(pfs 3)" ] && [ "$(lid "$LOOP")" = "$LID0" ] && t_a_p1p2 \
               && [ "$(dump_norm)" = "$REF_NORM" ]; }
 t_f_state() { local f3 f4; f3=$(pfs 3); f4=$(pfs 4); [ "$(ptype 3) ${f3:-none} $(ptype 4) ${f4:-none}" = "$EXPECT" ]; }
 cut_run() {
@@ -223,7 +226,7 @@ cut_run() {
     runlay; sed 's/^/    clean log: /' "$LOGF"
     chk "(f) $name: clean run completes (rc=0)" grep -q '^rc=0' "$LOGF"
     chk "(f) $name: final state equals (a): types 83, labels, ext4, label-id, p1/p2 identical" t_f_final
-    chk "(f) $name: e2fsck -fn ROOT_B and DATA clean" t_fsck
+    chk "(f) $name: e2fsck -fn DATA clean" t_fsck
     detach
 }
 t_f_nothing() { [ "$(table)" = "$TBL0" ] && [ "$(pfs 3)" = "" ] && [ "$(pfs 4)" = "" ] && ! grep -q '^rc=' "$LOGF"; }
@@ -232,13 +235,11 @@ attach $BASE_A 16G 2; LID0=$(lid "$LOOP"); TBL0=$(table); stubs_off
 export STUB_APPEND_KILL=1; EXTRA_PATH=$STUBS runlay; unset STUB_APPEND_KILL; stubs_off
 chk "(f) cut before the table write: table unchanged, nothing formatted" t_f_nothing
 detach
-cut_run "after the table write, before any mke2fs"   "da none db none"   STUB_MKE2FS_KILL=1
-cut_run "after DATA mke2fs, DATA type still db"      "da none db ext4"   STUB_PT_KILL=1
-cut_run "after DATA type 83, ROOT_B not formatted"   "da none 83 ext4"   STUB_MKE2FS_KILL=2
-cut_run "after ROOT_B mke2fs, ROOT_B type still da"  "da ext4 83 ext4"   STUB_PT_KILL=2
+cut_run "after the table write, before the DATA mke2fs"  "83 none db none"   STUB_MKE2FS_KILL=1
+cut_run "after DATA mke2fs, DATA type still db"           "83 none db ext4"   STUB_PT_KILL=1
 
 # ---------------------------------------------------------------- (g)
-t_g_log()   { [ "$(lines)" = 1 ] && grep -q '^I: layout: created ROOT_B DATA$' "$LOGF"; }
+t_g_log()   { [ "$(lines)" = 1 ] && grep -q '^I: layout: created ROOT_B (blank) DATA$' "$LOGF"; }
 t_g_names() { sgdisk -p "$LOOP" | grep -Eq '^ +3 .*8300 +ROOT_B$' && sgdisk -p "$LOOP" | grep -Eq '^ +4 .*8300 +DATA$' \
               && ! sfdisk -d "$LOOP" | grep -q GUID:48; }
 t_g_gpt()   { [ "$(blkid -p -s PTTYPE -o value "$LOOP")" = gpt ] && ! sfdisk -d "$LOOP" | grep -Eq 'type=(da|db)' \
@@ -252,8 +253,8 @@ LOOP=$(losetup --find --show --partscan $W/gpt.img)
 mkfs.fat -F32 -n EFI ${LOOP}p1 >/dev/null; mkfs.ext4 -q -F -L ROOT_A ${LOOP}p2
 mkdir -p /mnt/r; mount -o ro ${LOOP}p2 /mnt/r
 runlay; sed 's/^/    log: /' "$LOGF"
-chk "(g) GPT: one 'created ROOT_B DATA' log line (GPT path wording)" t_g_log
-chk "(g) GPT: ROOT_B and DATA named, type 8300, flags cleared" t_g_names
+chk "(g) GPT: one 'created ROOT_B (blank) DATA' log line" t_g_log
+chk "(g) GPT: ROOT_B (blank, no flag) and DATA named, type 8300, DATA flag cleared" t_g_names
 chk "(g) GPT: no DOS type (da/db), GPT valid" t_g_gpt
 umount /mnt/r; losetup -d "$LOOP"; LOOP=
 rm -f -- $W/gpt.img
@@ -275,27 +276,41 @@ LOOP=$(losetup --find --show --partscan $W/t.img)
 echo "    minimal ROOT_A: $mpart sectors"; sfdisk -d $LOOP | sed 's/^/    table: /' | tail -n 2
 hd0=$(dd if=${LOOP}p1 bs=1M status=none | sha256sum)
 runlay; sed 's/^/    log: /' "$LOGF"
-chk "(h) one growth line and one creation line, rc=0" bash -c "grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' '$LOGF' && grep -q '^I: layout: created DATA ROOT_B\$' '$LOGF' && [ \"\$(grep -c '^W:' '$LOGF')\" = 0 ] && grep -q '^rc=0' '$LOGF'"
+chk "(h) one growth line and one creation line, rc=0" bash -c "grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' '$LOGF' && grep -q '^I: layout: created ROOT_B (blank) DATA\$' '$LOGF' && [ \"\$(grep -c '^W:' '$LOGF')\" = 0 ] && grep -q '^rc=0' '$LOGF'"
 h_root_a()  { [ "$(blockdev --getsz ${LOOP}p2)" = 10485760 ] && [ "$(pfield 2 start)" = 1050624 ]; }
 h_fill()    { [ "$(blockdev --getsz ${LOOP}p2)" = "$(( $(dumpe2fs -h ${LOOP}p2 2>/dev/null | awk '/^Block count/{c=$3} /^Block size/{s=$3} END{print c*s/512}') ))" ] && e2fsck -fn ${LOOP}p2 >/dev/null 2>&1; }
 h_geom()    { [ "$(pfield 3 start)" = 11536384 ] && [ "$(pfield 3 size)" = 10485760 ] && [ "$(pfield 4 start)" = 22022144 ] \
-              && [ "$(plabel 3)" = ROOT_B ] && [ "$(plabel 4)" = DATA ] && [ "$(ptype 3)" = 83 ] && [ "$(ptype 4)" = 83 ]; }
+              && [ -z "$(plabel 3)" ] && [ "$(plabel 4)" = DATA ] && [ "$(ptype 3)" = 83 ] && [ "$(ptype 4)" = 83 ]; }
 h_end()     { [ $(( $(blockdev --getsz $LOOP) - 22022144 - $(blockdev --getsz ${LOOP}p4) )) -lt 2048 ]; }
 h_valid()   { sfdisk -V $LOOP >/dev/null 2>&1 && [ "$(ptype 1)" = c ] && ! sfdisk -d $LOOP | grep -Eq 'type=(da|db)(,|$)'; }
-h_fsck()    { e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1; }
+h_fsck()    { e2fsck -fn ${LOOP}p4 >/dev/null 2>&1; }
 h_boot()    { [ "$hd0" = "$(dd if=${LOOP}p1 bs=1M status=none | sha256sum)" ]; }
 chk "(h) ROOT_A is 5 GiB (10485760 sectors), start unchanged" h_root_a
 chk "(h) ROOT_A filesystem fills its partition and e2fsck -fn is clean" h_fill
-chk "(h) ROOT_B 5 GiB at 11536384 (1 MiB after ROOT_A), DATA at 22022144, labels ROOT_B and DATA, types 83" h_geom
+chk "(h) ROOT_B 5 GiB at 11536384 (1 MiB after ROOT_A), blank, DATA at 22022144 labelled DATA, types 83" h_geom
 chk "(h) DATA reaches the disk end (< 2048 sectors short)" h_end
 chk "(h) DOS table verifies, FIRMWARE still type c, no pending type" h_valid
-chk "(h) ROOT_B and DATA e2fsck -fn clean" h_fsck
+chk "(h) DATA e2fsck -fn clean" h_fsck
 chk "(h) boot partition byte-identical" h_boot
 tb=$(sfdisk -d $LOOP); : > "$LOGF"; runlay
 chk "(h) second run is a no-op (no log)" [ "$(grep -vc '^rc=' "$LOGF")" = 0 ]
 chk "(h) second run leaves the table unchanged" [ "$(sfdisk -d $LOOP)" = "$tb" ]
 losetup -d "$LOOP"; LOOP=
 rm -f -- $W/t.img $W/dos-min.img
+
+# ---------------------------------------------------------------- (j) legacy pending types (older images): da ROOT_B, db DATA
+t_j_log()   { [ "$(lines)" = 1 ] && grep -q '^I: layout: created DATA ROOT_B$' "$LOGF"; }
+t_j_state() { [ "$(ptype 3)" = 83 ] && [ "$(ptype 4)" = 83 ] && [ "$(plabel 3)" = ROOT_B ] && [ "$(plabel 4)" = DATA ] \
+              && [ "$(pfs 3)" = ext4 ] && [ "$(pfs 4)" = ext4 ] && ! sfdisk -d "$LOOP" | grep -Eq 'type=(da|db)(,|$)'; }
+echo "=== (j) legacy pending types: da ROOT_B and db DATA are formatted and set to 83"
+LEG=$W/dos-legacy.img
+mkdisk $LEG 16G 'start=2048, size=1048576, type=c\nstart=1050624, size=10485760, type=83\nstart=11536384, size=10485760, type=da\nstart=22022144, size=10485760, type=db' '2:ROOT_A'
+attach $LEG 16G 2; runlay; sed 's/^/    log: /' "$LOGF"
+chk "(j) one 'created DATA ROOT_B' log line" t_j_log
+chk "(j) ROOT_B and DATA formatted with their labels, types 83, no pending type" t_j_state
+chk "(j) e2fsck -fn ROOT_B and DATA clean" bash -c "e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1"
+detach
+rm -f -- $LEG
 
 echo "RESULT: $pass passed, $failn failed"
 [ "$failn" = 0 ]

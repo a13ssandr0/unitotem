@@ -8,7 +8,8 @@
 set -uo pipefail
 R="$1"; INITRD="$2"; ENG="$3"
 ALLOW=" grub-mkconfig update-grub grub-install grub-reboot zstd unzstd dpkg apt-get systemctl journalctl "   # run in the target's chroot, or only for sets we never build
-have=$(lsinitramfs "$INITRD" 2>/dev/null | sed 's|.*/||' | sort -u) || exit 2
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+have=$(python3 -I "$HERE/initrd-scan.py" list "$INITRD" 2>/dev/null | sed 's|.*/||' | sort -u) || exit 2
 [ -n "$have" ] || { echo "lsinitramfs: nothing listed for $INITRD" >&2; exit 2; }
 funcs=$(grep -oE '^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_-]*[[:space:]]*\(\)' "$ENG" | sed -E 's/^[[:space:]]*(function[[:space:]]+)?//; s/[[:space:]]*\(\)//')
 missing=""; n=0

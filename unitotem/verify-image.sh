@@ -129,10 +129,13 @@ HOOK_BOTTOM=$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays
 line_of() { grep -n -- "$2" "$1" 2>/dev/null | head -n 1 | cut -d: -f1; }
 before() { local a b; a=$(line_of "$1" "$2"); b=$(line_of "$1" "$3"); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; }
 chk "init-bottom hook defines layout_complete (ROOT_B and DATA are created on a flash image)" file_has "$HOOK_BOTTOM" '^layout_complete\(\)'
+chk "layout_complete creates ROOT_B blank: GPT ROOT_B without the pending flag, MBR type 83" bash -c "! grep -q -- '-A 3:set:48' '$HOOK_BOTTOM' && grep -q 'type=83' '$HOOK_BOTTOM'"
+chk "layout_complete formats DATA only (ROOT_B is never formatted at first boot)" bash -c "grep -q 'for lc_name in DATA ROOT_B' '$HOOK_BOTTOM' && grep -q 'for lc_t in db da' '$HOOK_BOTTOM'"
 chk "layout_complete runs before DATA is looked up by label" before "$HOOK_BOTTOM" '^layout_complete || true' 'blkid -L DATA'
 chk "init-bottom hook defines grow_data (DATA grown to the disk end)" file_has "$HOOK_BOTTOM" '^grow_data\(\)'
 chk "grow_data runs before DATA is mounted" before "$HOOK_BOTTOM" '^grow_data "\$DATA_DEV"' '^if ! mount -t ext4'
 chk "only partitions flagged by layout_complete are formatted (GPT attribute bit 48)" file_has "$HOOK_BOTTOM" 'GUID:48'
+chk "unitotem-update clones into a blank ROOT_B with the cause first-boot (slot_sound)" bash -c "grep -q 'return False, \"first-boot\" if blank' '$R/usr/sbin/unitotem-update'"
 HOOK_PREMOUNT=$R/etc/initramfs-tools/scripts/local-premount/unitotem-layout
 chk "local-premount copy of the hook is installed (ROOT_A grown before the root is mounted)" test -x "$HOOK_PREMOUNT"
 chk "local-premount copy is identical to the init-bottom hook" cmp -s "$HOOK_PREMOUNT" "$HOOK_BOTTOM"
@@ -219,7 +222,7 @@ RINIT="$FAT/unitotem/recovery-initrd.img"; [ "$ARCH" = arm64 ] && RINIT="$FAT/re
 chk "recovery initrd has every external command ota-engine.sh runs (tr and cmp were missing: amd64 set-default-recovery and --secure-boot shim died mid-deploy)" \
     bash "$(dirname "${BASH_SOURCE[0]}")/check-recovery-commands.sh" "$R" "$RINIT" "$ENG"
 chk "recovery initrd carries the linux terminfo entry (without it whiptail draws in mono with ASCII borders)" \
-    bash -c "lsinitramfs '$RINIT' 2>/dev/null | grep -q 'usr/share/terminfo/l/linux'"
+    bash -c "python3 -I '$(dirname "${BASH_SOURCE[0]}")/initrd-scan.py' list '$RINIT' 2>/dev/null | grep -q 'usr/share/terminfo/l/linux'"
 chk "recovery initrd carries the current ota-engine.sh (a stale copy had no static address for the fallback)" \
     bash "$(dirname "${BASH_SOURCE[0]}")/check-engine-copy.sh" "$RINIT" "$ENG"
 # the slot initramfs is built by the same hook and runs the same engine at every boot (build 61: no `sort`, root not found)

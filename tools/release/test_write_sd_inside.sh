@@ -9,6 +9,10 @@ mkdir -p /work/tmp /tmpfs; mount -t tmpfs -o size=3g tmpfs /tmpfs; export UNITOT
 mkdir -p /m
 attach() { losetup --find --show --partscan "$1"; }
 settle() { sleep 1; partprobe "$1" 2>/dev/null || true; sleep 1; }
+# blank_ok PARTITION: no filesystem signature (low-level probe) and the first MiB all zero
+blank_ok() { [ -z "$(blkid -p -o value -s TYPE -- "$1" 2>/dev/null || true)" ] && [ "$(head -c 1048576 -- "$1" | tr -d '\0' | wc -c)" = 0 ]; }
+# plant_stale FILE SECTOR: a stale ext4 (label STALE) written at SECTOR, as an earlier install leaves its ROOT_B
+plant_stale() { mkfs.ext4 -q -F -L STALE $W/stale.img 16M >/dev/null && dd if=$W/stale.img of="$1" bs=512 seek="$2" conv=notrunc status=none; rm -f -- $W/stale.img; }
 
 # --- source image: the amd64 A/B layout, small
 rm -f $W/src.img $W/src.img.xz $W/dst1.img $W/dst2.img $W/small.img
@@ -109,7 +113,9 @@ make_min() {
 }
 make_min $W/min.img ef00 EFI 1048576 yes
 MA=$MIN_A_START; SL=1048576; MB=$(( (MA + SL + 2047) / 2048 * 2048 )); MDS=$(( (MB + SL + 2047) / 2048 * 2048 ))
-truncate -s 2G $W/dst3.img; D3=$(attach $W/dst3.img)
+truncate -s 2G $W/dst3.img; plant_stale $W/dst3.img "$MB"
+check "minimal: the target ROOT_B holds a stale ext4 before the write" bash -c "[ \"\$(dd if=$W/dst3.img bs=512 skip=$((MB + 2)) count=2 status=none | tr -d '\\0' | wc -c)\" != 0 ]"
+D3=$(attach $W/dst3.img)
 check "write-sd from a minimal .img succeeds" bash -c "bash $SCRIPT --yes $W/min.img $D3 2>$W/w3.log || { cat $W/w3.log >&2; exit 1; }"; cat $W/w3.log
 settle "$D3"
 check "minimal: table is EFI, ROOT_A (slot), ROOT_B (slot), DATA (256 MiB), BIOS, in that place" \
@@ -117,12 +123,14 @@ check "minimal: table is EFI, ROOT_A (slot), ROOT_B (slot), DATA (256 MiB), BIOS
 GOTP=$(sfdisk -d $D3 | grep -E ' : start=' | sed -E 's/^[^ ]+ : start= *([0-9]+), size= *([0-9]+), type=.*name="([^"]*)".*/\1 \2 \3/' | sort -n | tr '\n' ';')
 check "minimal: partitions at the target starts and sizes" [ "$GOTP" = "34 2014 BIOS;2048 131072 EFI;$MA $SL ROOT_A;$MB $SL ROOT_B;$MDS 524288 DATA;" ]
 check "minimal: ROOT_B and DATA carry the Linux data GUID, BIOS the BIOS GUID" bash -c "sfdisk -d $D3 | grep 'name=\"ROOT_B\"' | grep -q 0FC63DAF-8483-4772-8E79-3D69D8477DE4 && sfdisk -d $D3 | grep 'name=\"DATA\"' | grep -q 0FC63DAF-8483-4772-8E79-3D69D8477DE4 && sfdisk -d $D3 | grep 'name=\"BIOS\"' | grep -q 21686148-6449-6E6F-744E-656564454649"
-check "minimal: labels EFI ROOT_A ROOT_B DATA" bash -c "[ \"\$(blkid -o value -s LABEL ${D3}p1 ${D3}p2 ${D3}p3 ${D3}p4 | tr '\n' ' ')\" = 'EFI ROOT_A ROOT_B DATA ' ]"
-mkdir -p /d1 /d2 /d3 /d4; mount -o ro ${D3}p3 /d3; mount -o ro ${D3}p4 /d4
-check "minimal: ROOT_B and DATA are empty ext4 (no files)" bash -c "[ \"\$(find /d3 /d4 -mindepth 1 -not -name lost+found | wc -l)\" = 0 ] && [ \"\$(blkid -o value -s TYPE ${D3}p3 ${D3}p4 | sort -u)\" = ext4 ]"
-umount /d3 /d4
+check "minimal: labels EFI ROOT_A DATA, ROOT_B has no label (blank)" bash -c "[ \"\$(blkid -o value -s LABEL ${D3}p1 ${D3}p2 ${D3}p4 | tr '\n' ' ')\" = 'EFI ROOT_A DATA ' ] && [ -z \"\$(blkid -p -o value -s LABEL ${D3}p3)\" ]"
+check "minimal: ROOT_B blank: stale signature gone, first MiB zero" blank_ok ${D3}p3
+check "minimal: ROOT_B partition name is ROOT_B (GPT)" bash -c "[ \"\$(blkid -p -o value -s PART_ENTRY_NAME ${D3}p3)\" = ROOT_B ]"
+mkdir -p /d1 /d2 /d4; mount -o ro ${D3}p4 /d4
+check "minimal: DATA is empty ext4 (no files)" bash -c "[ \"\$(find /d4 -mindepth 1 -not -name lost+found | wc -l)\" = 0 ] && [ \"\$(blkid -o value -s TYPE ${D3}p4)\" = ext4 ]"
+umount /d4
 check "minimal: ROOT_A grown to the slot (filesystem size = partition size)" bash -c "[ \"\$(dumpe2fs -h ${D3}p2 2>/dev/null | awk -F': *' '/^Block count:/{b=\$2}/^Block size:/{s=\$2}END{print b*s}')\" = $(( SL * 512 )) ]"
-check "minimal: ext4 of ROOT_A, ROOT_B, DATA clean and FAT of EFI clean" bash -c "e2fsck -fn ${D3}p2 && e2fsck -fn ${D3}p3 && e2fsck -fn ${D3}p4 && fsck.fat -n ${D3}p1"
+check "minimal: ext4 of ROOT_A and DATA clean and FAT of EFI clean" bash -c "e2fsck -fn ${D3}p2 && e2fsck -fn ${D3}p4 && fsck.fat -n ${D3}p1"
 mount -o ro ${D3}p2 /d2; check "minimal: ROOT_A files identical to the image (md5) and the marker" bash -c "[ \"\$(md5sum /d2/system.bin | cut -d' ' -f1)\" = '$MIN_MD5' ] && [ \"\$(cat /d2/marker)\" = marker ]"; umount /d2
 mount -o ro ${D3}p1 /d1; check "minimal: EFI keeps the image's files and unitotem-layout" bash -c "[ -f /d1/unitotem-layout ] && grep -qx 'UNITOTEM_SLOT_SECTORS=1048576' /d1/unitotem-layout && [ -f /d1/EFI/BOOT/BOOTX64.EFI ]"; umount /d1
 losetup -d "$D3"
@@ -143,16 +151,19 @@ make_dos_min() {   # $1 image
 }
 make_dos_min $W/mindos.img
 SL=1048576; DB=1181696; DD=2230272
-truncate -s 2G $W/dst4.img; D4=$(attach $W/dst4.img)
+truncate -s 2G $W/dst4.img; plant_stale $W/dst4.img "$DB"
+check "minimal MBR: the target ROOT_B holds a stale ext4 before the write" bash -c "[ \"\$(dd if=$W/dst4.img bs=512 skip=$((DB + 2)) count=2 status=none | tr -d '\\0' | wc -c)\" != 0 ]"
+D4=$(attach $W/dst4.img)
 check "write-sd from a minimal MBR .img succeeds" bash -c "bash $SCRIPT --yes $W/mindos.img $D4 2>$W/w4.log || { cat $W/w4.log >&2; exit 1; }"; cat $W/w4.log
 settle "$D4"
 GOTD=$(sfdisk -d $D4 | grep ' : start=' | sed -E 's/^[^ ]+ : start= *([0-9]+), size= *([0-9]+), type=([0-9a-f]+).*/\1 \2 \3/' | sort -n | tr '\n' ';')
 check "minimal MBR: table is dos with 2048/c, ROOT_A, ROOT_B, DATA as 83 at the target starts" [ "$(sfdisk -d $D4 | awk -F': *' '/^label:/{print $2}')" = dos ] && [ "$GOTD" = "2048 131072 c;133120 $SL 83;$DB $SL 83;$DD 524288 83;" ]
-check "minimal MBR: labels FIRMWARE ROOT_A ROOT_B DATA" bash -c "[ \"\$(blkid -o value -s LABEL ${D4}p1 ${D4}p2 ${D4}p3 ${D4}p4 | tr '\n' ' ')\" = 'FIRMWARE ROOT_A ROOT_B DATA ' ]"
-check "minimal MBR: ROOT_A grown to the slot, ROOT_B and DATA empty ext4, all clean" bash -c "[ \"\$(dumpe2fs -h ${D4}p2 2>/dev/null | awk -F': *' '/^Block count:/{b=\$2}/^Block size:/{s=\$2}END{print b*s}')\" = $(( SL * 512 )) ] && e2fsck -fn ${D4}p2 && e2fsck -fn ${D4}p3 && e2fsck -fn ${D4}p4 && fsck.fat -n ${D4}p1"
-mkdir -p /d2 /d3 /d4; mount -o ro ${D4}p2 /d2; mount -o ro ${D4}p3 /d3; mount -o ro ${D4}p4 /d4
-check "minimal MBR: ROOT_A files identical (md5), ROOT_B and DATA empty" bash -c "[ \"\$(md5sum /d2/system.bin | cut -d' ' -f1)\" = '$MIN_MD5' ] && [ \"\$(find /d3 /d4 -mindepth 1 -not -name lost+found | wc -l)\" = 0 ]"
-umount /d2 /d3 /d4
+check "minimal MBR: labels FIRMWARE ROOT_A DATA, ROOT_B has no label (blank)" bash -c "[ \"\$(blkid -o value -s LABEL ${D4}p1 ${D4}p2 ${D4}p4 | tr '\n' ' ')\" = 'FIRMWARE ROOT_A DATA ' ] && [ -z \"\$(blkid -p -o value -s LABEL ${D4}p3)\" ]"
+check "minimal MBR: ROOT_A grown to the slot, DATA empty ext4, all clean" bash -c "[ \"\$(dumpe2fs -h ${D4}p2 2>/dev/null | awk -F': *' '/^Block count:/{b=\$2}/^Block size:/{s=\$2}END{print b*s}')\" = $(( SL * 512 )) ] && e2fsck -fn ${D4}p2 && e2fsck -fn ${D4}p4 && fsck.fat -n ${D4}p1"
+check "minimal MBR: ROOT_B blank (stale signature gone, first MiB zero)" blank_ok ${D4}p3
+mkdir -p /d2 /d4; mount -o ro ${D4}p2 /d2; mount -o ro ${D4}p4 /d4
+check "minimal MBR: ROOT_A files identical (md5), DATA empty" bash -c "[ \"\$(md5sum /d2/system.bin | cut -d' ' -f1)\" = '$MIN_MD5' ] && [ \"\$(find /d4 -mindepth 1 -not -name lost+found | wc -l)\" = 0 ]"
+umount /d2 /d4
 losetup -d "$D4"
 echo "$ok passed, $fail failed"
 [ "$fail" = 0 ]

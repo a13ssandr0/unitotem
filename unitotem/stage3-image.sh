@@ -10,7 +10,7 @@ mkdir -p "${ROOTFS}" "/deploy/${ARCH}"
 echo "Extracting stage 2..."
 tar -I pigz -C "${ROOTFS}" -xf "${WORK_DIR}/stage2.tar.gz"
 
-IMG_DATE="$(date +%Y-%m-%d)"
+IMG_DATE="${IMG_DATE:-$(date +%Y-%m-%d)}"
 IMG_FILE="/deploy/${ARCH}/unitotem-${IMG_DATE}-${ARCH}.img"
 
 # size_to_mib: a size of the config (common.sh) in MiB; G and M only.
@@ -160,8 +160,14 @@ sync
 RECOVERY_VMLINUZ="${WORK_DIR}/recovery/recovery-vmlinuz-${ARCH}"
 RECOVERY_INITRD="${WORK_DIR}/recovery/recovery-initrd-${ARCH}.img"
 RECOVERY_MANIFEST="${WORK_DIR}/recovery/recovery.manifest"
+# arm64: the recovery files are the boot tree's (the engine is already appended there), see the boot tree block below.
+BOOT_TREE="${WORK_DIR}/boot-tree"
+if [ "$ARCH" = "arm64" ]; then
+    RECOVERY_VMLINUZ="$BOOT_TREE/recovery8.img"
+    RECOVERY_INITRD="$BOOT_TREE/recovery-initrd.img"
+fi
 for f in "$RECOVERY_VMLINUZ" "$RECOVERY_INITRD" "$RECOVERY_MANIFEST"; do
-    [ -f "$f" ] || { echo "Missing $f - run unitotem/stage1-recovery-initrd.sh first" >&2; exit 1; }
+    [ -f "$f" ] || { echo "Missing $f - run unitotem/stage1-recovery-initrd.sh first (arm64: unitotem/make-boot-tree.sh)" >&2; exit 1; }
 done
 
 # Level of the set: the build date as 14 digits (2026-10-19T05:56:32Z -> 20261019055632).
@@ -169,6 +175,22 @@ RECOVERY_BUILD_DATE=$(sed -n 's/^UNITOTEM_RECOVERY_BUILD_DATE=//p' "$RECOVERY_MA
 RECOVERY_LEVEL=$(printf '%s' "$RECOVERY_BUILD_DATE" | tr -cd '0-9')
 [[ "$RECOVERY_LEVEL" =~ ^[0-9]{14}$ ]] \
     || { echo "$RECOVERY_MANIFEST: UNITOTEM_RECOVERY_BUILD_DATE missing or not 14 digits ('$RECOVERY_BUILD_DATE')" >&2; exit 1; }
+
+# ---------- Boot tree (arm64): the FIRMWARE files shared with the preboot card ----------
+# Assembled once per build by unitotem/make-boot-tree.sh from stage 2 and the recovery set. Its files replace the stage-2 copies
+# on FIRMWARE; config.txt and cmdline.txt stay the full system's (the tree's are the recovery boot's and are not copied).
+if [ "$ARCH" = "arm64" ]; then
+    [ -s "$BOOT_TREE/boot-tree.sha256" ] || { echo "Missing $BOOT_TREE - run unitotem/make-boot-tree.sh first" >&2; exit 1; }
+    ( cd "$BOOT_TREE" && sha256sum -c --quiet boot-tree.sha256 ) || { echo "$BOOT_TREE: a file does not match boot-tree.sha256" >&2; exit 1; }
+    grep -qx "# unitotem-recovery-level: $RECOVERY_LEVEL" "$BOOT_TREE/boot-tree.sha256" \
+        || { echo "$BOOT_TREE: recovery level differs from $RECOVERY_MANIFEST" >&2; exit 1; }
+    for f in "$BOOT_TREE"/*; do
+        name=$(basename "$f")
+        case "$name" in boot-tree.sha256|config.txt|cmdline.txt) continue ;; esac
+        cp -- "$f" "${IMG_MNT}/boot/firmware/$name"
+        cmp -s -- "$f" "${IMG_MNT}/boot/firmware/$name" || boot_assert_fail "${IMG_MNT}/boot/firmware/$name differs from the boot tree"
+    done
+fi
 
 # Top-level dtbs (arm64): the fallback's device tree. The A/B block below copies them into the
 # slot directories; the top-level originals stay for the fallback.

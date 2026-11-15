@@ -13,7 +13,7 @@
 #                          bootcode.bin, and the file-level tar of the boot partition (p<N>-<LABEL>.bootfs.tar.xz)
 #
 # Minimal image (boot partition and ROOT_A only, no ROOT_B and no DATA): the target layout is synthesized from unitotem-layout on the
-# boot partition (UNITOTEM_SLOT_SECTORS). ROOT_A is described at the slot size, ROOT_B (p3, format) and DATA (p4, data) are added, and
+# boot partition (UNITOTEM_SLOT_SECTORS). ROOT_A is described at the slot size, ROOT_B (p3, blank) and DATA (p4, data) are added, and
 # the manifest carries UNITOTEM_SYNTH=1 (ROOT_A is grown to the slot on the target).
 #
 # Not meant to be executed directly.
@@ -79,13 +79,14 @@ image_node() {   # $1 partition number
 }
 
 # Action and cloner per partition label. EFI and FIRMWARE are copied file by file (never partclone'd: a restore must not
-# clobber the resident fallback on the same partition); DATA is kept or made new, never streamed; ROOT_B ships empty.
+# clobber the resident fallback on the same partition); DATA is kept or made new, never streamed; ROOT_B is blanked (first MiB zeroed,
+# cloned from ROOT_A at the first boot).
 _img_action() {
     case "$1" in
         EFI|FIRMWARE) echo filecopy ;;
         DATA)         echo data ;;
         BOOT|ROOT|ROOT_A) echo restore ;;
-        ROOT_B)       echo format ;;
+        ROOT_B)       echo blank ;;
         BIOS)         echo raw ;;
         *)            echo skip ;;
     esac
@@ -211,9 +212,9 @@ image_describe() {   # $1 directory, $2 arch
     : > "$out/parts.manifest.partial"
     for n in $(sed -nE 's#^/dev/[^ ]*[^0-9]([0-9]+) *:.*#\1#p' "$out/layout.sfdisk" | sort -n); do
         if [ "$synth" = 1 ] && { [ "$n" = 3 ] || [ "$n" = 4 ]; }; then
-            # ROOT_B and DATA are not in the image: the deploy makes them (format-part, data-op)
+            # ROOT_B and DATA are not in the image: the deploy blanks ROOT_B (blank-part) and makes DATA (data-op)
             dev=""; cloner=""; fstype=ext4
-            if [ "$n" = 3 ]; then label=ROOT_B; action=format; else label=DATA; action=data; fi
+            if [ "$n" = 3 ]; then label=ROOT_B; action=blank; else label=DATA; action=data; fi
             start=$(_img_layout_field "$out/layout.sfdisk" "$n" start); sectors=$(_img_layout_field "$out/layout.sfdisk" "$n" size)
         else
             dev=$(image_node "$n") || continue
@@ -234,7 +235,7 @@ image_describe() {   # $1 directory, $2 arch
             [ "$action" != filecopy ] || echo "UNITOTEM_PART_VOLID=$(blkid -s UUID -o value "$dev" 2>/dev/null || true)"
         } >> "$out/parts.manifest.partial"
         case "$action" in
-            data|format) echo "" >> "$out/parts.manifest.partial"; continue ;;
+            data|blank) echo "" >> "$out/parts.manifest.partial"; continue ;;
             filecopy)
                 local tarball="p${n}-${label}.bootfs.tar.xz"
                 IMG_MNT=$(mktemp -d "$IMG_TMPFS/unitotem-mnt.XXXXXX")

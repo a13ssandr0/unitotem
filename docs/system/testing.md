@@ -19,6 +19,10 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_grow_data.sh` (+ `test_grow_data_inside.sh`) | `grow_root`, `layout_complete` and `grow_data` on GPT and DOS, flash and minimal images, interruptions (`resize2fs` kill, `e2fsck -fy`, cut after the table write), premount dispatch; Docker `--privileged`: 279 checks |
 | `tools/release/test_overlay_status.sh` | Overlay hook under dash, mocked tools: 38 checks |
 | `tools/release/test_overlay_volatile.sh` | Volatile overlays without DATA (`volatile_overlays`), Docker `--privileged`: 47 checks |
+| `tools/release/test_deploy_blank_part.py` | `cmd_blank_part` (`ota-engine.sh`): ROOT_B first MiB zeroed and nothing else, refusals, no `format-part`: 11 checks |
+| `tools/release/test_win_install_server.py` | `tools/win-install-server.py` (Windows installer host server): 96 tests (bootstrap, payload ranges, inventory validation, one y/n question with yes/no in any case, `-y`, approval binding, per-PC and `--authorized-key` keys, state restart, pseudo-terminal prompt): [windows-installer.md](windows-installer.md#tests) |
+| `tools/windows-installer/Install-UniTotem.Tests.ps1` | Pester, 88 tests of `Install-UniTotem.ps1`: pure functions, size math, plan, token and grub rendering, Windows on ARM refusal, mocked dry run; no Windows cmdlet runs (Docker, see [windows-installer.md](windows-installer.md#tests)) |
+| `tools/release/test_installer_iso.py` | Installer ISO in user-mode QEMU, no root, no real disk: `bios`, `uefi`, `multi` (three disks, one too small), `sb`, `screen`, `small` (one too-small disk). One `(y/n)` confirmation, bytes written equal the image, the disk boots alone: [installer-iso.md](installer-iso.md#tests) |
 | `tools/release/test_deploy_backup.py` | `backup_stream` (`deploy/script/lib.sh`), `backup_running_system` (`deploy/script/remote-deploy.sh`) |
 | `tools/release/test_deploy_recovery_source.py` | `recovery_from_parts` (`deploy/script/remote-deploy.sh`): resident fallback source of a deploy, 29 checks |
 | `tools/release/test_identity_merge.py` | `unitotem_identity.py` account merge |
@@ -31,7 +35,8 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_wifi_roam.py` | `unitotem-wifi-roam` scan parsing and candidate choice |
 | `tools/release/fake-github.py` | GitHub Releases stub over HTTP |
 | `unitotem/verify-image.sh` | Rule checks on a mounted image; run by stage 3 |
-| `tools/release/test_write_sd.sh` | `deploy/script/write-sd.sh` on loop disks: table, filesystems, files, only used blocks written |
+| `tools/release/test_write_sd.sh` | `deploy/script/write-sd.sh` on loop disks: table, filesystems, files, only used blocks written; minimal images with a stale ROOT_B: ROOT_B blanked (no signature, first MiB zero), DATA empty ext4: 54 checks |
+| `tools/release/test_image_lib.sh` | `deploy/script/image-lib.sh` on loop images: descriptor actions (ROOT_B `blank`), synthesized layout, MBR conversion, streams: 56 checks |
 | `work/loopback-test/run.sh`, `inside.sh` | Loopback deploy (fresh target, table recreate, DATA mkfs), amd64 |
 | `work/loopback-test/run-ab.sh`, `inside-ab.sh` | Loopback A/B first deploy (layout 2, UEFI); leaves `scratch-ab/target.img` |
 | `work/loopback-test/run-arm64.sh`, `inside-arm64.sh` | arm64 path (`populate-real-kernel`) |
@@ -55,7 +60,7 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 
 ## Interfaces
 
-Host tests: `python3 tools/release/test_<name>.py`; no arguments, no root, no device. Output `PASS: <check>` / `FAIL: <check> <detail>` and a summary. Exit 0 all pass, 1 any fail.
+Host tests: `python3 tools/release/test_<name>.py`; no arguments, no root, no device. Exceptions: `test_installer_iso.py ISO FLASH.img.xz` (QEMU, see [installer-iso.md](installer-iso.md#tests)) and the Pester run (Docker). Output `PASS: <check>` / `FAIL: <check> <detail>` and a summary. Exit 0 all pass, 1 any fail.
 
 Image check: `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`; boot FAT under `boot/efi` (amd64) or `boot/firmware` (arm64); `AB_LAYOUT` 1 for A/B (default 0); env `FAT_DIR`. Exit 0/1.
 
@@ -107,6 +112,9 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 | Power cut | qemu-system-x86_64 with KVM, qemu-img, OVMF, sgdisk, sshpass, `deploy/script/lib.sh` |
 | Low-resolution OTA | qemu-system-x86_64, OVMF, mtools, sfdisk, xz |
 | Frame layout | python3, PIL optional |
+| Windows installer server | python3 (stdlib), ssh-keygen; run with `python3 -I` |
+| Windows installer Pester | docker (`mcr.microsoft.com/powershell:lts-ubuntu-22.04`, Pester installed inside) |
+| Installer ISO | qemu-system-x86_64 with KVM (user-mode networking, no root), OVMF (`/usr/share/OVMF`), sgdisk, mke2fs, ssh, socat, python3-pexpect, python3-pil, the ISO and its flash image |
 
 ## Recovery set sync on the test Pi
 `work/agents/agent-M/pi-recovery-sync-test.sh before|after|recovery-entry` (host side, `deploy/script/lib.sh` helpers only).

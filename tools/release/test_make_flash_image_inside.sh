@@ -105,7 +105,7 @@ fresh_full() {
 t_c_slot()    { [ "$(psize "$1" 2)" = "$SLOT" ] && [ "$(pstart "$1" 2)" = "$2" ]; }
 t_c_rootb()   { local bs=$(( ($2 + SLOT + 2047) / 2048 * 2048 ))
                 [ "$(pstart "$1" 3)" = "$bs" ] && [ "$(psize "$1" 3)" = "$SLOT" ] \
-                && [ "$(blkid -p -s LABEL -o value ${1}p3)" = ROOT_B ] && [ "$(blkid -p -s TYPE -o value ${1}p3)" = ext4 ]; }
+                && [ -z "$(blkid -p -s LABEL -o value ${1}p3)" ] && [ -z "$(blkid -p -s TYPE -o value ${1}p3)" ]; }
 t_c_data()    { local ds=$(( ($2 + SLOT + 2047) / 2048 * 2048 + SLOT ))
                 [ "$(pstart "$1" 4)" = "$ds" ] && [ $(( $(pstart "$1" 4) + $(psize "$1" 4) - 1 )) = "$3" ] \
                 && [ "$(blkid -p -s LABEL -o value ${1}p4)" = DATA ] && [ "$(blkid -p -s TYPE -o value ${1}p4)" = ext4 ]; }
@@ -136,7 +136,7 @@ complete_min() {
     chk "(3 $a) layout log: one 'created' line, rc=0" t_b_log
     chk "(3 $a) no warning" t_b_nowarn
     chk "(3 $a) ROOT_A grown to the slot, same start" t_c_slot "$LOOP" "$st"
-    chk "(3 $a) ROOT_B after ROOT_A, slot size, ext4 label ROOT_B" t_c_rootb "$LOOP" "$st"
+    chk "(3 $a) ROOT_B after ROOT_A, slot size, blank" t_c_rootb "$LOOP" "$st"
     chk "(3 $a) DATA after ROOT_B, to the last usable sector" t_c_data "$LOOP" "$st" "$last"
     if [ "$a" = arm64 ]; then
         chk "(3 $a) types: p1 c, p2 83, p3 83, p4 83; no pending type" t_b_types_all
@@ -146,7 +146,7 @@ complete_min() {
     chk "(3 $a) ROOT_A filesystem = partition (dumpe2fs block count x size)" t_c_fsbytes "$LOOP"
     chk "(3 $a) ROOT_A file tree unchanged" t_c_tree "$LOOP" "$ref"
     chk "(3 $a) ROOT_A filesystem clean (e2fsck -fn)" t_c_fsck "$LOOP"
-    chk "(3 $a) ROOT_B and DATA filesystems clean" t_b_fsck
+    chk "(3 $a) DATA filesystem clean" t_b_fsck
     chk "(3 $a) sfdisk -V clean" t_v "$LOOP"
     losetup -d "$LOOP"; LOOP=; rm -f -- $W/disk.img
 }
@@ -156,8 +156,8 @@ t_b_log()     { [ "$(grep -c '^I: layout: created' "$LOGF")" = 1 ] && grep -q '^
 t_h_log()     { grep -q '^I: layout: created' "$LOGF" && grep -q '^rc=0' "$LOGF"; }
 t_b_nowarn()  { ! grep -q '^W:' "$LOGF"; }
 t_b_four()    { [ "$(ndisk "$LOOP")" = 4 ] && ! sfdisk -d "$LOOP" | grep -Eq 'type=(5|f|85)(,|$)'; }
-t_b_names()   { [ "$(blkid -p -s LABEL -o value ${LOOP}p3)" = ROOT_B ] && [ "$(blkid -p -s LABEL -o value ${LOOP}p4)" = DATA ] \
-                && [ "$(blkid -p -s TYPE -o value ${LOOP}p3)" = ext4 ] && [ "$(blkid -p -s TYPE -o value ${LOOP}p4)" = ext4 ]; }
+t_b_names()   { [ -z "$(blkid -p -s LABEL -o value ${LOOP}p3)" ] && [ -z "$(blkid -p -s TYPE -o value ${LOOP}p3)" ] \
+                && [ "$(blkid -p -s LABEL -o value ${LOOP}p4)" = DATA ] && [ "$(blkid -p -s TYPE -o value ${LOOP}p4)" = ext4 ]; }
 t_b_types()   { [ "$(dline_type "$(dline "$LOOP" 3)")" = 83 ] && [ "$(dline_type "$(dline "$LOOP" 4)")" = 83 ] \
                 && [ "$(dline_type "$(dline "$LOOP" 1)")" = c ] && [ "$(dline_type "$(dline "$LOOP" 2)")" = 83 ]; }
 t_b_types_all() { t_b_types && ! sfdisk -d "$LOOP" | grep -Eq 'type=(da|db|5|f|85)(,|$)'; }
@@ -165,7 +165,7 @@ t_b_nopend()  { ! sfdisk -d "$LOOP" | grep -Eq 'type=(da|db)(,|$)'; }
 t_b_fw()      { [ "$(hash_sec "$LOOP" "$FW_START" "$FW_SIZE")" = "$(hash_sec "$FLA" "$FW_START" "$FW_SIZE")" ]; }
 t_b_id()      { [ "$(dos_id "$LOOP")" = 0x9f3a1c2e ]; }
 t_b_verify()  { sfdisk -V "$LOOP" >/dev/null 2>&1; }
-t_b_fsck()    { e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1; }
+t_b_fsck()    { e2fsck -fn ${LOOP}p4 >/dev/null 2>&1; }      # DATA: ROOT_B is blank until the first-boot clone
 t_b_noop()    { [ "$(grep -c '^I:' "$LOGF")" = 0 ] && grep -q '^rc=0' "$LOGF"; }
 t_h_names()   { sgdisk -p "$LOOP" | grep -Eq ' ROOT_B$' && sgdisk -p "$LOOP" | grep -Eq ' DATA$' && sgdisk -v "$LOOP" 2>&1 | grep -q 'No problems found'; }
 
@@ -223,9 +223,9 @@ chk "(1b) layout log: one 'created' line, rc=0" t_b_log
 chk "(1b) no warning" t_b_nowarn
 chk "(1b) four partitions, all primaries (no extended)" t_b_four
 chk "(1b) p2 ROOT_A grown to the slot, same start" t_c_slot "$LOOP" "$FA_START"
-chk "(1b) p3 ROOT_B: after ROOT_A, slot size, ext4 label ROOT_B" t_c_rootb "$LOOP" "$FA_START"
+chk "(1b) p3 ROOT_B: after ROOT_A, slot size, blank (no label, no filesystem)" t_c_rootb "$LOOP" "$FA_START"
 chk "(1b) p4 DATA: after ROOT_B, to the disk end" t_c_data "$LOOP" "$FA_START" $((DSZ - 1))
-chk "(1b) p3 ROOT_B and p4 DATA: labels, ext4" t_b_names
+chk "(1b) p3 ROOT_B blank, p4 DATA labelled DATA, ext4" t_b_names
 chk "(1b) types: p1 c, p2 83, p3 83, p4 83" t_b_types
 chk "(1b) no pending type (da/db) left" t_b_nopend
 chk "(1b) FIRMWARE bytes identical to the flash image" t_b_fw
@@ -234,7 +234,7 @@ chk "(1b) ROOT_A file tree unchanged" t_c_tree "$LOOP" "$REF_A"
 chk "(1b) ROOT_A filesystem clean (e2fsck -fn)" t_c_fsck "$LOOP"
 chk "(1b) label-id unchanged" t_b_id
 chk "(1b) sfdisk -V clean" t_b_verify
-chk "(1b) e2fsck -fn ROOT_B and DATA clean" t_b_fsck
+chk "(1b) e2fsck -fn DATA clean" t_b_fsck
 runlay; chk "(1b) second run: no log line, rc=0" t_b_noop
 losetup -d "$LOOP"; LOOP=; rm -f -- $W/disk.img
 
@@ -272,12 +272,12 @@ chk "(2b) ROOT_B and DATA created as GPT entries, rc=0" t_h_log
 chk "(2b) no warning" t_b_nowarn
 chk "(2b) names ROOT_B and DATA, GPT valid" t_h_names
 chk "(2b) p2 ROOT_A grown to the slot, same start" t_c_slot "$LOOP" "$GA_START"
-chk "(2b) p3 ROOT_B: after ROOT_A, slot size, ext4 label ROOT_B" t_c_rootb "$LOOP" "$GA_START"
+chk "(2b) p3 ROOT_B: after ROOT_A, slot size, blank (no label, no filesystem)" t_c_rootb "$LOOP" "$GA_START"
 chk "(2b) p4 DATA: after ROOT_B, to the last usable sector" t_c_data "$LOOP" "$GA_START" $((DSZ - 34))
 chk "(2b) ROOT_A filesystem = partition (dumpe2fs block count x size)" t_c_fsbytes "$LOOP"
 chk "(2b) ROOT_A file tree unchanged" t_c_tree "$LOOP" "$REF_G"
 chk "(2b) ROOT_A filesystem clean (e2fsck -fn)" t_c_fsck "$LOOP"
-chk "(2b) ROOT_B and DATA filesystems clean" t_b_fsck
+chk "(2b) DATA filesystem clean" t_b_fsck
 losetup -d "$LOOP"; LOOP=; rm -f -- $W/disk.img
 
 # ---- (3) minimal full images (ROOT_A shrunk, no ROOT_B / DATA in the table): flash image, then completion

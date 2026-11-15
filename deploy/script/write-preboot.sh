@@ -4,9 +4,10 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() { cat <<'USAGE'
-Usage: write-preboot.sh --image FILE [--yes] [--out FILE] [DEVICE]
+Usage: write-preboot.sh [--tree DIR | --image FILE] [--yes] [--out FILE] [DEVICE]
 
-  --image FILE   arm64 image: firmware, recovery kernel and initrd
+  --tree DIR     boot tree of the arm64 build (default: build/arm64/boot-tree)
+  --image FILE   arm64 image: its FIRMWARE partition is used instead of a tree
   DEVICE         whole disk of the card (default: the only removable one)
   --out FILE     keep the preboot image there
   --yes          do not ask
@@ -20,17 +21,17 @@ case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 log() { printf '%s %s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$1" "$2" >&2; }
 die() { log ERROR "$1"; exit 1; }
 
-YES=() IMG="" DEVICE="" OUT=""
+YES=() SRC=() DEVICE="" OUT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --yes) YES=(--yes); shift ;;
-        --image) IMG=$2; shift 2 ;;
+        --tree) SRC=(--tree "$2"); shift 2 ;;
+        --image) SRC=(--image "$2"); shift 2 ;;
         --out) OUT=$2; shift 2 ;;
         -*) die "unknown option $1" ;;
         *) DEVICE=$1; shift ;;
     esac
 done
-[ -n "$IMG" ] || die "--image FILE is required (an arm64 image)"
 
 if [ -z "$DEVICE" ]; then
     mapfile -t cands < <(lsblk -dnbo NAME,SIZE,RM,TYPE | awk '$3==1 && $4=="disk" && $2>0 {print "/dev/"$1}')
@@ -47,6 +48,6 @@ TMP=""
 if [ -z "$OUT" ]; then TMP=$(mktemp -d "${UNITOTEM_TMPFS:-/dev/shm}/preboot.XXXXXX"); OUT="$TMP/unitotem-preboot-arm64.img"; fi
 trap '[ -z "$TMP" ] || { rm -f -- "$TMP/unitotem-preboot-arm64.img" "$TMP/unitotem-preboot-arm64.img.xz"; rmdir -- "$TMP"; }' EXIT
 log INFO "building the preboot image"
-bash "${HERE}/make-preboot-image.sh" --image "$IMG" --out "$OUT"
+bash "${HERE}/make-preboot-image.sh" "${SRC[@]}" --out "$OUT"
 log INFO "writing it to ${DEVICE}"
 bash "${HERE}/write-sd.sh" "${YES[@]}" "${OUT}.xz" "$DEVICE"
