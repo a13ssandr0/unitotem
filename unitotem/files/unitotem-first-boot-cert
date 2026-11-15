@@ -13,7 +13,9 @@ DEST=/etc/ssl/unitotem.pem
 
 T=$(mktemp -d /etc/ssl/.unitotem-cert.XXXXXX)
 trap 'rm -rf -- "$T"' EXIT
-openssl req -x509 -nodes -newkey rsa:2048 -keyout "$T/key.pem" -out "$T/crt.pem" -days 365000 \
+# notBefore is the epoch, not "now": the clock of a new device is not reliable (an RTC kept in local time, a board with no RTC at 1970) and a
+# certificate that starts in the future is refused by every client until the real time arrives.
+openssl req -x509 -nodes -newkey rsa:2048 -keyout "$T/key.pem" -out "$T/crt.pem" -days 365000 -not_before 19700101000000Z \
     -subj "/C=../ST=./L=./O=a13ssandr0/OU=UniTotem/CN=UniTotem/emailAddress=."
 cat "$T/crt.pem" "$T/key.pem" > "$T/unitotem.pem"
 chmod 0600 "$T/unitotem.pem"
