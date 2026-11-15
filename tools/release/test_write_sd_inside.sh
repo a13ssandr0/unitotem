@@ -78,6 +78,9 @@ mkfs.ext4 -q "$D3"; mount "$D3" /m
 check "refuses a disk with a mounted filesystem" bash -c "! bash $SCRIPT --yes $W/src.img $D3"
 umount /m
 check "answer n cancels and writes nothing" bash -c "echo n | bash $SCRIPT $W/src.img $D3; [ \$? -ne 0 ] && [ \"\$(blkid -o value -s TYPE $D3)\" = ext4 ]"
+: > $W/empty.img; E=$(losetup --find --show $W/empty.img 2>/dev/null)
+check "refuses a device with no medium (size 0), at once" bash -c "timeout 10 bash $SCRIPT --yes $W/src.img $E 2>&1 | grep -q 'has no medium'"
+losetup -d "$E" 2>/dev/null; rm -f $W/empty.img
 check "refuses a regular file" bash -c "! bash $SCRIPT --yes $W/src.img $W/small.img"
 check "refuses a missing image" bash -c "! bash $SCRIPT --yes $W/none.img $D3"
 losetup -d "$D3"
