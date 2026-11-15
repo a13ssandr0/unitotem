@@ -149,5 +149,20 @@ with tempfile.TemporaryDirectory() as td:
     rc, out = uu.cmd_auto(A, conf)
     check("the next tick waits (backoff)", out["state"]["action"] == "backoff")
 
+    # --- blank B (first boot, the layout created it and nothing was written): the policy fetches onto it like onto any empty slot,
+    # and nothing is armed before the fetch has verified it
+    uu.do_fetch = fake_fetch
+    reset(); pol("download")
+    rc, out = uu.cmd_auto(A, conf)
+    check("blank B: the update is fetched onto it", log["fetch"] == 1 and out["state"]["action"] == "downloaded", (log, out))
+    reset()
+    try:
+        uu.auto_arm(conf)
+        armed_blank = True
+    except uu.Fail as e:
+        armed_blank = e.code == "nothing-fetched"
+    check("blank B: nothing is armed before a verified fetch", armed_blank)
+    check("blank B: no pending update was written", not os.path.exists(os.path.join(state, "pending.json")))
+
 print(f"\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

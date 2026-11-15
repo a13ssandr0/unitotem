@@ -19,6 +19,7 @@ def check(name, cond, extra=""):
 
 loader = importlib.machinery.SourceFileLoader("uu", os.path.join(ROOT, "unitotem/files/unitotem-update"))
 spec = importlib.util.spec_from_loader("uu", loader); uu = importlib.util.module_from_spec(spec); loader.exec_module(uu)
+REAL_SLOT_SOUND = uu.slot_sound                           # the section at the end needs the real check back
 
 with tempfile.TemporaryDirectory() as td:
     bf = os.path.join(td, "firmware"); os.makedirs(bf + "/slota/overlays")
@@ -70,9 +71,15 @@ with tempfile.TemporaryDirectory() as td:
         else: os.environ["UNITOTEM_SYS_BLOCK"] = old_sys_env
     check("auto: an unsound other slot (even one never valid, e.g. empty after a recovery) is rebuilt", reached)
     uu.slot_sound = lambda c, s: (True, "ok")
-    st["b"] = {"version": "1", "valid": True}; uu.write_state(conf, "slots.json", st)
+    st["b"] = {"version": "1", "valid": True, "prepared": True}; uu.write_state(conf, "slots.json", st)
     rc, out = uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf)
-    check("auto: a sound other slot is left alone", out.get("repaired") is False and "sound" in out.get("reason", ""), out)
+    check("auto: a sound and prepared other slot is left alone", out.get("repaired") is False and "sound" in out.get("reason", ""), out)
+    st["b"] = {"version": "1", "valid": True}; uu.write_state(conf, "slots.json", st)
+    try:
+        uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf); unprep = False
+    except uu.Fail as e:
+        unprep = e.code == "no-slot-device"       # passes slot_sound but was never prepared: the repair goes on to the copy
+    check("auto: a sound but unprepared other slot is repaired (cut before its state was written)", unprep)
 
     # --- the ESP's grub.cfg follows the image, never backwards
     esp = os.path.join(td, "esp"); os.makedirs(esp + "/unitotem-grub/grub")
@@ -282,6 +289,173 @@ finally:
     else: os.environ["UNITOTEM_SYS_BLOCK"] = old_sys
     import shutil
     shutil.rmtree(SYS, ignore_errors=True)
+
+# --- blank ROOT_B: created by the layout, never written (no label, no filesystem). Cause first-boot, repair clones into it.
+import shutil, subprocess
+
+uu.slot_sound = REAL_SLOT_SOUND
+
+
+def make_sys(disks):
+    base = tempfile.mkdtemp(prefix="agent-S-w1-blank-")
+    sysroot = os.path.join(base, "devices", "fake")
+    for disk, n in disks.items():
+        d = os.path.join(sysroot, disk); os.makedirs(d)
+        os.symlink(d, os.path.join(base, disk))
+        for i in range(1, n + 1):
+            pd = os.path.join(d, f"{disk}p{i}"); os.makedirs(pd)
+            open(os.path.join(pd, "partition"), "w").write(f"{i}\n")
+            os.symlink(pd, os.path.join(base, f"{disk}p{i}"))
+    return base
+
+
+class Quiet:                                              # stands in for io_friendly: no sysfs writes
+    def __init__(self, *a): pass
+    def apply(self): pass
+    def restore(self): pass
+
+
+def blank_run_out(*cmd, check=True):
+    ver = blank_version[0]
+    if cmd[0] == "findmnt":
+        return ROOT[0]
+    if cmd[0] == "blkid" and "-t" in cmd:
+        tag, value = cmd[cmd.index("-t") + 1].split("=", 1)
+        return "\n".join(d for d in sorted(FS) if FS[d].get(tag) == value)
+    if cmd[0] == "blkid" and "-s" in cmd:
+        return FS.get(cmd[-1], {}).get(cmd[cmd.index("-s") + 1], "")
+    if cmd[0] in ("tune2fs", "e2fsck"):
+        return ""
+    if cmd[0] == "mount":                                 # the copy reports the running version
+        d = os.path.join(cmd[-1], "usr/share/unitotem"); os.makedirs(d, exist_ok=True)
+        open(os.path.join(d, "release-version"), "w").write(ver + "\n")
+        return ""
+    raise AssertionError(f"unexpected command {cmd}")
+
+
+blank_version = ["2026.11.54"]
+ROOT = ["/dev/mmcblk0p2"]
+
+
+def blank_case(name, devs, root, want_cause, want_dev):
+    FS.clear(); FS.update(devs); ROOT[0] = root
+    base = make_sys({"mmcblk0": 3})
+    td3 = tempfile.mkdtemp(prefix="agent-S-w1-blank-state-")
+    run = os.path.join(td3, "run"); os.makedirs(run)
+    cmdline = os.path.join(td3, "cmdline"); open(cmdline, "w").write("root=LABEL=ROOT_A unitotem.slot=a\n")
+    vf = os.path.join(td3, "release-version"); open(vf, "w").write(blank_version[0] + "\n")
+    conf3 = dict(uu.CONF_DEFAULTS, UPDATE_BACKEND="grub", UPDATE_STATE_DIR=os.path.join(td3, "state"), UPDATE_RUN_DIR=run,
+                 UPDATE_CMDLINE=cmdline, UPDATE_VERSION_FILE=vf, UPDATE_DATA=os.path.join(td3, "data"), UPDATE_HEALTH_URL="")
+    calls = []
+
+    def fake_clone(c, src, dev, new_label, serr):
+        calls.append((dev, new_label)); src.read()
+
+    def fake_run(cmd, **kw):                              # findmnt -S: not mounted; e2fsck -fy on the copy: clean
+        if cmd[0] == "umount":                            # the fake mount left its files in the test's own temp dir
+            shutil.rmtree(os.path.join(cmd[-1], "usr"), ignore_errors=True)   # the directory itself stays: do_repair removes it
+        return subprocess.CompletedProcess(cmd, 1 if cmd[0] == "findmnt" else 0, b"", b"")
+
+    FakePopen.rc, FakePopen.stream = 0, b""                # the source stream reads clean (the clone itself is faked)
+    saved = (uu.run_out, uu.subprocess.run, uu.subprocess.Popen, uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly)
+    old_env = os.environ.get("UNITOTEM_SYS_BLOCK")
+    os.environ["UNITOTEM_SYS_BLOCK"] = base
+    uu.run_out, uu.subprocess.run, uu.subprocess.Popen = blank_run_out, fake_run, FakePopen
+    uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly = fake_clone, (lambda *a: 0), Quiet
+    try:
+        check(f"{name}: blank B is not sound, cause {want_cause}", uu.slot_sound(conf3, "b") == (False, want_cause),
+              uu.slot_sound(conf3, "b"))
+        rc, out = uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf3)
+        check(f"{name}: repair cloned into the blank slot", calls == [(want_dev, "ROOT_B")], calls)
+        check(f"{name}: repair reports cause {want_cause}", out.get("repaired") is True and out.get("cause") == want_cause, out)
+        check(f"{name}: event log names the cause", want_cause in open(uu.state_path(conf3, "events.log")).read())
+        lr = uu.read_state(conf3, "last-result.json") or {}
+        check(f"{name}: last-result is ok with the cause", lr.get("result") == "ok" and lr.get("cause") == want_cause, lr)
+        st3 = uu.read_state(conf3, "slots.json", {}) or {}
+        check(f"{name}: slot b marked valid after the copy", st3.get("b", {}).get("valid") is True, st3)
+    finally:
+        uu.run_out, uu.subprocess.run, uu.subprocess.Popen, uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly = saved
+        if old_env is None: os.environ.pop("UNITOTEM_SYS_BLOCK", None)
+        else: os.environ["UNITOTEM_SYS_BLOCK"] = old_env
+        shutil.rmtree(base, ignore_errors=True); shutil.rmtree(td3, ignore_errors=True)
+
+
+blank_gpt = {"/dev/mmcblk0p2": {"PARTLABEL": "ROOT_A", "LABEL": "ROOT_A", "TYPE": "ext4"},
+             "/dev/mmcblk0p3": {"PARTLABEL": "ROOT_B"}}
+blank_case("GPT blank ROOT_B", blank_gpt, "/dev/mmcblk0p2", "first-boot", "/dev/mmcblk0p3")
+blank_mbr = {"/dev/mmcblk0p2": {"LABEL": "ROOT_A", "TYPE": "ext4"}, "/dev/mmcblk0p3": {"LABEL": "", "TYPE": ""}}
+blank_case("MBR blank ROOT_B (neighbour)", blank_mbr, "/dev/mmcblk0p2", "first-boot", "/dev/mmcblk0p3")
+
+# unprepared: slot_sound passes (B looks sound) but slots.json has no valid+prepared entry for B: the clone repeats, cause unprepared
+FS.clear(); FS.update({"/dev/mmcblk0p2": {"LABEL": "ROOT_A", "TYPE": "ext4"}, "/dev/mmcblk0p3": {"LABEL": "ROOT_B", "TYPE": "ext4"}})
+ROOT[0] = "/dev/mmcblk0p2"
+base_u = make_sys({"mmcblk0": 3})
+td5 = tempfile.mkdtemp(prefix="agent-S-w1-unprep-")
+run5 = os.path.join(td5, "run"); os.makedirs(run5)
+cmd5 = os.path.join(td5, "cmdline"); open(cmd5, "w").write("root=LABEL=ROOT_A unitotem.slot=a\n")
+vf5 = os.path.join(td5, "release-version"); open(vf5, "w").write("2026.11.54\n")
+conf5 = dict(uu.CONF_DEFAULTS, UPDATE_BACKEND="grub", UPDATE_STATE_DIR=os.path.join(td5, "state"), UPDATE_RUN_DIR=run5,
+             UPDATE_CMDLINE=cmd5, UPDATE_VERSION_FILE=vf5, UPDATE_DATA=os.path.join(td5, "data"), UPDATE_HEALTH_URL="")
+st5 = uu.slots_state(conf5); st5["b"] = {"version": "2026.11.54", "valid": False}; uu.write_state(conf5, "slots.json", st5)
+calls5 = []
+saved5 = (uu.run_out, uu.subprocess.run, uu.subprocess.Popen, uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly, uu.slot_sound)
+old_env5 = os.environ.get("UNITOTEM_SYS_BLOCK"); os.environ["UNITOTEM_SYS_BLOCK"] = base_u
+FakePopen.rc, FakePopen.stream = 0, b""
+def clone5(c, src, dev, new_label, serr):
+    calls5.append((dev, new_label)); src.read()
+def run5_fake(cmd, **kw):
+    if cmd[0] == "umount":
+        shutil.rmtree(os.path.join(cmd[-1], "usr"), ignore_errors=True)
+    return subprocess.CompletedProcess(cmd, 1 if cmd[0] == "findmnt" else 0, b"", b"")
+uu.run_out, uu.subprocess.run, uu.subprocess.Popen = blank_run_out, run5_fake, FakePopen
+uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly = clone5, (lambda *a: 0), Quiet
+uu.slot_sound = lambda c, s: (True, "ok")                 # B looks sound on disk
+try:
+    rc5, out5 = uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf5)
+    check("unprepared: the clone repeats into B", calls5 == [("/dev/mmcblk0p3", "ROOT_B")], calls5)
+    check("unprepared: cause unprepared", out5.get("repaired") is True and out5.get("cause") == "unprepared", out5)
+finally:
+    (uu.run_out, uu.subprocess.run, uu.subprocess.Popen, uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly, uu.slot_sound) = saved5
+    if old_env5 is None: os.environ.pop("UNITOTEM_SYS_BLOCK", None)
+    else: os.environ["UNITOTEM_SYS_BLOCK"] = old_env5
+    shutil.rmtree(base_u, ignore_errors=True); shutil.rmtree(td5, ignore_errors=True)
+uu.slot_sound = REAL_SLOT_SOUND
+
+FS.clear(); FS.update({"/dev/mmcblk0p2": {"LABEL": "ROOT_A", "TYPE": "ext4"}, "/dev/mmcblk0p3": {"LABEL": "ROOT_NEW", "TYPE": "ext4"}})
+ROOT[0] = "/dev/mmcblk0p2"
+base = make_sys({"mmcblk0": 3})
+old_env = os.environ.get("UNITOTEM_SYS_BLOCK"); os.environ["UNITOTEM_SYS_BLOCK"] = base
+saved_run_out = uu.run_out
+uu.run_out = blank_run_out
+try:
+    cfg_b = dict(uu.CONF_DEFAULTS, UPDATE_BACKEND="grub")
+    check("a foreign label on B keeps cause label (a filesystem is there, not first-boot)", uu.slot_sound(cfg_b, "b") == (False, "label"),
+          uu.slot_sound(cfg_b, "b"))
+finally:
+    uu.run_out = saved_run_out
+    if old_env is None: os.environ.pop("UNITOTEM_SYS_BLOCK", None)
+    else: os.environ["UNITOTEM_SYS_BLOCK"] = old_env
+    shutil.rmtree(base, ignore_errors=True)
+
+# status with a blank B: no crash, the other slot has no version and no rollback
+td4 = tempfile.mkdtemp(prefix="agent-S-w1-status-")
+cmdl4 = os.path.join(td4, "cmdline"); open(cmdl4, "w").write("root=LABEL=ROOT_A unitotem.slot=a\n")
+vf4 = os.path.join(td4, "release-version"); open(vf4, "w").write("2026.11.54\n")
+conf4 = dict(uu.CONF_DEFAULTS, UPDATE_BACKEND="grub", UPDATE_STATE_DIR=os.path.join(td4, "state"), UPDATE_RUN_DIR=os.path.join(td4, "run"),
+             UPDATE_CMDLINE=cmdl4, UPDATE_VERSION_FILE=vf4, UPDATE_DATA=os.path.join(td4, "data"), UPDATE_HEALTH_URL="",
+             UPDATE_BOOTFS=os.path.join(td4, "fat"), UPDATE_GRUBENV=os.path.join(td4, "grubenv"))
+os.makedirs(conf4["UPDATE_RUN_DIR"]); os.makedirs(conf4["UPDATE_STATE_DIR"])
+saved_ov = uu.overlay_status
+uu.overlay_status = lambda c: None                        # reads the live overlay state of this host
+try:
+    rc, out = uu.cmd_status(argparse.Namespace(), conf4)
+    check("status: blank other slot reports no version", rc == 0 and out.get("slot") == "a" and out.get("other_version") is None, out)
+    check("status: blank other slot has no rollback", out.get("rollback_available") is False, out)
+except Exception as e:
+    check("status: blank other slot does not raise", False, repr(e))
+finally:
+    uu.overlay_status = saved_ov
+    shutil.rmtree(td4, ignore_errors=True)
 
 print(f"\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

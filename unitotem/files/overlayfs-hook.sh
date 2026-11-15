@@ -173,17 +173,18 @@ grow_root() {
 # on every boot, no flag file. GPT disks:
 #   - neither ROOT_B nor DATA in the GPT, ROOT_A the last partition, >= 5 GiB + 256 MiB free after it:
 #       sgdisk -e (valid backup GPT at the disk end), zero the first MiB of both new areas (stale signatures of a
-#       reused card), then ONE sgdisk write adds both entries, each flagged "pending" (GPT attribute bit 48);
+#       reused card), then ONE sgdisk write adds both entries: ROOT_B as a blank partition (GPT name ROOT_B, type
+#       8300, no filesystem; unitotem-update clones ROOT_A into it at the first confirmed boot), DATA flagged
+#       "pending" (GPT attribute bit 48);
 #   - partx -a tells the kernel about the two new partitions only (ROOT_A, mounted, is not touched);
-#   - every partition flagged pending is formatted (ROOT_B: ext4 label ROOT_B, the empty slot that unitotem-update
-#     repair fills; DATA: ext4 label DATA, as stage3), then its flag is cleared.
-# A cut before the table write changes nothing; a cut after it leaves flagged partitions that the next boot formats
-# (only flagged partitions are ever formatted: a damaged filesystem is never reformatted). Never touches ROOT_A or the
-# boot partition. Any failure logs one line and returns 0.
-# DOS (MBR) disks: layout_mbr, the same steps with primaries only; the pending flag is the MBR type (da ROOT_B,
-# db DATA). Power cuts, per step: before the table write nothing changes; after it, the next boot finds the da/db
-# partitions and formats them, DATA first; a cut after mke2fs and before the type change leaves the still-flagged
-# fresh (empty) filesystem, which the next boot formats again; after the type change the partition is done.
+#   - every partition flagged pending is formatted (DATA: ext4 label DATA, as stage3), then its flag is cleared.
+# A cut before the table write changes nothing; a cut after it leaves ROOT_B blank (nothing to redo) and DATA flagged,
+# which the next boot formats (only flagged partitions are ever formatted: a damaged filesystem is never reformatted).
+# Never touches ROOT_A or the boot partition. Any failure logs one line and returns 0.
+# DOS (MBR) disks: layout_mbr, the same steps with primaries only; ROOT_B is type 83 (blank), DATA is type db
+# (pending). Power cuts, per step: before the table write nothing changes; after it, the next boot finds the db
+# partition and formats it, then sets its type to 83; a cut between the two leaves the still-flagged fresh filesystem,
+# which the next boot formats again. A legacy da (ROOT_B pending from an older image) is formatted the same way.
 LAYOUT_SLOT_SECTORS=10485760        # ROOT_SLOT_SIZE 5G, as stage3
 LAYOUT_MIN_FREE=11010048            # slot + 256 MiB for DATA
 LAYOUT_LINUX_FS=8300
@@ -208,7 +209,7 @@ layout_complete() {
     [ "$lc_pt" = gpt ] || return 0
     lc_dump=$(sfdisk -d "$lc_ddev" 2>/dev/null) || return 0
 
-    lc_hasb=no; lc_hasd=no
+    lc_hasb=no; lc_hasd=no; lc_made=""
     echo "$lc_dump" | grep -q 'name="ROOT_B"' && lc_hasb=yes
     echo "$lc_dump" | grep -q 'name="DATA"' && lc_hasd=yes
 
@@ -228,17 +229,21 @@ layout_complete() {
         dd if=/dev/zero of="$lc_ddev" bs=512 seek="$lc_bs" count=2048 conv=notrunc >/dev/null 2>&1 \
             && dd if=/dev/zero of="$lc_ddev" bs=512 seek="$lc_ds" count=2048 conv=notrunc >/dev/null 2>&1 \
             || { log_warning_msg "layout: cannot clear the new areas, skipping"; return 0; }
-        sgdisk -n "3:${lc_bs}:$((lc_ds - 1))" -t "3:${LAYOUT_LINUX_FS}" -c 3:ROOT_B -A 3:set:48 \
+        sgdisk -n "3:${lc_bs}:$((lc_ds - 1))" -t "3:${LAYOUT_LINUX_FS}" -c 3:ROOT_B \
                -n "4:${lc_ds}:${lc_last}" -t "4:${LAYOUT_LINUX_FS}" -c 4:DATA -A 4:set:48 "$lc_ddev" >/dev/null 2>&1 \
             || { log_warning_msg "layout: partition table write failed, skipping"; return 0; }
         sgdisk -v "$lc_ddev" 2>&1 | grep -q "No problems found" \
             || { log_warning_msg "layout: GPT check failed after the write"; return 0; }
         lc_dump=$(sfdisk -d "$lc_ddev" 2>/dev/null) || return 0
+        partx -a --nr 3 "$lc_ddev" >/dev/null 2>&1          # ROOT_B: the kernel knows it now, the repair clones into it
+        udevadm settle --timeout=2 2>/dev/null || true
+        lc_made=" ROOT_B (blank)"
     fi
 
-    # Flagged partitions: make the kernel know them, format them, clear the flag.
+    # Flagged partitions: make the kernel know them, format them, clear the flag. ROOT_B is never flagged now; the
+    # name stays so that a ROOT_B flagged by an older image is formatted and cleared the same way.
     lc_did=""
-    for lc_name in ROOT_B DATA; do
+    for lc_name in DATA ROOT_B; do
         lc_line=$(echo "$lc_dump" | grep "name=\"$lc_name\"" | grep 'GUID:48' | head -n 1)
         [ -n "$lc_line" ] || continue
         lc_dev=${lc_line%% :*}
@@ -251,7 +256,7 @@ layout_complete() {
             || { log_warning_msg "layout: cannot clear the flag of $lc_name"; return 0; }
         lc_did="$lc_did $lc_name"
     done
-    [ -z "$lc_did" ] || log_success_msg "layout: created${lc_did}"
+    [ -z "$lc_made$lc_did" ] || log_success_msg "layout: created${lc_made}${lc_did}"
     return 0
 }
 # layout_mbr DISK SYSDIR PARDIR: the DOS (MBR) variant of layout_complete, primaries only. Creation needs ROOT_A the
@@ -261,7 +266,7 @@ layout_complete() {
 LAYOUT_MBR_MIN_FREE=524288          # 256 MiB, sectors
 LAYOUT_MBR_MAX_SECTORS=4294967295   # MBR addresses 2 TiB
 layout_mbr() {
-    lc_ddev=$1; lc_sys=$2; lc_par=$3
+    lc_ddev=$1; lc_sys=$2; lc_par=$3; lc_made=""
     lc_dump=$(sfdisk -d "$lc_ddev" 2>/dev/null) || return 0
     if ! echo "$lc_dump" | grep -Eq 'type=(da|db)(,|$)'; then
         lc_start=$(cat "$lc_sys/start"); lc_size=$(cat "$lc_sys/size"); lc_num=$(cat "$lc_sys/partition")
@@ -284,12 +289,12 @@ layout_mbr() {
         lc_free=$((lc_dsz - lc_bs))
         if [ "$lc_num" -le 2 ] && [ "$lc_free" -ge $((lc_size + LAYOUT_MBR_MIN_FREE)) ]; then
             lc_ds=$(( (lc_bs + lc_size + 2047) / 2048 * 2048 ))
-            lc_new="start=${lc_bs}, size=${lc_size}, type=da
+            lc_new="start=${lc_bs}, size=${lc_size}, type=83
 start=${lc_ds}, size=$((lc_dsz - lc_ds)), type=db"
-            lc_areas="$lc_bs $lc_ds"; lc_want=2
+            lc_areas="$lc_bs $lc_ds"; lc_want=2; lc_made=" ROOT_B (blank)"
         elif [ "$lc_free" -ge "$LAYOUT_MBR_MIN_FREE" ]; then
             lc_new="start=${lc_bs}, size=$((lc_dsz - lc_bs)), type=db"
-            lc_areas="$lc_bs"; lc_want=1
+            lc_areas="$lc_bs"; lc_want=1; lc_made=""
         else
             log_warning_msg "layout: not enough free space for DATA, skipping"; return 0
         fi
@@ -306,8 +311,8 @@ start=${lc_ds}, size=$((lc_dsz - lc_ds)), type=db"
         udevadm settle --timeout=2 2>/dev/null || true
     fi
 
-    # Pending partitions (type db DATA, da ROOT_B), DATA first: format, then set the type to 83. Only these types
-    # are formatted; a cut between the two steps leaves the fresh filesystem flagged, the next boot formats it again.
+    # Pending partitions (type db DATA; da ROOT_B only from an older image), format, then set the type to 83. Only these
+    # types are formatted; a cut between the two steps leaves the fresh filesystem flagged, the next boot formats it again.
     lc_did=""
     for lc_t in db da; do
         lc_line=$(sfdisk -d "$lc_ddev" 2>/dev/null | grep -E "type=${lc_t}(,|\$)" | head -n 1)
@@ -323,7 +328,7 @@ start=${lc_ds}, size=$((lc_dsz - lc_ds)), type=db"
             || { log_warning_msg "layout: cannot set the type of $lc_name"; return 0; }
         lc_did="$lc_did $lc_name"
     done
-    [ -z "$lc_did" ] || log_success_msg "layout: created${lc_did}"
+    [ -z "$lc_made$lc_did" ] || log_success_msg "layout: created${lc_made}${lc_did}"
     return 0
 }
 # overlay_status STATE: writes the one-line overlay outcome to $OVERLAY_STATUS_FILE and logs it with the "overlay:"

@@ -16,6 +16,14 @@ FORCE_STAGE="${FORCE_STAGE:-}"   # set to 0,1,2 to force rebuild from that stage
 PI_HOST="${PI_HOST:-}"
 PI_BUILD_BASE="${PI_BUILD_BASE:-/mnt/data/unitotem-native-build}"
 
+# make-boot-tree.sh arguments (arm64), as paths inside the build container and on the native Pi: /work is build/, /unitotem the unitotem/ tree.
+BOOT_TREE_ARGS=(--stage2 /work/arm64/stage2.tar.gz
+    --recovery-vmlinuz /work/arm64/recovery/recovery-vmlinuz-arm64
+    --recovery-initrd /work/arm64/recovery/recovery-initrd-arm64.img
+    --recovery-manifest /work/arm64/recovery/recovery.manifest
+    --engine /unitotem/files/ota-engine.sh
+    --out /work/arm64/boot-tree)
+
 # Key-only ssh: BatchMode and no askpass, so a missing key fails instead of prompting.
 _pi_ssh() {
     SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS \
@@ -58,7 +66,7 @@ build_natively_on_pi() {
     # /var/lib/dpkg, /usr, /etc) and returns to ro in a trap, however the
     # session ends.
     _pi_ssh "trap 'mount -o remount,ro / 2>/dev/null || true' EXIT; \
-        mkdir -p '${PI_BUILD_BASE}/unitotem' '${PI_BUILD_BASE}/build' '${PI_BUILD_BASE}/deploy' && \
+        mkdir -p '${PI_BUILD_BASE}/unitotem' '${PI_BUILD_BASE}/build' '${PI_BUILD_BASE}/deploy' '${PI_BUILD_BASE}/deploy-script' && \
         mount -o remount,rw / && \
         { mountpoint -q /var/lib/dpkg && mount -o remount,rw /var/lib/dpkg || true; } && \
         ln -sfn '${PI_BUILD_BASE}/unitotem' /unitotem && \
@@ -75,6 +83,7 @@ build_natively_on_pi() {
     echo "[arm64] Syncing sources to the Pi..."
     _pi_rsync -r --delete "${DIR}/unitotem/" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/"
     _pi_rsync "${DIR}/deploy/script/ota-engine.sh" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/files/ota-engine.sh"
+    _pi_rsync "${DIR}/deploy/script/make-preboot-image.sh" "${PI_HOST}:${PI_BUILD_BASE}/deploy-script/make-preboot-image.sh"
     _pi_rsync "${DIR}/tools/pkglock.py" "${PI_HOST}:${PI_BUILD_BASE}/unitotem/pkglock.py"
     # Locally supplied packages (build/extra-debs/<arch>/*.deb) - the manager package among them - are inputs of stage 1 and
     # must be on the Pi too; the arm64 manager package is generated there from the amd64 one.
@@ -88,7 +97,7 @@ build_natively_on_pi() {
     # is mounted, so mounting the image there would hide the build tree.
     local envvars="ARCH=arm64 ROOTFS='${PI_BUILD_BASE}/rootfs' IMG_MNT='${PI_BUILD_BASE}/imgmnt'"
     local var
-    for var in RELEASE MIRROR UNITOTEM_HOSTNAME UNITOTEM_LOCALE UNITOTEM_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE RELEASE_VERSION; do
+    for var in RELEASE MIRROR UNITOTEM_HOSTNAME UNITOTEM_LOCALE UNITOTEM_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE RELEASE_VERSION IMG_DATE; do
         [ -n "${!var:-}" ] && envvars="${envvars} ${var}='${!var}'"
     done
 
@@ -104,10 +113,16 @@ build_natively_on_pi() {
             xz-utils pigz zstd curl ca-certificates wget gnupg2 rsync git partclone python3 python3-pil \
             device-tree-compiler initramfs-tools-core cpio >/dev/null; \
         for s in stage0-bootstrap.sh stage1-packages.sh stage1-recovery-initrd.sh \
-                 stage2-configure.sh stage3-image.sh; do \
+                 stage2-configure.sh; do \
             echo \"[arm64] (native) Running \$s...\"; \
             env ${envvars} bash /unitotem/\$s; \
-        done" \
+        done; \
+        echo '[arm64] (native) Assembling the boot tree...'; \
+        mkdir -p /work/tmp && env ${envvars} TMPDIR=/work/tmp bash /unitotem/make-boot-tree.sh ${BOOT_TREE_ARGS[*]}; \
+        echo '[arm64] (native) Running stage3-image.sh...'; \
+        env ${envvars} bash /unitotem/stage3-image.sh; \
+        echo '[arm64] (native) Writing the preboot card...'; \
+        mkdir -p /work/tmp && env TMPDIR=/work/tmp bash '${PI_BUILD_BASE}/deploy-script/make-preboot-image.sh' --tree /work/arm64/boot-tree --out /deploy/arm64/unitotem-preboot-arm64.img" \
         || { echo "[arm64] native build failed on the Pi" >&2; return 1; }
 
     echo "[arm64] Fetching results from the Pi..."
@@ -240,7 +255,7 @@ for ARCH in ${ARCHES}; do
 
     # Pass through optional config overrides
     for VAR in RELEASE MIRROR UNITOTEM_HOSTNAME \
-               UNITOTEM_LOCALE UNITOTEM_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE RELEASE_VERSION; do
+               UNITOTEM_LOCALE UNITOTEM_TIMEZONE IMAGE_SIZE AB_LAYOUT ROOT_SLOT_SIZE RELEASE_VERSION IMG_DATE; do
         [ -n "${!VAR:-}" ] && RUN_OPTS+=(-e "${VAR}=${!VAR}")
     done
 
@@ -340,9 +355,23 @@ for ARCH in ${ARCHES}; do
         echo "${AB_LAYOUT:-1}" > "${DIR}/build/${ARCH}/stage2.layout"
     fi
 
+    # Boot tree (arm64): the FIRMWARE files and the recovery set that the full image and the preboot card share.
+    # Always rebuilt: it is cheap next to stage 3 and cannot be stale.
+    if [ "${ARCH}" = arm64 ]; then
+        echo "[arm64] Assembling the boot tree..."
+        ${DOCKER} run "${RUN_OPTS[@]}" "${BUILDER}" /unitotem/make-boot-tree.sh "${BOOT_TREE_ARGS[@]}"
+    fi
+
     # Stage 3: Create disk image (always runs to produce fresh image)
     echo "[${ARCH}] Stage 3: Creating disk image..."
     ${DOCKER} run "${RUN_OPTS[@]}" "${BUILDER}" /unitotem/stage3-image.sh
+
+    # Preboot card (arm64): written from the boot tree, the same files the full image carries on FIRMWARE.
+    if [ "${ARCH}" = arm64 ]; then
+        echo "[arm64] Writing the preboot card..."
+        ${DOCKER} run "${RUN_OPTS[@]}" -v "${DIR}/deploy/script:/deploy-script:ro" "${BUILDER}" \
+            bash /deploy-script/make-preboot-image.sh --tree /work/arm64/boot-tree --out /deploy/arm64/unitotem-preboot-arm64.img
+    fi
 
     adopt_lock
     echo "[${ARCH}] Done! Image in: deploy/${ARCH}/"

@@ -3,4 +3,5 @@ FROM debian:trixie
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         partclone xz-utils util-linux fdisk gdisk parted e2fsprogs dosfstools mtools cpio coreutils pv ca-certificates \
+        python3 zstd \
     && rm -rf /var/lib/apt/lists/*

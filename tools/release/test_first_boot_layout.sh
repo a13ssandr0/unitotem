@@ -1,7 +1,8 @@
 #!/bin/bash
 # First-boot layout test in QEMU: boots a FLASH image (unitotem-<date>-amd64-flash.img[.xz], from unitotem/make-flash-image.sh)
 # written raw to a 20 GiB virtual disk, once with UEFI (OVMF) and once with legacy BIOS (SeaBIOS), and checks over ssh that
-# the first boot created ROOT_B and DATA, mounted DATA, and that unitotem-update repair fills ROOT_B. A fresh image is in the
+# the first boot created ROOT_B (blank) and DATA, mounted DATA, and that the first confirmed boot clones ROOT_A into ROOT_B
+# (repair, cause first-boot) so that ROOT_B passes slot_sound. A fresh image is in the
 # first-access state (root has no password): the test creates the administrator through /setup (forwarded HTTPS port) and then
 # works as that account with sudo.
 # Needs a BUILT flash image (path as the argument), qemu-system-x86_64 (KVM optional), OVMF, sshpass. It does not run in CI.
@@ -85,6 +86,10 @@ run_mode() {
     done
     if [ "$t" -lt "$FILL_TIMEOUT" ]; then ok "$mode: ROOT_B filled by the automatic repair (~${t}s)"; else bad "$mode: ROOT_B filled within ${FILL_TIMEOUT}s"; fi
     rchk "$mode: ROOT_B mounts and holds a system" 'mkdir -p /tmp/rb && mount -o ro /dev/disk/by-partlabel/ROOT_B /tmp/rb && r=0; test -s /tmp/rb/usr/share/unitotem/release-version || r=1; umount /tmp/rb; exit $r'
+    rchk "$mode: the clone was made because ROOT_B was blank (cause first-boot, event log)" \
+        'grep -q "repair: slot b (first-boot) <- copy of slot a" /mnt/data/unitotem/update/events.log'
+    rchk "$mode: ROOT_B passes slot_sound (repair finds the other slot sound, copies nothing)" \
+        'unitotem-update --json repair --foreground | grep -q "other slot is sound"'
     # second boot: nothing left to do
     qssh 'systemctl reboot' >/dev/null 2>&1 || true
     sleep 30; t=0

@@ -1172,8 +1172,13 @@ def slot_sound(conf, slot):
     """Is SLOT bootable as it stands? Same bar as slot_check plus, on a Raspberry, the boot files the firmware reads from the FAT.
     Read-only: never repairs, never writes."""
     dev = slot_dev(slot)
-    if not dev or run_out("blkid", "-s", "LABEL", "-o", "value", dev, check=False) != label(slot):
+    if not dev:
         return False, "label"
+    lab = run_out("blkid", "-s", "LABEL", "-o", "value", dev, check=False)
+    if lab != label(slot):
+        # a partition the layout created and nothing has written yet: no label and no filesystem signature
+        blank = not lab and not run_out("blkid", "-s", "TYPE", "-o", "value", dev, check=False)
+        return False, "first-boot" if blank else "label"
     if subprocess.run(["e2fsck", "-fn", dev], capture_output=True).returncode != 0:
         return False, "fsck"
     # a clean filesystem is not a system: a freshly formatted slot (what a host recovery leaves in the slot it did not fill) passes fsck
@@ -1337,20 +1342,31 @@ def clone_into_slot(conf, src_stdout, dev, new_label, serr_file):
         os.close(fd)
 
 
+def _repair_sound(conf, st, slot):
+    """slot_sound, plus the state record: a slot whose copy was cut before its state was written (no valid and prepared
+    entry in slots.json, e.g. a cut between the superblock write and prepare_overlays) is not sound for the repair, so the
+    repair runs again. slot_sound itself is unchanged (fetch and status use it as it is)."""
+    ok, why = slot_sound(conf, slot)
+    if ok and not (st[slot].get("valid") and st[slot].get("prepared")):
+        return False, "unprepared"
+    return ok, why
+
+
 def do_repair(a, conf):
-    """Rebuild the OTHER slot as a copy of the one we are running whenever it is not a sound system (damaged, empty after a recovery,
-    half-fetched): simple rule, the running slot is by definition good. Does nothing when the other slot is sound."""
+    """Rebuild the OTHER slot as a copy of the one we are running whenever it is not a sound system (blank after the first boot,
+    damaged, empty after a recovery, half-fetched): simple rule, the running slot is by definition good. Does nothing when the other
+    slot is sound. The cause is the slot_sound reason: first-boot, label, fsck, mount, empty, bootfile:<name>."""
     need_backend(conf)
     cur = cur_slot(conf); new = other_slot(cur)
     st = slots_state(conf)
-    ok, why = slot_sound(conf, new)
+    ok, why = _repair_sound(conf, st, new)
     if ok and not a.force:
         return 0, {"repaired": False, "reason": "other slot is sound"}
     iof = None
     with Lock(conf):
         try:
             progress(conf, op="repair", phase="check", state="running", percent=0)
-            okc, whyc = slot_sound(conf, new)         # again under the lock: another operation may have just rebuilt it
+            okc, whyc = _repair_sound(conf, slots_state(conf), new)   # again under the lock: another operation may have just rebuilt it
             if okc and not a.force:
                 return 0, {"repaired": False, "reason": "other slot is sound"}
             ver = current_version(conf)

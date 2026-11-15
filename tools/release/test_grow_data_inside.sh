@@ -393,8 +393,8 @@ flash_of() {  # flash_of ARCH : make the flash image of base-ARCH.img
     bash /repo/unitotem/make-flash-image.sh $W/base-$1.img $W/flash-$1.img
 }
 
-# DOS (arm64) layout checks. MBR partitions have no names: the pending state is the MBR type (da ROOT_B, db DATA),
-# and the created partitions are announced in DATA-first order. LAYOUT_DOS and LAYOUT_WANT are set per arch.
+# DOS (arm64) layout checks. MBR partitions have no names: the pending state is the MBR type (db DATA); ROOT_B is type 83
+# from the start and blank (no label, no filesystem). LAYOUT_DOS and LAYOUT_WANT are set per arch.
 LAYOUT_DOS=0; LAYOUT_WANT='ROOT_B DATA'; LID0=
 tdump()        { if [ "$LAYOUT_DOS" = 1 ]; then sfdisk -d "$LOOP"; else sgdisk -p "$LOOP"; fi; }
 dos_type()     { sfdisk -d "$LOOP" | grep "^${LOOP}p$1 " | sed -n 's/.*type=\([0-9a-fA-F]*\).*/\1/p'; }
@@ -404,14 +404,13 @@ dos_valid()    { sfdisk -V "$LOOP" >/dev/null 2>&1 && [ "$(blkid -p -s PTTYPE -o
 dos_lid()      { [ -n "$LID0" ] && [ "$(sfdisk -d "$LOOP" | sed -n 's/^label-id: //p')" = "$LID0" ]; }
 created_once() { [ "$(grep -vc '^rc=' "$LOGF")" = 1 ] && grep -q "created $LAYOUT_WANT" "$LOGF"; }
 noop_second_run() { [ "$(grep -vc '^rc=' "$LOGF")" = 0 ] && tdump | cmp -s - /tmp/lay.t1; }
-# slot_sound (unitotem-update, _by_name) finds a MBR slot by its filesystem label: no PARTLABEL on MBR disks
-dos_slot_lookup() {
-    [ "$(blkid -t LABEL=ROOT_B -o device | grep "^${LOOP}p[0-9]*$")" = "${LOOP}p3" ] || return 1
-    [ "$(blkid -s LABEL -o value ${LOOP}p3)" = ROOT_B ] || return 1
-    mkdir -p /mnt/b && mount -o ro ${LOOP}p3 /mnt/b || return 1
-    ! test -e /mnt/b/usr/share/unitotem/release-version; local r=$?
-    umount /mnt/b; return $r
-}
+# ROOT_B as the layout leaves it: blank. unitotem-update finds it by position (MBR, _neighbour) or PARTLABEL (GPT)
+# and slot_sound says first-boot for it.
+# blankb.sh PART: exit 0 when PART has neither a label nor a filesystem signature (a child shell runs it: bash -c strings)
+printf '%s\n' '#!/bin/sh' '[ -z "$(blkid -s LABEL -o value "$1")" ] && [ -z "$(blkid -s TYPE -o value "$1")" ]' > /tmp/blankb.sh
+blank_b()      { sh /tmp/blankb.sh ${LOOP}p3; }
+dos_blank_b()  { blank_b && [ "$(dos_type 3)" = 83 ]; }
+gpt_blank_b()  { blank_b && sfdisk -d "$LOOP" | grep "^${LOOP}p3 " | grep -q 'name="ROOT_B"'; }
 # the arm64 flash image: DOS table, two partitions (FIRMWARE, ROOT_A), nothing pending
 dos_flash_ok() { sfdisk -V "$1" >/dev/null 2>&1 && [ "$(sfdisk -d "$1" | grep -c ' : start=')" = 2 ] && ! sfdisk -d "$1" | grep -Eq 'type=(da|db)(,|$)'; }
 
@@ -420,7 +419,7 @@ layout_scenario() {  # layout_scenario NAME ARCH DISKSIZE
     echo "=== $name ($arch flash image on a $size disk)"
     cp --sparse=always $f $W/t.img; truncate -s $size $W/t.img
     LOOP=$(losetup --find --show --partscan $W/t.img)
-    LAYOUT_DOS=0; LAYOUT_WANT='ROOT_B DATA'; [ "$arch" = arm64 ] && { LAYOUT_DOS=1; LAYOUT_WANT='DATA ROOT_B'; }
+    LAYOUT_DOS=0; LAYOUT_WANT='ROOT_B (blank) DATA'; [ "$arch" = arm64 ] && LAYOUT_DOS=1
     [ "$LAYOUT_DOS" = 1 ] && LID0=$(sfdisk -d "$LOOP" | sed -n 's/^label-id: //p')
     local rootp=2 bootp=1
     hroot=$(part_hash ${LOOP}p$rootp); hboot=$(part_hash ${LOOP}p$bootp)
@@ -429,7 +428,7 @@ layout_scenario() {  # layout_scenario NAME ARCH DISKSIZE
     t0=$(date +%s.%N); runlay; t1=$(date +%s.%N)
     sed 's/^/    log: /' "$LOGF"; echo "    elapsed: $(awk "BEGIN{print $t1-$t0}") s"
     chk "$name: one 'created' log line ($LAYOUT_WANT)" created_once
-    chk "$name: ROOT_B is exactly 5 GiB (10485760 sectors), label ROOT_B" bash -c "[ \$(blockdev --getsz ${LOOP}p3) = 10485760 ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ]"
+    chk "$name: ROOT_B is exactly 5 GiB (10485760 sectors), blank (no label, no filesystem)" bash -c "[ \$(blockdev --getsz ${LOOP}p3) = 10485760 ] && sh /tmp/blankb.sh ${LOOP}p3"
     chk "$name: ROOT_B starts right after ROOT_A, 1 MiB aligned" bash -c "[ \$(( \$(cat /sys/class/block/${LOOP##*/}p3/start) % 2048 )) = 0 ] && [ \$(cat /sys/class/block/${LOOP##*/}p3/start) = \$(( \$(cat /sys/class/block/${LOOP##*/}p2/start) + \$(cat /sys/class/block/${LOOP##*/}p2/size) )) ]"
     # GPT: the last 33 sectors hold the backup table; DOS has none, DATA ends at the disk end
     local dend=$(( $(blockdev --getsz $LOOP) - 34 )); [ "$LAYOUT_DOS" = 1 ] && dend=$(blockdev --getsz $LOOP)
@@ -446,11 +445,11 @@ layout_scenario() {  # layout_scenario NAME ARCH DISKSIZE
         chk "$name: no pending flag left" bash -c "! sfdisk -d $LOOP | grep -q GUID:48"
         chk "$name: GPT valid, backup at the disk end" bash -c "sgdisk -v $LOOP 2>&1 | grep -q 'No problems found' && ! sgdisk -p $LOOP 2>&1 | grep -qi 'warning\|corrupt'"
     fi
-    chk "$name: e2fsck -fn ROOT_B and DATA clean" bash -c "e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1"
+    chk "$name: e2fsck -fn DATA clean" bash -c "e2fsck -fn ${LOOP}p4 >/dev/null 2>&1"
     if [ "$LAYOUT_DOS" = 1 ]; then
-        chk "$name: slot_sound's lookup finds ROOT_B (blkid LABEL, MBR has no PARTLABEL) and it holds no system" dos_slot_lookup
+        chk "$name: ROOT_B blank and type 83: unitotem-update finds it by position (MBR)" dos_blank_b
     else
-        chk "$name: slot_sound's lookup finds ROOT_B (blkid -t PARTLABEL, LABEL) and it holds no system" bash -c "sfdisk -d ${LOOP} | grep \"^${LOOP}p3 \" | grep -q 'name=\"ROOT_B\"' && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && mkdir -p /mnt/b && mount -o ro ${LOOP}p3 /mnt/b && ! test -e /mnt/b/usr/share/unitotem/release-version; r=\$?; umount /mnt/b; exit \$r"
+        chk "$name: ROOT_B blank and named ROOT_B (GPT PARTLABEL): unitotem-update finds it by name" gpt_blank_b
     fi
     chk "$name: only one filesystem labelled ROOT_A (no stale copy)" bash -c "[ \$(for d in ${LOOP}p*; do blkid -s LABEL -o value \$d; done | grep -c '^ROOT_A\$') = 1 ]"
     chk "$name: ROOT_A still mounted and readable" bash -c "ls /mnt/r/lost+found >/dev/null"
@@ -495,21 +494,21 @@ fresh $((fsz + 5300)); sgdisk -p $LOOP > /tmp/lay.t0; runlay
 chk "tight disk: one log line, table untouched" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 1 ] && grep -q 'not enough free space' $LOGF && sgdisk -p $LOOP | cmp -s - /tmp/lay.t0"
 done_
 
-echo "=== crash after the table write (mke2fs fails): flagged partitions, next boot completes"
+echo "=== crash after the table write (mke2fs of DATA fails): DATA flagged, ROOT_B blank, next boot completes"
 fresh 20480; mkdir -p /tmp/shim2; printf '#!/bin/sh\nexit 1\n' > /tmp/shim2/mke2fs; chmod +x /tmp/shim2/mke2fs
 PATH=/tmp/shim2:$PATH runlay; sed 's/^/    log: /' $LOGF
-chk "after the table write: table has ROOT_B and DATA, both flagged" bash -c "[ \$(sfdisk -d $LOOP | grep -c GUID:48) = 2 ]"
-chk "after the table write: one warning, boot continues" bash -c "grep -q 'mke2fs ROOT_B failed' $LOGF && grep -q '^rc=0' $LOGF"
+chk "after the table write: ROOT_B unflagged and blank, DATA flagged" bash -c "[ \$(sfdisk -d $LOOP | grep -c GUID:48) = 1 ] && sfdisk -d $LOOP | grep 'GUID:48' | grep -q DATA && sh /tmp/blankb.sh ${LOOP}p3"
+chk "after the table write: one warning (mke2fs DATA), boot continues" bash -c "grep -q 'mke2fs DATA failed' $LOGF && grep -q '^rc=0' $LOGF"
 runlay; sed 's/^/    log: /' $LOGF
-chk "next run: both formatted, flags cleared, DATA grown path no-op" bash -c "e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1 && ! sfdisk -d $LOOP | grep -q GUID:48 && grep -q 'created ROOT_B DATA' $LOGF"
+chk "next run: DATA formatted and flag cleared, ROOT_B still blank, one created line" bash -c "e2fsck -fn ${LOOP}p4 >/dev/null 2>&1 && ! sfdisk -d $LOOP | grep -q GUID:48 && grep -q 'created DATA' $LOGF && sh /tmp/blankb.sh ${LOOP}p3"
 done_
 
-echo "=== crash between ROOT_B and DATA formats"
-fresh 20480; printf '#!/bin/sh\nif [ -e /tmp/shim3.n ]; then exit 1; fi\n: > /tmp/shim3.n\nexec /sbin/mke2fs "$@"\n' > /tmp/shim2/mke2fs; chmod +x /tmp/shim2/mke2fs; rm -f /tmp/shim3.n
-PATH=/tmp/shim2:$PATH runlay; sed 's/^/    log: /' $LOGF
-chk "ROOT_B done, DATA still flagged" bash -c "[ \$(sfdisk -d $LOOP | grep -c GUID:48) = 1 ] && sfdisk -d $LOOP | grep 'GUID:48' | grep -q DATA && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ]"
-rm -f /tmp/shim3.n; runlay
-chk "next run completes DATA" bash -c "[ \"\$(blkid -s LABEL -o value ${LOOP}p4)\" = DATA ] && ! sfdisk -d $LOOP | grep -q GUID:48"
+echo "=== ROOT_B is never formatted: the mke2fs calls of a layout run name DATA only"
+fresh 20480; printf '#!/bin/sh\necho "$*" >> /tmp/shim2/calls\nexec /sbin/mke2fs "$@"\n' > /tmp/shim2/mke2fs; chmod +x /tmp/shim2/mke2fs; rm -f /tmp/shim2/calls
+PATH=/tmp/shim2:$PATH runlay; sed 's/^/    log: /' $LOGF; sed 's/^/    mke2fs: /' /tmp/shim2/calls
+chk "mke2fs ran once, for DATA only" bash -c "[ \"\$(wc -l < /tmp/shim2/calls)\" = 1 ] && grep -q 'DATA' /tmp/shim2/calls && ! grep -q ROOT_B /tmp/shim2/calls"
+chk "ROOT_B blank after the layout: no label, no filesystem" blank_b
+chk "layout log: created ROOT_B (blank) DATA" grep -q '^I: layout: created ROOT_B (blank) DATA$' $LOGF
 done_
 
 echo "=== stale signatures in the new areas (reused card)"
@@ -519,7 +518,7 @@ dd if=${LOOP}p2 of=$LOOP bs=512 seek=$B count=16384 conv=notrunc status=none    
 dd if=${LOOP}p2 of=$LOOP bs=512 seek=$((B+10485760)) count=16384 conv=notrunc status=none  # and where DATA will start
 partx -u $LOOP 2>/dev/null; mount -o ro ${LOOP}p2 /mnt/r
 runlay
-chk "stale ROOT_A copies are gone: one ROOT_A, ROOT_B and DATA labelled right" bash -c "[ \$(for d in ${LOOP}p*; do blkid -s LABEL -o value \$d; done | grep -c '^ROOT_A\$') = 1 ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p4)\" = DATA ]"
+chk "stale ROOT_A copies are gone: one ROOT_A, ROOT_B blank, DATA labelled right" bash -c "[ \$(for d in ${LOOP}p*; do blkid -s LABEL -o value \$d; done | grep -c '^ROOT_A\$') = 1 ] && sh /tmp/blankb.sh ${LOOP}p3 && [ \"\$(blkid -s LABEL -o value ${LOOP}p4)\" = DATA ]"
 done_
 
 echo "=== ROOT_A is not the last partition"
@@ -602,7 +601,7 @@ min_expect() {  # min_expect NAME ARCH [SUMS] : ROOT_A at the slot size and clea
     chk "$name: DATA starts on the 1 MiB boundary after ROOT_B" [ "$d_st" = $(( (b_st + b_sz + 2047) / 2048 * 2048 )) ]
     if [ "$arch" = amd64 ]; then dend=$(( $(blockdev --getsz $LOOP) - 34 )); else dend=$(blockdev --getsz $LOOP); fi
     chk "$name: DATA reaches the last usable sector ($((d_st + d_sz)) vs $dend)" [ $((dend - d_st - d_sz)) -lt 2048 ]
-    chk "$name: ROOT_B and DATA e2fsck -fn clean" bash -c "e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1"
+    chk "$name: ROOT_B blank (no label, no filesystem), DATA e2fsck -fn clean" bash -c "sh /tmp/blankb.sh ${LOOP}p3 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1"
     if [ "$arch" = amd64 ]; then
         chk "$name: GPT valid, names ROOT_B and DATA, no pending flag" bash -c "sgdisk -v $LOOP 2>&1 | grep -q 'No problems found' && sgdisk -p $LOOP | grep -qE '^ +3 .*ROOT_B' && sgdisk -p $LOOP | grep -qE '^ +4 .*DATA' && ! sfdisk -d $LOOP | grep -q GUID:48"
     else
@@ -669,7 +668,7 @@ mkdir -p /tmp/shim; printf '#!/bin/sh\nexit 1\n' > /tmp/shim/resize2fs; chmod +x
 PATH=/tmp/shim:$PATH runlay; sed 's/^/    log: /' $LOGF
 chk "after the cut: ROOT_A partition is 5 GiB" [ "$(min_sys 2 size)" = 10485760 ]
 chk "after the cut: filesystem still smaller than its partition" [ "$(fs_sectors)" -lt 10485760 ]
-chk "after the cut: ROOT_B and DATA exist (the layout went on)" bash -c "[ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p4)\" = DATA ]"
+chk "after the cut: ROOT_B (blank) and DATA exist (the layout went on)" bash -c "sh /tmp/blankb.sh ${LOOP}p3 && [ \"\$(blkid -s LABEL -o value ${LOOP}p4)\" = DATA ]"
 runlay; sed 's/^/    log: /' $LOGF
 chk "next run: one growth line for ROOT_A" bash -c "grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' $LOGF && [ \"\$(grep -c 'grow: ROOT_A' $LOGF)\" = 1 ]"
 min_expect "resumed" amd64
@@ -713,7 +712,7 @@ chk "prereqs: prints nothing, rc 0, disk untouched" bash -c "[ -z \"\$(dash $W/p
 PATH=/tmp/blkidshim:$PATH LOOP=$LOOP dash $W/premount/unitotem-layout; echo "rc=$?" >> $LOGF
 sed 's/^/    log: /' $LOGF
 min_expect "premount" amd64
-chk "premount run: one growth line and one creation line, rc=0" bash -c "grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' $LOGF && grep -q '^I: layout: created ROOT_B DATA' $LOGF && grep -q '^rc=0' $LOGF"
+chk "premount run: one growth line and one creation line, rc=0" bash -c "grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' $LOGF && grep -q '^I: layout: created ROOT_B (blank) DATA' $LOGF && grep -q '^rc=0' $LOGF"
 min_detach
 rm -f -- /scripts/functions
 

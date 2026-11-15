@@ -15,7 +15,8 @@
 # GUIDs, labels and start sectors; the MBR boot code is copied. Filesystems keep their UUID and label (partclone clones
 # them). The expanded image lives only in tmpfs (/dev/shm); the copy is refused when it does not fit there. The last partition is not grown: DATA grows to the disk end at the first boot (docs/system/storage-and-persistence.md).
 # Minimal image (boot partition and ROOT_A only): the layout of image_describe (unitotem-layout gives the slot): ROOT_A is cloned
-# into the slot and grown offline (e2fsck -fy, resize2fs), ROOT_B and DATA are created empty (mkfs.ext4).
+# into the slot and grown offline (e2fsck -fy, resize2fs), DATA is created empty (mkfs.ext4) and ROOT_B is left blank: its first
+# MiB is zeroed (no filesystem signature), the first confirmed boot clones ROOT_A into it.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() { cat <<'USAGE'
@@ -144,13 +145,18 @@ node_of() {
 NUMS=$(sed -nE 's#^/dev/[^ ]*[^0-9]([0-9]+) *:.*#\1#p' "$TMP/table.sfdisk" | sort -n)
 for n in $NUMS; do
     if [ "$SYNTH" = 1 ] && { [ "$n" = 3 ] || [ "$n" = 4 ]; }; then
-        # ROOT_B and DATA of a minimal image: no source, an empty ext4 (as the deploy makes them)
+        # ROOT_B and DATA of a minimal image: no source. DATA is an empty ext4; ROOT_B is blanked (as the deploy does): the
+        # first MiB is zeroed so no stale signature remains, and the first confirmed boot clones ROOT_A into it.
         dst=""
         for _ in $(seq 1 50); do dst=$(node_of "$DEVICE" "$n"); [ -n "$dst" ] && [ -b "$dst" ] && break; sleep 0.2; done
         [ -b "$dst" ] || die "partition $n: device node missing (target '$dst')"
-        if [ "$n" = 3 ]; then label=ROOT_B; else label=DATA; fi
-        log INFO "partition $n ($label): empty ext4"
-        mkfs.ext4 -q -F -L "$label" "$dst" || die "mkfs.ext4 on partition $n failed"
+        if [ "$n" = 3 ]; then
+            log INFO "partition $n (ROOT_B): blank, cloned from ROOT_A at the first boot"
+            dd if=/dev/zero of="$dst" bs=1M count=1 conv=notrunc,fsync status=none || die "zeroing partition $n failed"
+        else
+            log INFO "partition $n (DATA): empty ext4"
+            mkfs.ext4 -q -F -L DATA "$dst" || die "mkfs.ext4 on partition $n failed"
+        fi
         continue
     fi
     src=$(node_of "$LOOP" "$n"); dst=""
@@ -190,6 +196,7 @@ for n in $NUMS; do
         log INFO "partition $n grown to the slot"
     fi
 done
+log INFO "flushing the write cache of the device (this can take a while on a slow card)"
 sync
 partprobe "$DEVICE" 2>/dev/null || true
 udevadm settle --timeout=10 2>/dev/null || true
@@ -197,9 +204,19 @@ udevadm settle --timeout=10 2>/dev/null || true
 # --- check: label and UUID of every filesystem equal the image's, ext4 and FAT are consistent
 bad=0
 for n in $NUMS; do
-    if [ "$SYNTH" = 1 ] && { [ "$n" = 3 ] || [ "$n" = 4 ]; }; then
-        dst=$(node_of "$DEVICE" "$n"); want=ROOT_B; [ "$n" = 3 ] || want=DATA
-        [ "$(blkid -o value -s LABEL -- "$dst" 2>/dev/null || true)" = "$want" ] || { log ERROR "partition $n: label is not $want"; bad=1; }
+    if [ "$SYNTH" = 1 ] && [ "$n" = 3 ]; then
+        # ROOT_B is blank: no filesystem signature, the first MiB zero, and the table name ROOT_B on a GPT disk
+        dst=$(node_of "$DEVICE" "$n")
+        [ -z "$(blkid -p -o value -s TYPE -- "$dst" 2>/dev/null || true)" ] || { log ERROR "partition $n: ROOT_B is not blank (filesystem signature left)"; bad=1; }
+        [ "$(head -c 1048576 -- "$dst" | tr -d '\0' | wc -c)" = 0 ] || { log ERROR "partition $n: ROOT_B first MiB is not zero"; bad=1; }
+        if grep -q '^label: gpt' "$TMP/table.sfdisk"; then
+            [ "$(blkid -p -o value -s PART_ENTRY_NAME -- "$dst" 2>/dev/null || true)" = ROOT_B ] || { log ERROR "partition $n: partition name is not ROOT_B"; bad=1; }
+        fi
+        continue
+    fi
+    if [ "$SYNTH" = 1 ] && [ "$n" = 4 ]; then
+        dst=$(node_of "$DEVICE" "$n")
+        [ "$(blkid -o value -s LABEL -- "$dst" 2>/dev/null || true)" = DATA ] || { log ERROR "partition $n: label is not DATA"; bad=1; }
         e2fsck -fn "$dst" >/dev/null 2>&1 || { log ERROR "partition $n: e2fsck reports errors"; bad=1; }
         continue
     fi
