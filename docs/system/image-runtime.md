@@ -69,7 +69,23 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 
 ## ACPI event storm
 
-`unitotem-acpi-storm-guard` (timer: 20 s after boot, then every 30 s, `Nice=19`) samples the counters `gpeNN` of `/sys/firmware/acpi/interrupts` for one second and writes `mask` to every event above 2000 per second, logging `masked ACPI event gpeNN: <rate> events per second` (journal, tag `unitotem-acpi-storm-guard`). The mask lasts until the next boot and the check repeats, so a storm that starts later is caught too. No event number is fixed in the image: it is specific to a firmware. Measured on an HP 250 G5: GPE 03 fired about 10000 times a second, `irq/9-acpi` and `kacpid` took more than a CPU; after the mask the interrupt rate was 0 and the CPU 99.6 % idle. Test: `tools/release/test_acpi_storm_guard.sh` (fake interrupts directory). A masked event stops its own notifications (on that laptop: nothing a kiosk needs; battery, lid and hotkeys were not checked).
+`unitotem-acpi-storm-guard` (timer: 20 s after boot, then every 30 s, `Nice=19`) samples the counters `gpeNN` of `/sys/firmware/acpi/interrupts` for one second and writes `mask` to every event above 2000 per second, logging `masked ACPI event gpeNN: <rate> events per second` (journal, tag `unitotem-acpi-storm-guard`). A storm that cannot be masked is logged as `cannot be masked`. The mask lasts until the next boot and the check repeats, so a storm that starts later is caught too. The mask is written before, and independently of, the record below. No event number is fixed in the image: it is specific to a firmware. Measured on an HP 250 G5: GPE 03 fired about 10000 times a second, `irq/9-acpi` and `kacpid` took more than a CPU; after the mask the interrupt rate was 0 and the CPU 99.6 % idle. A masked event stops its own notifications (on that laptop: nothing a kiosk needs; battery, lid and hotkeys were not checked).
+
+Record: every storm found, masked or not, is written to `/var/lib/unitotem/acpi-storms` (override: `UNITOTEM_ACPI_STATE`). It is device state on the DATA `/var` overlay, so it survives reboots and A/B updates like `/var/lib/unitotem/notifications.json`; no image-owned file is there. A machine with no storm writes nothing: neither file nor directory. The file is replaced atomically. One line per event:
+
+`gpeNN <first> <last> <rate> <boots> <boot_id> <masked>`
+
+- `first`, `last`: epoch seconds as the device clock said them; the clock can be wrong early in boot.
+- `rate`: highest events per second seen.
+- `boots`: boots in which the event was masked, counted once per boot.
+- `boot_id`: `/proc/sys/kernel/random/boot_id` of the last counted boot.
+- `masked`: 1 if the mask was written in that boot, else 0.
+
+Lines that do not match this format are ignored; at most 64 lines are read; a corrupt file counts as empty. A record that cannot be written is logged as a warning; the masking is not affected. The manager shows the record on the Info page and raises a notification (`docs/manager/node-system.md`). Test: `tools/release/test_acpi_storm_guard.sh` (fake interrupts directory and state file).
+
+HP 250 G5 cause (decompiled DSDT, `work/g5-dsdt/DSDT.dsl`): `_GPE._L03` writes BIOS debug code 3, drives GPIO 0x44 high (`WTGP(0x44,1)`) and sends `Notify(\_SB.PCI0.SAT0, 0x81)` (SATA controller information change: the kernel rechecks the SATA ports, for example for an optical drive). The event is level-triggered and stays asserted, hence the storm. With the mask: 0 events per second, nothing new in dmesg after 22 minutes; the disk is unaffected (its own AHCI interrupt).
+
+Prior art: masking a GPE is the usual workaround (kernel parameter `acpi_mask_gpe=`; HP Omen support advice). Kernel bugzilla 219393 (HP Victus): masking did not stop the storm. The only documented side effect: a Framework laptop does not wake from the lid with gpe10 masked. A deferred handler can re-enable a masked GPE; the 30 s repeat covers that.
 
 ## Device suffix and host name
 
@@ -90,6 +106,8 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 Enabled units: `systemd-timesyncd`, `NetworkManager`, `dbus`, `ssh`, `iptables-firewall`, `unitotem-maintenance-mode`, `unitotem-compositor`, `unitotem-boot-ok`, `unitotem-ssh-hostkey`, `unitotem-persist-paths`, `unitotem-first-boot-cert`, `unitotem-net-watchdog.timer`, `unitotem-wifi-roam.timer`, `unitotem-cpu-performance`, `unitotem-update-auto.timer`, `unitotem-nouveau-fallback` (amd64, by symlink, not `systemctl enable`).
 
 Masked: `apt-daily(-upgrade).timer/.service`, `getty@tty1`, `wayvnc`, `wayvnc-control`, `wayvnc-generate-keys`.
+
+- `serial-getty@.service.d/10-unitotem-real-uart.conf` (`unitotem/files/serial-getty-real-uart.conf`): `ExecCondition` skips a serial getty whose `/sys/class/tty/<port>/type` is 0 (no UART behind the port; the kernel line carries `console=ttyS0`). Without it a laptop restarted agetty 199 times in 34 minutes. A port with type != 0 (Pi UART, PC COM) and an unreadable type keep their getty. Checked with a fake sysfs: type 0 skips, 4, 16 and 8250 run, a missing file runs.
 
 Commands:
 

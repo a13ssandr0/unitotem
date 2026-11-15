@@ -16,6 +16,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 | `Papi/power.py` | `Power/*` |
 | `Papi/updater.py` | `Settings/Update/*`, status polling |
 | `Papi/firmware.py` | `Settings/Firmware/*`, status polling |
+| `Papi/acpi_storms.py` | `Settings/AcpiStorms/list` |
 | `Papi/vnc.py` | `Vnc/*` |
 | `Papi/display*.py` | display API ([screens-and-touch.md](screens-and-touch.md)) |
 | `Psystem/network/networkmanager.py` | NetworkManager over D-Bus: devices, connections, activation, Wi-Fi profiles |
@@ -28,6 +29,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 | `Psystem/update_progress.py` | inotify on `/run`, pushes progress and the bell progress bar |
 | `Psystem/firmware.py` | client of `unitotem-firmware --json` (Raspberry Pi firmware card) |
 | `Psystem/firmware_progress.py` | inotify on `/run` (helpers shared with the updater), pushes `Settings/Firmware/status` and the bell progress bar |
+| `Psystem/acpi_storms.py` | parser and watch of `/var/lib/unitotem/acpi-storms` (written by `unitotem-acpi-storm-guard`), pushes `Settings/AcpiStorms/list`, raises `acpi.storm.*` |
 | `Psystem/timer_actions.py` | timers loop, action execution, `MinuteClock` |
 | `Psystem/suspend.py` | suspend with scheduled wake, logind sleep signals |
 | `Psystem/wake.py` | wake-time computation (pure, croniter) |
@@ -44,7 +46,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 
 ## How it works
 
-- Start-up: stale VNC sessions swept; tasks for screens (wake, probe), touch mapping, timers loop, sleep watch, hostname watch, date and time watch (`datetime_watch`), update progress watch, firmware progress watch, daily update check (first after 180 s, then every 24 h), desktop notifications.
+- Start-up: stale VNC sessions swept; tasks for screens (wake, probe), touch mapping, timers loop, sleep watch, hostname watch, date and time watch (`datetime_watch`), update progress watch, firmware progress watch, ACPI storm watch, daily update check (first after 180 s, then every 24 h), desktop notifications.
 - First boot: with no default IPv4 route the hotspot starts. `first_boot_context` returns SSID, password and QR while it is active.
 - Hotspot: NM profile id `UniTotem first boot hotspot`, mode `ap`, IPv4 `shared`. Its UUID is `hotspot_uuid` in `/etc/unitotem/unitotem.env` (generated once). Default SSID = `unitotem-<SUFFIX>` (the suffix `unitotem-hostname` writes to `/etc/unitotem/device-suffix` on the first boot, see `docs/system/image-runtime.md`; the hostname cut to 32 bytes when the file is missing); default password = last 8 hex digits of the Wi-Fi MAC, uppercase. Recreated when the requested SSID/password differ from the stored ones. SSID 1-32 bytes, passphrase 8-63 characters; an out-of-range value raises `ValueError` before anything is read or written.
 - Hotspot stop: after a successful `activate_connection` or `connect_wifi` when the hotspot is active and IPv4 is up, and at manager shutdown. The Wi-Fi device is disconnected only if the hotspot is its active connection; then the profile is deleted.
@@ -77,6 +79,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - Job fields: `uuid, command, minute, hour, day_of_month, month, day_of_week, enabled, output, mechanism, wake`; for `sus` also `next_suspend, next_wake, wake_problem`. Commands: `pwr`, `reb`, `sus`, `scr_on`, `scr_off`.
 - `Power/`: `reboot()` (power or admin); `poweroff()`; `suspend_support()` returns `available, reason, rtc, rtc_local, min_sleep, max_sleep, last_refusal`; `suspend(wake_at)` with `YYYY-MM-DDTHH:MM` in node local time.
 - `Settings/Firmware/` (admin): `status()`, `check()` (reply key `check`), `apply(files=True, eeprom=True)` (reply key `result`; both false answers `nothing-selected`). Event: `Settings/Firmware/status`. Helper contract: [system/firmware.md](../system/firmware.md).
+- `Settings/AcpiStorms/` (any logged in user): `list()` returns `storms`. Event: `Settings/AcpiStorms/list` (`storms`), pushed at start and when the record changes. Entry: see [ACPI storms](#acpi-storms-unitotem-acpi-storm-guard).
 - `Settings/Update/` (admin; `availability` any user): `status()`, `check()`, `fetch(force=False)`, `apply(reboot=True)`, `confirm()`, `rollback(reboot=True)`, `cancel()`, `copy_to_other()`, `set_policy(mode, time='04:00')` (mode: `off`, `download`, `stage`, `reboot`, `scheduled`), `availability()`. Events: `Settings/Update/status`, `Settings/Update/availability`.
 - `Vnc/outputs()` (admin) returns `outputs[{name, width, height, x, y}]` (active outputs) and `available` (`wayvnc` installed).
 - Errors: `WSResponse(error=..., extra=...)`, e.g. `Invalid timer`, `Not found`, `Unknown action`, `Cannot suspend`, `Cannot use this suspend timer`.
@@ -85,6 +88,16 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 
 - Keys used: `supported`, `kind`, `family`, `op` (`check`|`apply`|null), `phase`, `percent`, `error`, `reboot_required`, `blockers`, `files`, `eeprom`, `returncode`. Helper output: [system/firmware.md](../system/firmware.md).
 - Notification keys: `firmware.progress` (persistent bar), `firmware.failed` (error), `firmware.done` (info; the restart text when `reboot_required`).
+
+### ACPI storms (`unitotem-acpi-storm-guard`)
+
+- Record: `/var/lib/unitotem/acpi-storms`, written atomically by the guard, one line per masked event: `gpeNN <first_seen> <last_seen> <rate> <boots> <boot_id> <masked>`.
+- Read: at most 4096 bytes, at most 64 lines; an oversized, NUL, non-UTF-8, symlinked or non-regular file, or one with more lines, reads as empty. A line that does not match is skipped; of two lines for one event the first counts. Numbers: epoch 0..4102444800, rate 0..10^9, boots 0..10^6.
+- Entry: `name`, `first_seen`, `last_seen`, `rate`, `boots`, `masked_now` (masked in the current boot), `seen_now` (last seen in the current boot). Sorted by `name`.
+- Watch: inotify on `/var/lib/unitotem` (nothing is created), throttled 1 s. Without it a warning is logged once and the record is read at start and on each `Settings/AcpiStorms/list` call.
+- Push `Settings/AcpiStorms/list` `{storms}` only when the list differs from the last one pushed.
+- Notification per entry with `seen_now`: key `acpi.storm.<name>.<boots>`, warning, audience `admin`, link `/info`, source `acpi-storm-guard`. Text: masked (`ACPI event <name> was firing <rate> times a second and has been masked`; title `ACPI event <name> masked`) or not (`... fires <rate> times a second and cannot be masked`; title `ACPI event <name> cannot be masked`). One per event per boot: a new boot count is a new notification. Entries of earlier boots are not notified.
+- No acknowledge: the record stays while the file exists.
 
 ### Updater status (`unitotem-update`; slot names are capitals)
 
