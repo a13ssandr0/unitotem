@@ -38,7 +38,7 @@ image_open() {
             IMG_TMP=$(mktemp -d "$IMG_TMPFS/unitotem-image.XXXXXX")
             IMG_FILE="$IMG_TMP/image.img"
             echo "$(date +%Y-%m-%dT%H:%M:%S) INFO expanding $(basename -- "$image") into $IMG_TMPFS" >&2
-            xz -dc -T0 -- "$image" | pv -N expand -s "$raw" | dd of="$IMG_FILE" bs=4M conv=sparse status=none
+            xz -dc -T0 -- "$image" | pv -N expand -s "$raw" | dd of="$IMG_FILE" bs=4M iflag=fullblock conv=sparse status=none
             local st=("${PIPESTATUS[@]}")
             [ "${st[0]}" = 0 ] && [ "${st[2]}" = 0 ] || { _img_err "the expanded image does not fit in $IMG_TMPFS ($((avail / 1048576)) MiB free) or $image is damaged"; image_close; return 1; }
             ;;
