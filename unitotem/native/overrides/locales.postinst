@@ -1,0 +1,96 @@
+#!/bin/sh
+# Native build replacement (docs/system/build.md, Native arm64 build). The same steps as the package postinst with every
+# absolute path under DPKG_ROOT, and the same debconf answers as the reference image (no locale selected in stage 1, so
+# /etc/locale.gen keeps every entry commented; stage 2 selects the image locale). locale-gen is not run here: the locale
+# archive is built by stage 2 (unitotem/stage2-configure.sh). update-locale is the package's perl script, run with
+# --locale-file on the target file.
+set -e
+: "${DPKG_ROOT:?}"
+R="$DPKG_ROOT"
+
+# Files
+LG="$R/etc/locale.gen"
+EE="$R/etc/locale.conf"
+LEGACY_EE="$R/etc/default/locale"
+
+# Sanitize environnement
+LC_ALL=C
+LANG=C
+umask 022
+
+if [ "$1" = configure ]; then
+    # Transition to /etc/locale.conf
+    if [ -f "$LEGACY_EE" ] && [ ! -L "$LEGACY_EE" ] && [ ! -e "$EE" ]; then
+        mv "$LEGACY_EE" "$EE"
+    fi
+    if [ ! -e "$LEGACY_EE"  ]; then
+        ln -sfr "$EE" "$LEGACY_EE"
+    fi
+
+    # Load debconf
+    . /usr/share/debconf/confmodule
+    db_version 2.0
+
+    db_set locales/default_environment_locale None
+    db_set locales/locales_to_be_generated ""
+
+    db_get locales/default_environment_locale && DEFAULT_ENVIRONMENT="$RET"
+    db_get locales/locales_to_be_generated && SELECTED_LOCALES=$RET
+    SELECTED_LOCALES="$(echo $SELECTED_LOCALES | sed -e 's/, /\n/g')"
+
+    if [ "$SELECTED_LOCALES" = "All locales" ]; then
+        [ -e $LG ] && rm -f $LG
+        # the link target is a path of the image, not of the builder
+        ln -s /usr/share/i18n/SUPPORTED $LG
+    else
+        [ -L $LG ] && [ "$(readlink $LG)" = "/usr/share/i18n/SUPPORTED" ] && rm -f $LG
+        if [ ! -e $LG ] ; then
+            cat > $LG << EOF
+# This file lists locales that you wish to have built. You can find a list
+# of valid supported locales at /usr/share/i18n/SUPPORTED, and you can add
+# user defined locales to /usr/local/share/i18n/SUPPORTED. If you change
+# this file, you need to rerun locale-gen.
+#
+
+EOF
+        fi
+
+        # Comment previous defined locales
+        sed -i -e 's/^ *[a-zA-Z]/# &/' $LG
+
+        # Get list of supported locales
+        if [ -f "$R/usr/local/share/i18n/SUPPORTED" ] ; then
+            SUPPORTED_LOCALES="$(sed -e '/^[a-zA-Z]/!d' -e 's/ *$//g' "$R/usr/share/i18n/SUPPORTED" "$R/usr/local/share/i18n/SUPPORTED" | sort -u)"
+        else
+            SUPPORTED_LOCALES="$(sed -e '/^[a-zA-Z]/!d' -e 's/ *$//g' "$R/usr/share/i18n/SUPPORTED" | sort -u)"
+        fi
+
+        # Make sure all locales exist in locales.gen
+        echo "$SUPPORTED_LOCALES" | while read locale ; do
+           if ! grep -q "^[# ]*$locale *\$" $LG; then
+             echo "# $locale" >> $LG
+           fi
+        done
+
+        # Uncomment selected locales
+        echo "$SELECTED_LOCALES" | while read locale ; do
+            sed -i -e "0,/^[# ]*$locale *$/ s/^[# ]*$locale *$/$locale/" $LG
+        done
+    fi
+
+    # locale-gen: not run here (see the header)
+
+    if ! [ -e $EE ] || [ -n "$DEBCONF_RECONFIGURE" ] ; then
+        # Remove previous definitions
+        update-locale --locale-file="$EE" --no-checks LANG
+
+        # Set default LANG environment variable
+        if [ -n "$DEFAULT_ENVIRONMENT" ] && [ "$DEFAULT_ENVIRONMENT" != "None" ]; then
+            update-locale --locale-file="$EE" "LANG=$DEFAULT_ENVIRONMENT"
+        fi
+    fi
+
+    db_stop
+fi
+
+exit 0

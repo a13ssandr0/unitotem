@@ -1,0 +1,4 @@
+#!/bin/sh
+# Native build: replaces the package's postinst (it runs update-initramfs in the target). The initramfs is built by the
+# native builder (stage 2); see docs/system/build.md, Native arm64 build.
+exit 0

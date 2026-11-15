@@ -1,0 +1,97 @@
+#!/bin/sh
+# postinst script for polkitd: native build replacement (docs/system/build.md, Native arm64 build). Inspired by polkitd (GPL).
+# The same end state for a fresh install, with every absolute path under DPKG_ROOT: the polkitd account from the package
+# sysusers file (systemd-sysusers --root), numeric owners for the permission changes, the XML catalog entries through
+# update-xmlcatalog (rebased as in xml-core.postinst) and the tmpfiles entries (systemd-tmpfiles --root). The upgrade-only
+# branches (old home directory of polkitd, moved conffiles, old pam/rules cleanup) and the service and bus actions are not
+# run: the native build installs every package fresh and never starts services.
+
+set -e
+
+R="${DPKG_ROOT}"
+
+# nb_count PATTERN COUNT FILE: the rebase below must find exactly its lines, else stop.
+nb_count() {
+    [ "$(grep -c -F -- "$1" "$3")" = "$2" ] || { echo "polkitd: $1 not found $2 time(s) in $3" >&2; exit 1; }
+}
+
+# nb_update_xmlcatalog ARGS: update-xmlcatalog from the target tree, catalog files under DPKG_ROOT.
+nb_update_xmlcatalog() {
+    f="$R/usr/sbin/update-xmlcatalog"
+    nb_count "= '/var/lib/xml-core';" 1 "$f"
+    nb_count "= '/etc/xml';" 1 "$f"
+    nb_count "= '/usr/share/xml-core/catalog.header';" 1 "$f"
+    nb_count "= '/usr/share/xml-core/catalog.footer';" 1 "$f"
+    nb_count '$catalog = $local;' 1 "$f"
+    nb_count '-f $local' 2 "$f"
+    sed -e "s|= '/var/lib/xml-core';|= \$ENV{NB_TARGET} . '/var/lib/xml-core';|" \
+        -e "s|= '/etc/xml';|= \$ENV{NB_TARGET} . '/etc/xml';|" \
+        -e "s|= '/usr/share/xml-core/catalog.header';|= \$ENV{NB_TARGET} . '/usr/share/xml-core/catalog.header';|" \
+        -e "s|= '/usr/share/xml-core/catalog.footer';|= \$ENV{NB_TARGET} . '/usr/share/xml-core/catalog.footer';|" \
+        -e 's|\$catalog = \$local;|$catalog = $ENV{NB_TARGET} . $local;|' \
+        -e 's|-f \$local|-f $ENV{NB_TARGET} . $local|g' \
+        "$f" | NB_TARGET="$R" perl - "$@"
+}
+
+# set_perms USER GROUP MODE FILE: FILE is the path in the image; owners are numeric ids from the image account files.
+set_perms() {
+    USER=$1
+    GROUP=$2
+    MODE=$3
+    FILE=$4
+    if ! dpkg-statoverride --admindir="$R/var/lib/dpkg" --list "$FILE" > /dev/null 2>&1; then
+        UID_N=$(awk -F: -v u="$USER" '$1 == u { print $3; exit }' "$R/etc/passwd")
+        GID_N=$(awk -F: -v g="$GROUP" '$1 == g { print $3; exit }' "$R/etc/group")
+        chown "$UID_N:$GID_N" "$R$FILE"
+        chmod "$MODE" "$R$FILE"
+    fi
+}
+
+case "$1" in
+    configure)
+        systemd-sysusers --root="$R" polkit.conf
+
+        # Older versions had rules.d owned by polkitd:root - reset that
+        set_perms root root 755 /usr/share/polkit-1/rules.d
+
+        # Older versions had /var/lib/polkit-1 as polkitd's home directory; clean that up (no effect on a fresh image)
+        rm -fr "$R/var/lib/polkit-1/.cache" || true
+        if [ -d "$R/var/lib/polkit-1/" ]; then
+            rmdir --ignore-fail-on-non-empty "$R/var/lib/polkit-1/"
+        fi
+
+        set_perms root polkitd 750 /etc/polkit-1/rules.d
+        set_perms root root 4755 /usr/lib/polkit-1/polkit-agent-helper-1
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+# Automatically added by dh_installxmlcatalogs/UNDECLARED
+if [ "$1" = "configure" ]; then
+	nb_update_xmlcatalog --sort --add --type public --id "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" --package polkitd --local /usr/share/xml/polkit-1/catalog.xml
+	nb_update_xmlcatalog --sort --add --type system --id "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd" --package polkitd --local /usr/share/xml/polkit-1/catalog.xml
+
+	nb_update_xmlcatalog --sort --add --type public --id "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" --package polkitd --root
+	nb_update_xmlcatalog --sort --add --type system --id "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd" --package polkitd --root
+
+fi
+# End automatically added section
+
+# Automatically added by dh_installtmpfiles/13.23
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+	if [ -x "$(command -v systemd-tmpfiles)" ]; then
+		systemd-tmpfiles --root="$R" --create polkit-tmpfiles.conf || true
+	fi
+fi
+# End automatically added section
+
+exit 0
+
+# vim:set sw=4 sts=4 et:

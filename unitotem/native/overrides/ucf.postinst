@@ -1,0 +1,19 @@
+#! /bin/sh
+# Native build replacement (docs/system/build.md, Native arm64 build): the package script touches its state files at
+# absolute paths; here the same files relative to DPKG_ROOT. Mode 644 root:root from the image umask (0022).
+
+set -e
+
+case "$1" in
+  configure)
+    touch "${DPKG_ROOT}/var/lib/ucf/hashfile"
+    touch "${DPKG_ROOT}/var/lib/ucf/registry"
+    ;;
+  abort-upgrade) ;;
+  abort-remove) ;;
+  abort-deconfigure) ;;
+  *) echo "$0: didn't understand being called with \`$1'" 1>&2
+     exit 0;;
+esac
+
+exit 0

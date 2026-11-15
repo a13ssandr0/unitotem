@@ -1,0 +1,64 @@
+#!/bin/sh
+# ppp postinst: native build replacement (docs/system/build.md, Native arm64 build). Same files as the package script, every
+# absolute path under DPKG_ROOT, dip group by its numeric id from the image. The upgrade-only steps (pppd-dns cleanup, the
+# moved conffile /etc/init.d/pppd-dns) are not run: the native build installs every package fresh.
+set -e
+
+R="${DPKG_ROOT}"
+
+everything() {
+
+# install /etc/ppp/pap-secrets and /etc/ppp/chap-secrets from templates,
+# if necessary
+for file in pap-secrets chap-secrets; do
+  if [ -f "$R/etc/ppp/$file" ]; then
+    TAG=$(head --lines=1 "$R/etc/ppp/$file")
+    if [ "$TAG" = "#GENERATED-BY-DEBIAN-INSTALLER#" ]; then
+      (sed -e "s/-HOSTNAME-/${HOST-}/g" "$R/usr/share/ppp/$file"; \
+        cat "$R/etc/ppp/$file") > "$R/etc/ppp/$file.tmp"
+      mv "$R/etc/ppp/$file.tmp" "$R/etc/ppp/$file"
+    fi
+  else
+    sed -e "s/-HOSTNAME-/${HOST-}/g" < "$R/usr/share/ppp/$file" > "$R/etc/ppp/$file"
+  fi
+  chmod 600 "$R/etc/ppp/$file"
+done
+
+DIP_GID=$(awk -F: '$1 == "dip" { print $3; exit }' "$R/etc/group")
+
+# install template provider files
+if [ ! -f "$R/etc/ppp/peers/provider" ]; then
+  install -g "$DIP_GID" -m 640 "$R/usr/share/ppp/provider.peer" \
+			"$R/etc/ppp/peers/provider"
+fi
+if [ ! -f "$R/etc/chatscripts/provider" ]; then
+  install -g "$DIP_GID" -m 640 "$R/usr/share/ppp/provider.chatscript" \
+			"$R/etc/chatscripts/provider"
+fi
+
+# fix the log files permissions
+ADM_GID=$(awk -F: '$1 == "adm" { print $3; exit }' "$R/etc/group")
+LOG_FILES="$R/var/log/ppp.log $R/var/log/ppp-connect-errors"
+for file in $LOG_FILES; do
+  [ -e "$file" ] || continue
+  chown "0:$ADM_GID" "$file"
+  chmod 640 "$file"
+done
+
+}
+
+case "$1" in
+    configure)
+	everything "$@"
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+    echo "postinst called with unknown argument '$1'" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

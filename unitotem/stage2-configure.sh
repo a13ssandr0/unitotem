@@ -10,8 +10,12 @@ mkdir -p "${ROOTFS}"
 echo "Extracting stage 1..."
 tar -I pigz -C "${ROOTFS}" -xf "${WORK_DIR}/stage1.tar.gz"
 
-ensure_qemu
-mount_chroot
+if [ "$NATIVE_BUILD" = 1 ]; then
+    nb_setup
+else
+    ensure_qemu
+    mount_chroot
+fi
 
 # ---------- Hostname ----------
 
@@ -28,7 +32,18 @@ EOF
 # /etc/default/locale is read by login sessions (profile.d/unitotem-locale.sh) and by Debian's systemd; /etc/locale.conf is the systemd-native file.
 
 sed -i "s/^# *${UNITOTEM_LOCALE} UTF-8/${UNITOTEM_LOCALE} UTF-8/" "${ROOTFS}/etc/locale.gen"
-chroot "${ROOTFS}" locale-gen
+if [ "$NATIVE_BUILD" = 1 ]; then
+    # locale-gen's own work: the host localedef compiles the target's locale sources (data only) into the target's archive
+    rm -rf "${ROOTFS}/usr/lib/locale/locale-archive"
+    grep -E '^[^#]' "${ROOTFS}/etc/locale.gen" | while read -r loc charset; do
+        input=${loc%%.*}; input=${input%%@*}
+        [ -z "${loc##*@*}" ] && input="${input}@${loc#*@}" && input=${input%%.*}
+        I18NPATH="${ROOTFS}/usr/share/i18n" localedef --prefix="${ROOTFS}" -i "$input" -c -f "$charset" \
+            -A /usr/share/locale/locale.alias "$loc" || true
+    done
+else
+    chroot "${ROOTFS}" locale-gen
+fi
 printf 'LANG=%s\n' "${UNITOTEM_LOCALE}" > "${ROOTFS}/etc/default/locale"
 printf 'LANG=%s\n' "${UNITOTEM_LOCALE}" > "${ROOTFS}/etc/locale.conf"
 install -m 644 /unitotem/files/unitotem-locale.sh "${ROOTFS}/etc/profile.d/unitotem-locale.sh"
@@ -38,15 +53,29 @@ install -m 644 /unitotem/files/unitotem-locale.sh "${ROOTFS}/etc/profile.d/unito
 
 ln -sf "/usr/share/zoneinfo/${UNITOTEM_TIMEZONE}" "${ROOTFS}/etc/localtime"
 echo "${UNITOTEM_TIMEZONE}" > "${ROOTFS}/etc/timezone"
-chroot "${ROOTFS}" dpkg-reconfigure -f noninteractive tzdata
+if [ "$NATIVE_BUILD" = 1 ]; then
+    # tzdata's postinst result: the canonical zone name in /etc/timezone and the link
+    tz=$(readlink -f "${ROOTFS}/usr/share/zoneinfo/${UNITOTEM_TIMEZONE}")
+    tz=${tz#"${ROOTFS}"/usr/share/zoneinfo/}
+    echo "$tz" > "${ROOTFS}/etc/timezone"
+    ln -sf "/usr/share/zoneinfo/${tz}" "${ROOTFS}/etc/localtime"
+else
+    chroot "${ROOTFS}" dpkg-reconfigure -f noninteractive tzdata
+fi
 
 # ---------- Root first-access state ----------
 # Root starts with an empty password, a login shell that only creates the first
 # administrator, and the sshd marker group (see docs/system/image-runtime.md).
 
-chroot "${ROOTFS}" groupadd --system unitotem-first-admin
-chroot "${ROOTFS}" passwd -d root
-chroot "${ROOTFS}" usermod -s /usr/sbin/unitotem-first-admin -aG unitotem-first-admin root
+if [ "$NATIVE_BUILD" = 1 ]; then
+    groupadd -P "${ROOTFS}" --system unitotem-first-admin
+    passwd -R "${ROOTFS}" -d root
+    usermod -P "${ROOTFS}" -s /usr/sbin/unitotem-first-admin -aG unitotem-first-admin root 2>/dev/null
+else
+    chroot "${ROOTFS}" groupadd --system unitotem-first-admin
+    chroot "${ROOTFS}" passwd -d root
+    chroot "${ROOTFS}" usermod -s /usr/sbin/unitotem-first-admin -aG unitotem-first-admin root
+fi
 
 # ---------- SSH ----------
 
@@ -58,7 +87,15 @@ chmod 700 "${ROOTFS}/root/.ssh"
 # ---------- Password policy ----------
 # PAM profile (libpam-pwquality, stage1): pam-auth-update rebuilds common-password from the enabled profiles.
 install -m 644 /unitotem/files/unitotem-pwquality "${ROOTFS}/usr/share/pam-configs/unitotem-pwquality"
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive pam-auth-update --package --force
+if [ "$NATIVE_BUILD" = 1 ]; then
+    # the host script works on absolute paths: run it in a private mount namespace with the target's PAM data over them
+    unshare -m env DPKG_ROOT="${ROOTFS}" DEBIAN_FRONTEND=noninteractive bash -c '
+        set -e
+        for d in /etc/pam.d /usr/share/pam-configs /var/lib/pam; do mount --bind "$0$d" "$d"; done
+        pam-auth-update --package --force' "${ROOTFS}"
+else
+    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive pam-auth-update --package --force
+fi
 
 # ---------- Plymouth ----------
 # No theme is pinned here: the unitotem-manager package installs and selects the
@@ -221,6 +258,14 @@ mkdir -p "${ROOTFS}/etc/systemd/system/unitotem-manager.service.d"
 install -m 644 /unitotem/files/unitotem-manager-wayland.conf "${ROOTFS}/etc/systemd/system/unitotem-manager.service.d/20-unitotem-wayland.conf"
 install -m 755 /unitotem/files/unitotem-first-boot-cert "${ROOTFS}/usr/sbin/unitotem-first-boot-cert"
 install -m 644 /unitotem/files/unitotem-first-boot-cert.service "${ROOTFS}/etc/systemd/system/unitotem-first-boot-cert.service"
+install -m 755 /unitotem/files/unitotem-hostname "${ROOTFS}/usr/sbin/unitotem-hostname"
+install -m 644 /unitotem/files/unitotem-hostname.service "${ROOTFS}/etc/systemd/system/unitotem-hostname.service"
+# Each device gets its own machine id on its first boot (systemd generates it and the /etc overlay keeps it in DATA): the image ships an
+# EMPTY file ("uninitialized" would start systemd's interactive first-boot setup) and the D-Bus copy is a link to it.
+: > "${ROOTFS}/etc/machine-id"
+mkdir -p "${ROOTFS}/var/lib/dbus"
+rm -f -- "${ROOTFS}/var/lib/dbus/machine-id"
+ln -s /etc/machine-id "${ROOTFS}/var/lib/dbus/machine-id"
 install -m 755 /unitotem/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
 install -m 755 /unitotem/files/unitotem-boot-orientation "${ROOTFS}/usr/sbin/unitotem-boot-orientation"
 install -m 755 /unitotem/files/unitotem-firmware "${ROOTFS}/usr/sbin/unitotem-firmware"
@@ -229,7 +274,11 @@ install -m 644 /unitotem/files/unitotem-update-auto.timer "${ROOTFS}/etc/systemd
 install -d "${ROOTFS}/usr/lib/unitotem"
 install -m 644 /unitotem/files/unitotem_identity.py "${ROOTFS}/usr/lib/unitotem/unitotem_identity.py"
 # the web UI logs in through PAM with system accounts of this group (the manager postinst creates it too)
-chroot "${ROOTFS}" getent group unitotem >/dev/null || chroot "${ROOTFS}" addgroup --system unitotem
+if [ "$NATIVE_BUILD" = 1 ]; then
+    grep -q '^unitotem:' "${ROOTFS}/etc/group" || groupadd -P "${ROOTFS}" --system unitotem
+else
+    chroot "${ROOTFS}" getent group unitotem >/dev/null || chroot "${ROOTFS}" addgroup --system unitotem
+fi
 # Public half of the update root key only. The private keys live outside the repo
 # (tools/release/backup-keys.sh); losing them means no fielded device accepts an update again.
 install -d -m 755 "${ROOTFS}/usr/share/unitotem/update-keys"
@@ -309,7 +358,10 @@ done
 
 # ---------- Enable services ----------
 
-chroot "${ROOTFS}" systemctl enable \
+rootfs_systemctl() {
+    if [ "$NATIVE_BUILD" = 1 ]; then SYSTEMCTL_SKIP_SYSV=1 systemctl --root="${ROOTFS}" "$@"; else chroot "${ROOTFS}" systemctl "$@"; fi
+}
+rootfs_systemctl enable \
     systemd-timesyncd \
     NetworkManager \
     dbus \
@@ -322,6 +374,7 @@ chroot "${ROOTFS}" systemctl enable \
     unitotem-ssh-hostkey \
     unitotem-persist-paths \
     unitotem-first-boot-cert \
+    unitotem-hostname \
     unitotem-net-watchdog.timer \
     unitotem-wifi-roam.timer \
     unitotem-cpu-performance \
@@ -330,7 +383,7 @@ chroot "${ROOTFS}" systemctl enable \
 # Disable unattended apt: /var/lib/dpkg is pinned to the read-only ROOT (overlayfs-hook.sh) so these timers
 # cannot take dpkg's lock, updates go through OTA, and background package changes would show up as local
 # modifications in unitotem-ota-changes. `mask`, not `disable`: package updates pull the units back in.
-chroot "${ROOTFS}" systemctl mask apt-daily.timer apt-daily-upgrade.timer \
+rootfs_systemctl mask apt-daily.timer apt-daily-upgrade.timer \
     apt-daily.service apt-daily-upgrade.service
 
 # ---------- amd64: the NVIDIA stack is installed for machines that have an NVIDIA GPU; on every other PC it must not make the system 'degraded' ----------
@@ -373,13 +426,28 @@ mkdir -p "${ROOTFS}/var/lib/systemd/linger"
 # The stage1 tarball can be older than deploy/script/ota-engine.sh, so it is refreshed here, right before
 # the initramfs is regenerated.
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
-chroot "${ROOTFS}" update-initramfs -u -k all
+if [ "$NATIVE_BUILD" = 1 ]; then
+    # the initramfs of the installed system, by the native builder (no target program runs)
+    KVER_N=$(cd "${ROOTFS}/lib/modules" && ls -1 | head -1)
+    python3 -I /unitotem/build-recovery-initrd.py --arch "$ARCH" --rootfs "${ROOTFS}" --out "${WORK_DIR}/slot-scratch" \
+        --work "${WORK_DIR}/slot-work" --engine "${ROOTFS}/usr/lib/unitotem/ota-engine.sh" \
+        --list "${ROOTFS}/usr/share/unitotem-ota/ota-initrd.list" --slot-out "${ROOTFS}/boot/initrd.img-${KVER_N}"
+    rm -rf "${WORK_DIR}/slot-scratch" "${WORK_DIR}/slot-work"
+    chmod 644 "${ROOTFS}/boot/initrd.img-${KVER_N}"
+    ln -sfn "boot/initrd.img-${KVER_N}" "${ROOTFS}/initrd.img"
+else
+    chroot "${ROOTFS}" update-initramfs -u -k all
+fi
 # arm64: the firmware loads kernel+initramfs from the SD at ~5 MB/s, so the initramfs is shrunk:
 # no hwdb.bin, only the Wi-Fi firmware of Raspberry Pi chips (see unitotem/slim-initramfs.py).
 if [ "$ARCH" = "arm64" ]; then
     install -m 755 /unitotem/slim-initramfs.py "${ROOTFS}/tmp/slim-initramfs.py"
     for _initrd in "${ROOTFS}"/boot/initrd.img-*; do
-        chroot "${ROOTFS}" python3 /tmp/slim-initramfs.py "/boot/$(basename "$_initrd")" "/tmp/slim.img" --arch arm64
+        if [ "$NATIVE_BUILD" = 1 ]; then
+            python3 -I "${ROOTFS}/tmp/slim-initramfs.py" "$_initrd" "${ROOTFS}/tmp/slim.img" --arch arm64
+        else
+            chroot "${ROOTFS}" python3 /tmp/slim-initramfs.py "/boot/$(basename "$_initrd")" "/tmp/slim.img" --arch arm64
+        fi
         cat "${ROOTFS}/tmp/slim.img" > "$_initrd"
     done
     rm -f "${ROOTFS}/tmp/slim-initramfs.py" "${ROOTFS}/tmp/slim.img"
@@ -403,7 +471,7 @@ if [ "$ARCH" = "arm64" ]; then
     rm -f "${ROOTFS}/usr/bin/qemu-aarch64-static"
 fi
 
-umount_chroot
+if [ "$NATIVE_BUILD" = 1 ]; then nb_teardown; else umount_chroot; fi
 
 echo "Saving stage 2 tarball..."
 tar -I pigz -C "${ROOTFS}" -cf "${WORK_DIR}/stage2.tar.gz" .

@@ -34,12 +34,14 @@ def parse_args(argv):
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--rootfs", metavar="DIR", help="extracted stage-1 rootfs (read only)")
     src.add_argument("--stage1", metavar="TARBALL", help="stage1.tar.gz, extracted under --work")
-    p.add_argument("--out", required=True, metavar="DIR")
+    p.add_argument("--out", required=True, metavar="DIR", help="output directory (scratch with --slot-out)")
     p.add_argument("--work", metavar="DIR", help="scratch directory (default: a temporary folder in --out)")
     p.add_argument("--engine", required=True, metavar="PATH", help="ota-engine.sh to ship as /usr/lib/unitotem")
     p.add_argument("--logo-dir", metavar="DIR", help="output of unitotem/logo/gen-logo.py (default: rendered now)")
     p.add_argument("--list", "--hook-list", dest="list_path", default=DEFAULT_LIST, metavar="PATH",
                    help="ota-initrd.list (default: unitotem/files/ota-initrd.list)")
+    p.add_argument("--slot-out", metavar="FILE",
+                   help="build the initramfs of the installed system (update-initramfs equivalent) into FILE; no vmlinuz, no manifest")
     p.add_argument("--hook-script", default=DEFAULT_HOOK, metavar="PATH",
                    help="project hook port (default: unitotem/ninitrd/otahook.py)")
     return p.parse_args(argv)
@@ -87,6 +89,8 @@ def sha256(path):
 
 def render_logo(work):
     logo_dir = os.path.join(work, "logo")
+    if os.path.exists(logo_dir):
+        shutil.rmtree(logo_dir)
     os.makedirs(logo_dir)
     res = subprocess.run([sys.executable, LOGO_SCRIPT, logo_dir], capture_output=True, text=True)
     if res.returncode != 0:
@@ -109,6 +113,8 @@ def main(argv=None):
             root = os.path.abspath(args.rootfs)
         else:
             root = os.path.join(work, "rootfs")
+            if os.path.exists(root):  # leftover of an earlier run in a kept --work folder
+                shutil.rmtree(root)
             os.makedirs(root)
             # device nodes are not used by the initrd and cannot be created without root
             subprocess.run(["tar", "-p", "--exclude=./dev/*", "-xf", os.path.abspath(args.stage1), "-C", root], check=True)
@@ -118,8 +124,14 @@ def main(argv=None):
 
         import assemble
         dest = os.path.join(work, "dest")
+        if os.path.exists(dest):
+            shutil.rmtree(dest)
         level = assemble.build(root, dest, args.arch, kver, os.path.abspath(args.engine),
-                               logo_dir, args.list_path, load_hook(args.hook_script))
+                               logo_dir, args.list_path, load_hook(args.hook_script), slot=bool(args.slot_out))
+        if args.slot_out:
+            assemble.pack(dest, os.path.abspath(args.slot_out), work, level)
+            print(f"Wrote {args.slot_out} ({os.path.getsize(args.slot_out)} bytes)")
+            return
 
         out = os.path.abspath(args.out)
         initrd = os.path.join(out, f"recovery-initrd-{args.arch}.img")

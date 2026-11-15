@@ -1,0 +1,160 @@
+#!/usr/bin/python3 -I
+"""Native build: run an apt transaction against a target tree with the host dpkg, step by step.
+
+usage: nb-install ROOT APT_CONF OVERRIDES_DIR LOCAL_DEB_DIR APT_GET_ARGS...
+
+apt-get -s gives the order of the transaction (Inst, Conf, Remv, Purg). The packages are downloaded by apt, then replayed
+with dpkg --root ... --force-script-chrootless: unpack batches, configure batches, removals, then the pending triggers. Between
+unpack and configure a maintainer script that cannot run chrootless is replaced by OVERRIDES_DIR/<package>.<script>
+(docs/system/build.md, Native arm64 build). Inspired by apt's own dpkg driver (pkgDPkgPM).
+"""
+import fnmatch
+import os
+import re
+import subprocess
+import sys
+import urllib.parse
+
+ROOT, CONF, OVERRIDES, LOCAL = sys.argv[1:5]
+ARGS = sys.argv[5:]
+ENV = dict(os.environ, APT_CONFIG=CONF, DEBIAN_FRONTEND="noninteractive")
+ARCHIVES = os.path.join(ROOT, "var/cache/apt/archives")
+SCRIPTS = ("preinst", "postinst", "prerm", "postrm")
+DPKG = ["dpkg", "--root=" + ROOT, "--force-script-chrootless", "--force-unsafe-io"]
+
+INST = re.compile(r"^Inst (\S+) (?:\[[^\]]*\] )?\((\S+) .*?\[(\w+)\]\)")
+CONFL = re.compile(r"^Conf (\S+) ")
+REMV = re.compile(r"^(Remv|Purg) (\S+) ")
+
+
+def run(cmd, **kw):
+    r = subprocess.run(cmd, env=ENV, stdin=subprocess.DEVNULL, **kw)
+    if r.returncode:
+        sys.exit("nb-install: %s failed (%d)" % (" ".join(cmd[:6]), r.returncode))
+
+
+def deb_index():
+    idx = {}
+    for d in (ARCHIVES, LOCAL):
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                if f.endswith(".deb"):
+                    name, ver, arch = f[:-4].split("_")
+                    idx[(name, urllib.parse.unquote(ver), arch)] = os.path.join(d, f)
+    return idx
+
+
+def override_for(p, s):
+    """OVERRIDES/<package>.<script>; a '%' in the file name stands for any text (linux-image-%.postinst)."""
+    for f in sorted(os.listdir(OVERRIDES)):
+        if f.endswith("." + s) and fnmatch.fnmatchcase(p, f[:-len(s) - 1].replace("%", "*")):
+            return os.path.join(OVERRIDES, f)
+    return None
+
+
+def apply_patches(p):
+    """OVERRIDES/<package>.<script>.sed: sed script applied to the installed maintainer script."""
+    for s in SCRIPTS:
+        sed = os.path.join(OVERRIDES, "%s.%s.sed" % (p, s))
+        dst = os.path.join(ROOT, "var/lib/dpkg/info", "%s.%s" % (p, s))
+        if not os.path.exists(sed):
+            continue
+        for d in (dst, os.path.join(ROOT, "var/lib/dpkg/info", "%s:arm64.%s" % (p, s))):
+            if os.path.exists(d):
+                before = open(d, "rb").read()
+                run(["sed", "-i", "-f", sed, d])
+                if open(d, "rb").read() == before:
+                    sys.exit("nb-install: %s did not change %s: the package script differs from the one it was written for" % (sed, d))
+                print("nb-install: %s.%s patched" % (p, s), flush=True)
+
+
+def apply_overrides(pkgs):
+    for p in pkgs:
+        apply_patches(p)
+        for s in SCRIPTS:
+            src = override_for(p, s)
+            if src:
+                for dst in (os.path.join(ROOT, "var/lib/dpkg/info", "%s.%s" % (p, s)),
+                            os.path.join(ROOT, "var/lib/dpkg/info", "%s:arm64.%s" % (p, s))):
+                    if os.path.exists(dst):
+                        with open(src, "rb") as a, open(dst, "wb") as b:
+                            b.write(a.read())
+                        os.chmod(dst, 0o755)
+                        print("nb-install: %s.%s replaced by the native override" % (p, s), flush=True)
+
+
+sim = subprocess.run(["apt-get", "-s"] + ARGS, env=ENV, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+if sim.returncode:
+    sys.stderr.write(sim.stdout + sim.stderr)
+    sys.exit("nb-install: apt-get -s failed")
+steps = []  # (kind, [names or debs])
+for line in sim.stdout.splitlines():
+    m = INST.match(line)
+    if m:
+        steps.append(("unpack", (m.group(1), m.group(2), m.group(3))))
+        continue
+    m = CONFL.match(line)
+    if m:
+        steps.append(("configure", m.group(1)))
+        continue
+    m = REMV.match(line)
+    if m:
+        steps.append(("purge" if m.group(1) == "Purg" else "remove", m.group(2)))
+if not steps:
+    print("nb-install: nothing to do")
+    sys.exit(0)
+
+if any(k == "unpack" for k, _ in steps):
+    run(["apt-get", "-y", "--download-only"] + [a for a in ARGS if a != "-s"])
+idx = deb_index()
+
+batches = []
+for kind, val in steps:
+    if batches and batches[-1][0] == kind:
+        batches[-1][1].append(val)
+    else:
+        batches.append((kind, [val]))
+
+for kind, vals in batches:
+    if kind == "unpack":
+        debs = []
+        for name, ver, arch in vals:
+            deb = idx.get((name, ver, arch))
+            if deb is None:
+                sys.exit("nb-install: no archive for %s %s %s" % (name, ver, arch))
+            debs.append(deb)
+        run(DPKG + ["--no-triggers", "--auto-deconfigure", "--unpack"] + debs)
+        apply_overrides([n for n, _, _ in vals])
+    elif kind == "configure" and os.environ.get("NB_SURVEY"):
+        # survey mode (lab): configure one by one, keep going, list the packages whose scripts fail
+        for v in vals:
+            r = subprocess.run(DPKG + ["--force-depends", "--no-triggers", "--configure", v], env=ENV, stdin=subprocess.DEVNULL)
+            if r.returncode:
+                print("NB-SURVEY-FAILED %s" % v, flush=True)
+    elif kind == "configure":
+        run(DPKG + ["--no-triggers", "--configure"] + vals)
+    else:
+        run(DPKG + ["--no-triggers", "--" + kind] + vals)
+if os.environ.get("NB_SURVEY"):
+    subprocess.run(DPKG + ["--force-depends", "--configure", "--pending"], env=ENV, stdin=subprocess.DEVNULL)
+else:
+    run(DPKG + ["--configure", "--pending"])
+
+# apt's own bookkeeping, which the replay bypasses: packages installed as dependencies are marked "auto", the requested ones manual
+if ARGS and ARGS[0] in ("install",) or any(a == "install" for a in ARGS):
+    requested = set()
+    for a in ARGS:
+        if a.startswith("-") or a == "install":
+            continue
+        if a.endswith(".deb"):
+            requested.add(os.path.basename(a).split("_")[0])
+        else:
+            requested.add(re.split(r"[=/]", a)[0])
+    new = [v[0] for k, v in steps if k == "unpack" and not any(
+        l.startswith("Inst %s [" % v[0]) for l in sim.stdout.splitlines())]
+    auto = sorted(set(new) - requested)
+    manual = sorted(set(v[0] for k, v in steps if k == "unpack") & requested)
+    if auto:
+        run(["apt-mark", "auto"] + auto, capture_output=True)
+    if manual:
+        run(["apt-mark", "manual"] + manual, capture_output=True)

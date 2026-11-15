@@ -1,0 +1,9 @@
+# Target programs that maintainer scripts call by name under --force-script-chrootless (one per line); see nb-shim.
+ldconfig
+dbus-uuidgen
+linux-run-hooks
+py3compile
+py3clean
+nb-pycompile
+adduser
+addgroup
