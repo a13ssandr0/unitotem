@@ -15,6 +15,10 @@ Paths: relative to the repository root.
 | `unitotem/files/unitotem-ssh` | `start` / `stop` of dropbear in open mode |
 | `tools/release/test_installer_iso.py` | QEMU tests (BIOS, UEFI on USB, three disks, Secure Boot, too-small disks, screenshots) |
 
+## Writing the stick
+
+`sudo deploy/script/write-iso.sh [--yes] [--no-eject] ISO DEVICE` copies the whole hybrid ISO to a whole disk, reads it back and compares, then ejects a removable device. It refuses a device with mounted partitions, the disk holding `/` or `/boot`, a medium of size 0 and a device smaller than the ISO; the confirmation is `(y/n)`.
+
 ## How it works
 
 Build: `tools/build-installer-iso.sh --flash deploy/amd64/unitotem-<date>-amd64-flash.img.xz [--out DIR] [--kernel F --initrd F]`. About 90 s, output `DIR/unitotem-installer-<date>-amd64.iso` + `.sha256`. Default `DIR`: `deploy/amd64`.
