@@ -10,7 +10,7 @@ IMAGE_SIZE=14G; ROOT_SLOT_SIZE=5G; EFI_SIZE=512M; FIRMWARE_SIZE=512M
 export LOOP=
 pass=0; failn=0
 # loop devices of this test are detached on any exit (only those backed by our own files)
-cleanup() { for f in t.img big.img pr.img base-amd64.img base-arm64.img; do for l in $(losetup -j $W/$f -O NAME -n 2>/dev/null); do umount -l ${l}p2 ${l}p4 2>/dev/null; losetup -d $l 2>/dev/null; done; done; }
+cleanup() { for f in t.img big.img pr.img base-amd64.img base-arm64.img base-dos.img; do for l in $(losetup -j $W/$f -O NAME -n 2>/dev/null); do umount -l ${l}p2 ${l}p4 2>/dev/null; losetup -d $l 2>/dev/null; done; done; }
 trap cleanup EXIT; trap 'exit 1' TERM INT
 ok()  { pass=$((pass+1)); echo "PASS: $1"; }
 bad() { failn=$((failn+1)); echo "FAIL: $1"; }
@@ -247,6 +247,103 @@ umount /mnt/r; losetup -d $LOOP; rm -f -- $W/t.img
 
 }
 if [ "${PHASE2_ONLY:-0}" = 1 ]; then for arch in amd64 arm64; do make_img $arch $W/base-$arch.img; done; else phase1; fi
+
+# ---------------------------------------------------------------- DOS (MBR) disks: DATA is primary 4 (or a logical one)
+make_img_dos() {  # make_img_dos FILE : DOS table of the stage3 shape (FIRMWARE c, ROOT_A, ROOT_B, DATA 83), then filesystems
+    local img=$1
+    rm -f -- "$img"; truncate -s "$IMAGE_SIZE" "$img"
+    printf '%s\n' 'label: dos' 'start=2048, size=1048576, type=c, bootable' 'size=10485760, type=83' \
+        'size=10485760, type=83' 'type=83' | sfdisk -q "$img" >/dev/null 2>&1
+    LOOP=$(losetup --find --show --partscan "$img"); nodes
+    mkfs.fat -F32 -n FIRMWARE ${LOOP}p1 >/dev/null; mkfs.ext4 -q -F -L ROOT_A ${LOOP}p2; mkfs.ext4 -q -F -L ROOT_B ${LOOP}p3
+    mkfs.ext4 -q -F -L DATA ${LOOP}p4
+    mkdir -p /mnt/d; mount ${LOOP}p4 /mnt/d
+    for i in 1 2 3 4 5 6 7 8; do head -c $((i*1000003)) /dev/urandom > /mnt/d/f$i; done
+    mkdir -p /mnt/d/upper/etc.a; cp /etc/passwd /mnt/d/upper/etc.a/
+    (cd /mnt/d && find . -type f -exec sha256sum {} + | sort -k2 > /tmp/sums-dos.txt)
+    umount /mnt/d; losetup -d "$LOOP"; LOOP=
+}
+dos_sig() {  # dos_sig LOOP : label-id and the DATA entry (p4) without its size
+    sfdisk -d "$1" | grep -E 'label-id|p4 :' | sed 's/size= *[0-9]*,//'
+}
+dos_scenario() {  # dos_scenario NAME DISKSIZE EXPECT(grow|noop) : DATA is p4 of the DOS base image
+    local name=$1 size=$2 expect=$3
+    echo "=== $name (dos, disk $size, expect $expect)"
+    cp --sparse=always $W/base-dos.img $W/t.img; truncate -s "$size" $W/t.img
+    LOOP=$(losetup --find --show --partscan $W/t.img); nodes
+    hash_parts $LOOP > /tmp/h.before
+    dos_sig $LOOP > /tmp/g.before
+    local sz0; sz0=$(blockdev --getsz ${LOOP}p4)
+    mkdir -p /mnt/r; mount -o ro ${LOOP}p2 /mnt/r   # the root slot is mounted from the same disk
+    runfn ${LOOP}p4; cat "$LOGF" | sed 's/^/    log: /'
+    local sz1; sz1=$(blockdev --getsz ${LOOP}p4)
+    if [ "$expect" = grow ]; then
+        local dend=$(blockdev --getsz $LOOP)
+        local pend=$(( $(cat /sys/class/block/${LOOP##*/}p4/start) + sz1 ))
+        chk "$name: DATA reaches the disk end ($pend vs $dend, < 2048 sectors apart)" [ $((dend - pend)) -lt 2048 ]
+        chk "$name: DATA grew ($((sz0/2048)) -> $((sz1/2048)) MiB)" [ "$sz1" -gt "$sz0" ]
+        local bc bs; bc=$(dumpe2fs -h ${LOOP}p4 2>/dev/null | sed -n 's/^Block count: *//p'); bs=$(dumpe2fs -h ${LOOP}p4 2>/dev/null | sed -n 's/^Block size: *//p')
+        chk "$name: filesystem fills the partition ($((bc*bs/512)) of $sz1 sectors)" [ $((sz1 - bc*bs/512)) -lt 4096 ]
+        chk "$name: one 'grown' log line" [ "$(lines)" = 1 ]
+        umount /mnt/r
+        chk "$name: e2fsck -fn DATA clean" e2fsck -fn ${LOOP}p4 >/dev/null 2>&1
+        dos_sig $LOOP > /tmp/g.after
+        chk "$name: label-id, DATA type and flags unchanged" cmp -s /tmp/g.before /tmp/g.after
+        chk "$name: sfdisk -l reads the table without warning" bash -c "! sfdisk -l $LOOP 2>&1 | grep -qi 'warning\|corrupt'"
+        # second run: no-op
+        mount -o ro ${LOOP}p2 /mnt/r
+        local c0; c0=$(sfdisk -d $LOOP | md5sum)
+        runfn ${LOOP}p4
+        chk "$name: second run is a no-op (no log, table unchanged)" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 0 ] && [ \"\$(sfdisk -d $LOOP | md5sum)\" = \"$c0\" ]"
+        umount /mnt/r
+    else
+        chk "$name: DATA size unchanged" [ "$sz1" = "$sz0" ]
+        chk "$name: no log line" [ "$(lines)" = 0 ]
+        umount /mnt/r
+    fi
+    mount ${LOOP}p4 /mnt/d
+    chk "$name: file checksums unchanged" bash -c "cd /mnt/d && find . -type f -not -name '.*' -exec sha256sum {} + | sort -k2 | cmp -s - /tmp/sums-dos.txt"
+    umount /mnt/d
+    hash_parts $LOOP > /tmp/h.after
+    chk "$name: other partitions byte-identical" cmp -s /tmp/h.before /tmp/h.after
+    losetup -d "$LOOP"; rm -f $W/t.img
+}
+phase_dos() {
+    make_img_dos $W/base-dos.img
+    echo "--- layout dos"; sfdisk -d $W/base-dos.img | sed -n '/label-id/,$p'
+    dos_scenario "dos-32G" 32G grow
+    dos_scenario "dos-15G" 15G grow
+    dos_scenario "dos-image" 14G noop
+    echo "=== dos: less than 64 MiB free"
+    cp --sparse=always $W/base-dos.img $W/t.img; truncate -s $((14*1024+32))M $W/t.img
+    LOOP=$(losetup --find --show --partscan $W/t.img); nodes; sfdisk -d $LOOP > /tmp/t.before
+    runfn ${LOOP}p4; chk "dos 32 MiB free: skipped silently, table untouched" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 0 ] && [ \"\$(sfdisk -d $LOOP)\" = \"\$(cat /tmp/t.before)\" ]"
+    losetup -d $LOOP; rm -f $W/t.img
+    echo "=== dos: wrong filesystem (vfat on DATA)"
+    cp --sparse=always $W/base-dos.img $W/t.img; truncate -s 32G $W/t.img
+    LOOP=$(losetup --find --show --partscan $W/t.img); nodes; mkfs.fat ${LOOP}p4 >/dev/null; sfdisk -d $LOOP > /tmp/t.before
+    runfn ${LOOP}p4; chk "dos vfat DATA: one log line, table untouched" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 1 ] && [ \"\$(sfdisk -d $LOOP)\" = \"\$(cat /tmp/t.before)\" ]"
+    losetup -d $LOOP; rm -f $W/t.img
+    echo "=== dos: partition after DATA (DATA is p3, p4 starts at 30 GiB)"
+    printf '%s\n' 'label: dos' 'start=2048, size=1048576, type=c' 'size=10485760, type=83' 'size=4194304, type=83' \
+        'start=62914560, size=204800, type=83' | { truncate -s 32G $W/t.img; sfdisk -q $W/t.img >/dev/null 2>&1; }
+    LOOP=$(losetup --find --show --partscan $W/t.img); nodes
+    mkfs.fat -F32 -n FIRMWARE ${LOOP}p1 >/dev/null; mkfs.ext4 -q -F -L ROOT_A ${LOOP}p2; mkfs.ext4 -q -F -L DATA ${LOOP}p3; mkfs.ext4 -q -F -L EXTRA ${LOOP}p4
+    sfdisk -d $LOOP > /tmp/t.before
+    runfn ${LOOP}p3; sed 's/^/    log: /' $LOGF
+    chk "dos partition after DATA: one log line, table untouched" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 1 ] && grep -q 'not the last partition' $LOGF && [ \"\$(sfdisk -d $LOOP)\" = \"\$(cat /tmp/t.before)\" ]"
+    losetup -d $LOOP; rm -f $W/t.img
+    echo "=== dos: DATA is a logical partition (p5 inside an extended p3): one log line, table untouched"
+    printf '%s\n' 'label: dos' 'start=2048, size=1048576, type=c' 'size=10485760, type=83' 'type=5' 'type=83' \
+        | { truncate -s 32G $W/t.img; sfdisk -q $W/t.img >/dev/null 2>&1; }
+    LOOP=$(losetup --find --show --partscan $W/t.img); nodes
+    mkfs.fat -F32 -n FIRMWARE ${LOOP}p1 >/dev/null; mkfs.ext4 -q -F -L ROOT_A ${LOOP}p2; mkfs.ext4 -q -F -L DATA ${LOOP}p5
+    sfdisk -d $LOOP > /tmp/t.before
+    runfn ${LOOP}p5; sed 's/^/    log: /' $LOGF
+    chk "dos logical DATA: one log line, table untouched" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 1 ] && grep -q 'logical partition' $LOGF && [ \"\$(sfdisk -d $LOOP)\" = \"\$(cat /tmp/t.before)\" ]"
+    losetup -d $LOOP; rm -f $W/t.img
+}
+phase_dos
 if [ "$BIG" = 1 ]; then
     echo "=== timing: 400 GB sparse disk, DATA 3 GiB -> 400 GB"
     for mode in offline online; do
@@ -296,28 +393,65 @@ flash_of() {  # flash_of ARCH : make the flash image of base-ARCH.img
     bash /repo/unitotem/make-flash-image.sh $W/base-$1.img $W/flash-$1.img
 }
 
+# DOS (arm64) layout checks. MBR partitions have no names: the pending state is the MBR type (da ROOT_B, db DATA),
+# and the created partitions are announced in DATA-first order. LAYOUT_DOS and LAYOUT_WANT are set per arch.
+LAYOUT_DOS=0; LAYOUT_WANT='ROOT_B DATA'; LID0=
+tdump()        { if [ "$LAYOUT_DOS" = 1 ]; then sfdisk -d "$LOOP"; else sgdisk -p "$LOOP"; fi; }
+dos_type()     { sfdisk -d "$LOOP" | grep "^${LOOP}p$1 " | sed -n 's/.*type=\([0-9a-fA-F]*\).*/\1/p'; }
+dos_types()    { [ "$(dos_type 1)" = c ] && [ "$(dos_type 2)" = 83 ] && [ "$(dos_type 3)" = 83 ] && [ "$(dos_type 4)" = 83 ]; }
+no_pending_mbr() { ! sfdisk -d "$LOOP" | grep -Eq 'type=(da|db)(,|$)'; }
+dos_valid()    { sfdisk -V "$LOOP" >/dev/null 2>&1 && [ "$(blkid -p -s PTTYPE -o value "$LOOP")" = dos ]; }
+dos_lid()      { [ -n "$LID0" ] && [ "$(sfdisk -d "$LOOP" | sed -n 's/^label-id: //p')" = "$LID0" ]; }
+created_once() { [ "$(grep -vc '^rc=' "$LOGF")" = 1 ] && grep -q "created $LAYOUT_WANT" "$LOGF"; }
+noop_second_run() { [ "$(grep -vc '^rc=' "$LOGF")" = 0 ] && tdump | cmp -s - /tmp/lay.t1; }
+# slot_sound (unitotem-update, _by_name) finds a MBR slot by its filesystem label: no PARTLABEL on MBR disks
+dos_slot_lookup() {
+    [ "$(blkid -t LABEL=ROOT_B -o device | grep "^${LOOP}p[0-9]*$")" = "${LOOP}p3" ] || return 1
+    [ "$(blkid -s LABEL -o value ${LOOP}p3)" = ROOT_B ] || return 1
+    mkdir -p /mnt/b && mount -o ro ${LOOP}p3 /mnt/b || return 1
+    ! test -e /mnt/b/usr/share/unitotem/release-version; local r=$?
+    umount /mnt/b; return $r
+}
+# the arm64 flash image: DOS table, two partitions (FIRMWARE, ROOT_A), nothing pending
+dos_flash_ok() { sfdisk -V "$1" >/dev/null 2>&1 && [ "$(sfdisk -d "$1" | grep -c ' : start=')" = 2 ] && ! sfdisk -d "$1" | grep -Eq 'type=(da|db)(,|$)'; }
+
 layout_scenario() {  # layout_scenario NAME ARCH DISKSIZE
     local name=$1 arch=$2 size=$3 f=$W/flash-$2.img
     echo "=== $name ($arch flash image on a $size disk)"
     cp --sparse=always $f $W/t.img; truncate -s $size $W/t.img
     LOOP=$(losetup --find --show --partscan $W/t.img)
+    LAYOUT_DOS=0; LAYOUT_WANT='ROOT_B DATA'; [ "$arch" = arm64 ] && { LAYOUT_DOS=1; LAYOUT_WANT='DATA ROOT_B'; }
+    [ "$LAYOUT_DOS" = 1 ] && LID0=$(sfdisk -d "$LOOP" | sed -n 's/^label-id: //p')
     local rootp=2 bootp=1
     hroot=$(part_hash ${LOOP}p$rootp); hboot=$(part_hash ${LOOP}p$bootp)
     [ "$arch" = amd64 ] && hbios=$(part_hash ${LOOP}p5)
     mkdir -p /mnt/r; mount -o ro ${LOOP}p$rootp /mnt/r
     t0=$(date +%s.%N); runlay; t1=$(date +%s.%N)
     sed 's/^/    log: /' "$LOGF"; echo "    elapsed: $(awk "BEGIN{print $t1-$t0}") s"
-    chk "$name: one 'created' log line" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 1 ] && grep -q 'created ROOT_B DATA' $LOGF"
+    chk "$name: one 'created' log line ($LAYOUT_WANT)" created_once
     chk "$name: ROOT_B is exactly 5 GiB (10485760 sectors), label ROOT_B" bash -c "[ \$(blockdev --getsz ${LOOP}p3) = 10485760 ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ]"
     chk "$name: ROOT_B starts right after ROOT_A, 1 MiB aligned" bash -c "[ \$(( \$(cat /sys/class/block/${LOOP##*/}p3/start) % 2048 )) = 0 ] && [ \$(cat /sys/class/block/${LOOP##*/}p3/start) = \$(( \$(cat /sys/class/block/${LOOP##*/}p2/start) + \$(cat /sys/class/block/${LOOP##*/}p2/size) )) ]"
-    local dend=$(( $(blockdev --getsz $LOOP) - 34 )); local pend=$(( $(cat /sys/class/block/${LOOP##*/}p4/start) + $(blockdev --getsz ${LOOP}p4) ))
+    # GPT: the last 33 sectors hold the backup table; DOS has none, DATA ends at the disk end
+    local dend=$(( $(blockdev --getsz $LOOP) - 34 )); [ "$LAYOUT_DOS" = 1 ] && dend=$(blockdev --getsz $LOOP)
+    local pend=$(( $(cat /sys/class/block/${LOOP##*/}p4/start) + $(blockdev --getsz ${LOOP}p4) ))
     chk "$name: DATA reaches the last usable sector ($pend vs $dend)" [ $((dend - pend)) -lt 2048 ]
     chk "$name: DATA is ext4, label DATA" bash -c "[ \"\$(blkid -s TYPE -o value ${LOOP}p4)\" = ext4 ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p4)\" = DATA ]"
-    chk "$name: GPT names and type codes" bash -c "sgdisk -p $LOOP | grep -E '^ +3 ' | grep -q '8300  ROOT_B' && sgdisk -p $LOOP | grep -E '^ +4 ' | grep -q '8300  DATA'"
-    chk "$name: no pending flag left" bash -c "! sfdisk -d $LOOP | grep -q GUID:48"
-    chk "$name: GPT valid, backup at the disk end" bash -c "sgdisk -v $LOOP 2>&1 | grep -q 'No problems found' && ! sgdisk -p $LOOP 2>&1 | grep -qi 'warning\|corrupt'"
+    if [ "$LAYOUT_DOS" = 1 ]; then
+        chk "$name: DOS types p1 c, p2 83, p3 83, p4 83" dos_types
+        chk "$name: no pending type (da/db) left" no_pending_mbr
+        chk "$name: DOS table verifies (sfdisk -V, PTTYPE dos)" dos_valid
+        chk "$name: label-id unchanged" dos_lid
+    else
+        chk "$name: GPT names and type codes" bash -c "sgdisk -p $LOOP | grep -E '^ +3 ' | grep -q '8300  ROOT_B' && sgdisk -p $LOOP | grep -E '^ +4 ' | grep -q '8300  DATA'"
+        chk "$name: no pending flag left" bash -c "! sfdisk -d $LOOP | grep -q GUID:48"
+        chk "$name: GPT valid, backup at the disk end" bash -c "sgdisk -v $LOOP 2>&1 | grep -q 'No problems found' && ! sgdisk -p $LOOP 2>&1 | grep -qi 'warning\|corrupt'"
+    fi
     chk "$name: e2fsck -fn ROOT_B and DATA clean" bash -c "e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1"
-    chk "$name: slot_sound's lookup finds ROOT_B (blkid -t PARTLABEL, LABEL) and it holds no system" bash -c "[ \"\$(blkid -t PARTLABEL=ROOT_B -o device)\" = ${LOOP}p3 ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && mkdir -p /mnt/b && mount -o ro ${LOOP}p3 /mnt/b && ! test -e /mnt/b/usr/share/unitotem/release-version; r=\$?; umount /mnt/b; exit \$r"
+    if [ "$LAYOUT_DOS" = 1 ]; then
+        chk "$name: slot_sound's lookup finds ROOT_B (blkid LABEL, MBR has no PARTLABEL) and it holds no system" dos_slot_lookup
+    else
+        chk "$name: slot_sound's lookup finds ROOT_B (blkid -t PARTLABEL, LABEL) and it holds no system" bash -c "[ \"\$(blkid -t PARTLABEL=ROOT_B -o device)\" = ${LOOP}p3 ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && mkdir -p /mnt/b && mount -o ro ${LOOP}p3 /mnt/b && ! test -e /mnt/b/usr/share/unitotem/release-version; r=\$?; umount /mnt/b; exit \$r"
+    fi
     chk "$name: only one filesystem labelled ROOT_A (no stale copy)" bash -c "[ \$(blkid | grep -c 'LABEL=\"ROOT_A\"') = 1 ]"
     chk "$name: ROOT_A still mounted and readable" bash -c "ls /mnt/r/lost+found >/dev/null"
     umount /mnt/r
@@ -327,17 +461,22 @@ layout_scenario() {  # layout_scenario NAME ARCH DISKSIZE
     mount ${LOOP}p4 /mnt/d; chk "$name: DATA mounts, holds only lost+found (empty like stage3's)" bash -c "[ \"\$(ls -A /mnt/d)\" = lost+found ]"; 
     chk "$name: mkdir -p seeding paths work on the new DATA (hook, persist-paths, ssh-hostkey)" bash -c "mkdir -p /mnt/d/upper/etc.a /mnt/d/work/etc.a /mnt/d/unitotem/persist /mnt/d/unitotem/ssh-host-keys && ls /mnt/d/unitotem/persist >/dev/null"
     umount /mnt/d
-    sgdisk -p $LOOP > /tmp/lay.t1
+    tdump > /tmp/lay.t1
     mount -o ro ${LOOP}p2 /mnt/r; runlay; umount /mnt/r
-    chk "$name: second run is a no-op (no log, table unchanged)" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 0 ] && sgdisk -p $LOOP | cmp -s - /tmp/lay.t1"
+    chk "$name: second run is a no-op (no log, table unchanged)" noop_second_run
     losetup -d $LOOP; rm -f $W/t.img
 }
 
 for arch in amd64 arm64; do
     echo "=== flash image of $arch"
     flash_of $arch | sed 's/^/    /'
-    echo "--- flash layout $arch ($(stat -c %s $W/flash-$arch.img) bytes, $(du -h $W/flash-$arch.img | cut -f1) allocated)"; sgdisk -p $W/flash-$arch.img | sed -n '/Number/,$p'
-    chk "flash-$arch: sgdisk -v clean and only the kept partitions" bash -c "sgdisk -v $W/flash-$arch.img 2>&1 | grep -q 'No problems found' && ! sgdisk -p $W/flash-$arch.img | grep -Eq 'ROOT_B|DATA'"
+    echo "--- flash layout $arch ($(stat -c %s $W/flash-$arch.img) bytes, $(du -h $W/flash-$arch.img | cut -f1) allocated)"
+    if [ "$arch" = arm64 ]; then sfdisk -d $W/flash-$arch.img; else sgdisk -p $W/flash-$arch.img | sed -n '/Number/,$p'; fi
+    if [ "$arch" = arm64 ]; then
+        chk "flash-$arch: sfdisk -V clean, two partitions, no pending type" dos_flash_ok $W/flash-$arch.img
+    else
+        chk "flash-$arch: sgdisk -v clean and only the kept partitions" bash -c "sgdisk -v $W/flash-$arch.img 2>&1 | grep -q 'No problems found' && ! sgdisk -p $W/flash-$arch.img | grep -Eq 'ROOT_B|DATA'"
+    fi
     layout_scenario "$arch-layout-20G" $arch 20G
     layout_scenario "$arch-layout-2G-more" $arch $(( $(stat -c %s $W/flash-$arch.img) / 1048576 + 5400 ))M
 done

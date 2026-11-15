@@ -33,12 +33,13 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 ### Raspberry Pi (arm64, `backend=rpi`)
 
+- Partition table: MBR (DOS) on every Raspberry Pi model, primaries only: FIRMWARE (type `c`) is partition 1, ROOT_A 2, ROOT_B 3, DATA 4 ([storage](storage-and-persistence.md#layout)).
 - FIRMWARE (FAT): `config.txt`, shared firmware, `slota/` and `slotb/` (`kernel8.img`, `initramfs8`, `cmdline.txt`, dtbs, overlays), resident fallback `recovery8.img`, `recovery-initrd.img`, top-level `*.dtb`, `recovery.sha256`, `unitotem-ota.*`.
 - Default: `config.txt` `os_prefix=slota/` (or `slotb/`).
 - Trial: `tryboot.txt` holds the other slot's `os_prefix`; read by the firmware only on a reboot with `systemctl reboot --reboot-argument="0 tryboot"`. A plain reboot or power cut returns to the `config.txt` slot.
 - Promotion: `config.txt` rewritten from `tryboot.txt` with the new `os_prefix`; `tryboot.txt` removed.
 - Resident fallback: `config.txt` without `os_prefix` loads `recovery8.img` with `unitotem.ota=1`.
-- Requires the EEPROM bootloader (`/proc/device-tree/chosen/bootloader`); else `backend-unsupported`. Pi 3 and Zero 2 get no A/B.
+- Requires the EEPROM bootloader (`/proc/device-tree/chosen/bootloader`); else the slot-switch commands exit `backend-unsupported`. Pi 3 and Zero 2 have no EEPROM bootloader: their disk has the A/B layout (flash image, first boot), but `unitotem-update` refuses every slot-switch command, so no update runs on them. Their trial reboot (`0 tryboot`) is not honoured by their firmware; see [deploy-and-recovery](deploy-and-recovery.md).
 
 ### PC (amd64, UEFI or BIOS, `backend=grub`)
 

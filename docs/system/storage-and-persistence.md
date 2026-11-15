@@ -10,8 +10,8 @@ Immutable Debian root on two A/B slots (ROOT_A, ROOT_B). Mutable state lives on 
 |---|---|
 | `unitotem/common.sh` | `AB_LAYOUT`, `ROOT_SLOT_SIZE` 5G, `IMAGE_SIZE` 14G, `EFI_SIZE`, `FIRMWARE_SIZE` 512M |
 | `unitotem/stage3-image.sh` | Partition table, `mkfs`, baseline, final fsck, flash image |
-| `unitotem/make-flash-image.sh` | Full image -> flash image (boot partition(s) + ROOT_A only) |
-| `tools/release/test_grow_data.sh` | Container test of `layout_complete` and `grow_data` (privileged Docker) |
+| `unitotem/make-flash-image.sh` | Full image -> flash image (boot partition(s) + ROOT_A only): DOS table on arm64, GPT on amd64 |
+| `tools/release/test_grow_data.sh` | Container test of `layout_complete` and `grow_data`, GPT and DOS (privileged Docker) |
 | `tools/release/test_first_boot_layout.sh` | QEMU test of a built flash image (UEFI and BIOS) |
 | `unitotem/stage2-configure.sh` | fstab; A/B drops `LABEL=ROOT /` and `LABEL=BOOT`; installs overlay hook; cmdline `ro` |
 | `unitotem/files/fstab-arm64`, `fstab-amd64` | Boot FAT `ro,nofail`; tmpfs `/tmp`, `/run`, `/var/cache`, `/var/tmp` |
@@ -40,10 +40,26 @@ A/B (`AB_LAYOUT=1`):
 
 amd64 A/B has no BOOT partition: each slot carries its kernel and initrd in `/boot`; GRUB lives on the ESP. Single-root (`AB_LAYOUT=0`): arm64 FIRMWARE, ROOT, DATA; amd64 EFI, BOOT, ROOT, DATA, BIOS; overlay suffix empty. Slot size is fixed: changing it means repartitioning and moving DATA.
 
+Partition table (by image and target):
+
+| Input | Table on the disk |
+|---|---|
+| Full image, amd64 | GPT (as built) |
+| Full image, arm64, `write-sd.sh` | GPT, copied as is |
+| Full image, arm64, network deploy | MBR, converted by `remote-deploy.sh` for every Raspberry Pi; not written when DATA is kept (a GPT disk stays GPT) |
+| Flash image, arm64 | MBR (`make-flash-image.sh`) |
+| Flash image, amd64 | GPT |
+
+- The build writes GPT on both architectures (`sgdisk` on amd64, `parted mklabel gpt` on arm64). The release assets and the `unitotem-release` input stay GPT by design (`unitotem-release` reads them with `sgdisk -i`); the payload is partition bytes only, valid on any table.
+- GRUB `part_gpt` (`grub-ab-entries`, `grub-ota-entry`) is amd64 only; the updater finds slots by PARTLABEL on GPT and by filesystem label on MBR ([ab-updates](ab-updates.md#slot-devices-and-repair-writes)).
+
 Images:
 
 - Full image (`unitotem-<date>-<arch>.img.xz`, 14 GiB): the layout above. Source of the network deploy (`remote-deploy.sh` reads it in place), the release assets and `build-ab`.
-- Flash image (`unitotem-<date>-<arch>-flash.img.xz`, A/B only, ~5.6 GiB): written to a card or disk with Imager or `dd`. `unitotem/make-flash-image.sh` builds it from the full image: fresh GPT (same disk GUID) with every partition except ROOT_B and DATA (same numbers, GUIDs, names, attributes, start sectors; bytes copied unchanged; on amd64 the MBR boot code too), then 1 MiB. Checked at build: `sgdisk -v`, sha256 of every kept partition, fsck of boot and ROOT_A.
+- Flash image (`unitotem-<date>-<arch>-flash.img.xz`, A/B only, ~5.6 GiB): written to a card or disk with Imager or `dd`. `unitotem/make-flash-image.sh` builds it from the full image, with every partition except ROOT_B and DATA, bytes copied unchanged, then 1 MiB:
+  - arm64: DOS table, label-id = first 8 hex digits of the disk GUID, FIRMWARE type `c` bootable as partition 1, ROOT_A type `83` as partition 2, same start sectors and sizes. No boot code copy.
+  - amd64: fresh GPT with the same disk GUID, partition GUIDs, names, attributes and start sectors; the MBR boot code is copied.
+  Checked at build: arm64 `sfdisk -V` and `sfdisk -d` (type, label-id, start, size, bootable); amd64 `sgdisk -v`; sha256 of every kept partition; fsck of every kept partition.
 - The BIOS-boot partition (amd64) sits at sectors 34-2047, before partition 1, so it is part of the flash image and never in the way of the space that is cut off.
 
 First boot of a flash image and of any image on a larger disk (initramfs init-bottom, `overlayfs-hook.sh`, before and after the DATA lookup; the OTA fallback and the resident recovery initrd do not carry the hook). Each decision is derived from the disk on every boot, no flag file; any failure logs one line and the boot continues.
@@ -60,11 +76,10 @@ First boot of a flash image and of any image on a larger disk (initramfs init-bo
      - Formatting: DATA first, then ROOT_B (`mke2fs -t ext4 -L <label>`), each followed by its type change to `83`.
      - Power cuts: before the table write nothing changed. After it, the next boot finds `da`/`db` and formats them. A cut after `mke2fs` and before the type change leaves a flagged, empty filesystem that the next boot formats again. Known residual: if the type change fails after DATA was formatted and used, the next boot formats DATA again.
      - Slot devices on MBR are found by filesystem label: `slot_dev` in `unitotem-update`, rules in [ab-updates](ab-updates.md#slot-devices-and-repair-writes).
-     - Still GPT-only: `grow_data` (logs one line and skips DOS), `tools/release/unitotem-release` (`sgdisk -i`), GRUB `part_gpt` in `grub-ab-entries` and `grub-ota-entry`. Full A/B on a DOS disk (Pi 3) also needs a one-shot trial without tryboot, a release build for MBR, and DATA growth on DOS.
-2. `grow_data` (DATA found, `e2fsck -p` done, not mounted): acts when the disk is GPT, DATA is ext4 and the last partition by start sector, and at least 64 MiB are free after it.
-   - `sgdisk -e`; `sfdisk -N 4` (`--wipe never --wipe-partitions never`: sfdisk otherwise wipes the filesystem signature of the resized partition) rewrites only the DATA entry (type, GUID, name, attributes kept) in one table write; `sgdisk -v` must be clean; `partx -u --nr 4` updates the kernel size of DATA only.
+2. `grow_data` (DATA found, `e2fsck -p` done, not mounted): acts when the disk is GPT or DOS, DATA is ext4 and the last partition by start sector, and at least 64 MiB are free after it. DOS: DATA is a primary (1-4); the free space is the disk size minus the end of DATA (no backup table); `sgdisk` is not called.
+   - GPT: `sgdisk -e`. `sfdisk -N 4` (`--wipe never --wipe-partitions never`: sfdisk otherwise wipes the filesystem signature of the resized partition) rewrites only the DATA entry (type, GUID or label-id, name or flags kept) in one table write; GPT: `sgdisk -v` must be clean; `partx -u --nr 4` updates the kernel size of DATA only.
    - Then, if the filesystem is at least 32 MiB smaller than the partition: (a) `e2fsck -fp`. Exit 0 or 1: go to (b). Exit >1 (a cut inside `resize2fs` can leave "Resize inode not valid": reproduced by SIGKILL between 0.085 and 0.105 s of the ~0.18 s offline `resize2fs` on a 400 GB disk, hit in 38 of 55 runs in that window; exit 4 "UNEXPECTED INCONSISTENCY", dumpe2fs state "clean with errors") while the filesystem is smaller than its partition (a growth is pending; never when it already fills the partition): ONE `e2fsck -fy` runs, logs "grow: repaired DATA after an interrupted resize", and must return <=1 (measured: exit 1, then `-fn` clean, second `-fy` exit 0, file checksums unchanged, `resize2fs` completes, 12 of 12 copies); then (b). Any other case: one warning, the boot continues with the filesystem unchanged. (b) Offline `resize2fs`. A cut after the table write is finished by the next boot (the filesystem is smaller than its partition).
-   - Skipped with one log line: not ext4, not GPT, DATA not last. Skipped silently: less than 64 MiB free (also the case of an image on a disk of its own size), nothing to grow.
+   - Skipped with one log line: not ext4, neither GPT nor DOS, DATA not last, logical DATA (DOS partition 5 or above). Skipped silently: less than 64 MiB free (also the case of an image on a disk of its own size), nothing to grow.
    - Measured (privileged container, sparse loop disk, ROOT_A mounted from the same disk): 400 GB disk, DATA 3 GiB -> ~400 GB: whole `grow_data` 1.2 s offline (`resize2fs` alone online 0.18 s, so offline costs nothing noticeable; offline also has no reserved-GDT limit); `layout_complete` on 400 GB (ROOT_B 5 GiB + DATA ~395 GB, lazy inode tables) 4.3 s; on 20 GB 4.2 s.
    - The kernel accepts the changes with the root partition of the same disk mounted: `partx -u/-a` use the BLKPG calls for the named partition only.
    - Minimum disk for the layout: flash image (~5.6 GiB) + 5.25 GiB. Below that `layout_complete` logs one line and nothing is created.
@@ -170,5 +185,6 @@ State in `DATA/unitotem/update/`: `slots.json` (`{slot: {version, valid, prepare
 - `unitotem/verify-image.sh <rootfs> <arch> <ab>`: fstab, persist list, overlay hook; run by stage 3.
 - `work/loopback-test/run-ab.sh <parts dir>` (env `ARCH`): A/B deploy in a privileged container.
 - `work/loopback-test/powercut-ab.sh`: QEMU power cuts at crashpoints (`testing.md`).
-- `tools/release/test_grow_data.sh [--big]` (privileged Docker, loop devices inside the container only): builds the stage3 layouts of both architectures, writes them to larger disks and runs `layout_complete` and `grow_data` under `dash` with the root partition mounted; also flash-image creation, no-op and interruption cases (including the `resize2fs` kill with `e2fsck -fy` repair), `--big` adds the 400 GB timings.
+- `tools/release/test_grow_data.sh [--big]` (privileged Docker, loop devices inside the container only): builds the stage3 layouts of both architectures, writes them to larger disks and runs `layout_complete` and `grow_data` under `dash` with the root partition mounted; also flash-image creation, no-op and interruption cases (including the `resize2fs` kill with `e2fsck -fy` repair), DOS cases (32 GB and 15 GB grow, image size, less than 64 MiB free, vfat DATA, partition after DATA, logical DATA), `--big` adds the 400 GB timings.
+- `tools/release/test_make_flash_image.sh` (privileged Docker, loop devices inside the container only): arm64 flash image is DOS (type, label-id, start, size, bootable, bytes), `layout_mbr` completes it to four primaries, amd64 stays GPT: 30 checks.
 - `tools/release/test_first_boot_layout.sh FLASH_IMG [uefi|bios|both]`: boots a built flash image in QEMU on a 20 GiB disk and checks ROOT_B, DATA, the mount and the repair over ssh.

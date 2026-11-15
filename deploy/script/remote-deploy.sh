@@ -318,7 +318,7 @@ REMOTE_EOF
         # use rpi-legacy: a direct config.txt swap protected by the initramfs checks and the boot counter.
         TRYBOOT_CAPABLE="${P[TRYBOOT]:-0}"
         # Pi 3 and Zero 2 have no EEPROM bootloader and no firmware tryboot: their one-shot trial is implemented in the system, so the deploy treats
-        # them as capable. Their ROM reads an MBR only: the table of the image is converted (image_table_dos in load_image).
+        # them as capable. Every Raspberry Pi gets the MBR table of the image (image_table_dos in load_image); Pi 3 / Zero 2 need it (ROM).
         PI3=0
         if echo "${P[MODEL]}" | grep -qiE "raspberry pi (3|.*zero 2)"; then PI3=1; TRYBOOT_CAPABLE=1; fi
     elif [ "${P[EFI]}" = 1 ]; then
@@ -333,9 +333,10 @@ print_probe() {
     if [ "${FIRMWARE}" = rpi ]; then
         local tb_why="EEPROM bootloader without tryboot support (or absent: Pi 3/Zero 2)"
         [ "${TRYBOOT_CAPABLE}" = 1 ] && tb_why="detected via device tree, SoC ${P[SOC]:-n/a}"
-        [ "${PI3:-0}" = 1 ] && tb_why="Raspberry Pi 3 / Zero 2: trial boot implemented in the system, MBR table"
+        [ "${PI3:-0}" = 1 ] && tb_why="Raspberry Pi 3 / Zero 2: trial boot implemented in the system"
         echo "Firmware                     : ${FIRMWARE}  (tryboot: ${TRYBOOT_CAPABLE} - ${tb_why})"
         echo "Trial boot mode              : $([ "${TRYBOOT_CAPABLE}" = 1 ] && echo 'rpi-tryboot (firmware-level protection)' || echo 'rpi-legacy (config.txt swap + boot counter)')"
+        echo "Partition table              : MBR (written at deploy)"
     else
         echo "Firmware                     : ${FIRMWARE}  (tryboot: ${TRYBOOT_CAPABLE})"
     fi
@@ -901,10 +902,10 @@ load_image() {
     IMG_DESC=$(mktemp -d "${IMG_TMPFS}/unitotem-desc.XXXXXX")
     log "Reading the partitions of $(basename "$OPT_IMAGE")..."
     image_describe "$IMG_DESC" "$ARCH" || die "cannot read the partitions of ${OPT_IMAGE}"
-    # The Pi 3 ROM does not read GPT: the same partitions, written as an MBR (primaries; FAT type c for the firmware, 83 for the rest).
-    if [ "${PI3:-0}" = 1 ]; then
+    # Every Raspberry Pi gets an MBR: the same partitions (primaries; FAT type c for the firmware, 83 for the rest). The Pi 3 ROM needs it.
+    if [ "$ARCH" = arm64 ] && [ "$FIRMWARE" = rpi ]; then
         image_table_dos "$IMG_DESC" || die "cannot convert the partition table of ${OPT_IMAGE} to MBR"
-        log "Target is a ${P[MODEL]:-Raspberry Pi 3 / Zero 2}: the partition table is written as MBR."
+        log "Target is a ${P[MODEL]:-unknown Raspberry Pi}: the partition table is written as MBR."
     fi
 
     P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${IMG_DESC}/parts.manifest")

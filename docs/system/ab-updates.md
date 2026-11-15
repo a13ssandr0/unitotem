@@ -58,7 +58,7 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
 3. Two or more with the label: on the disk of the running root, A is the lowest partition number and B the highest. No candidate on that disk: not found.
 4. Neutral (`ROOT_NEW`) or blank label: the partition next to the other slot (B: +1, A: -1). Refused when it is the running root, labelled `DATA`, `FIRMWARE`, `EFI` or `BOOT`, or not ext4 or empty.
 
-Sysfs is `/sys/class/block`; `UNITOTEM_SYS_BLOCK` overrides it (tests). MBR disks have no partition names, so rules 2 to 4 apply there.
+Sysfs is `/sys/class/block`; `UNITOTEM_SYS_BLOCK` overrides it (tests). MBR disks (every Raspberry Pi whose table the deploy wrote) have no partition names, so rules 2 to 4 apply there.
 
 Repair writes go through `clone_into_slot`:
 
