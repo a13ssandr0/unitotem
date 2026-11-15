@@ -62,7 +62,7 @@ bytes_human() {
 # OTA_PASSWORD: the login password of the ADOPTED system (not the fallback's).
 OTA_PASSWORD="${OTA_PASSWORD:-unitotem}"
 # OTA fallback credentials (port 2222). Read from the environment only, never defaulted, never on a command line:
-#   OTA_FALLBACK_KEY=PATH       private key; default: the per-target key (ota_key_path) when it exists
+#   OTA_FALLBACK_KEY=PATH       private key; default: ~/.ssh/id_ed25519 of the operator
 #   (remote-deploy.sh deploy finds the login by itself, ota_auth_resolve; the variables below are for the other tools)
 #   OTA_FALLBACK_USER=NAME      login user of the fallback (default root)
 #   OTA_FALLBACK_PASSWORD=...   password, used when no key is available
@@ -204,28 +204,12 @@ OTA_SSH_OPTS=(-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountM
 # without it (the identity files of the user's home are still tried).
 if [ -n "${SUDO_UID:-}" ]; then SSH_OPTS+=(-F /dev/null); SCP_OPTS+=(-F /dev/null); OTA_SSH_OPTS+=(-F /dev/null); fi
 
-# Per-target key of the OTA fallback, kept in the operator's state directory (never in the repository). The
-# fallback accepts it once its public line is armed (unitotem-ota-arm --authkey-file, or the kernel cmdline).
-ota_key_path() {
-    local host="$1"
-    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || die "invalid host name for the OTA key: '${host}'"
-    echo "${XDG_STATE_HOME:-$HOME/.local/state}/unitotem-deploy/${host//:/_}/id_ed25519"
-}
-
-# Creates the per-target key when missing (ed25519, no passphrase) and returns its private key path.
-ota_key_ensure() {
-    local host="$1" key dir
-    key=$(ota_key_path "$host") || die "invalid OTA host '${host}'"
-    dir=$(dirname "$key")
-    ( umask 077 && mkdir -p -m 0700 "$dir" ) || die "cannot create ${dir}"
-    chmod 0700 "$dir" || die "cannot chmod 0700 ${dir}"
-    if [ ! -f "$key" ]; then
-        ( umask 077 && ssh-keygen -q -t ed25519 -N '' -C unitotem-deploy -f "$key" </dev/null ) \
-            || die "ssh-keygen failed for ${key}"
-    elif [ ! -f "$key.pub" ]; then
-        ( umask 077 && ssh-keygen -y -f "$key" > "$key.pub" ) || die "cannot derive ${key}.pub"
-    fi
-    chmod 0600 "$key" || die "cannot chmod 0600 ${key}"
+# The key of the operator: ~/.ssh/id_ed25519, the one ssh uses. The fallback is armed with its public line and logged in with it; no other key
+# is made, so a target never depends on a key that only exists in a state directory.
+ota_user_key() {
+    local key="${HOME}/.ssh/id_ed25519"
+    [ -f "$key" ] || die "no ssh key ${key}: create it with  ssh-keygen -t ed25519  and run this again"
+    [ -f "$key.pub" ] || die "no public key ${key}.pub: derive it with  ssh-keygen -y -f ${key} > ${key}.pub"
     echo "$key"
 }
 
@@ -240,11 +224,10 @@ ota_key_publine() {
     echo "$line"
 }
 
-# Chooses the key the fallback is armed with for HOST and sets OTA_ARM_KEY (private key path) and
-# OTA_FALLBACK_KEY, so ota_ssh uses the same key at any address the fallback is found at (discover_fallback).
-# Call WITHOUT command substitution: the globals must reach the caller. OTA_FALLBACK_KEY set by the user wins.
+# Chooses the key the fallback is armed with and sets OTA_ARM_KEY (private key path) and OTA_FALLBACK_KEY, so ota_ssh uses the same key at
+# any address the fallback is found at (discover_fallback). Call WITHOUT command substitution: the globals must reach the caller.
+# OTA_FALLBACK_KEY set by the caller wins (the Windows installer passes its own).
 ota_arm_key() {
-    local host="$1"
     if [ -n "${OTA_FALLBACK_KEY:-}" ]; then
         [ -f "$OTA_FALLBACK_KEY" ] || die "OTA_FALLBACK_KEY not found: ${OTA_FALLBACK_KEY}"
         if [ ! -f "$OTA_FALLBACK_KEY.pub" ]; then
@@ -252,16 +235,14 @@ ota_arm_key() {
                 || die "cannot derive ${OTA_FALLBACK_KEY}.pub"
         fi
     else
-        local key
-        key=$(ota_key_ensure "$host") || die "cannot prepare the OTA key for ${host}"
-        OTA_FALLBACK_KEY="$key"
+        OTA_FALLBACK_KEY=$(ota_user_key)
     fi
     OTA_ARM_KEY="$OTA_FALLBACK_KEY"
 }
 
 # Finds how to log in to the fallback of HOST, the way ssh does, and remembers it for ota_auth_for: the keys first (OTA_FALLBACK_KEY, the
-# per-target key, the identity files of the user's ~/.ssh, then the ssh agent), then the open fallback (an empty password, root only), then a
-# password asked on the terminal for USER (asked too when no USER was given: root takes keys only). Call WITHOUT command substitution: the
+# key of the user, ~/.ssh/id_ed25519, then the ssh agent), then the open fallback (an empty password, root only), then a password asked on the
+# terminal for USER (the login is asked too when no USER was given). Call WITHOUT command substitution: the
 # result is in OTA_RESOLVED_{HOST,USER,MODE,KEY,PW}. Returns 1 when nothing works.
 OTA_RESOLVED_HOST="" OTA_RESOLVED_USER="" OTA_RESOLVED_MODE="" OTA_RESOLVED_KEY="" OTA_RESOLVED_PW=""
 _ota_try() {   # USER HOST then ssh options: 0 when the login works
@@ -278,12 +259,7 @@ ota_auth_resolve() {
     u=${user:-root}
     OTA_RESOLVED_HOST="" OTA_RESOLVED_USER="" OTA_RESOLVED_MODE="" OTA_RESOLVED_KEY="" OTA_RESOLVED_PW=""
     [ -z "${OTA_FALLBACK_KEY:-}" ] || keys+=("$OTA_FALLBACK_KEY")
-    key=$(ota_key_path "$host" 2>/dev/null) && [ -f "$key" ] && keys+=("$key")
-    for key in "${HOME}"/.ssh/id_*; do
-        case "$key" in *.pub) continue ;; esac
-        [ -f "$key" ] || continue
-        [[ " ${keys[*]} " == *" $key "* ]] || keys+=("$key")
-    done
+    [ ! -f "${HOME}/.ssh/id_ed25519" ] || [[ " ${keys[*]:-} " == *" ${HOME}/.ssh/id_ed25519 "* ]] || keys+=("${HOME}/.ssh/id_ed25519")
     for key in "${keys[@]}"; do
         if _ota_try "$u" "$host" -o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o IdentitiesOnly=yes -i "$key"; then
             OTA_RESOLVED_HOST="$host" OTA_RESOLVED_USER="$u" OTA_RESOLVED_MODE=key OTA_RESOLVED_KEY="$key"; return 0
@@ -295,14 +271,14 @@ ota_auth_resolve() {
     if [ "$u" = root ] && _ota_try_password root "$host" ""; then
         OTA_RESOLVED_HOST="$host" OTA_RESOLVED_USER=root OTA_RESOLVED_MODE=open; return 0
     fi
-    # a password: only from a person at a terminal, read the way ssh reads it (not echoed)
+    # a password: only from a person at a terminal, read the way ssh reads it (not echoed); root may accept one too
     if [ -r /dev/tty ] && : < /dev/tty 2>/dev/null; then tty_in=/dev/tty; elif [ ! -t 0 ]; then return 1; fi
     if [ -z "$user" ]; then
-        printf 'Administrator of %s: ' "$host" >&2; IFS= read -r user < "$tty_in" || return 1
+        printf 'Login of %s [root]: ' "$host" >&2; IFS= read -r user < "$tty_in" || return 1
+        user=${user:-root}
         [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "invalid user name" >&2; return 1; }
         u=$user
     fi
-    [ "$u" != root ] || { echo "root takes keys only on the fallback of ${host}: no key of yours is accepted" >&2; return 1; }
     for tries in 1 2 3; do
         printf '%s@%s password: ' "$u" "$host" >&2; IFS= read -rs pw < "$tty_in" || return 1; echo >&2
         if _ota_try_password "$u" "$host" "$pw"; then
@@ -314,7 +290,7 @@ ota_auth_resolve() {
 }
 
 # Selects the credentials for HOST and sets OTA_AUTH_MODE (key|open|password), OTA_AUTH_OPTS (ssh options)
-# and OTA_AUTH_TARGET (user@host). Order: OTA_FALLBACK_KEY, the per-target key of HOST, OTA_FALLBACK_OPEN=1,
+# and OTA_AUTH_TARGET (user@host). Order: OTA_FALLBACK_KEY, ~/.ssh/id_ed25519, OTA_FALLBACK_OPEN=1,
 # OTA_FALLBACK_PASSWORD. Dies when none is set.
 ota_auth_for() {
     local host="$1" key="" user="${OTA_FALLBACK_USER:-root}"
@@ -332,8 +308,8 @@ ota_auth_for() {
     if [ -n "${OTA_FALLBACK_KEY:-}" ]; then
         [ -f "$OTA_FALLBACK_KEY" ] || die "OTA_FALLBACK_KEY not found: ${OTA_FALLBACK_KEY}"
         key="$OTA_FALLBACK_KEY"
-    else
-        key=$(ota_key_path "$host") || die "invalid OTA host '${host}'"
+    elif [ -f "${HOME}/.ssh/id_ed25519" ]; then
+        key="${HOME}/.ssh/id_ed25519"
     fi
     if [ -n "$key" ] && [ -f "$key" ]; then
         OTA_AUTH_MODE=key

@@ -119,7 +119,7 @@ def ensure_admin(host, port, user, password, fp):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    p.add_argument('--archive', required=True)
+    p.add_argument('--archive', help='without it only the administrator is created')
     p.add_argument('--host', required=True)
     p.add_argument('--port', type=int, default=443)
     p.add_argument('--admin-user', required=True)
@@ -133,12 +133,14 @@ def main(argv=None):
         if not password:
             raise Failure('empty password')
         with tempfile.TemporaryDirectory(prefix='unitotem-migrate-') as tmp:
+            fp = fingerprint(args.host, args.port)
+            ensure_admin(args.host, args.port, args.admin_user, password, fp)
+            if not args.archive:
+                return 0
             root, source = Path(tmp, 'root'), Path(tmp, 'source')
             root.mkdir()
             extract(args.archive, root)
             name = build_source(root, source, args.timezone)
-            fp = fingerprint(args.host, args.port)
-            ensure_admin(args.host, args.port, args.admin_user, password, fp)
             os.environ.update(UNITOTEM_URL='https://%s:%d' % (args.host, args.port), UNITOTEM_USER=args.admin_user,
                               UNITOTEM_PASSWORD_FILE=args.admin_password_file)
             cmd = ['--source', str(source), '--fingerprint', fp, '--playlist', args.playlist or name]

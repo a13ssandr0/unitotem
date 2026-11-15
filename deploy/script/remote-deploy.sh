@@ -979,28 +979,73 @@ post_deploy_probe() {
     return 1
 }
 
-# Migration of the settings of the earlier system: the archive written by backup_legacy_system is the only input; migrate-legacy.py (beside this script) creates the
-# first administrator (when the new system has none) and imports settings, media, hostname, time zone and the marked crontab lines as they were.
-migrate_legacy() {
-    local ip="$1"
-    [ -n "${LEGACY_ARCHIVE:-}" ] || return 0
-    # The first administrator of the new system is USER (the name in USER@HOST, "admin" without one): its password is typed here, like ssh.
-    local admin="${TARGET_USER:-admin}" pw pw2 pwfile tty_in=/dev/stdin
-    if [ -r /dev/tty ] && : < /dev/tty 2>/dev/null; then tty_in=/dev/tty; elif [ ! -t 0 ]; then
-        warn "the settings of the earlier system are in ${LEGACY_ARCHIVE}; there is no terminal to ask the password of the new administrator: run migrate-legacy.py later"
-        return 0
+# The administrator of the new system, asked before anything is written: name, password (twice) and whether the public key of the user is copied
+# to it. Enter at the name leaves the account to the setup page. Without a terminal nothing is asked.
+ADMIN_NAME="" ADMIN_PW="" ADMIN_COPY_KEY=0
+ask_admin() {
+    local tty_in pw2 a
+    if [ -r /dev/tty ] && : < /dev/tty 2>/dev/null; then tty_in=/dev/tty; else log "No terminal: the administrator is created on the setup page of the new system."; return 0; fi
+    echo "Administrator account of the new UniTotem (used for the web page and ssh; created when the system has none)." >&2
+    while :; do
+        printf 'Name (Enter: create it later on the setup page): ' >&2; IFS= read -r ADMIN_NAME < "$tty_in" || { ADMIN_NAME=""; return 0; }
+        [ -n "$ADMIN_NAME" ] || return 0
+        [[ "$ADMIN_NAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && [ "$ADMIN_NAME" != root ] && break
+        echo "invalid name: lowercase letters, digits, - and _, not root" >&2
+    done
+    while :; do
+        printf 'Password: ' >&2; IFS= read -rs ADMIN_PW < "$tty_in" || { ADMIN_NAME=""; return 0; }; echo >&2
+        printf 'Again: ' >&2; IFS= read -rs pw2 < "$tty_in" || { ADMIN_NAME=""; return 0; }; echo >&2
+        [ -n "$ADMIN_PW" ] && [ "$ADMIN_PW" = "$pw2" ] && break
+        echo "the passwords differ or are empty" >&2
+    done
+    if [ -f "${HOME}/.ssh/id_ed25519.pub" ]; then
+        printf 'Copy your ssh key (%s) to %s? [y/N] ' "${HOME}/.ssh/id_ed25519.pub" "$ADMIN_NAME" >&2; IFS= read -r a < "$tty_in" || a=n
+        case "$a" in [yY]*) ADMIN_COPY_KEY=1 ;; esac
+    else
+        echo "No ssh key ${HOME}/.ssh/id_ed25519: create it with  ssh-keygen -t ed25519  to log in without a password." >&2
     fi
-    printf 'Password of the new administrator %s: ' "$admin" >&2; IFS= read -rs pw < "$tty_in" || return 0; echo >&2
-    printf 'Again: ' >&2; IFS= read -rs pw2 < "$tty_in" || return 0; echo >&2
-    [ "$pw" = "$pw2" ] && [ -n "$pw" ] || { warn "the passwords differ or are empty: the settings stay in ${LEGACY_ARCHIVE}, run migrate-legacy.py later"; return 0; }
-    pwfile=$(mktemp "${IMG_TMPFS}/unitotem-pw.XXXXXX"); printf '%s\n' "$pw" > "$pwfile"
-    local args=(--archive "$LEGACY_ARCHIVE" --host "$ip" --admin-user "$admin" --admin-password-file "$pwfile")
-    [ -z "$OPT_TIMEZONE" ] || args+=(--timezone "$OPT_TIMEZONE")
-    log "Migrating the settings of the earlier system to ${ip}..."
+}
+
+# Waits up to 10 minutes for the new system to answer on HTTPS; returns 1 when it does not.
+wait_new_system() {
+    local ip="$1" waited=0 answer
+    log "Waiting for ${ip} to answer on the new system (up to 10 minutes)..."
+    sleep 30
+    while ! answer=$(post_deploy_probe "$ip"); do
+        sleep 10; waited=$((waited + 10))
+        [ "$waited" -lt 600 ] || { warn "${ip} did not answer on the new system within 10 minutes - check manually (it may still be in stage 2, or waiting in the fallback)"; return 1; }
+    done
+    log "Deploy complete: ${ip} answers on the new system (HTTPS /login: ${answer})."
+}
+
+# Creates the administrator asked for, imports the settings of the earlier system (migrate-legacy.py, which also creates the administrator when
+# the archive is given) and copies the public key of the user to the administrator's authorized_keys.
+finish_admin() {
+    local ip="$1" pwfile
+    [ -n "$ADMIN_NAME" ] || { [ -z "${LEGACY_ARCHIVE:-}" ] || warn "the settings of the earlier system are in ${LEGACY_ARCHIVE}: run migrate-legacy.py to import them"; return 0; }
+    pwfile=$(mktemp "${IMG_TMPFS}/unitotem-pw.XXXXXX"); printf '%s\n' "$ADMIN_PW" > "$pwfile"
+    local args=(--host "$ip" --admin-user "$ADMIN_NAME" --admin-password-file "$pwfile")
+    if [ -n "${LEGACY_ARCHIVE:-}" ]; then
+        args+=(--archive "$LEGACY_ARCHIVE")
+        [ -z "$OPT_TIMEZONE" ] || args+=(--timezone "$OPT_TIMEZONE")
+        log "Migrating the settings of the earlier system to ${ip}..."
+    else
+        log "Creating the administrator ${ADMIN_NAME} on ${ip}..."
+    fi
     python3 -I "${HERE}/migrate-legacy.py" "${args[@]}" \
-        && log "Settings migrated and verified." \
-        || warn "the migration failed: the settings are intact in ${LEGACY_ARCHIVE}; run migrate-legacy.py again"
+        && log "Administrator ready${LEGACY_ARCHIVE:+, settings migrated and verified}." \
+        || warn "the administrator or the migration failed${LEGACY_ARCHIVE:+: the settings are intact in ${LEGACY_ARCHIVE}}; run migrate-legacy.py again"
     rm -f -- "$pwfile"
+    if [ "$ADMIN_COPY_KEY" = 1 ]; then
+        local pub; pub=$(ota_key_publine "${HOME}/.ssh/id_ed25519") || return 0
+        if printf '%s\n' "$pub" | SSHPASS="$ADMIN_PW" SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS sshpass -e ssh "${SSH_OPTS[@]}" \
+            -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+            "${ADMIN_NAME}@${ip}" 'umask 077; mkdir -p ~/.ssh; read -r k; grep -qxF "$k" ~/.ssh/authorized_keys 2>/dev/null || printf "%s\n" "$k" >> ~/.ssh/authorized_keys' 2>/dev/null; then
+            log "Your ssh key is installed for ${ADMIN_NAME}@${ip}."
+        else
+            warn "could not copy your ssh key to ${ADMIN_NAME}@${ip}"
+        fi
+    fi
 }
 
 # The A/B layout on a Raspberry Pi 4/5 needs tryboot, which the running VideoCore firmware announces (probe: TRYBOOT) and an old one does not.
@@ -1073,8 +1118,8 @@ deploy_from_system() {
     backup_running_system
     backup_legacy_system
 
-    # The fallback accepts only this key (armed below); the private key stays on this machine.
-    ota_arm_key "$target_ip"
+    # The fallback accepts the key of the user (armed below); the private key stays on this machine.
+    ota_arm_key
     local arm_pub; arm_pub=$(ota_key_publine "$OTA_ARM_KEY") || die "cannot read the public key ${OTA_ARM_KEY}.pub"
 
     if [ "${P[HAVE_UNITOTEM]:-0}" = 1 ]; then
@@ -1108,15 +1153,9 @@ deploy_from_system() {
     fi
     run_ota_sequence "$target_ip" "$TARGET_DISK_BYID"
 
-    log "OTA sequence sent. Waiting for ${target_ip} to answer on the new system (up to 10 minutes)..."
-    local waited=0 answer
-    sleep 30
-    while ! answer=$(post_deploy_probe "$target_ip"); do
-        sleep 10; waited=$((waited + 10))
-        [ "$waited" -lt 600 ] || { warn "${target_ip} did not answer on the new system within 10 minutes - check manually (it may still be in stage 2, or waiting in the fallback)"; return 0; }
-    done
-    log "Deploy complete: ${target_ip} answers on the new system (HTTPS /login: ${answer})."
-    migrate_legacy "$target_ip"
+    log "OTA sequence sent."
+    wait_new_system "$target_ip" || return 0
+    finish_admin "$target_ip"
     return 0
 }
 
@@ -1240,6 +1279,7 @@ deploy_from_fallback() {
     [ -z "${P[NETADDR]:-}" ] || log "The installed system keeps the fixed address ${P[NETADDR]} (gateway ${P[NETGW]:-none}, DNS ${P[NETDNS]:-none})."
     run_ota_sequence "$host" "$disk"
     log "Recovery sequence sent: the target reboots into the restored system."
+    if [ -n "$ADMIN_NAME" ]; then wait_new_system "$host" && finish_admin "$host" || true; fi
 }
 
 # Is there a fallback (dropbear) answering on HOST:PORT?
@@ -1250,6 +1290,7 @@ ota_fallback_present() {
 cmd_deploy() {
     [ -n "$OPT_IMAGE" ] || die "--image FILE is required (the full A/B image of the target's architecture)"
     [ -f "$OPT_IMAGE" ] || die "image not found: ${OPT_IMAGE}"
+    ask_admin
     if ota_fallback_present "$TARGET_HOST" "$OTA_PORT"; then
         deploy_from_fallback
     else

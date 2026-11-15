@@ -50,7 +50,7 @@ A successful dropbear login stands down the idle watchdog.
 
 | State | When | Login |
 |---|---|---|
-| Key | an armed key is present: `unitotem.ota.authkey=<base64 ssh-ed25519>` on the command line, or `unitotem-ota.authorized_keys` on the boot partition, or `root/.ssh/authorized_keys` of the booted slot in DATA | `ssh -p 2222 root@host` with that key (`deploy` tries `OTA_FALLBACK_KEY`, the per-node key and `~/.ssh/id_*` by itself) |
+| Key | an armed key is present: `unitotem.ota.authkey=<base64 ssh-ed25519>` on the command line, or `unitotem-ota.authorized_keys` on the boot partition, or `root/.ssh/authorized_keys` of the booted slot in DATA | `ssh -p 2222 root@host` with that key (`deploy` tries `OTA_FALLBACK_KEY` and `~/.ssh/id_ed25519` by itself) |
 | Administrator | DATA holds administrators of group `sudo` (`upper/etc.<slot>/group` and `shadow`) | `ssh -p 2222 <admin>@host`: root shell with the administrator's password or key (`deploy <admin>@host` asks the password on the terminal); root itself takes keys only |
 | Open | no key and no administrator was found at all, DATA absent or unreadable included | `ssh -p 2222 root@host` with an empty password (`deploy` finds it by itself); dropbear runs with `-B`; this is the preboot card |
 | Closed | an administrator exists but its password is forgotten, and no key | no login: arm a key by writing `unitotem-ota.authorized_keys` on the boot partition from another machine, or reset the first access |

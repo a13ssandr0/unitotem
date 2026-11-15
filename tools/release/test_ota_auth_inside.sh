@@ -31,16 +31,14 @@ resolve_tty() {   # resolve_tty USER INPUT : the same on a pseudo terminal, INPU
 ssh-keygen -q -t ed25519 -N '' -f /root/.ssh/id_ed25519
 serve closed; cp /root/.ssh/id_ed25519.pub /root/.ssh/authorized_keys
 R=$(resolve); check "your key from ~/.ssh is found and used" bash -c "echo '$R' | grep -q 'rc=0 mode=key user=root key=/root/.ssh/id_ed25519'"
-# --- the key made for the node (state directory), none in ~/.ssh
 rm -f /root/.ssh/id_ed25519 /root/.ssh/id_ed25519.pub
-mkdir -p /root/.local/state/unitotem-deploy/127.0.0.1; ssh-keygen -q -t ed25519 -N '' -f /root/.local/state/unitotem-deploy/127.0.0.1/id_ed25519
-cp /root/.local/state/unitotem-deploy/127.0.0.1/id_ed25519.pub /root/.ssh/authorized_keys
-R=$(resolve); check "the key made when the node was armed is found" bash -c "echo '$R' | grep -q 'rc=0 mode=key.*unitotem-deploy/127.0.0.1/id_ed25519'"
+ssh-keygen -q -t ed25519 -N '' -f /root/.ssh/id_rsa_other; cp /root/.ssh/id_rsa_other.pub /root/.ssh/authorized_keys
+R=$(resolve); check "another key of ~/.ssh is not tried" bash -c "echo '$R' | grep -q 'rc=1'"
 # --- OTA_FALLBACK_KEY wins
 ssh-keygen -q -t ed25519 -N '' -f /tmp/explicit; cat /tmp/explicit.pub >> /root/.ssh/authorized_keys
 R=$(OTA_FALLBACK_KEY=/tmp/explicit resolve); check "OTA_FALLBACK_KEY is tried first" bash -c "echo '$R' | grep -q 'rc=0 mode=key.*key=/tmp/explicit'"
 # --- open: no key, empty root password
-rm -rf /root/.local/state/unitotem-deploy /root/.ssh/authorized_keys
+rm -f /root/.ssh/authorized_keys
 serve open
 R=$(resolve); check "an open fallback is detected: root with an empty password" bash -c "echo '$R' | grep -q 'rc=0 mode=open user=root'"
 # --- a closed fallback with an administrator: password from the terminal
@@ -49,5 +47,5 @@ R=$(resolve_tty admin 'secret\n'); check "the password of the administrator is a
 R=$(resolve_tty '' 'admin\nsecret\n'); check "with no user given the administrator is asked first, then the password" bash -c "echo '$R' | grep -q 'rc=0 mode=password user=admin'"
 R=$(resolve_tty admin 'bad\nbad\nbad\n'); check "three wrong passwords end in failure" bash -c "echo '$R' | grep -q 'rc=1'"
 R=$(resolve admin); check "no terminal and no key: no password is asked, the login fails" bash -c "echo '$R' | grep -q 'rc=1'"
-R=$(resolve_tty root 'x\n'); check "root explicitly: keys only, no password is asked" bash -c "echo '$R' | grep -q 'rc=1'"
+R=$(resolve_tty root 'x\nx\nx\n'); check "root explicitly: a password is asked and refused when wrong" bash -c "echo '$R' | grep -q 'rc=1'"
 echo "$ok passed, $fail failed"; [ "$fail" = 0 ]
