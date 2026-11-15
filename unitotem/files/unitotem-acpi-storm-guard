@@ -7,10 +7,19 @@
 #   UNITOTEM_ACPI_DIR=<dir>          the interrupts directory (default /sys/firmware/acpi/interrupts)
 #   UNITOTEM_ACPI_STORM_LIMIT=<n>    events per second (default 2000)
 #   UNITOTEM_ACPI_SAMPLE=<s>         sample length in seconds (default 1)
+#   UNITOTEM_ACPI_STATE=<file>       record of the storms (default /var/lib/unitotem/acpi-storms)
+#   UNITOTEM_BOOT_ID=<id>            boot id of the record (default /proc/sys/kernel/random/boot_id)
+#
+# Every storm found, masked or not, is recorded in the state file, one line per event:
+#   gpeNN <first> <last> <rate> <boots> <boot_id> <masked>
+# first, last: epoch seconds as the device clock said them; rate: highest events per second seen; boots: boots in which the event
+# was masked, counted once per boot; boot_id: boot of the last count; masked: 1 if the mask was written in that boot.
+# The file is written only when a storm is found. A record that cannot be written is logged; the masking is not affected.
 set -eu
 DIR=${UNITOTEM_ACPI_DIR:-/sys/firmware/acpi/interrupts}
 LIMIT=${UNITOTEM_ACPI_STORM_LIMIT:-2000}
 SAMPLE=${UNITOTEM_ACPI_SAMPLE:-1}
+STATE=${UNITOTEM_ACPI_STATE:-/var/lib/unitotem/acpi-storms}
 [ -d "$DIR" ] || exit 0
 case "$LIMIT$SAMPLE" in *[!0-9]*|"") echo "unitotem-acpi-storm-guard: invalid limit or sample" >&2; exit 1 ;; esac
 [ "$SAMPLE" -ge 1 ] || exit 1
@@ -23,16 +32,80 @@ snap() {   # "<count> <name>" for every general-purpose event (gpe00 .. gpeFF; g
         printf '%s %s\n' "$(awk '{print $1; exit}' "$f")" "${f##*/}"
     done
 }
+# record RUN: merges the storms of this run ("name rate masked" lines) into the state file, atomically
+record() {
+    now=$(date +%s) || return 1
+    [ -n "$now" ] || return 1
+    boot=${UNITOTEM_BOOT_ID:-}
+    [ -n "$boot" ] || boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+    case "$boot" in ''|*[!0-9a-f-]*) boot=0 ;; esac
+    [ "${#boot}" -le 40 ] || boot=0
+    dir=${STATE%/*}
+    [ "$dir" != "$STATE" ] || dir=.
+    [ -n "$dir" ] || dir=/
+    mkdir -p -- "$dir" 2>/dev/null || return 1
+    old=/dev/null
+    [ -f "$STATE" ] && old=$STATE
+    tmp="$STATE.$$.tmp"
+    awk -v now="$now" -v boot="$boot" '
+    function valid(    ok) {
+        if (NF != 7) return 0
+        if ($1 !~ /^gpe[0-9A-F][0-9A-F]$/) return 0
+        if ($2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ || $5 !~ /^[0-9]+$/) return 0
+        if ($6 !~ /^[0-9a-f-]+$/ || length($6) > 40) return 0
+        return ($7 ~ /^[01]$/)
+    }
+    FNR == 1 { file++ }
+    file == 1 {   # this run: kernel name, rate, masked
+        n = "gpe" toupper(substr($1, 4))
+        rn[++nrun] = n; rr[n] = $2 + 0; rk[n] = $3 + 0
+        next
+    }
+    file == 2 {   # the state file: first 64 lines, invalid lines ignored, first valid line per name wins
+        if (FNR > 64 || !valid() || ($1 in seen)) next
+        seen[$1] = 1; ord[++no] = $1
+        fi[$1] = $2 + 0; la[$1] = $3 + 0; ra[$1] = $4 + 0; bo[$1] = $5 + 0; bi[$1] = $6; mk[$1] = $7 + 0
+        next
+    }
+    END {
+        for (i = 1; i <= nrun; i++) {
+            n = rn[i]
+            if (!(n in seen)) {
+                seen[n] = 1; ord[++no] = n
+                fi[n] = now + 0; la[n] = now + 0; ra[n] = 0; bo[n] = 0; bi[n] = ""; mk[n] = 0
+            }
+            if (rr[n] > ra[n]) ra[n] = rr[n]
+            if (bi[n] == boot) {
+                la[n] = now + 0
+                if (rk[n] == 1) mk[n] = 1
+            } else {
+                bo[n]++; bi[n] = boot; la[n] = now + 0; mk[n] = rk[n]
+            }
+        }
+        for (i = 1; i <= no; i++) {
+            n = ord[i]
+            printf "%s %d %d %d %d %s %d\n", n, fi[n], la[n], ra[n], bo[n], bi[n], mk[n]
+        }
+    }' "$1" "$old" > "$tmp" && mv -f -- "$tmp" "$STATE" || { rm -f -- "$tmp"; return 1; }
+}
 snap > "$T/a"
 sleep "$SAMPLE"
 snap > "$T/b"
 awk -v lim="$LIMIT" -v s="$SAMPLE" 'NR==FNR { a[$2] = $1; next } ($2 in a) { d = ($1 - a[$2]) / s; if (d > lim) printf "%s %d\n", $2, d }' "$T/a" "$T/b" > "$T/storm"
+: > "$T/run"
 while read -r name rate; do
     [ -n "$name" ] || continue
     if echo mask > "$DIR/$name" 2>/dev/null; then
         msg="masked ACPI event $name: $rate events per second (limit $LIMIT)"
+        masked=1
     else
         msg="ACPI event $name fires $rate times per second (limit $LIMIT) and cannot be masked"
+        masked=0
     fi
+    printf '%s %s %s\n' "$name" "$rate" "$masked" >> "$T/run"
     logger -t unitotem-acpi-storm-guard -p daemon.warning -- "$msg" 2>/dev/null || echo "unitotem-acpi-storm-guard: $msg" >&2
 done < "$T/storm"
+if [ -s "$T/run" ]; then
+    record "$T/run" || { msg="cannot record ACPI storms in $STATE"; logger -t unitotem-acpi-storm-guard -p daemon.warning -- "$msg" 2>/dev/null || echo "unitotem-acpi-storm-guard: $msg" >&2; }
+fi
+exit 0

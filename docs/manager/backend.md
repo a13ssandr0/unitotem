@@ -38,7 +38,7 @@ Utilities (`manager/utils/`)
 - `models/user.py`: `UserPerms`, `UserData`, `User`, `user_manager`. `osusers.py`: system accounts, PAM. `passwords.py`: username rule and password policy (shared spec `tests/password_vectors.json`). `sessions.py`: logged-in websockets. See [security.md](security.md).
 - `storage/uploadmanager.py`: uploads folder, watcher, `save`, `remove`. `storage/file_info.py`: duration, mime, pages, colour probe.
 - `notifications.py`: notification center. `backup.py`: core backup parts, archive, legacy import. `changes.py`: content-change listeners. `ready.py`: `sd_notify READY=1`, once. `_logging.py`: Hypercorn log adapter for loguru.
-- `system/`: read-only machine facts: `ip.py` (reachable address, netlink changes), `sysinfo.py`, `machine.py`, `cpu.py`, `sensors.py`, `procfs.py`, `lsblk.py` (filesystem usage cache), `gpu.py` (Chromium switches for the viewer).
+- `system/`: read-only machine facts: `ip.py` (reachable address, netlink changes), `sysinfo.py`, `machine.py`, `cpu.py`, `sensors.py`, `procfs.py`, `lsblk.py` (filesystem usage: a mounted filesystem by `statvfs`, an unmounted one from its superblock with `s_overhead_clusters` taken out so both count like `df`), `gpu.py` (Chromium switches for the viewer).
 - `browser.py` (User-Agent of the embedded browser), `labwc.py`, `outputs.py`, `units.py`, `extras.py`, `async_timer.py`.
 
 ## How it works

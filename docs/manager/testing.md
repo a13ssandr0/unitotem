@@ -93,7 +93,7 @@ Unit (`manager/tests/`), `.venv/bin/python -m pytest`:
 - Playlists and ticker: `test_playlists`, `test_ticker_*`.
 - Remote: `test_remote_*`.
 - Screens, touch, identity: `test_screens_*`, `test_touch*`, `test_ddc_parsers`, `test_gpu_profiles`, `test_output_transform`, `test_mechanism_resolution`, `test_identity`.
-- System: `test_suspend`, `test_timers`, `test_hotspot_stop`, `test_network_details`, `test_hosts_file`, `test_machine`, `test_updater`, `test_update_progress`, `test_plugins`, `test_datetime` (time zone and NTP through a fake timedate1, never the real bus).
+- System: `test_suspend`, `test_timers`, `test_hotspot_stop`, `test_network_details`, `test_hosts_file`, `test_machine`, `test_updater`, `test_update_progress`, `test_acpi_storms`, `test_plugins`, `test_datetime` (time zone and NTP through a fake timedate1, never the real bus).
 - Backup and uploads: `test_backup_users`, `test_backup_node_parts`, `test_upload_manager`, `test_plugins` (legacy archives).
 - Users and security: `test_osusers`, `test_password_policy`, `test_security_api`, `test_security_model`, `test_first_admin_script`, `test_setup_first_access`, `test_backup_users`, `test_login_hardening`, `test_templates_escape`, `test_webui_entries`.
 - Password policy (one policy, PAM and manager; see [security.md](security.md)):
