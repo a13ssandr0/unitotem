@@ -63,12 +63,16 @@ fi
 
 START=$(date +%s)
 log INFO "writing $(basename -- "$ISO") ($((SIZE / 1048576)) MiB) to $DEVICE"
-pv -N iso -s "$SIZE" -- "$ISO" | dd of="$DEVICE" bs=4M conv=fsync status=none
+# O_DIRECT (when the size is a multiple of the sector): the bar follows what the stick really accepts, not the page cache, so there is no
+# long silent wait for the flush at the end
+OFLAG=""; [ $((SIZE % 512)) = 0 ] && OFLAG="oflag=direct"
+pv -N iso -s "$SIZE" -- "$ISO" | dd of="$DEVICE" bs=4M conv=fsync $OFLAG status=none
 st=("${PIPESTATUS[@]}")
 { [ "${st[0]}" = 0 ] && [ "${st[1]}" = 0 ]; } || die "the copy failed"
+log INFO "flushing the write cache of the device (this can take a while on a slow stick)"
 sync
 blockdev --flushbufs "$DEVICE" 2>/dev/null || true
-log INFO "reading back"
+log INFO "reading back to verify"
 dd if="$DEVICE" bs=4M count="$SIZE" iflag=count_bytes status=none | pv -N verify -s "$SIZE" | cmp -s -- - "$ISO" \
     || die "the data read back differs from the ISO"
 log INFO "done and verified in $(( $(date +%s) - START )) s: $DEVICE"
