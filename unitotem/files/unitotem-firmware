@@ -197,13 +197,37 @@ def installed_version(c):
 
 
 def fs_writable(path):
+    """True when the FAT can be written: a mount point is remounted read-write for the work (bootfs_rw), any other path must be writable."""
     try:
         st = os.statvfs(path)
     except OSError:
         return False
+    if os.path.ismount(path):
+        return True
     if st.f_flag & os.ST_RDONLY:
         return False
     return os.access(path, os.W_OK)
+
+
+class bootfs_rw:
+    """The boot FAT is mounted read-only (fstab): remount rw for the work, sync, remount ro. A no-op where PATH is not a mount point.
+    Inspired by unitotem-update."""
+    def __init__(self, path):
+        self.path = path
+        self.on = False
+
+    def __enter__(self):
+        if os.path.ismount(self.path):
+            r = subprocess.run(["mount", "-o", "remount,rw", self.path], capture_output=True, text=True)
+            if r.returncode:
+                raise Fail("not-writable", f"cannot remount {self.path} read-write: {r.stderr.strip()}")
+            self.on = True
+        return self
+
+    def __exit__(self, *exc):
+        if self.on:
+            subprocess.run(["sync"])
+            subprocess.run(["mount", "-o", "remount,ro", self.path], capture_output=True)
 
 
 def read_throttled(c):
@@ -986,11 +1010,13 @@ def run_apply(c, family, files, eeprom):
             if blk:
                 raise Fail("blocked", f"apply refused: {blk[0]}", rc=14, blockers=blk)
             fw_row, fw_files, ee, ee_dir = fetch_and_stage(c, family, work, deadline, op="apply", eeprom=eeprom)
-            names = swap_files(c, fw_row, fw_files) if files else []
+            names = []
             staged = False
-            if eeprom:
-                apply_step(c, "eeprom", 95)
-                staged = eeprom_stage(c, family, ee, ee_dir)
+            with bootfs_rw(c["UNITOTEM_FW_BOOT"]):
+                names = swap_files(c, fw_row, fw_files) if files else []
+                if eeprom:
+                    apply_step(c, "eeprom", 95)
+                    staged = eeprom_stage(c, family, ee, ee_dir)
             pending = eeprom and os.path.isfile(os.path.join(c["UNITOTEM_FW_BOOT"], "pieeprom.upd"))
             reboot = bool(names) or bool(pending)
             write_progress(c, op="apply", phase="done", percent=100, state="done", error=None,

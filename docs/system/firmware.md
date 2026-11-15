@@ -58,7 +58,7 @@ Risk window: the two files of one pair can differ for a few milliseconds (`start
 - `under-voltage`: `get_throttled` bit 0 set.
 - `no-power-info`: `get_throttled` unreadable.
 - `pending-confirm`: an A/B update waits for its confirm.
-- `not-writable`: `/boot/firmware` not mounted read-write.
+- `not-writable`: `/boot/firmware` is neither a mount point nor writable. The image mounts the FAT read-only (fstab): `apply` remounts it read-write for the swap and the EEPROM staging, then `sync` and read-only again (`bootfs_rw`, as `unitotem-update`); a failed remount is `not-writable`.
 - `busy`: an operation holds the lock.
 
 Other refusals: `no-eeprom` (Pi 3 has no EEPROM), `unsupported` (not a Pi), `nothing-to-do` (cached check shows no update), `busy` (exit 12).

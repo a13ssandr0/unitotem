@@ -1014,6 +1014,33 @@ def read_bytes_file(path):
         return f.read()
 
 
+def test_bootfs_remount():
+    """A read-only boot FAT that is a mount point is remounted rw for the work and ro after; it is no blocker."""
+    calls = []
+    real_run, real_ismount, real_statvfs = F.subprocess.run, F.os.path.ismount, F.os.statvfs
+
+    class Done:
+        returncode = 0
+        stderr = ""
+    F.subprocess.run = lambda argv, **kw: (calls.append(list(argv)), Done())[1]
+    F.os.path.ismount = lambda p: p == "/fake/boot"
+    F.os.statvfs = lambda p: type("V", (), {"f_flag": F.os.ST_RDONLY})()
+    try:
+        check("a read-only mount point is no blocker", F.fs_writable("/fake/boot") is True)
+        with F.bootfs_rw("/fake/boot"):
+            calls.append(["inside"])
+        check("remount rw, the work, sync, remount ro",
+              calls == [["mount", "-o", "remount,rw", "/fake/boot"], ["inside"], ["sync"], ["mount", "-o", "remount,ro", "/fake/boot"]],
+              str(calls))
+        calls.clear()
+        with F.bootfs_rw("/not/a/mount"):
+            pass
+        check("a plain directory is left alone", calls == [], str(calls))
+    finally:
+        F.subprocess.run, F.os.path.ismount, F.os.statvfs = real_run, real_ismount, real_statvfs
+
+
+
 def main():
     global OK, FAIL
     if not shutil.which("gpg") or not shutil.which("gpgv"):
@@ -1042,6 +1069,7 @@ def main():
             test_apply_failures(lab_dir, gh, fpr, keyring)
             test_apply_eeprom(lab_dir, gh, fpr, keyring)
             test_apply_pi3_no_eeprom(lab_dir, gh, fpr, keyring)
+            test_bootfs_remount()
         finally:
             for home in (gh, os.path.join(td, "gh2")):
                 if os.path.isdir(home):
