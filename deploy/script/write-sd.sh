@@ -41,6 +41,10 @@ done
 [ -f "$IMAGE" ] || die "image not found: $IMAGE"
 [ -b "$DEVICE" ] || die "not a block device: $DEVICE"
 case "$(lsblk -dno TYPE -- "$DEVICE")" in disk|loop) ;; *) die "$DEVICE is not a whole disk" ;; esac
+# A card reader keeps a device per slot even when it is empty: its size is 0. The size comes from sysfs (no I/O): an ioctl on an empty slot
+# (blockdev, a partition scan) can sit in the kernel for minutes and cannot be interrupted.
+DEV_SECTORS=$(cat "/sys/class/block/$(basename -- "$DEVICE")/size" 2>/dev/null || echo 0)
+[ "$DEV_SECTORS" -gt 0 ] || die "$DEVICE has no medium (size 0): insert the card or reseat the reader"
 
 # --- the device must be free: nothing mounted on it, not the disk of / or /boot
 if [ -n "$(lsblk -nro MOUNTPOINTS -- "$DEVICE" | tr -d ' \n')" ]; then
@@ -72,7 +76,7 @@ SECT=$(awk -F': *' '/^sector-size:/{print $2}' "$TMP/table.sfdisk"); SECT=${SECT
 NEED=$(awk -v s="$SECT" '/start=/ { match($0,/start= *[0-9]+/); st=substr($0,RSTART,RLENGTH); gsub(/[^0-9]/,"",st);
                                     match($0,/size= *[0-9]+/); sz=substr($0,RSTART,RLENGTH); gsub(/[^0-9]/,"",sz);
                                     e=(st+sz)*s; if (e>m) m=e } END{print m+0}' "$TMP/table.sfdisk")
-HAVE=$(blockdev --getsize64 "$DEVICE")
+HAVE=$((DEV_SECTORS * 512))
 [ "$NEED" -gt 0 ] || die "cannot read the partition sizes of the image"
 [ "$HAVE" -ge "$NEED" ] || die "$DEVICE is $((HAVE / 1048576)) MiB, the partitions need $((NEED / 1048576)) MiB"
 
