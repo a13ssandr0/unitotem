@@ -1373,7 +1373,7 @@ ota_ui_start() {
     local placeholder=$' \n \n \n \n '
     # (NEWT_COLORS has no effect on this whiptail's own "+---+" border: ota_frame paints that ring of cells black on the
     # framebuffer instead.)
-    setsid -c sh -c "TERM=linux TERMINFO=/lib/terminfo exec whiptail \
+    setsid -c sh -c "TERM=linux TERMINFO=/usr/share/terminfo exec whiptail \
             --backtitle 'UniTotem OTA' --gauge '$placeholder' 14 72 0 < '$OTA_UI_FIFO'" \
         < /dev/tty1 > /dev/tty1 2>/dev/null &
     ( ota_ui_feed > "$OTA_UI_FIFO" ) &

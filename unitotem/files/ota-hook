@@ -92,11 +92,13 @@ for forced in mke2fs dd mount umount losetup mkfifo; do
     done
 done
 
-# terminfo: whiptail (via slang) cannot draw without it. Ship the framebuffer console entry and the two
-# serial terminal types ota-engine.sh can select (TERM=linux for tty*/fbcon, vt220 for ttyS*/ttyAMA*).
+# terminfo: whiptail (via slang) draws in mono with ASCII borders without it. Ship the framebuffer console entry and the two
+# serial terminal types ota-engine.sh can select (TERM=linux for tty*/fbcon, vt220 for ttyS*/ttyAMA*). Debian 13 keeps the
+# database in /usr/share/terminfo (older releases in /lib/terminfo); the entries land in /usr/share/terminfo of the initramfs.
 for tif in l/linux v/vt220 v/vt100; do
-    src="/lib/terminfo/${tif}"
-    [ -f "$src" ] && copy_file file "$src" "$src"
+    for dir in /usr/share/terminfo /lib/terminfo /usr/lib/terminfo; do
+        if [ -f "${dir}/${tif}" ]; then copy_file file "${dir}/${tif}" "/usr/share/terminfo/${tif}"; break; fi
+    done
 done
 
 manual_add_modules vfat nls_iso8859-1 nls_cp437 overlay
