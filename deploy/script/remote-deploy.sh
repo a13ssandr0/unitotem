@@ -387,8 +387,7 @@ select_disk() {
         if [ -n "$chosen" ]; then
             echo ""
             IFS='|' read -r name size tran model byid <<< "$chosen"
-            read -rp "Confirm writing to ${name} ($(bytes_human "$size"))? [type YES]: " ans
-            [ "$ans" = "YES" ] || die "cancelled by the user"
+            confirm "Confirm writing to ${name} ($(bytes_human "$size"))?" || die "cancelled by the user"
         else
             echo ""
             local choice
@@ -406,8 +405,7 @@ select_disk() {
     if [ "$OPT_YES" != 1 ]; then
         echo ""
         echo "!!! Disk ${TARGET_DISK} ($(bytes_human "$TARGET_DISK_SIZE")) will be completely rewritten. !!!"
-        read -rp "Type 'YES' to proceed: " ans
-        [ "$ans" = "YES" ] || die "cancelled by the user"
+        confirm "Proceed?" || die "cancelled by the user"
     fi
 }
 
@@ -832,7 +830,7 @@ run_ota_sequence() {
                 if [ "${P_SYNTH:-0}" = 1 ] && [ "$label" = ROOT_A ]; then grow_args="--fstype ext4 --grow 1"; fi
                 # The partition is read from the image into a pipe while the target pulls it: nothing is stored.
                 local fifo="${IMG_DESC}/stream.${partnum}"; mkfifo -- "$fifo"
-                image_stream "$partnum" > "$fifo" &
+                IMG_STREAM_USED="$used" image_stream "$partnum" > "$fifo" &
                 local ppid=$!
                 local pid; pid=$(serve_data "$host" "$fifo")
                 wait_data_ready "partition ${partnum}"
@@ -1030,8 +1028,7 @@ ask_admin() {
         [ -n "$ADMIN_PW" ] && [ "$ADMIN_PW" = "$pw2" ] && break
         echo "the passwords differ or are empty" >&2
     done
-    printf 'Copy your ssh key (%s/.ssh/id_ed25519.pub) to %s? [y/N] ' "$HOME" "$ADMIN_NAME" >&2; IFS= read -r a < "$tty_in" || a=n
-    case "$a" in [yY]*) ADMIN_COPY_KEY=1; ota_user_key >/dev/null ;; esac
+    confirm "Copy your ssh key (${HOME}/.ssh/id_ed25519.pub) to ${ADMIN_NAME}?" < "$tty_in" && { ADMIN_COPY_KEY=1; ota_user_key >/dev/null; }
 }
 
 # Waits up to 10 minutes for the new system to answer on HTTPS; returns 1 when it does not.
@@ -1091,8 +1088,7 @@ ensure_tryboot_firmware() {
         die "${host} reports under-voltage right now (get_throttled=${thr}): check the power supply, nothing was written"
     fi
     if [ "$OPT_YES" != 1 ]; then
-        read -rp "The firmware of ${host} has no tryboot: update it with raspberrypi-bootloader, restart and probe again? [type YES]: " ans
-        [ "$ans" = "YES" ] || die "cancelled by the user"
+        confirm "The firmware of ${host} has no tryboot: update it with raspberrypi-bootloader, restart and probe again?" || die "cancelled by the user"
     fi
     ts=$(date +%Y%m%d-%H%M%S)
     mkdir -p "$OPT_BACKUP_DIR" || die "cannot create the backup directory ${OPT_BACKUP_DIR}"
@@ -1137,8 +1133,7 @@ deploy_from_system() {
     changes_gate
 
     if [ "$OPT_YES" != 1 ]; then
-        read -rp "Proceed with the deploy? [type YES]: " ans
-        [ "$ans" = "YES" ] || die "cancelled by the user"
+        confirm "Proceed with the deploy?" || die "cancelled by the user"
     fi
 
     local target_ip="${TARGET_USERHOST##*@}"
@@ -1302,8 +1297,7 @@ deploy_from_fallback() {
         echo "DATA        : NOT preservable (${why}) - the disk is rewritten from scratch"
     fi
     if [ "$OPT_YES" != 1 ]; then
-        read -rp "Proceed with the recovery? [type YES]: " ans
-        [ "$ans" = "YES" ] || die "cancelled by the user"
+        confirm "Proceed with the recovery?" || die "cancelled by the user"
     fi
 
     if [ "$keep" != 1 ] && [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ] && [ "$OPT_NO_BACKUP" != 1 ]; then
@@ -1421,12 +1415,10 @@ changes_gate() {
         return 0
     fi
 
-    local ans
     case "$verdict" in
-        packages-only) read -rp "Only installed packages are affected. Proceed and lose them? [type YES]: " ans ;;
-        *)             read -rp "Files were also changed that packages do NOT explain. Proceed? [type YES]: " ans ;;
+        packages-only) confirm "Only installed packages are affected. Proceed and lose them?" || die "cancelled by the user" ;;
+        *)             confirm "Files were also changed that packages do NOT explain. Proceed?" || die "cancelled by the user" ;;
     esac
-    [ "$ans" = "YES" ] || die "cancelled by the user"
 }
 
 cmd_disarm() {
