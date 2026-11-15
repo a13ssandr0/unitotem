@@ -1,6 +1,6 @@
 #!/bin/bash
 # Lab driver: runs the REAL run_ota_sequence()/populate_bootfs_step() of deploy/script/remote-deploy.sh against a target that is
-# already in the OTA environment (the same steps as the `recover` subcommand), for an amd64/UEFI A-B parts set.
+# already in the OTA environment (the same steps as `remote-deploy.sh deploy` on a fallback), for an amd64/UEFI A-B parts set.
 # Usage: recover-driver.sh HOST DISK_BYID PARTS_DIR
 # Fallback credentials come from the environment (deploy/script/lib.sh, ota_auth_for): OTA_FALLBACK_KEY, or
 # OTA_FALLBACK_USER with OTA_FALLBACK_PASSWORD, or OTA_FALLBACK_OPEN=1. The per-target key is used when it exists.

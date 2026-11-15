@@ -12,7 +12,7 @@ Paths: relative to the repository root. Lab findings behind the UEFI method: [wi
 
 On a terminal the question is the prompt: a log line that arrives while it waits is printed above it (the prompt line is erased first) and the prompt is drawn again below with what the operator had typed (Backspace and Ctrl-U edit; input is read in cbreak mode). Without a terminal the question is a plain log line and input is read line by line.
 4. The PC polls every 5 s (`waiting for approval minutes_left=N` on its console at the start and then every 5 minutes) (`-TimeoutMinutes`, default 60). Without approval it exits with code 8 having changed nothing. After approval it downloads `/payload.zip`, verifies size and SHA-256 (both embedded in the bootstrap), extracts it to `%ProgramData%\UniTotem-install`, prepares the boot files and the one-shot boot entry (sections below), and restarts (`shutdown /r /t 10`). Every step is posted to the server and printed live as `[HOSTNAME] text`.
-5. Host: the server prints the full command after the approval: `OTA_FALLBACK_KEY=<per-PC key> deploy/script/remote-deploy.sh recover <ip> --image FILE --yes`; run it once the environment answers (see After the restart).
+5. Host: the server prints the full command after the approval: `OTA_FALLBACK_KEY=<per-PC key> deploy/script/remote-deploy.sh deploy <ip> --image FILE --yes`; run it once the environment answers (see After the restart).
 
 Authenticity: HTTP on the local network, no TLS. The bootstrap carries the payload hash, but the bootstrap itself is not authenticated: anyone able to spoof the host's address on the LAN could serve a different script. Run the server on a trusted network. Inventories from other machines are only shown; nothing runs without the operator's word.
 
@@ -38,7 +38,7 @@ WinRE (the recovery command prompt) has no PowerShell, no `curl` and normally no
 
 ## Local flow (USB stick)
 
-`tools/windows-installer/Install-UniTotem.ps1` prepares a Windows 10/11 PC so that it starts the UniTotem OTA environment once. The host then runs the normal network recovery (`deploy/script/remote-deploy.sh recover`), which **erases the whole system disk**: Windows is not kept. The script itself destroys nothing; it adds boot files and one boot entry, and `-Undo` removes them.
+`tools/windows-installer/Install-UniTotem.ps1` prepares a Windows 10/11 PC so that it starts the UniTotem OTA environment once. The host then runs the normal network recovery (`deploy/script/remote-deploy.sh deploy`), which **erases the whole system disk**: Windows is not kept. The script itself destroys nothing; it adds boot files and one boot entry, and `-Undo` removes them.
 
 ## Files
 
@@ -121,10 +121,10 @@ Proof (emulated, not on Windows; QEMU/SeaBIOS with TCG): disk with a bootmgr sta
 ## After the restart
 
 1. The environment starts, takes an address by DHCP (first wired port with a cable) and shows `OTA update mode ... Address: <ip> Port: 2222`. The address is also visible in the router's client list; `discover_fallback` in `deploy/script/remote-deploy.sh` scans the local /24 for dropbear on 2222.
-2. From the host (key mode; open mode: `OTA_FALLBACK_OPEN=1`):
+2. From the host (the per-PC key through `OTA_FALLBACK_KEY`; with no key the login is open):
 
 ```
-OTA_FALLBACK_KEY=<private key> deploy/script/remote-deploy.sh recover <ip> --image deploy/amd64/unitotem-<date>-amd64.img.xz --disk <by-id or name>
+OTA_FALLBACK_KEY=<private key> deploy/script/remote-deploy.sh deploy <ip> --image deploy/amd64/unitotem-<date>-amd64.img.xz --disk <by-id or name>
 ```
 
 `--disk` selects the disk to erase (by-id contains the model and serial shown by the script). Details, backups and options: [deploy-and-recovery.md](deploy-and-recovery.md). Add `--yes` for an unattended run.
@@ -141,7 +141,7 @@ No prompt, no window; runs from PowerShell Remoting, ssh, PsExec or a scheduled 
 
 Exit codes: 0 ok (also dry run, cancelled), 1 failed, 2 usage, 3 not elevated, 4 unsupported system or no room, 5 confirmation mismatch, 6 payload missing or corrupt, 7 BitLocker wait timed out, 8 no approval from the host, 9 host unreachable. `Install-UniTotem.status.json`: `Result` (`dry-run`, `prepared`, `undone`, `stopped`, `failed`), `Code`, `Message`, `Mode` (`uefi`/`bios`), `Where` (`boot`/`new`), `Partition`, `BootEntry`, `DiskNumber`, `DiskSerial`, `DiskModel`, `ExpectedToken`, `Time`.
 
-Flow: (1) the user runs the script once, or the host runs it remotely if Windows is reachable; (2) one restart into the OTA environment; (3) the host finds the environment (`discover_fallback` or the address from the router) and runs `recover <ip> --parts ... --yes`; the install finishes by itself.
+Flow: (1) the user runs the script once, or the host runs it remotely if Windows is reachable; (2) one restart into the OTA environment; (3) the host finds the environment (`discover_fallback` or the address from the router) and runs `deploy <ip> --image FILE`; the install finishes by itself.
 
 Not unattended: firmware that ignores `BootNext` (Windows starts again), a firmware setup password, Secure Boot without the Microsoft UEFI CA, a PC without wired DHCP. Static addressing for the environment is not available: `unitotem.ota=1` does not read `unitotem-ota.conf` (the boot-FAT lookup is by the label `EFI`/`FIRMWARE`).
 
@@ -173,5 +173,5 @@ Server (Python `logging`, logger `winserver`) and client use `YYYY-MM-DD HH:MM:S
 - A PC that resets or drops a connection (restart, `ConnectionResetError`, `BrokenPipeError`, timeout) gives one `INFO (server) client disconnected addr=... reason=...` line; any other request error is logged with its traceback in the standard format (`ERROR (server) request failed ...`). `Server.handle_error` replaces socketserver's raw dump, so nothing goes to stderr.
 - The prompt switches the terminal to cbreak; the saved attributes are restored with `TCSAFLUSH` on every exit path: `finally` around the input loop, `atexit`, and handlers for SIGINT, SIGTERM, SIGHUP and SIGQUIT that restore and end the process through `SystemExit` (exit code 128 + signal), then a new line is printed. Nothing is touched when stdin is not a terminal. Tested on a pty with each signal and with a crash in the prompt thread (ECHO, ICANON, ISIG, ICRNL equal to the initial values).
 - State files that cannot be used are deleted with a reason: `state file discarded name=... reason=corrupt|schema|stale` (`stale`: older than 7 days; `schema`: not valid for this version).
-- The command printed after an approval names the newest `deploy/amd64/unitotem-*-amd64.img.xz` (it serves UEFI and BIOS PCs); without one it prints `--parts <parts>` and `WARNING no parts set found under deploy/amd64`.
+- The command printed after an approval names the image given to the server with `--image FILE` (a full amd64 image serves UEFI and BIOS PCs); without it it prints `--parts <parts>` and `WARNING no parts set found under deploy/amd64`.
 - The client writes numbers with the invariant culture (decimal point under any Windows language) and the same partition type labels as the server; facts are printed once, in the inventory (the plan after the approval holds only the new steps).

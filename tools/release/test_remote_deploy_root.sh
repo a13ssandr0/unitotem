@@ -1,6 +1,6 @@
 #!/bin/bash
 # Test of the privilege handling of deploy/script/remote-deploy.sh and make-preboot-image.sh: --help and probe/changes/disarm need no root;
-# deploy and recover run the script again through sudo with the variables it reads (sudo-rs ignores -E). A stub `sudo` records its arguments;
+# deploy runs the script again through sudo with the variables it reads (sudo-rs ignores -E). A stub `sudo` records its arguments;
 # nothing is executed as root.
 #   tools/release/test_remote_deploy_root.sh
 set -u
@@ -15,7 +15,7 @@ for s in remote-deploy.sh make-preboot-image.sh; do
 done
 check "remote-deploy.sh with no arguments prints the usage, no sudo" bash -c "rm -f $T/sudo.args; PATH=$SUDO_BIN:\$PATH bash $DIR/deploy/script/remote-deploy.sh 2>&1 | grep -q Usage; [ ! -e $T/sudo.args ]"
 if [ "$(id -u)" != 0 ]; then
-    for sub in deploy recover; do
+    for sub in deploy; do
         rm -f "$T/sudo.args"
         OTA_FALLBACK_KEY=/k/key UNITOTEM_BACKUP_DIR=/b OTHER_SECRET=nope PATH="$SUDO_BIN:$PATH" bash "$DIR/deploy/script/remote-deploy.sh" "$sub" root@host --yes >/dev/null 2>&1
         check "$sub goes through sudo env with OTA_FALLBACK_KEY" grep -qx 'OTA_FALLBACK_KEY=/k/key' "$T/sudo.args"

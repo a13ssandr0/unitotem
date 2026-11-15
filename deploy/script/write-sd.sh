@@ -15,7 +15,17 @@
 # GUIDs, labels and start sectors; the MBR boot code is copied. Filesystems keep their UUID and label (partclone clones
 # them). The expanded image lives only in tmpfs (/dev/shm); the copy is refused when it does not fit there. The last partition is not grown: DATA grows to the disk end at the first boot (docs/system/storage-and-persistence.md).
 set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+usage() { cat <<'USAGE'
+Usage: write-sd.sh [--yes] [--no-eject] IMAGE DEVICE
+
+  IMAGE    .img or .img.xz (expanded in tmpfs only)
+  DEVICE   whole disk, e.g. /dev/sdb: everything on it is lost
+
+Needs root. Copies each partition with partclone (used blocks only).
+Docs: docs/system/deploy-and-recovery.md
+USAGE
+}
 
 log() { printf '%s %s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$1" "$2" >&2; }
 die() { log ERROR "$1"; exit 1; }
@@ -25,7 +35,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --yes) YES=1; shift ;;
         --no-eject) EJECT=0; shift ;;
-        -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 0 ;;
+        -h|--help) usage; exit 0 ;;
         --) shift; break ;;
         -*) die "unknown option $1" ;;
         *) break ;;
@@ -58,7 +68,7 @@ for mp in / /boot /boot/efi; do
 done
 
 # shellcheck source=deploy/script/image-lib.sh
-source "${DIR}/deploy/script/image-lib.sh"
+source "${HERE}/image-lib.sh"
 cleanup() { [ -z "$IMG_TMP" ] || rm -f -- "$IMG_TMP/table.sfdisk" "$IMG_TMP/partclone.log"; image_close; }
 trap cleanup EXIT
 image_open "$IMAGE" || die "cannot open $IMAGE"

@@ -50,26 +50,26 @@ A successful dropbear login stands down the idle watchdog.
 
 | State | When | Login |
 |---|---|---|
-| Key | an armed key is present: `unitotem.ota.authkey=<base64 ssh-ed25519>` on the command line, or `unitotem-ota.authorized_keys` on the boot partition, or `root/.ssh/authorized_keys` of the booted slot in DATA | `ssh -p 2222 root@host` with that key (`OTA_FALLBACK_KEY=FILE`) |
-| Administrator | DATA holds administrators of group `sudo` (`upper/etc.<slot>/group` and `shadow`) | `ssh -p 2222 <admin>@host`: root shell with the administrator's password or key (`OTA_FALLBACK_USER=NAME OTA_FALLBACK_PASSWORD=...`); root itself takes keys only |
-| Open | no key and no administrator was found at all, DATA absent or unreadable included | `ssh -p 2222 root@host` with an empty password (`OTA_FALLBACK_OPEN=1`); dropbear runs with `-B`; this is the preboot card |
+| Key | an armed key is present: `unitotem.ota.authkey=<base64 ssh-ed25519>` on the command line, or `unitotem-ota.authorized_keys` on the boot partition, or `root/.ssh/authorized_keys` of the booted slot in DATA | `ssh -p 2222 root@host` with that key (`deploy` tries `OTA_FALLBACK_KEY`, the per-node key and `~/.ssh/id_*` by itself) |
+| Administrator | DATA holds administrators of group `sudo` (`upper/etc.<slot>/group` and `shadow`) | `ssh -p 2222 <admin>@host`: root shell with the administrator's password or key (`deploy <admin>@host` asks the password on the terminal); root itself takes keys only |
+| Open | no key and no administrator was found at all, DATA absent or unreadable included | `ssh -p 2222 root@host` with an empty password (`deploy` finds it by itself); dropbear runs with `-B`; this is the preboot card |
 | Closed | an administrator exists but its password is forgotten, and no key | no login: arm a key by writing `unitotem-ota.authorized_keys` on the boot partition from another machine, or reset the first access |
 
 Only one slot's accounts are read: `unitotem.slot=` on the command line, else `saved_entry` of the boot partition grubenv, else slot A.
 
-Host side (`deploy/script/lib.sh`, `ota_auth_for`): `OTA_FALLBACK_KEY`, the per-target key `~/.local/state/unitotem-deploy/<host>/id_ed25519`, `OTA_FALLBACK_OPEN=1`, `OTA_FALLBACK_PASSWORD`; none set is an error naming the variables.
+Host side: `deploy [USER@]HOST[:PORT]` finds a fallback by its dropbear banner and logs in by itself (`ota_auth_resolve`, `deploy-and-recovery.md#fallback-authentication`): keys, then open, then a password typed on the terminal.
 
 ### Preboot card (Raspberry Pi 3, 4, 5)
 
 `deploy/script/write-preboot.sh`: one FAT partition with the Pi firmware, `recovery8.img`, `recovery-initrd.img` and `config.txt`/`cmdline.txt` (`unitotem.ota=recover`). No password, key or DATA exists on it: the fallback is open. The screen shows the DHCP address; then
 
-`OTA_FALLBACK_OPEN=1 deploy/script/remote-deploy.sh recover <address> --image <full image> --yes`
+`deploy/script/remote-deploy.sh deploy <address> --image <full image> --yes`
 
 The initrd of the card carries the engine of the repository (appended cpio archive).
 
 ## What a deploy goes through
 
-`remote-deploy.sh deploy|recover`: stage 1 (the target runs the fallback; a power loss reboots into it) → table and partitions → ROOT_A → ROOT_B formatted empty → DATA kept or new → first boot in trial (`reboot -f '0 tryboot'` on a Pi, `grub-reboot` on a PC) → confirm. A failure before stage 2 leaves the old system; after the table is written the state is the fallback.
+`remote-deploy.sh deploy`: stage 1 (the target runs the fallback; a power loss reboots into it) → table and partitions → ROOT_A → ROOT_B formatted empty → DATA kept or new → first boot in trial (`reboot -f '0 tryboot'` on a Pi, `grub-reboot` on a PC) → confirm. A failure before stage 2 leaves the old system; after the table is written the state is the fallback.
 
 | Moment | State of the target |
 |---|---|

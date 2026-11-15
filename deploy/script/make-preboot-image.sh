@@ -1,22 +1,24 @@
 #!/bin/bash
-# Minimal "preboot" SD image for a Raspberry Pi (arm64): the resident OTA fallback and nothing else.
+# Minimal "preboot" SD image for a Raspberry Pi (arm64): the OTA fallback and nothing else.
 #
-#   deploy/script/make-preboot-image.sh [--image FILE] [--recovery-dir DIR] [--engine FILE] [--out FILE] [--size-mib N] [--no-xz]
-#
-# Write the result to an SD card and power on the Pi: it boots the fallback kernel + initramfs from RAM, gets an
-# address by DHCP on every wired interface, shows it on screen and waits (no idle timeout) for the host:
-#
-#   deploy/script/remote-deploy.sh recover <address-shown-on-screen> --image deploy/arm64/<image> --yes
-#
-# `recover` finds no UniTotem partitions, so it lays out the whole card (partition table, boot partition, slots A
-# and B, DATA) and reboots into the real system.
-#
-# The single FAT partition (MBR, type 0c, from 1 MiB) holds the firmware (start*.elf, fixup*.dat, bootcode.bin,
-# device trees) from the boot partition of the arm64 image (read in place, as root), the fallback kernel + initramfs from build/arm64/recovery/,
-# config.txt and cmdline.txt; no overlays or slot directories. About 60 MiB; the default image is 128 MiB.
+# One FAT partition (MBR, type 0c, from 1 MiB): the Pi firmware, the recovery kernel and initrd and the device trees, all read from the boot
+# partition of the arm64 image given with --image; config.txt and cmdline.txt (unitotem.ota=recover). The engine in the initrd is replaced by
+# --engine. The Pi boots it, gets an address by DHCP, shows it and waits for `remote-deploy.sh deploy <address> --image FILE`.
 set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-case "${1:-}" in -h|--help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;; esac
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+usage() { cat <<'USAGE'
+Usage: make-preboot-image.sh --image FILE [options]
+
+  --image FILE      arm64 image: firmware, recovery kernel and initrd
+  --out FILE        result (./unitotem-preboot-arm64.img)
+  --engine FILE     engine put in the initrd (ota-engine.sh beside this)
+  --size-mib N      card image size (128)
+  --no-xz           no .xz copy
+
+Needs root. Docs: docs/system/deploy-and-recovery.md
+USAGE
+}
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 # Runs this script again as root through sudo, with the variables it reads (sudo-rs ignores -E): the OTA_* credentials, UNITOTEM_*,
 # the state directory, the ssh agent and the locale. sudo keeps the working directory.
 reexec_as_root() {
@@ -28,11 +30,10 @@ reexec_as_root() {
 }
 [ "$(id -u)" = 0 ] || reexec_as_root "${BASH_SOURCE[0]}" "$@"
 ARCH=arm64
-IMAGE="" REC="${DIR}/build/arm64/recovery" ENGINE="${DIR}/deploy/script/ota-engine.sh" OUT="" SIZE_MIB=128 XZ=1
+IMAGE="" ENGINE="${HERE}/ota-engine.sh" OUT="./unitotem-preboot-arm64.img" SIZE_MIB=128 XZ=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --image) IMAGE="$2"; shift 2 ;;
-        --recovery-dir) REC="$2"; shift 2 ;;
         --engine) ENGINE="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --size-mib) SIZE_MIB="$2"; shift 2 ;;
@@ -41,14 +42,9 @@ while [ $# -gt 0 ]; do
     esac
 done
 for c in sfdisk mkfs.fat mcopy dd tar xz truncate cpio install; do command -v "$c" >/dev/null || { echo "missing command $c" >&2; exit 1; }; done
-source "${DIR}/deploy/script/image-lib.sh"
-# any arm64 image has the firmware partition, the flash image too
-[ -n "$IMAGE" ] || IMAGE=$(ls -t "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}".img.xz "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}"-flash.img.xz "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}".img 2>/dev/null | head -1 || true)
-[ -f "$IMAGE" ] || { echo "no arm64 image (use --image)" >&2; exit 1; }
+source "${HERE}/image-lib.sh"
+[ -f "$IMAGE" ] || { echo "--image FILE is required (an arm64 image)" >&2; exit 1; }
 [ -f "$ENGINE" ] || { echo "engine not found: $ENGINE" >&2; exit 1; }
-VMLINUZ="${REC}/recovery-vmlinuz-${ARCH}"; INITRD="${REC}/recovery-initrd-${ARCH}.img"
-[ -s "$VMLINUZ" ] && [ -s "$INITRD" ] || { echo "missing ${VMLINUZ} or ${INITRD}" >&2; exit 1; }
-[ -n "$OUT" ] || OUT="${DIR}/deploy/${ARCH}/unitotem-preboot-${ARCH}.img"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/preboot.XXXXXX")
 trap 'image_close; rm -rf -- "$WORK"' EXIT
@@ -60,6 +56,9 @@ FWNODE=""; for n in 1 2; do d=$(image_node "$n") && [ "$(blkid -s LABEL -o value
 [ -n "$FWNODE" ] || { echo "the image has no FIRMWARE partition" >&2; exit 1; }
 SRC="$WORK/src"; mkdir -p "$SRC"; mount -t vfat -o ro "$FWNODE" "$SRC"
 ( shopt -s nullglob; cd "$SRC" && for f in bootcode.bin start*.elf fixup*.dat *.dtb LICENCE.broadcom; do [ -f "$f" ] && cp -- "$f" "$FW/"; done; true )
+VMLINUZ="$WORK/recovery8.img"; INITRD="$WORK/recovery-initrd.img"
+cp -- "$SRC/recovery8.img" "$VMLINUZ" 2>/dev/null; cp -- "$SRC/recovery-initrd.img" "$INITRD" 2>/dev/null
+[ -s "$VMLINUZ" ] && [ -s "$INITRD" ] || { umount "$SRC"; echo "the image has no recovery8.img and recovery-initrd.img on its boot partition" >&2; exit 1; }
 umount "$SRC"
 # the Pi 3/4 firmware and the device trees are what the boards that run arm64 UniTotem need; drop the extra start*_x/_db variants
 rm -f "$FW"/start_x.elf "$FW"/start4x.elf "$FW"/start_db.elf "$FW"/start4db.elf "$FW"/fixup_x.dat "$FW"/fixup4x.dat "$FW"/fixup_db.dat "$FW"/fixup4db.dat

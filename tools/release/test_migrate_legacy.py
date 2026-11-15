@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tools/migrate-legacy.py against the fake device of test_import_unitotem2.py: archive in, first administrator, settings out."""
+"""deploy/script/migrate-legacy.py against the fake device of test_import_unitotem2.py: archive in, first administrator, settings out."""
 import importlib.util
 import io
 import json
@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import test_import_unitotem2 as base          # noqa: E402
 
-spec = importlib.util.spec_from_file_location('migrate_legacy', HERE.parent / 'migrate-legacy.py')
+spec = importlib.util.spec_from_file_location('migrate_legacy', HERE.parent.parent / 'deploy' / 'script' / 'migrate-legacy.py')
 mig = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mig)
 

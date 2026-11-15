@@ -63,6 +63,7 @@ bytes_human() {
 OTA_PASSWORD="${OTA_PASSWORD:-unitotem}"
 # OTA fallback credentials (port 2222). Read from the environment only, never defaulted, never on a command line:
 #   OTA_FALLBACK_KEY=PATH       private key; default: the per-target key (ota_key_path) when it exists
+#   (remote-deploy.sh deploy finds the login by itself, ota_auth_resolve; the variables below are for the other tools)
 #   OTA_FALLBACK_USER=NAME      login user of the fallback (default root)
 #   OTA_FALLBACK_PASSWORD=...   password, used when no key is available
 #   OTA_FALLBACK_OPEN=1         empty password: first access to a device with no admin and no key
@@ -258,11 +259,74 @@ ota_arm_key() {
     OTA_ARM_KEY="$OTA_FALLBACK_KEY"
 }
 
+# Finds how to log in to the fallback of HOST, the way ssh does, and remembers it for ota_auth_for: the keys first (OTA_FALLBACK_KEY, the
+# per-target key, the identity files of the user's ~/.ssh, then the ssh agent), then the open fallback (an empty password, root only), then a
+# password asked on the terminal for USER (asked too when no USER was given: root takes keys only). Call WITHOUT command substitution: the
+# result is in OTA_RESOLVED_{HOST,USER,MODE,KEY,PW}. Returns 1 when nothing works.
+OTA_RESOLVED_HOST="" OTA_RESOLVED_USER="" OTA_RESOLVED_MODE="" OTA_RESOLVED_KEY="" OTA_RESOLVED_PW=""
+_ota_try() {   # USER HOST then ssh options: 0 when the login works
+    local u="$1" h="$2"; shift 2
+    SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS ssh "${OTA_SSH_OPTS[@]}" -o ConnectTimeout=8 "$@" -n "${u}@${h}" true >/dev/null 2>&1
+}
+_ota_try_password() {   # USER HOST PASSWORD
+    SSHPASS="$3" SSH_ASKPASS_REQUIRE=never env -u DISPLAY -u SSH_ASKPASS sshpass -e ssh "${OTA_SSH_OPTS[@]}" -o ConnectTimeout=8 \
+        -o PreferredAuthentications=password -o PubkeyAuthentication=no -n "${1}@${2}" true >/dev/null 2>&1
+}
+ota_auth_resolve() {
+    local host="$1" user="${2:-}" u key pw tty_in=/dev/stdin tries
+    local -a keys=()
+    u=${user:-root}
+    OTA_RESOLVED_HOST="" OTA_RESOLVED_USER="" OTA_RESOLVED_MODE="" OTA_RESOLVED_KEY="" OTA_RESOLVED_PW=""
+    [ -z "${OTA_FALLBACK_KEY:-}" ] || keys+=("$OTA_FALLBACK_KEY")
+    key=$(ota_key_path "$host" 2>/dev/null) && [ -f "$key" ] && keys+=("$key")
+    for key in "${HOME}"/.ssh/id_*; do
+        case "$key" in *.pub) continue ;; esac
+        [ -f "$key" ] || continue
+        [[ " ${keys[*]} " == *" $key "* ]] || keys+=("$key")
+    done
+    for key in "${keys[@]}"; do
+        if _ota_try "$u" "$host" -o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o IdentitiesOnly=yes -i "$key"; then
+            OTA_RESOLVED_HOST="$host" OTA_RESOLVED_USER="$u" OTA_RESOLVED_MODE=key OTA_RESOLVED_KEY="$key"; return 0
+        fi
+    done
+    if [ -n "${SSH_AUTH_SOCK:-}" ] && _ota_try "$u" "$host" -o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no; then
+        OTA_RESOLVED_HOST="$host" OTA_RESOLVED_USER="$u" OTA_RESOLVED_MODE=key OTA_RESOLVED_KEY=""; return 0
+    fi
+    if [ "$u" = root ] && _ota_try_password root "$host" ""; then
+        OTA_RESOLVED_HOST="$host" OTA_RESOLVED_USER=root OTA_RESOLVED_MODE=open; return 0
+    fi
+    # a password: only from a person at a terminal, read the way ssh reads it (not echoed)
+    if [ -r /dev/tty ] && : < /dev/tty 2>/dev/null; then tty_in=/dev/tty; elif [ ! -t 0 ]; then return 1; fi
+    if [ -z "$user" ]; then
+        printf 'Administrator of %s: ' "$host" >&2; IFS= read -r user < "$tty_in" || return 1
+        [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "invalid user name" >&2; return 1; }
+        u=$user
+    fi
+    [ "$u" != root ] || { echo "root takes keys only on the fallback of ${host}: no key of yours is accepted" >&2; return 1; }
+    for tries in 1 2 3; do
+        printf '%s@%s password: ' "$u" "$host" >&2; IFS= read -rs pw < "$tty_in" || return 1; echo >&2
+        if _ota_try_password "$u" "$host" "$pw"; then
+            OTA_RESOLVED_HOST="$host" OTA_RESOLVED_USER="$u" OTA_RESOLVED_MODE=password OTA_RESOLVED_PW="$pw"; return 0
+        fi
+        echo "Permission denied, please try again." >&2
+    done
+    return 1
+}
+
 # Selects the credentials for HOST and sets OTA_AUTH_MODE (key|open|password), OTA_AUTH_OPTS (ssh options)
 # and OTA_AUTH_TARGET (user@host). Order: OTA_FALLBACK_KEY, the per-target key of HOST, OTA_FALLBACK_OPEN=1,
 # OTA_FALLBACK_PASSWORD. Dies when none is set.
 ota_auth_for() {
     local host="$1" key="" user="${OTA_FALLBACK_USER:-root}"
+    if [ "${OTA_RESOLVED_HOST:-}" = "$host" ]; then   # found by ota_auth_resolve
+        OTA_AUTH_TARGET="${OTA_RESOLVED_USER}@${host}"; OTA_AUTH_MODE="$OTA_RESOLVED_MODE"
+        case "$OTA_RESOLVED_MODE" in
+            key)  OTA_AUTH_OPTS=(-o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no)
+                  [ -z "$OTA_RESOLVED_KEY" ] || OTA_AUTH_OPTS+=(-o IdentitiesOnly=yes -i "$OTA_RESOLVED_KEY") ;;
+            *)    OTA_AUTH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no); OTA_FALLBACK_PASSWORD="$OTA_RESOLVED_PW" ;;
+        esac
+        return 0
+    fi
     [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid OTA fallback user: '${user}'"
     OTA_AUTH_TARGET="${user}@${host}"
     if [ -n "${OTA_FALLBACK_KEY:-}" ]; then

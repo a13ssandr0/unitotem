@@ -1,6 +1,6 @@
 #!/bin/bash
 # Rehearsal of a network deploy, no hardware: an amd64 PC (QEMU/KVM) boots the recovery kernel and initrd of build/amd64/recovery into the OTA
-# fallback (open access), remote-deploy.sh recover writes the image from a privileged container, then the disk boots (UEFI through OVMF, or
+# fallback (open access), remote-deploy.sh deploy writes the image from a privileged container, then the disk boots (UEFI through OVMF, or
 # legacy BIOS) and the web UI must answer with the first-access page. Scratch: work/deploy-e2e/. Needs docker, /dev/kvm, qemu, OVMF.
 #   tools/release/test_deploy_e2e.sh [uefi|bios] [FULL_IMAGE.img.xz]     (default: uefi, the newest deploy/amd64/unitotem-2*-amd64.img.xz)
 set -u
@@ -31,13 +31,13 @@ rm -f "$DISK"; truncate -s 16G "$DISK"
 systemd-run --user --unit=qemu-e2e-fb --collect timeout 1800 qemu-system-x86_64 $(qemu_args fb) -kernel "$DIR/build/amd64/recovery/recovery-vmlinuz-amd64" \
     -initrd "$W/initrd" -append "unitotem.ota=recover console=ttyS0,115200" >/dev/null 2>&1
 up=0; for _ in $(seq 1 60); do
-    OTA_PORT=$FB OTA_FALLBACK_OPEN=1 bash -c "source '$DIR/deploy/script/lib.sh'; ota_ssh 127.0.0.1 'echo UP'" 2>/dev/null | grep -q UP && { up=1; break; }; sleep 4; done
-check "the fallback answers with open access (empty root password)" [ "$up" = 1 ]
+    timeout 4 bash -c "exec 3<>/dev/tcp/127.0.0.1/$FB && head -c 20 <&3" 2>/dev/null | grep -q dropbear && { up=1; break; }; sleep 4; done
+check "the fallback (dropbear) is up" [ "$up" = 1 ]
 [ "$up" = 1 ] || { echo "$ok passed, $fail failed"; exit 1; }
 docker run --rm --privileged --network host --shm-size=24g -v "$DIR:/repo" -v "$(dirname "$IMG"):/img:ro" -v /dev:/dev \
-    -e OTA_FALLBACK_OPEN=1 -e OTA_PORT=$FB -e UNITOTEM_BACKUP_DIR=/repo/work/deploy-e2e/backups unitotem-deploy-e2e \
-    bash /repo/deploy/script/remote-deploy.sh recover 127.0.0.1:$FB --port 9710 --image "/img/$(basename "$IMG")" --yes > "$W/out/e2e-$FW.log" 2>&1; rc=$?
-check "remote-deploy.sh recover from the image exits 0" [ "$rc" = 0 ]
+    -e UNITOTEM_BACKUP_DIR=/repo/work/deploy-e2e/backups unitotem-deploy-e2e \
+    bash /repo/deploy/script/remote-deploy.sh deploy 127.0.0.1:$FB --port 9710 --image "/img/$(basename "$IMG")" --yes > "$W/out/e2e-$FW.log" 2>&1; rc=$?
+check "remote-deploy.sh deploy finds the fallback, logs in without a password (open) and exits 0" bash -c "[ $rc = 0 ] && grep -q 'Logged in to the fallback as root (open)' $W/out/e2e-$FW.log"
 check "the log reaches the reboot into the restored system" grep -q 'Recovery sequence sent' "$W/out/e2e-$FW.log"
 systemctl --user stop qemu-e2e-fb 2>/dev/null
 systemd-run --user --unit=qemu-e2e-disk --collect timeout 900 qemu-system-x86_64 $(qemu_args disk) >/dev/null 2>&1
