@@ -24,6 +24,8 @@ tar -I pigz -C "${ROOTFS}" -xf "${STAGE1}"
 # The initrd carries a copy of the OTA engine. The stage1 tarball can be older than deploy/script/ota-engine.sh (a change of the engine alone does not
 # rebuild stage 1), so the copy is refreshed here, as stage 2 does for the slot initramfs.
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
+# The hook that builds the initrd is refreshed the same way.
+install -m 755 /unitotem/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
 
 ensure_qemu
 mount_chroot
