@@ -1,0 +1,7 @@
+[Unit]
+Description=UniTotem - mask an ACPI event that fires in a storm
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-acpi-storm-guard
+Nice=19
