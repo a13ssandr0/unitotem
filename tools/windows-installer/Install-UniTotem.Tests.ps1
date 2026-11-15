@@ -37,6 +37,30 @@ Describe 'Get-PartitionBytes' {
         $r | Should -Be 304MB
     }
 }
+Describe 'Test-SupportedArchitecture' {
+    It 'refuses Windows on ARM in every spelling' {
+        Test-SupportedArchitecture 'ARM64' | Should -BeFalse
+        Test-SupportedArchitecture 'ARM' | Should -BeFalse
+        Test-SupportedArchitecture 'arm64' | Should -BeFalse
+    }
+    It 'accepts x64, x86 and an unknown value' {
+        Test-SupportedArchitecture 'AMD64' | Should -BeTrue
+        Test-SupportedArchitecture 'x86' | Should -BeTrue
+        Test-SupportedArchitecture '' | Should -BeTrue
+    }
+    It 'Get-NativeArchitecture prefers PROCESSOR_ARCHITEW6432 (x86 process on ARM64)' {
+        $saved = @{ A = $env:PROCESSOR_ARCHITECTURE; W = $env:PROCESSOR_ARCHITEW6432 }
+        try {
+            $env:PROCESSOR_ARCHITECTURE = 'x86'; $env:PROCESSOR_ARCHITEW6432 = 'ARM64'
+            Get-NativeArchitecture | Should -Be 'ARM64'
+            Test-SupportedArchitecture (Get-NativeArchitecture) | Should -BeFalse
+            $env:PROCESSOR_ARCHITEW6432 = $null
+            Get-NativeArchitecture | Should -Be 'x86'
+        } finally {
+            $env:PROCESSOR_ARCHITECTURE = $saved.A; $env:PROCESSOR_ARCHITEW6432 = $saved.W
+        }
+    }
+}
 Describe 'Test-ShrinkFeasible' {
     It 'needs the space plus a margin' {
         Test-ShrinkFeasible 100GB 40GB 304MB | Should -BeTrue

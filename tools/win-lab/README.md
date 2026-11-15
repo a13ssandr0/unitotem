@@ -6,9 +6,10 @@ ON. Results and method: `docs/system/windows-install-research.md`. This folder c
 
 ## The lab
 
-- libvirt domain `win11-lab` (`qemu:///system`) = full clone of an Italian Windows 11 Pro 24H2; the user's own `win11` is NEVER touched.
+- libvirt domain `win11-lab` (`qemu:///system`), made from a Windows 11 Pro 24H2 ISO; the domain is not in the repository. Other libvirt domains on the host are not part of the lab: never touch them.
 - UEFI with Secure Boot on and Microsoft keys (`OVMF_CODE_4M.ms.fd`), emulated TPM 2.0 (swtpm), 8 GB RAM, 4 vCPUs, e1000e NIC on the `default` network, 64 GB SATA disk.
 - access: SSH as `lab` (administrator, key `work/win-lab/id_lab`, PowerShell 5.1).
+- Needs a Windows 11 ISO supplied by the operator: the scripts are libvirt-based and the VM is not in the repository. `recover-driver.sh` is no longer in the repository; the deploy into the OTA environment is `deploy/script/remote-deploy.sh deploy` ([deploy-and-recovery.md](../../docs/system/deploy-and-recovery.md)).
 
 ## Files
 
@@ -20,7 +21,6 @@ ON. Results and method: `docs/system/windows-install-research.md`. This folder c
 | `serialcap.sh` | captures the serial console (ttyS0) to a file: OVMF messages (`BdsDxe: loading Boot0005 ...`), which are not visible on screen, appear there |
 | `probe-windows.ps1` | read-only Windows-side probe (UEFI/BIOS, Secure Boot, decoded db/KEK/PK, BitLocker, disks, ESP, NIC, RAM) |
 | `nvram-var.ps1` | reads/writes raw UEFI variables from Windows and decodes `Boot####`/`BootOrder`/`BootNext` |
-| `recover-driver.sh` | runs the real `run_ota_sequence()`/`populate_bootfs_step()` from `remote-deploy.sh` against the OTA environment started from Windows |
 
 ## Baseline and NVRAM: caveats
 

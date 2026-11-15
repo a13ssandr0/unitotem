@@ -1,19 +1,19 @@
 #!/bin/bash
 # `install`: writes the UniTotem flash image from the installer ISO to a disk. Runs in the installer initramfs
 # (tools/build-installer-iso.sh, docs/system/installer-iso.md), from the console or over ssh.
-#   install                      pick the disk, two y/n questions (needs a terminal)
-#   install --disk DEV           skip the picker, keep the questions (needs a terminal)
-#   install --disk DEV -y        no questions, for unattended use over ssh
+#   install                      pick the disk, one y/n confirmation (needs a terminal)
+#   install --disk DEV           skip the picker, keep the confirmation (needs a terminal)
+#   install --disk DEV -y        no confirmation, for unattended use over ssh
 #   install --console            started by the console menu: closes ssh first, reopens it unless the disk is written
 # Exit codes: 0 done, 1 failed, 2 usage, 3 no terminal, 4 refused disk, 5 cancelled (changes=none), 6 media not found,
-# 7 already running. Nothing is written before the questions are answered y (or -y with a validated --disk).
+# 7 already running. Nothing is written before the confirmation is answered y (or -y with a validated --disk).
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export TERMINFO=/usr/share/terminfo
 LOG=/run/unitotem-installer.log
 MEDIA=/run/installer-media
 MEDIA_LABEL=UNITOTEM_ISO
 T=/run/unitotem-installer
-XZ_FILE='' XZ_SHA='' XZ_BYTES='' RAW_BYTES='' RAW_SHA='' MEDIA_DISK=''
+XZ_FILE='' XZ_SHA='' XZ_BYTES='' RAW_BYTES='' RAW_SHA='' MIN_BYTES='' MEDIA_DISK=''
 DISK='' DISK_BYTES=0 DISK_MODEL='' OPT_DISK='' OPT_YES=0 OPT_CONSOLE=0 STATE=/run/unitotem-installer.state
 
 # log LEVEL TEXT: INFO|WARNING|ERROR line to the log file and the kernel log (debug level)
@@ -73,17 +73,18 @@ disk_of() {
 # Reads payload.info as data: every key and value fullmatch-validated.
 read_info() {
     local f=$1 k v
-    XZ_FILE='' XZ_SHA='' XZ_BYTES='' RAW_BYTES='' RAW_SHA=''
+    XZ_FILE='' XZ_SHA='' XZ_BYTES='' RAW_BYTES='' RAW_SHA='' MIN_BYTES=''
     while IFS='=' read -r k v; do
         case $k in
-            image)      [[ $v =~ ^[A-Za-z0-9._-]+$ ]] && XZ_FILE=$v ;;
-            xz_sha256)  [[ $v =~ ^[0-9a-f]{64}$ ]] && XZ_SHA=$v ;;
-            raw_sha256) [[ $v =~ ^[0-9a-f]{64}$ ]] && RAW_SHA=$v ;;
-            xz_bytes)   [[ $v =~ ^[0-9]{1,15}$ ]] && XZ_BYTES=$v ;;
-            raw_bytes)  [[ $v =~ ^[0-9]{1,15}$ ]] && RAW_BYTES=$v ;;
+            image)          [[ $v =~ ^[A-Za-z0-9._-]+$ ]] && XZ_FILE=$v ;;
+            xz_sha256)      [[ $v =~ ^[0-9a-f]{64}$ ]] && XZ_SHA=$v ;;
+            raw_sha256)     [[ $v =~ ^[0-9a-f]{64}$ ]] && RAW_SHA=$v ;;
+            xz_bytes)       [[ $v =~ ^[0-9]{1,15}$ ]] && XZ_BYTES=$v ;;
+            raw_bytes)      [[ $v =~ ^[0-9]{1,15}$ ]] && RAW_BYTES=$v ;;
+            min_disk_bytes) [[ $v =~ ^[0-9]{1,15}$ ]] && MIN_BYTES=$v ;;
         esac
     done < "$f"
-    [ -n "$XZ_FILE" ] && [ -n "$XZ_SHA" ] && [ -n "$RAW_SHA" ] && [ -n "$XZ_BYTES" ] && [ -n "$RAW_BYTES" ]
+    [ -n "$XZ_FILE" ] && [ -n "$XZ_SHA" ] && [ -n "$RAW_SHA" ] && [ -n "$XZ_BYTES" ] && [ -n "$RAW_BYTES" ] && [ -n "$MIN_BYTES" ]
 }
 
 # find_media: mounts the device labelled UNITOTEM_ISO that carries the payload (up to 90 s for slow USB)
@@ -136,14 +137,14 @@ list_disks() {
     done
 }
 
-# ask_yn PROMPT [yellow]: y or n then Enter; anything else asks again; end of input counts as n
+# ask_yn PROMPT [yellow]: y, yes, n or no in any case, then Enter; anything else asks again; end of input counts as n
 ask_yn() {
     local a pre='' post=''
     [ "${2:-}" = yellow ] && { pre=$'\033[33m'; post=$'\033[0m'; }
     while :; do
         printf '%s%s (y/n) %s' "$pre" "$1" "$post"
         read -r a || return 1
-        case $a in y) return 0 ;; n) return 1 ;; esac
+        case ${a,,} in y|yes) return 0 ;; n|no) return 1 ;; esac
         echo "Invalid answer, type y or n"
     done
 }
@@ -167,7 +168,7 @@ pick_disk() {
     else
         for i in "${!names[@]}"; do
             printf '%d) /dev/%s  %s  %s%s\n' $((i + 1)) "${names[$i]}" "$(size_gib "${sizes[$i]}")" "${models[$i]}" \
-                "$([ "${sizes[$i]}" -lt "$RAW_BYTES" ] && echo '  (too small)')"
+                "$([ "${sizes[$i]}" -lt "$MIN_BYTES" ] && echo '  (too small)')"
         done
         while :; do
             printf 'Select the disk (1-%d, q to quit): ' "${#names[@]}"
@@ -175,8 +176,8 @@ pick_disk() {
             [ "$ans" = q ] && return 1
             if [[ $ans =~ ^[0-9]{1,3}$ ]] && [ "$ans" -ge 1 ] && [ "$ans" -le "${#names[@]}" ]; then
                 i=$((ans - 1))
-                if [ "${sizes[$i]}" -lt "$RAW_BYTES" ]; then
-                    say WARNING "disk=/dev/${names[$i]} too small"
+                if [ "${sizes[$i]}" -lt "$MIN_BYTES" ]; then
+                    say WARNING "disk=/dev/${names[$i]} too small min=$MIN_BYTES"
                     continue
                 fi
                 set_disk "${names[$i]}"
@@ -185,18 +186,17 @@ pick_disk() {
             echo "Invalid answer, type a number from 1 to ${#names[@]} or q"
         done
     fi
-    [ "$DISK_BYTES" -ge "$RAW_BYTES" ] || { say WARNING "disk=$DISK too small changes=none"; return 1; }
+    [ "$DISK_BYTES" -ge "$MIN_BYTES" ] || { say WARNING "disk=$DISK too small min=$MIN_BYTES changes=none"; return 1; }
 }
 
-# confirm_disk: shows the target and its partitions, two y/n questions; writing needs y to both
+# confirm_disk: shows the target and its partitions, one y/n confirmation; writing needs y
 confirm_disk() {
     local parts
     parts=$(lsblk -nl -o NAME,SIZE,FSTYPE,LABEL "$DISK" 2>/dev/null | tail -n +2 | head -n 8)
     [ -n "$parts" ] || parts="no partitions"
     say INFO "target=$DISK model=$DISK_MODEL size=$(size_gib "$DISK_BYTES")"
     printf '%s\n\n' "$parts"
-    ask_yn "Erase $DISK and install UniTotem?" || return 1
-    ask_yn "Last chance: erase this disk?" yellow || return 1
+    ask_yn "Erase $DISK and install UniTotem?" yellow || return 1
 }
 
 # progress bars only when stderr is a terminal
@@ -250,7 +250,7 @@ if [ -n "$OPT_DISK" ]; then
     if [ "$n" = "$MEDIA_DISK" ]; then say ERROR "disk=$OPT_DISK is the boot media changes=none"; exit 4; fi
     if disk_mounted "$n"; then say ERROR "disk=$OPT_DISK is mounted changes=none"; exit 4; fi
     set_disk "$n"
-    if [ "$DISK_BYTES" -lt "$RAW_BYTES" ]; then say ERROR "disk=$DISK too small changes=none"; exit 4; fi
+    if [ "$DISK_BYTES" -lt "$MIN_BYTES" ]; then say ERROR "disk=$DISK too small min=$MIN_BYTES changes=none"; exit 4; fi
 else
     pick_disk || { say INFO "cancelled changes=none"; exit 5; }
 fi
