@@ -239,10 +239,9 @@ apt_install --no-install-recommends \
 mkdir -p "${ROOTFS}/usr/lib/unitotem"
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
-# framebuffer logo of the deploy/recovery screen (pre-rendered by tools/gen-logo.py)
-install -m 644 /unitotem/files/unitotem-logo-256x73.bgrx /unitotem/files/unitotem-logo-640x182.bgrx \
-    /unitotem/files/unitotem-logo-256x73.rgb565 /unitotem/files/unitotem-logo-640x182.rgb565 \
-    /unitotem/files/unitotem-logo-1280x365.bgrx /unitotem/files/unitotem-logo-1280x365.rgb565 "${ROOTFS}/usr/lib/unitotem/"   # the largest is for the placeholder on 4K; the real system'"'"'s KMS framebuffer can be 16 OR 32 bpp (16 on a Raspberry Pi 4)
+# framebuffer logo of the deploy/recovery screen, rendered from the transparent wordmark (unitotem/logo/gen-logo.py); 32 bpp and 16 bpp
+# (the real system's KMS framebuffer can be either; 16 on a Raspberry Pi 4); the largest size is for the placeholder on 4K
+python3 /unitotem/logo/gen-logo.py "${ROOTFS}/usr/lib/unitotem" >/dev/null || { echo "ERROR: logo rendering failed" >&2; exit 1; }
 
 install -m 755 /unitotem/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
 # zstd -19 instead of the gzip that mkinitramfs falls back to when zstd is missing in the chroot: ~25% smaller, the Pi kernel has CONFIG_RD_ZSTD.

@@ -1597,7 +1597,7 @@ ota_idle_watchdog() {
 # so the caller falls back to text.
 OTA_LOGO_DIR=${OTA_LOGO_DIR:-/usr/lib/unitotem}
 ota_logo() {
-    local fb=/sys/class/graphics/fb0 W H bpp stride logo lw lh y0 x0 r
+    local fb=/sys/class/graphics/fb0 W H bpp stride logo lw lh y0 x0 spans
     [ -w /dev/fb0 ] && [ -r "$fb/virtual_size" ] && [ -r "$fb/bits_per_pixel" ] && [ -r "$fb/stride" ] || return 1
     IFS=, read -r W H < "$fb/virtual_size"; read -r bpp < "$fb/bits_per_pixel"; read -r stride < "$fb/stride"
     # 32 bpp: the KMS framebuffer (real system); 16 bpp: the firmware framebuffer of the resident Pi fallback (RGB565)
@@ -1607,11 +1607,15 @@ ota_logo() {
     if [ "$W" -le 800 ]; then logo=$OTA_LOGO_DIR/unitotem-logo-256x73.$ext; lw=256; lh=73
     else logo=$OTA_LOGO_DIR/unitotem-logo-640x182.$ext; lw=640; lh=182; fi
     [ -r "$logo" ] && [ "$W" -ge "$lw" ] && [ "$H" -ge $((lh + 40)) ] || return 1
+    spans=${logo%.*}.spans
+    [ -r "$spans" ] || return 1
     x0=$(( (W - lw) / 2 )); y0=32
-    for ((r = 0; r < lh; r++)); do
-        dd if="$logo" of=/dev/fb0 bs=$((lw * bytes)) skip=$r count=1 seek=$(( (y0 + r) * stride + x0 * bytes )) \
-           oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
-    done
+    # only the runs of lettering are written (transparent logo): one dd per run, the screen around it is left as it is
+    local row rx rl
+    while read -r row rx rl; do
+        dd if="$logo" iflag=skip_bytes skip=$(( (row * lw + rx) * bytes )) of=/dev/fb0 bs=$((rl * bytes)) count=1 \
+           seek=$(( (y0 + row) * stride + (x0 + rx) * bytes )) oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
+    done < "$spans"
     return 0
 }
 

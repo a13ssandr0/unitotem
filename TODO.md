@@ -97,7 +97,7 @@
 - [system] unitotem-update:378 Lock unlinks before close; :782 health_ok disables TLS verification; unitotem-maintenance ignores update-grub failure and reboots anyway.
 - [system] tools/pkglock.py: LOCAL_RE treats any `~devN` archive version as local; `.lock.prev` left untracked; tests missing for check/snapcheck/upgrade.
 - [system] tools/release/unitotem-release: `build` has no caller/test, build-ab has no split for roots over 2 GiB, no publish script or workflow.
-- [system] Stale files: flash-*/flash.manifest, `.gitignore:3` deploy/flasher/, tools/assets/ unreferenced, docker-compose.yml unreferenced.
+- [system] Stale files: flash-*/flash.manifest, `.gitignore:3` deploy/flasher/, docker-compose.yml unreferenced.
 - [system] Product text names developer items: stage1-packages.sh:143 "the Pi 4 test unit", manager rtc.py:151 "the test VM", gpu.py:213 and screens/identity.py/mechanism.py name test machines.
 
 ## To build (Viewers and Display pages)
