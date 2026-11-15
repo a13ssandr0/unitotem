@@ -1,4 +1,5 @@
 #!/bin/bash
+# NATIVE_INITRD=1 builds the recovery initrd on the host (unitotem/build-recovery-initrd.sh, no Docker); default 0.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -117,20 +118,40 @@ build_natively_on_pi() {
     echo "[arm64] Native build complete."
 }
 
-if ! ${DOCKER} info >/dev/null 2>&1; then
-    echo "Docker not available or not running" >&2
-    exit 1
+# NATIVE_INITRD=1: the recovery kernel+initrd are built on the host by the python builder, which reads the stage 1
+# rootfs without running its binaries. Output matches the Docker path: build/ARCH/recovery/.
+native_recovery_initrd() {
+    local stage1="${DIR}/build/${ARCH}/stage1.tar.gz"
+    local out="${DIR}/build/${ARCH}/recovery"
+    local work="${DIR}/build/${ARCH}/recovery-work"
+    [ -f "${stage1}" ] || { echo "[${ARCH}] native recovery initrd needs build/${ARCH}/stage1.tar.gz" >&2; return 1; }
+    mkdir -p "${out}" "${work}"
+    echo "[${ARCH}] Building recovery (fallback) kernel+initrd on the host..."
+    bash "${DIR}/unitotem/build-recovery-initrd.sh" --arch "${ARCH}" --stage1 "${stage1}" --out "${out}" \
+        --engine "${DIR}/deploy/script/ota-engine.sh" --list "${DIR}/unitotem/files/ota-initrd.list" --work "${work}"
+}
+
+NATIVE_INITRD="${NATIVE_INITRD:-0}"
+
+# ONLY_RECOVERY with NATIVE_INITRD=1 runs no Docker at all: skip the daemon check and the builder image.
+if [ "${NATIVE_INITRD}" = 1 ] && [ -n "${ONLY_RECOVERY:-}" ]; then
+    echo ">>> NATIVE_INITRD=1 ONLY_RECOVERY=1: Docker not used"
+else
+    if ! ${DOCKER} info >/dev/null 2>&1; then
+        echo "Docker not available or not running" >&2
+        exit 1
+    fi
+
+    # Register QEMU binfmt for arm64 cross-compilation
+    echo ">>> Setting up QEMU binfmt handlers..."
+    ${DOCKER} run --rm --privileged tonistiigi/binfmt --install arm64 2>/dev/null \
+        || ${DOCKER} run --rm --privileged multiarch/qemu-user-static --reset -p yes \
+        || echo "Warning: could not register binfmt handlers (may already be registered)"
+
+    # Build the builder image
+    echo ">>> Building unitotem builder image..."
+    ${DOCKER} build -f "${DIR}/Dockerfile.unitotem" -t unitotem-builder "${DIR}"
 fi
-
-# Register QEMU binfmt for arm64 cross-compilation
-echo ">>> Setting up QEMU binfmt handlers..."
-${DOCKER} run --rm --privileged tonistiigi/binfmt --install arm64 2>/dev/null \
-    || ${DOCKER} run --rm --privileged multiarch/qemu-user-static --reset -p yes \
-    || echo "Warning: could not register binfmt handlers (may already be registered)"
-
-# Build the builder image
-echo ">>> Building unitotem builder image..."
-${DOCKER} build -f "${DIR}/Dockerfile.unitotem" -t unitotem-builder "${DIR}"
 
 mkdir -p "${DIR}/build" "${DIR}/deploy"
 
@@ -257,7 +278,11 @@ for ARCH in ${ARCHES}; do
     if [ -n "${ONLY_RECOVERY:-}" ]; then
         [ -f "${DIR}/build/${ARCH}/stage1.tar.gz" ] || { echo "[${ARCH}] ONLY_RECOVERY needs build/${ARCH}/stage1.tar.gz" >&2; exit 1; }
         echo "[${ARCH}] Building only the recovery (fallback) kernel+initrd..."
-        ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage1-recovery-initrd.sh
+        if [ "${NATIVE_INITRD}" = 1 ]; then
+            native_recovery_initrd
+        else
+            ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage1-recovery-initrd.sh
+        fi
         continue
     fi
 
@@ -280,7 +305,11 @@ for ARCH in ${ARCHES}; do
     # artifacts are missing.
     if [ "${STAGE1_RAN}" = 1 ] || [ ! -f "${DIR}/build/${ARCH}/recovery/recovery.manifest" ]; then
         echo "[${ARCH}] Stage 1b: Building recovery (fallback) kernel+initrd..."
-        ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage1-recovery-initrd.sh
+        if [ "${NATIVE_INITRD}" = 1 ]; then
+            native_recovery_initrd
+        else
+            ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage1-recovery-initrd.sh
+        fi
     else
         echo "[${ARCH}] Stage 1b: skipping (recovery.manifest exists)"
     fi

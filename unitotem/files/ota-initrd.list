@@ -1,0 +1,61 @@
+# unitotem-ota initramfs list. Read by unitotem/files/ota-hook (installed as
+# /usr/share/unitotem-ota/ota-initrd.list) and by unitotem/ninitrd/lists.py.
+# One directive per line, fields separated by blanks, '#' starts a comment line.
+#   bin NAME...          command found with command -v, copied with its libraries (missing: warning)
+#   real NAME...         real binary copied over any BusyBox applet of the same name
+#   file SRC [DST]       plain file, DST defaults to SRC
+#   logo BASENAME...     /usr/lib/unitotem/BASENAME.{bgrx,rgb565,spans}
+#   terminfo L/NAME...   terminfo entries, installed under /usr/share/terminfo
+#   module NAME...       kernel module forced into the initrd
+#   module-opt NAME...   as module, only when the running kernel has it
+#   x86-bin, x86-module, x86-dir   only when the target is not arm64 or /usr/sbin/efibootmgr exists
+
+# Engine shell: ota-engine.sh needs bash (pipefail, /dev/tcp, process substitution).
+bin bash
+
+# /etc/group (getgrgid(0) during login) and ota-engine.sh.
+file /etc/group
+file /usr/lib/unitotem/ota-engine.sh
+
+# Framebuffer logo of the deploy and recovery screen (ota_logo in ota-engine.sh).
+logo unitotem-logo-256x73 unitotem-logo-640x182
+
+# Partitioning, filesystems and the partclone images.
+bin partclone.extfs partclone.fat partclone.dd partclone.restore partclone.info
+bin sgdisk parted sfdisk partx blockdev blkid mountpoint
+bin e2fsck tune2fs resize2fs dumpe2fs mke2fs e2label mkfs.fat fsck.fat fatlabel mkfs.ext4
+
+# Image transfer, dialogs and archives.
+bin xz unxz pv whiptail
+
+# Network: SSH server of the fallback, Wi-Fi, interfaces.
+bin dropbear dropbearkey scp wpa_supplicant wpa_passphrase
+
+# Text tools and shell helpers used by ota-engine.sh.
+bin sha256sum base64 awk cut paste readlink mkfifo cp grep head tail stty
+bin tr cmp od sed lsblk partprobe basename dirname sort rm chmod tar
+
+# Network and udev tools.
+bin ip udevadm setsid
+
+# Real util-linux and e2fsprogs binaries: BusyBox versions lack the flags ota-engine.sh needs.
+real mke2fs dd mount umount losetup mkfifo
+
+# terminfo for whiptail: the framebuffer console and the two serial types ota-engine.sh selects.
+terminfo l/linux v/vt220 v/vt100
+
+# Filesystems and character sets: vfat for the EFI partition, nls_ascii is the default vfat iocharset.
+module vfat nls_iso8859-1 nls_cp437 overlay
+
+# Wi-Fi: brcmfmac, plus the vendor modules split out from kernel 6.18 (cyw is the Pi 3B+/4/400/5 chip).
+module brcmfmac brcmutil
+module-opt brcmfmac_cyw brcmfmac_wcc brcmfmac_bca
+module nls_ascii
+
+# Reset on a Raspberry Pi: without it reboot(2) ends in "Reboot failed".
+module bcm2835_wdt
+
+# x86 only: GRUB and EFI variables for the boot entries.
+x86-bin efibootmgr grub-install
+x86-module efivarfs
+x86-dir /usr/lib/grub/i386-pc /usr/lib/grub/x86_64-efi

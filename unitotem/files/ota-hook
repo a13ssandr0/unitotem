@@ -2,51 +2,102 @@
 # initramfs-tools hook: pulls every binary/module ota-engine.sh needs into an initrd. Installed at
 # /etc/initramfs-tools/hooks/unitotem-ota in the rootfs by unitotem/stage1-packages.sh, so it is used
 # both by unitotem/stage1-recovery-initrd.sh (the resident fallback kernel+initrd) and by the
-# system's own `update-initramfs`.
+# system's own `update-initramfs`. The names it copies are listed in /usr/share/unitotem-ota/ota-initrd.list.
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case "$1" in prereqs) prereqs; exit 0 ;; esac
 
 . /usr/share/initramfs-tools/hook-functions
 
-# ota-engine.sh is bash (it needs pipefail and process substitution, which dash lacks); copy_exec
-# resolves its shared libs too.
-copy_exec /bin/bash /bin
+LIST=/usr/share/unitotem-ota/ota-initrd.list
+[ -r "$LIST" ] || { echo "unitotem-ota hook: ${LIST} not found" >&2; exit 1; }
 
 # /etc/passwd and /etc/shadow are generated at run time by fallback_auth_setup (deploy/script/ota-engine.sh): no password
 # hash is baked into the initrd.
 mkdir -p "${DESTDIR}/etc" "${DESTDIR}/root/.ssh"
 chmod 700 "${DESTDIR}/root/.ssh"
-# /etc/group: copied so getgrgid(0) lookups during login resolve.
-copy_file file /etc/group /etc/group
 
-# ota-engine.sh itself, plus the /usr/sbin/unitotem-ota-engine symlink that the init-premount/local-bottom
-# wrappers and every SSH-driven subcommand invoke.
-copy_file file /usr/lib/unitotem/ota-engine.sh /usr/lib/unitotem/ota-engine.sh
-# the logo shown on the framebuffer by the deploy/recovery screen (see ota_logo in ota-engine.sh)
-for _logo in unitotem-logo-256x73 unitotem-logo-640x182; do
-    for _ext in bgrx rgb565 spans; do
-        copy_file file "/usr/lib/unitotem/${_logo}.${_ext}" "/usr/lib/unitotem/${_logo}.${_ext}"
-    done
-done
+# x86 directives apply on every non-arm64 target, and on arm64 only when efibootmgr is installed.
+X86=0
+if [ "$(uname -m)" != "aarch64" ] || [ -f /usr/sbin/efibootmgr ]; then X86=1; fi
+
+# Directives are read from fd 3 so that the copy functions cannot consume the list.
+while read -r directive rest <&3; do
+    case "$directive" in
+        ''|'#'*) continue ;;
+    esac
+    # Names contain no glob characters (lists.py), but word splitting must not expand any pattern.
+    set -f
+    set -- $rest
+    set +f
+    case "$directive" in
+        bin)
+            for _n in "$@"; do
+                p=$(command -v "$_n" 2>/dev/null) && copy_exec "$p" || echo "unitotem-ota hook: '$_n' not found, skipping" >&2
+            done ;;
+        real)
+            # copy_exec's "skip if exists" does not win against the BusyBox applet hardlinks of
+            # zz-busybox-initramfs, so the real binaries are copied directly.
+            for _n in "$@"; do
+                real=$(command -v "$_n" 2>/dev/null)
+                [ -n "$real" ] || continue
+                dest="${DESTDIR}${real}"
+                rm -f "$dest"
+                mkdir -p "$(dirname "$dest")"
+                cp -a "$real" "$dest"
+                # A plain cp does not resolve shared library dependencies; ldd's path column
+                # is enough (these are dynamic ELF binaries).
+                ldd "$real" 2>/dev/null | grep -oE '/[^ ]+' | while read -r lib; do
+                    [ -f "$lib" ] || continue
+                    copy_file file "$lib" "$lib"
+                done
+            done ;;
+        file)
+            copy_file file "$1" "${2:-$1}" ;;
+        logo)
+            for _b in "$@"; do
+                for _ext in bgrx rgb565 spans; do
+                    copy_file file "/usr/lib/unitotem/${_b}.${_ext}" "/usr/lib/unitotem/${_b}.${_ext}"
+                done
+            done ;;
+        terminfo)
+            # whiptail (via slang) draws in mono with ASCII borders without the entry. Debian 13 keeps the
+            # database in /usr/share/terminfo (older releases in /lib/terminfo).
+            for _t in "$@"; do
+                for dir in /usr/share/terminfo /lib/terminfo /usr/lib/terminfo; do
+                    if [ -f "${dir}/${_t}" ]; then copy_file file "${dir}/${_t}" "/usr/share/terminfo/${_t}"; break; fi
+                done
+            done ;;
+        module)
+            manual_add_modules "$@" ;;
+        module-opt)
+            # modprobe resolves the names with underscores; kernels that lack a module skip it.
+            for _m in "$@"; do
+                modinfo -k "${version}" "$_m" >/dev/null 2>&1 && manual_add_modules "$_m"
+            done ;;
+        x86-bin)
+            if [ "$X86" = 1 ]; then
+                for _n in "$@"; do
+                    p=$(command -v "$_n" 2>/dev/null) && copy_exec "$p"
+                done
+            fi ;;
+        x86-module)
+            if [ "$X86" = 1 ]; then manual_add_modules "$@"; fi ;;
+        x86-dir)
+            if [ "$X86" = 1 ]; then
+                for d in "$@"; do
+                    [ -d "$d" ] && copy_file directory "$d" "$d"
+                done
+            fi ;;
+        *)
+            echo "unitotem-ota hook: unknown directive '${directive}' in ${LIST}" >&2
+            exit 1 ;;
+    esac
+done 3< "$LIST"
+
+# The ota-engine.sh symlink that the init-premount/local-bottom wrappers and every SSH-driven subcommand invoke.
 mkdir -p "${DESTDIR}/usr/sbin"
 ln -sf /usr/lib/unitotem/ota-engine.sh "${DESTDIR}/usr/sbin/unitotem-ota-engine"
-
-for bin in \
-    partclone.extfs partclone.fat partclone.dd partclone.restore partclone.info \
-    sgdisk parted sfdisk partx blockdev blkid mountpoint \
-    e2fsck tune2fs resize2fs dumpe2fs mke2fs e2label mkfs.fat fsck.fat fatlabel mkfs.ext4 \
-    xz unxz pv whiptail \
-    dropbear dropbearkey scp \
-    wpa_supplicant wpa_passphrase \
-    sha256sum base64 awk cut paste readlink mkfifo cp grep head tail stty \
-    tr cmp od sed lsblk partprobe basename dirname sort \
-    rm chmod tar \
-    ip udevadm \
-    setsid \
-; do
-    p=$(command -v "$bin" 2>/dev/null) && copy_exec "$p" || echo "unitotem-ota hook: '$bin' not found, skipping" >&2
-done
 
 # nc is a Debian alternatives symlink (nc -> /etc/alternatives/nc -> nc.traditional); copy_exec on the
 # symlink is unreliable, so resolve it explicitly and recreate the symlink by hand.
@@ -65,63 +116,6 @@ if [ -n "$REBOOT_REAL" ]; then
     copy_exec "$REBOOT_REAL"
     mkdir -p "${DESTDIR}/usr/sbin"
     ln -sf "$REBOOT_REAL" "${DESTDIR}/usr/sbin/reboot"
-fi
-
-# initramfs-tools-core's zz-busybox-initramfs hook (always last) hardlinks busybox onto every name that
-# is not already present, and klibc-utils does the same for its own set. Broken cases: mke2fs
-# (mkfs.ext4 is a symlink to it), dd (busybox's dd rejects the conv=/oflag=/status=progress flags
-# ota-engine.sh needs), and mount/umount/losetup/mkfifo (GNU-only flags). copy_exec's "skip if exists"
-# dedup does not reliably win that race, so the real binaries are copied directly.
-for forced in mke2fs dd mount umount losetup mkfifo; do
-    real=$(command -v "$forced" 2>/dev/null)
-    [ -n "$real" ] || continue
-    dest="${DESTDIR}${real}"
-    rm -f "$dest"
-    mkdir -p "$(dirname "$dest")"
-    cp -a "$real" "$dest"
-    # A plain cp, unlike copy_exec, does not resolve shared library dependencies; ldd's path column
-    # is enough (these are dynamic ELF binaries).
-    ldd "$real" 2>/dev/null | grep -oE '/[^ ]+' | while read -r lib; do
-        [ -f "$lib" ] || continue
-        copy_file file "$lib" "$lib"
-    done
-done
-
-# terminfo: whiptail (via slang) draws in mono with ASCII borders without it. Ship the framebuffer console entry and the two
-# serial terminal types ota-engine.sh can select (TERM=linux for tty*/fbcon, vt220 for ttyS*/ttyAMA*). Debian 13 keeps the
-# database in /usr/share/terminfo (older releases in /lib/terminfo); the entries land in /usr/share/terminfo of the initramfs.
-for tif in l/linux v/vt220 v/vt100; do
-    for dir in /usr/share/terminfo /lib/terminfo /usr/lib/terminfo; do
-        if [ -f "${dir}/${tif}" ]; then copy_file file "${dir}/${tif}" "/usr/share/terminfo/${tif}"; break; fi
-    done
-done
-
-manual_add_modules vfat nls_iso8859-1 nls_cp437 overlay
-# Since the 6.18 kernels brcmfmac is split by chip vendor: the core module requests a vendor module
-# (brcmfmac-cyw for the CYW4345x of the Pi 3B+/4/400/5, -wcc, -bca) when the chip probes, and without it
-# the probe fails and there is no wlan0. modprobe resolves the names with underscores; kernels that
-# lack them (older than 6.13) skip the loop.
-manual_add_modules brcmfmac brcmutil
-for _m in brcmfmac_cyw brcmfmac_wcc brcmfmac_bca; do
-    modinfo -k "${version}" "$_m" >/dev/null 2>&1 && manual_add_modules "$_m"
-done
-
-# nls_ascii: the default vfat iocharset ("ascii") is a separate module; without it every `mount -t vfat`
-# without an explicit iocharset= fails with "FAT-fs: IO charset ascii not found". nls_iso8859-1 and
-# nls_cp437 only cover filename conversion.
-manual_add_modules nls_ascii
-
-# bcm2835_wdt implements the reset on a Pi; MODULES=most does not include it, and without it any
-# reboot(2), tryboot argument or not, ends in "Reboot failed -- System halted".
-manual_add_modules bcm2835_wdt
-
-if [ "$(uname -m)" != "aarch64" ] || [ -f /usr/sbin/efibootmgr ]; then
-    p=$(command -v efibootmgr 2>/dev/null) && copy_exec "$p"
-    p=$(command -v grub-install 2>/dev/null) && copy_exec "$p"
-    manual_add_modules efivarfs
-    for d in /usr/lib/grub/i386-pc /usr/lib/grub/x86_64-efi; do
-        [ -d "$d" ] && copy_file directory "$d" "$d"
-    done
 fi
 
 exit 0

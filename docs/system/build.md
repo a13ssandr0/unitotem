@@ -13,7 +13,10 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | `unitotem/common.sh` | Defaults, A/B sizes, chroot mount helpers, `apt_install` (aria2 prefetch, then apt) |
 | `unitotem/stage0-bootstrap.sh` | debootstrap base to `build/<arch>/stage0.tar.gz` |
 | `unitotem/stage1-packages.sh` | Apt sources, package lock, kernel, firmware, bootloader, GPU, Wayland, manager .debs, purge, lock verify/freeze -> `stage1.tar.gz` |
-| `unitotem/stage1-recovery-initrd.sh` | Resident OTA fallback kernel+initrd and `recovery.manifest` |
+| `unitotem/stage1-recovery-initrd.sh` | Resident OTA fallback kernel+initrd and `recovery.manifest` (Docker path; native variant: [Native recovery initrd](#native-recovery-initrd)) |
+| `unitotem/build-recovery-initrd.sh`, `unitotem/build-recovery-initrd.py` | Native builder of the same kernel+initrd and manifest: host Python, no chroot, no target binary runs |
+| `unitotem/ninitrd/` | Native builder package: `assemble.py` (staging, cpio), `stage.py` (copy_file, copy_exec, libraries), `modules.py` (modules, firmware), `stockhooks.py` (stock hooks), `otahook.py` (list directives), `lists.py` (list reader) |
+| `unitotem/files/ota-initrd.list` | Names the fallback initrd carries (directive table in [Native recovery initrd](#native-recovery-initrd)); read by `ota-hook` and by the native builder |
 | `unitotem/stage2-configure.sh` | Hostname, locale, timezone, root first-access state, boot config, fstab, NetworkManager, services, initramfs, arm64 FIRMWARE files -> `stage2.tar.gz` |
 | `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, flash image, xz |
 | `unitotem/make-flash-image.sh` | Flash image from the full image |
@@ -37,7 +40,8 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Stage 0 and 1: run when the tarball is missing or stale.
   - Stage 1b (recovery initrd): runs when stage 1 ran or `build/<arch>/recovery/recovery.manifest` is missing.
   - `ONLY_RECOVERY=1 PKGLOCK=off PI_NATIVE_BUILD=0 ARCHES=<arch> ./build-unitotem.sh` rebuilds only the recovery kernel and initrd from the existing stage 1 tarball (minutes; output in `build/<arch>/recovery/`).
-  - Stage 1b installs `deploy/script/ota-engine.sh` and `unitotem/files/ota-hook` after extracting `stage1.tar.gz` (as stage 2 does for the slot initramfs): the tarball can hold an older engine. Rebuild after a change of the engine alone, without redoing stage 1 (about an hour per architecture): on the build server set the mtime of `deploy/script/ota-engine.sh` before the stage 1 tarball (`touch -d`), delete `deploy/<arch>/recovery.manifest`, run with `FORCE_STAGE=2`; stage 1 is skipped, 1b, 2 and 3 run (about 25 minutes). A later full rebuild reads the real file.
+  - `NATIVE_INITRD=1 ONLY_RECOVERY=1 PKGLOCK=off PI_NATIVE_BUILD=0 ARCHES=<arch> ./build-unitotem.sh` runs the same rebuild with the native builder and no Docker at all (no daemon, no builder image, no binfmt).
+  - Stage 1b installs `deploy/script/ota-engine.sh`, `unitotem/files/ota-hook` and `unitotem/files/ota-initrd.list` (at `/usr/share/unitotem-ota/`) after extracting `stage1.tar.gz` (as stage 2 does for the slot initramfs): the tarball can hold an older engine. Rebuild after a change of the engine alone, without redoing stage 1 (about an hour per architecture): on the build server set the mtime of `deploy/script/ota-engine.sh` before the stage 1 tarball (`touch -d`), delete `deploy/<arch>/recovery.manifest`, run with `FORCE_STAGE=2`; stage 1 is skipped, 1b, 2 and 3 run (about 25 minutes). A later full rebuild reads the real file.
   - Stage 2: runs when stale or when `AB_LAYOUT` differs from `build/<arch>/stage2.layout`.
   - Stage 3: always runs.
 - Staleness: a tarball is rebuilt when `unitotem/stage<N>*.sh`, `unitotem/common.sh`, `Dockerfile.unitotem` or the previous tarball is newer. Stages 1 and 2 also depend on `unitotem/files/*` and `deploy/script/ota-engine.sh`. `FORCE_STAGE=N` deletes tarballs N and up.
@@ -83,7 +87,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Purge: arm64 Chromium (apt); compilers (`dpkg --force-depends`, keeps DKMS modules: `build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 gcc-14-for-host cpp-14-for-host` and the `x86-64-linux-gnu` cross variants; the 7.2 headers depend on `gcc-14-for-host`/`cpp-14-for-host`); `mesa-vulkan-drivers` (apt; the viewer renders through ANGLE-GL, llvmpipe/radeonsi stay in `mesa-libgallium` + `libllvm19`); `libclang1-19` (`dpkg --force-depends`: `libshiboken6` declares it, no shared object loads it); amd64 X server packages. No NVIDIA library is purged: the NVIDIA set is installed with `--no-install-recommends` and pulls no CUDA, NVDEC or Vulkan library.
   - Asserts labwc, wlr-randr, wlopm, wayvnc, mesa-libgallium, libllvm19, libneatvnc and libavcodec61 survive and the NVIDIA module `nvidia.ko*` exists in the single kernel directory (amd64, after each purge). Removes `/var/lib/dkms/mok.key`.
   - Lock: verify (exact match) or freeze to `build/<arch>/<arch>.lock.new`.
-- Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values. `UNITOTEM_RECOVERY_BUILD_DATE` is the set's level (14 digits, `boot.md#recovery-set`).
+- Stage 1b: copies kernel and initrd (`MODULES=most`, zstd), writes `recovery.manifest` with sha256 values. `UNITOTEM_RECOVERY_BUILD_DATE` is the set's level (14 digits, `boot.md#recovery-set`). With `NATIVE_INITRD=1` the native builder runs instead of `stage1-recovery-initrd.sh` (same inputs and outputs).
 - Stage 2:
   - Hostname, root first-access state (`passwd -d`, login shell, marker group), sshd_config, packages `sudo` and `adduser`.
   - Locale (`UNITOTEM_LOCALE`): `<locale> UTF-8` is uncommented in `/etc/locale.gen` and `locale-gen` runs (`C.UTF-8` is built into libc-bin, always available). `LANG=<locale>` is written to `/etc/default/locale` and `/etc/locale.conf`. `unitotem/files/unitotem-locale.sh` is installed as `/etc/profile.d/unitotem-locale.sh` (mode 644).
@@ -103,6 +107,55 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - amd64: `grub-install` for EFI and BIOS (`--removable --no-uefi-secure-boot`), the signed Secure Boot chain installed in `EFI/BOOT` (shim as `BOOTX64.EFI`), `grub-mkconfig` (A/B: `grub.cfg` and `grubenv` in `unitotem-grub/` on the ESP).
   - Boot assertions (kernel magic, dtb parse, initramfs `/init`, `config.txt` references), release-version, change baseline, `verify-image.sh`, fsck of all partitions.
   - A/B: `unitotem/make-flash-image.sh` writes the flash image from the full one (fresh GPT, partitions except ROOT_B and DATA copied unchanged, sgdisk/sha256/fsck verification), `xz -T0`; then `xz -T0` of the full image. The raw `.img` files are removed.
+
+### Native recovery initrd
+
+`unitotem/build-recovery-initrd.sh` (wrapper: `python3 -I`) runs `unitotem/build-recovery-initrd.py`, which builds the resident fallback kernel and initrd from a stage 1 rootfs on any host with Python 3.11+. No chroot, Docker, binfmt or emulation. Logic is ported from Debian initramfs-tools 0.151 (mkinitramfs, hook-functions, stock hooks). Inspired by initramfs-tools (GPL-2+).
+
+Input (`--arch arm64|amd64`, one of `--stage1 TARBALL` or `--rootfs DIR`): the rootfs is read only; a tarball is extracted under `--work`. Also `--engine` (`ota-engine.sh`, placed at `/usr/lib/unitotem/ota-engine.sh` of the initrd), `--list` (default `unitotem/files/ota-initrd.list`), `--logo-dir` (default: rendered by `unitotem/logo/gen-logo.py` into the work folder), `--out`, `--work`. A given `--work` is kept; otherwise a temporary folder in `--out` is removed.
+
+Output in `--out`: `recovery-initrd-<arch>.img`, `recovery-vmlinuz-<arch>` (copy of `boot/vmlinuz-<kver>`), `recovery.manifest` (the keys of the Docker path). `UNITOTEM_RECOVERY_PARTCLONE_VERSION` comes from the rootfs dpkg database; `UNITOTEM_RECOVERY_BUILD_DATE` is the build time (UTC).
+
+Host tools, all reading or writing foreign-arch files:
+
+- `readelf` (binutils): NEEDED, RUNPATH, RPATH, interpreter. ELF headers only.
+- `depmod -a -b DEST` (kmod): module index of the staging tree.
+- `cpio` (newc, owner 0:0), `zstd` (level from the rootfs `conf.d/unitotem-compress`: 19).
+- `fc-cache -s -y DEST` (fontconfig): caches of the plymouth fonts.
+- `sh -n` (syntax check of initramfs scripts: parses only), `tar` (`--stage1`), `logo/gen-logo.py` (Pillow).
+- Python: standard library. `.zst` modules need `compression.zstd` (Python 3.14); `.xz` and `.gz` use lzma and gzip.
+
+No target binary and no target-derived shell text is executed. Initramfs scripts are checked with `sh -n` (parse only). The PREREQ order of each script is read statically from its `prereqs()` function (`_prereqs` in `assemble.py`): the variable echoed there, assigned as a literal.
+
+Image structure (as mkinitramfs): an uncompressed cpio of the `*.xz` and `*.zst` files (kernel modules and firmware, already compressed), followed by a zstd cpio of all other files. The kernel reads both as one archive stream.
+
+Library resolution (replaces `ldd`): NEEDED entries are followed recursively. Search order: DT_RUNPATH of the requesting object (else DT_RPATH; `$ORIGIN` is its directory), then `/lib/<triplet>`, `/usr/lib/<triplet>`, `/lib`, `/usr/lib`. `LD_LIBRARY_PATH` and `/etc/ld.so.conf` are not read. The interpreter (PT_INTERP) is copied. Symlink chains are copied as `copy_file` does. A NEEDED entry that is not found gives one warning and is skipped. `libpthread*` also copies `libgcc_s.so.1` (stock rule).
+
+Module selection: `MODULES=most` is forced. The `auto_add_modules` table of hook-functions (base, net, ide, scsi, block, ata, dasd, firewire, mmc, usb_storage, fb) and the `module` directives follow dracut-install semantics: hard dependencies from `modules.dep`, softdeps (pre and post), `=dir` forms, `-s` symbol and `-P` path filters. Symbol filters read the module's undefined-symbol table with a Python ELF parser (no `nm`). Firmware named by the modinfo `firmware` values is searched in `/lib/firmware/updates/<kver>`, `/lib/firmware/updates`, `/lib/firmware/<kver>`, `/lib/firmware`, each as-is, then `.zst`, then `.xz`. Missing modules or firmware are skipped silently. Hidden dependencies (`hidden_dep_add_modules`) and builtin firmware (`modules.builtin.modinfo`) are added as mkinitramfs does.
+
+Name list `unitotem/files/ota-initrd.list`: single source of truth for the names the fallback carries. Read by the native builder (`--list`) and by `ota-hook` at its installed path `/usr/share/unitotem-ota/ota-initrd.list`. `stage1-packages.sh` installs it there (image-owned, under `/usr/share`); `stage1-recovery-initrd.sh` refreshes it. One directive per line, fields separated by blanks, `#` starts a comment. An unknown directive stops both readers. The native builder also rejects malformed names and arguments (`lists.py`).
+
+| Directive | Effect |
+|---|---|
+| `bin NAME...` | Command found with `command -v`, copied with its libraries; missing: warning |
+| `real NAME...` | Real binary written over the BusyBox applet of that name (`mke2fs dd mount umount losetup mkfifo`) |
+| `file SRC [DST]` | Plain file, absolute paths, `DST` defaults to `SRC` |
+| `logo BASENAME...` | `/usr/lib/unitotem/BASENAME.{bgrx,rgb565,spans}` |
+| `terminfo L/NAME...` | Entry copied to `/usr/share/terminfo/L/NAME` (source: `/usr/share/terminfo`, `/lib/terminfo`, `/usr/lib/terminfo`) |
+| `module NAME...` | Kernel module forced into the initrd |
+| `module-opt NAME...` | As `module`, only for names the kernel has |
+| `x86-bin`, `x86-module`, `x86-dir` | Only when the target is not arm64 or `/usr/sbin/efibootmgr` exists |
+
+Logic kept in code, not in the list: `/etc/group`, `/root/.ssh` (mode 700, no keys: generated at each fallback start), the `unitotem-ota-engine` symlink, the `nc` alternatives link, `reboot` (systemd binary, see [boot](boot.md#rules-and-gotchas)), `bash` (shell of the engine). The hook tests the x86 condition with `uname -m` of the build environment; the native builder uses `--arch`. Same result.
+
+Known differences from the mkinitramfs output (Docker path):
+
+- No `etc/ld.so.cache`: deliberate. `ldconfig -r` is not ported; every library is in `/lib/<triplet>` or `/lib`, which glibc searches by default.
+- Fontconfig caches (4 files under `var/cache/fontconfig`): same names, written by the host `fc-cache`. Contents differ only in the directory mtimes, 6 bytes per cache at header offsets 48-63.
+- Two extra logo files, `unitotem-logo-256x73.spans` and `unitotem-logo-640x182.spans`: the Docker reference predates them.
+- `ota-engine.sh` and the logo `bgrx`/`rgb565` files differ in content: the native output carries the newer sources.
+- Equal to the Docker output: file list (apart from the points above), symlinks, modes (setuid `mount` and `umount`), the five `scripts/*/ORDER` files, the module set (322) and the firmware set (164).
+- Not run: `/etc/initramfs-tools/hooks/*` (the native `otahook.py` replaces `unitotem-ota`), `ldconfig`, `DSDT.aml` override (refused), `COMPRESS` other than zstd (refused).
 
 ## Interfaces
 
@@ -125,6 +178,7 @@ Environment of `build-unitotem.sh`:
 | `PI_BUILD_BASE` | path on the device | Build tree on the device |
 | `PKGLOCK` | `on` | `off`: skip all lock logic |
 | `PKGLOCK_KEEP` | `0` | `1`: keep the lock on security updates |
+| `NATIVE_INITRD` | `0` | `1`: stage 1b (and `ONLY_RECOVERY`) uses the native builder, [Native recovery initrd](#native-recovery-initrd) |
 
 Forwarded to the stages (Docker and native): `RELEASE`, `MIRROR`, `UNITOTEM_HOSTNAME`, `UNITOTEM_LOCALE`, `UNITOTEM_TIMEZONE`, `IMAGE_SIZE`, `AB_LAYOUT`, `ROOT_SLOT_SIZE`, `RELEASE_VERSION`, `EFI_SIZE`, `ROOT_SIZE`. `BOOT_SIZE`, `FIRMWARE_SIZE` are read by the stages but not forwarded.
 
