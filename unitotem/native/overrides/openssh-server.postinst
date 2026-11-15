@@ -1,0 +1,99 @@
+#!/bin/sh
+# Native build: DPKG_ROOT-aware replacement of the postinst (docs/system/build.md, Native arm64 build). The original runs the
+# target's sshd -G and ssh-keygen, ucf and systemctl on absolute paths; none of them can run here. Same end state for a fresh
+# install: /etc/ssh/sshd_config (upstream file, debconf answers at their template default true), the three host keys,
+# the sshd user and the _ssh group, the openssh-server tmpfiles, the SysV rc links, the systemd enablement symlinks.
+# Host keys: generated here with the builder's ssh-keygen (same key formats). unitotem-ssh-hostkey replaces them at boot.
+set -e
+: "${DPKG_ROOT:?}"
+root="$DPKG_ROOT"
+action="$1"
+
+. /usr/share/debconf/confmodule
+db_version 2.0
+
+umask 022
+
+create_sshdconfig() {
+    # debconf answers: both template defaults are true, which keeps the upstream file unchanged
+    db_get openssh-server/permit-root-login
+    permit_root_login="$RET"
+    db_get openssh-server/password-authentication
+    password_authentication="$RET"
+    if [ ! -e "${root}/etc/ssh/sshd_config" ]; then
+        new_config="$(mktemp)"
+        cp "${root}/usr/share/openssh/sshd_config" "$new_config"
+        if [ "$permit_root_login" != true ]; then
+            sed -i 's/^#*PermitRootLogin .*/PermitRootLogin yes/' "$new_config"
+        fi
+        if [ "$password_authentication" != true ]; then
+            sed -i 's/^#PasswordAuthentication .*/PasswordAuthentication no/' "$new_config"
+        fi
+        mkdir -p "${root}/etc/ssh"
+        install -m 644 "$new_config" "${root}/etc/ssh/sshd_config"
+        rm -f "$new_config"
+    fi
+}
+
+create_keys() {
+    for t in rsa ecdsa ed25519; do
+        f="${root}/etc/ssh/ssh_host_${t}_key"
+        if [ ! -f "$f" ]; then
+            ssh-keygen -q -t "$t" -f "$f" -N ''
+        fi
+    done
+}
+
+if [ "$action" = configure ]; then
+    create_sshdconfig
+    create_keys
+fi
+
+# dh_installsysusers
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+    systemd-sysusers --root="$root" openssh-server.conf
+fi
+
+# dh_installtmpfiles
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+    if [ -x "$(command -v systemd-tmpfiles)" ]; then
+        systemd-tmpfiles --root="$root" --create openssh-server.conf || true
+    fi
+fi
+
+# dh_installdeb
+dpkg-maintscript-helper rm_conffile /etc/network/if-up.d/openssh-server 1:7.9p1-1\~ -- "$@"
+
+# dh_installinit (SysV links only; the service is not started)
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+    if [ -x "${root}/etc/init.d/ssh" ]; then
+        update-rc.d ssh defaults >/dev/null
+    fi
+fi
+
+# dh_installsystemd: enablement symlinks and state only; no systemctl in the builder
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+    deb-systemd-helper unmask 'ssh.service' >/dev/null || true
+    if deb-systemd-helper --quiet was-enabled 'ssh.service'; then
+        deb-systemd-helper enable 'ssh.service' >/dev/null || true
+    else
+        deb-systemd-helper update-state 'ssh.service' >/dev/null || true
+    fi
+    if deb-systemd-helper debian-installed 'ssh.socket'; then
+        deb-systemd-helper unmask 'ssh.socket' >/dev/null || true
+        if deb-systemd-helper --quiet was-enabled 'ssh.socket'; then
+            deb-systemd-helper enable 'ssh.socket' >/dev/null || true
+        fi
+    fi
+    deb-systemd-helper update-state 'ssh.socket' >/dev/null || true
+    deb-systemd-helper unmask 'sshd-keygen.service' >/dev/null || true
+    if deb-systemd-helper --quiet was-enabled 'sshd-keygen.service'; then
+        deb-systemd-helper enable 'sshd-keygen.service' >/dev/null || true
+    else
+        deb-systemd-helper update-state 'sshd-keygen.service' >/dev/null || true
+    fi
+fi
+
+db_stop
+
+exit 0

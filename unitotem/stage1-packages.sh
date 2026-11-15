@@ -10,9 +10,13 @@ mkdir -p "${ROOTFS}"
 echo "Extracting stage 0..."
 tar -I pigz -C "${ROOTFS}" -xf "${WORK_DIR}/stage0.tar.gz"
 
-ensure_qemu
-mount_chroot
-install_policy_rc
+if [ "$NATIVE_BUILD" = 1 ]; then
+    nb_setup
+else
+    ensure_qemu
+    mount_chroot
+    install_policy_rc
+fi
 
 # Build-time only: dpkg fsync()s every file it unpacks, which dominates the install on the
 # container's overlay filesystem. The result is tarred and re-checked, so a crash costs a rerun.
@@ -140,12 +144,12 @@ fi
 
 # The NVIDIA repository (sources.list.d/unitotem-nvidia.list) has no snapshot and is read live, also with a lock. A locked NVIDIA version
 # that NVIDIA has withdrawn makes the installs below fail: renew the lock (tools/pkglock.py upgrade amd64).
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get update
+rootfs_apt update
 PKGLOCK_FROZEN_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if [ "${PKGLOCK:-on}" != off ]; then
     # The stage-0 base (debootstrap, from an older day) must match what the archives (or the lock's pins) say: with a lock this moves each
     # package up or down to its locked version; without one it brings the base to the current versions, security fixes included.
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -y --allow-downgrades dist-upgrade
+    rootfs_apt -y --allow-downgrades dist-upgrade
 fi
 
 # Recommends nobody needs, kept out of stage 1 only (the file is removed in "Clean up", the shipped image has no pin): the speech model of
@@ -164,7 +168,7 @@ EOF_PIN
 # the checks below test an arbitrary one.
 rootfs_kver() {
     local dirs n
-    dirs=$(chroot "${ROOTFS}" find /lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n') || dirs=""
+    dirs=$(find "${ROOTFS}/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n') || dirs=""
     n=$(printf '%s' "$dirs" | grep -c . || true)
     if [ "$n" != 1 ]; then
         echo "ERROR: expected exactly one kernel in /lib/modules, found ${n}: $(echo $dirs)" >&2
@@ -175,7 +179,7 @@ rootfs_kver() {
 
 # The NVIDIA module DKMS builds (nvidia-kernel-open-dkms 620: nvidia.ko, or a compressed nvidia.ko.*) for kernel $1.
 nvidia_module_present() {
-    chroot "${ROOTFS}" sh -c "ls /lib/modules/$1/updates/dkms/nvidia.ko* >/dev/null 2>&1"
+    ls "${ROOTFS}"/lib/modules/"$1"/updates/dkms/nvidia.ko* >/dev/null 2>&1
 }
 
 if [ "$ARCH" = "amd64" ]; then
@@ -236,6 +240,7 @@ fi
 apt_install --no-install-recommends \
     partclone gdisk parted fdisk pv netcat-traditional dropbear-bin wpasupplicant whiptail dosfstools xz-utils
 
+nb_kernel_post
 mkdir -p "${ROOTFS}/usr/lib/unitotem"
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
@@ -390,11 +395,15 @@ if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
     mkdir -p "${ROOTFS}/tmp/extra-debs"
     printf 'local .deb installed: %s\n' "$LOCAL_DEB_DIR"/*.deb
     cp "$LOCAL_DEB_DIR"/*.deb "${ROOTFS}/tmp/extra-debs/"
-    chroot "${ROOTFS}" sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --allow-downgrades /tmp/extra-debs/*.deb"
+    if [ "$NATIVE_BUILD" = 1 ]; then
+        rootfs_apt install -y --no-install-recommends --allow-downgrades "${ROOTFS}"/tmp/extra-debs/*.deb
+    else
+        chroot "${ROOTFS}" sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --allow-downgrades /tmp/extra-debs/*.deb"
+    fi
     # haproxy (a dependency of the repository's 2.x manager) would answer ports 80/443
     # with a 503; the 3.x manager binds them itself.
-    if chroot "${ROOTFS}" dpkg -s haproxy >/dev/null 2>&1; then
-        chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y haproxy
+    if rootfs_dpkg -s haproxy >/dev/null 2>&1; then
+        rootfs_apt purge -y haproxy
     fi
     rm -rf "${ROOTFS}/tmp/extra-debs"
     # CEF execs cefpython3/subprocess; python3-cefpython3 3.0.0~dev5 shipped it as 0644,
@@ -403,11 +412,11 @@ if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
     CEFSUB=/usr/lib/python3/dist-packages/cefpython3/subprocess
     if [ ! -x "${ROOTFS}${CEFSUB}" ]; then
         echo ">>> WARNING: ${CEFSUB} is not executable in the package: applying a dpkg-statoverride 0755 (fix python3-cefpython3)"
-        chroot "${ROOTFS}" dpkg-statoverride --update --add root root 0755 "${CEFSUB}"
+        rootfs_dpkg_statoverride --update --add root root 0755 "${CEFSUB}"
     fi
     [ -x "${ROOTFS}${CEFSUB}" ] || { echo "ERROR: ${CEFSUB} is not executable" >&2; exit 1; }
     for pkg in unitotem unitotem-manager unitotem-node unitotem-viewer python3-cefpython3 plymouth-theme-unitotem; do
-        v=$(chroot "${ROOTFS}" dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
+        v=$(rootfs_dpkg_query -W -f='${Version}' "$pkg" 2>/dev/null || true)
         case "$v" in 3.*) ;; *) echo "ERROR: $pkg is not installed at version 3.x (found: '${v}')" >&2; exit 1 ;; esac
     done
 fi
@@ -423,7 +432,7 @@ mountpoint -q "${ROOTFS}/var/cache/apt/archives" && umount "${ROOTFS}/var/cache/
 # of the 2.x manager; the compilers come in through build-essential (python3-pip on arm64,
 # dkms on amd64). The removal list is printed first and the NVIDIA module is asserted after.
 purge_list() { # names from $@ that are actually installed
-    local p; for p in "$@"; do chroot "${ROOTFS}" dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' && echo "$p"; done
+    local p; for p in "$@"; do rootfs_dpkg_query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' && echo "$p"; done
     # Always succeed: the loop's status is that of the last name, which would stop the build under set -e.
     return 0
 }
@@ -437,18 +446,18 @@ REMOVE_LIBS=$(purge_list mesa-vulkan-drivers)
 echo ">>> removing unused libraries (apt): $(echo $REMOVE_LIBS)"
 if [ -n "$(echo $REMOVE_LIBS)" ]; then
     # shellcheck disable=SC2086
-    { chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -s purge $REMOVE_LIBS 2>&1 | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'; } || true
+    { rootfs_apt -s purge $REMOVE_LIBS 2>&1 | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'; } || true
     # shellcheck disable=SC2086
-    chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE_LIBS
+    rootfs_apt purge -y $REMOVE_LIBS
 fi
 if [ "$ARCH" = "arm64" ]; then
     REMOVE=$(purge_list chromium chromium-browser chromium-common chromium-l10n rpi-chromium-mods)
     echo ">>> removing (arm64, apt): $(echo $REMOVE)"
     if [ -n "$REMOVE" ]; then
         # shellcheck disable=SC2086
-        { chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get -s purge $REMOVE 2>&1 | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'; } || true   # informational only: must never stop the build
+        { rootfs_apt -s purge $REMOVE 2>&1 | grep -E '^(Remv|E:)' | sed 's/^/    dry-run: /'; } || true   # informational only: must never stop the build
         # shellcheck disable=SC2086
-        chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get purge -y $REMOVE
+        rootfs_apt purge -y $REMOVE
     fi
     # The compilers go with dpkg --force-depends, not apt: `apt-get purge cpp` would also take
     # packages that depend on cpp. Harmless unmet-dependency note in `dpkg --audit`.
@@ -457,9 +466,9 @@ if [ "$ARCH" = "arm64" ]; then
                            gcc-14-aarch64-linux-gnu g++-14-aarch64-linux-gnu cpp-14-aarch64-linux-gnu)
     echo ">>> removing (arm64, dpkg --force-depends): $(echo $REMOVE_CC)"
     # shellcheck disable=SC2086
-    [ -z "$REMOVE_CC" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $REMOVE_CC
+    [ -z "$REMOVE_CC" ] || rootfs_dpkg --force-depends --purge $REMOVE_CC
     # the manager must still be there: apt may have taken it along if it had a hard dependency on any of the above
-    chroot "${ROOTFS}" dpkg-query -W -f='${Status}' unitotem-manager | grep -q 'ok installed' \
+    rootfs_dpkg_query -W -f='${Status}' unitotem-manager | grep -q 'ok installed' \
         || { echo "ERROR: removing Chromium/compilers also removed unitotem-manager" >&2; exit 1; }
 else
     # dkms depends on the compilers, so apt would remove them and dkms's prerm would delete the
@@ -470,7 +479,7 @@ else
                         gcc-14-x86-64-linux-gnu g++-14-x86-64-linux-gnu cpp-14-x86-64-linux-gnu)
     echo ">>> removing (amd64, dpkg --force-depends): $(echo $REMOVE)"
     # shellcheck disable=SC2086
-    [ -z "$REMOVE" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $REMOVE
+    [ -z "$REMOVE" ] || rootfs_dpkg --force-depends --purge $REMOVE
     KVER=$(rootfs_kver)
     nvidia_module_present "$KVER" \
         || { echo "ERROR: the NVIDIA module disappeared when removing the compilers" >&2; exit 1; }
@@ -480,7 +489,7 @@ fi
 CLANG=$(purge_list libclang1-19)
 echo ">>> removing (dpkg --force-depends): $(echo $CLANG)"
 # shellcheck disable=SC2086
-[ -z "$CLANG" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $CLANG
+[ -z "$CLANG" ] || rootfs_dpkg --force-depends --purge $CLANG
 if [ "$ARCH" = "amd64" ]; then
     KVER=$(rootfs_kver)
     nvidia_module_present "$KVER" \
@@ -499,29 +508,39 @@ fi
 XPURGE=$(purge_list xserver-xorg-core xserver-xorg-legacy xserver-xorg xserver-xorg-input-all xserver-xorg-video-all xinit x11-xserver-utils)
 echo ">>> removing the X server (dpkg --force-depends): $(echo $XPURGE)"
 # shellcheck disable=SC2086
-[ -z "$XPURGE" ] || chroot "${ROOTFS}" dpkg --force-depends --purge $XPURGE
+[ -z "$XPURGE" ] || rootfs_dpkg --force-depends --purge $XPURGE
 # What the Wayland session needs must have survived the removals above, on every architecture.
 for t in labwc wlr-randr wlopm wayvnc; do
-    chroot "${ROOTFS}" sh -c "command -v $t >/dev/null" || { echo "ERROR: $t disappeared with the removal of compilers/Chromium" >&2; exit 1; }
+    [ -x "${ROOTFS}/usr/bin/$t" ] || [ -x "${ROOTFS}/usr/sbin/$t" ] || [ -x "${ROOTFS}/bin/$t" ] || { echo "ERROR: $t disappeared with the removal of compilers/Chromium" >&2; exit 1; }
 done
 # ...and so must the libraries behind them (llvmpipe/radeonsi, the ffmpeg chain of wayvnc).
 for pkg in mesa-libgallium libllvm19 libneatvnc0 libavcodec61; do
-    chroot "${ROOTFS}" dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'ok installed' \
-        || { [ "$pkg" = libneatvnc0 ] && chroot "${ROOTFS}" dpkg-query -W -f='${Status}' libneatvnc1 2>/dev/null | grep -q 'ok installed'; } \
+    rootfs_dpkg_query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'ok installed' \
+        || { [ "$pkg" = libneatvnc0 ] && rootfs_dpkg_query -W -f='${Status}' libneatvnc1 2>/dev/null | grep -q 'ok installed'; } \
         || { echo "ERROR: $pkg disappeared with the removal of unused libraries" >&2; exit 1; }
 done
 echo ">>> installed size of / after removal: $(du -sxm "${ROOTFS}" | cut -f1) MiB"
 
-chroot "${ROOTFS}" env DEBIAN_FRONTEND=noninteractive apt-get clean
+if [ "$NATIVE_BUILD" = 1 ]; then
+    # trigger-driven caches and guarded postinst blocks, then the traces of the bootstrap tool
+    /unitotem/native/nb-finalize
+    rm -f "${ROOTFS}/etc/apt/apt.conf.d/99mmdebstrap" "${ROOTFS}/var/lib/dpkg/arch"
+fi
+rootfs_apt clean
 rm -rf "${ROOTFS}/var/lib/apt/lists/"*
 
-remove_policy_rc
-umount_chroot
+if [ "$NATIVE_BUILD" = 1 ]; then
+    nb_host_touched
+    nb_teardown
+else
+    remove_policy_rc
+    umount_chroot
+fi
 
 echo "Saving stage 1 tarball..."
 # ---------- Package lock: verify or freeze ----------
 if [ "$PKGLOCKED" = 1 ]; then
-    python3 /unitotem/pkglock.py verify "$PKGLOCK_FILE" "${ROOTFS}" || { echo "ERROR: the image does not match the package lock (see above): run tools/pkglock.py upgrade ${ARCH} if the packages changed on purpose" >&2; exit 1; }
+    python3 /unitotem/pkglock.py verify "$PKGLOCK_FILE" "${ROOTFS}" || { echo "ERROR: the image does not match the package lock (see above): run tools/pkglock.py upgrade ${ARCH} if the packages changed on purpose" >&2; [ -n "${NB_SURVEY:-}" ] || exit 1; }
     # the shipped image does not carry the snapshot sources or the pins (a device never runs apt): back to the ordinary ones
     rm -f "${ROOTFS}/etc/apt/preferences.d/99-unitotem-lock" "${ROOTFS}/etc/apt/apt.conf.d/99-pkglock"
     cat > "${ROOTFS}/etc/apt/sources.list" << EOF

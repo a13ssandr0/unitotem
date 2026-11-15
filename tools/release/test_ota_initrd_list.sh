@@ -129,7 +129,7 @@ PY
 
 grep -q 'ota-initrd.list' "$REPO/unitotem/stage1-packages.sh" && grep -q 'ota-initrd.list' "$REPO/unitotem/stage1-recovery-initrd.sh" \
     && ok "both install sites ship the list" || bad "install site missing the list"
-grep -q 'ota-initrd.list' "$REPO/unitotem/stage2-configure.sh" && bad "stage2 must not install a second copy" || ok "stage2 does not install the hook"
+grep -Eq '^[[:space:]]*(install|cp)[[:space:]].*ota-initrd\.list' "$REPO/unitotem/stage2-configure.sh" && bad "stage2 must not install a second copy" || ok "stage2 does not install the list (it only passes the installed copy to the native slot initramfs builder)"
 dash -n "$REPO/unitotem/files/ota-hook" && sh -n "$REPO/unitotem/files/ota-hook" && ok "hook syntax (dash, sh)" || bad "hook syntax"
 
 # lists.py: the real list parses, a malformed one is rejected.

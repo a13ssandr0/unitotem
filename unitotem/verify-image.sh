@@ -124,7 +124,7 @@ echo "== Logo and manager"
 for f in unitotem-logo-{256x73,640x182,1280x365}.{bgrx,rgb565,spans}; do
     chk "framebuffer logo $f in the image" test -s "$R/usr/lib/unitotem/$f"
 done
-chk "OTA hook carries the logo into the initramfs" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" 'unitotem-logo-'
+chk "OTA hook list carries the logo into the initramfs" file_has "$R/usr/share/unitotem-ota/ota-initrd.list" '^logo[[:space:]].*unitotem-logo-'
 HOOK_BOTTOM=$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays
 line_of() { grep -n -- "$2" "$1" 2>/dev/null | head -n 1 | cut -d: -f1; }
 before() { local a b; a=$(line_of "$1" "$2"); b=$(line_of "$1" "$3"); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; }
@@ -134,7 +134,7 @@ chk "init-bottom hook defines grow_data (DATA grown to the disk end)" file_has "
 chk "grow_data runs before DATA is mounted" before "$HOOK_BOTTOM" '^grow_data "\$DATA_DEV"' '^if ! mount -t ext4'
 chk "only partitions flagged by layout_complete are formatted (GPT attribute bit 48)" file_has "$HOOK_BOTTOM" 'GUID:48'
 for _t in sgdisk sfdisk partx resize2fs e2fsck dumpe2fs mke2fs blkid readlink dd udevadm; do
-    chk "$_t is in the initramfs hook list (layout and growth of DATA)" file_has "$R/etc/initramfs-tools/hooks/unitotem-ota" "(^|[[:space:]])${_t}([[:space:]]|\$)"
+    chk "$_t is in the initramfs hook list (layout and growth of DATA)" file_has "$R/usr/share/unitotem-ota/ota-initrd.list" "(^|[[:space:]])${_t}([[:space:]]|\$)"
 done
 for pkg in unitotem unitotem-manager unitotem-node unitotem-viewer python3-cefpython3 plymouth-theme-unitotem; do
     chk "package $pkg is installed at 3.x" bash -c "awk -v p='$pkg' 'BEGIN{RS=\"\";FS=\"\\n\"} \$1==\"Package: \"p{for(i=1;i<=NF;i++) if(\$i ~ /^Version: 3\\./) f=1} END{exit !f}' $R/var/lib/dpkg/status"
@@ -245,6 +245,11 @@ echo "== Device identity (nothing secret may be shared by every device flashed f
 chk "no TLS private key in the image (it is generated on first boot)" bash -c "! test -e $R/etc/ssl/unitotem.pem && ! test -e $R/etc/ssl/unitotem_key.pem"
 chk "first-boot certificate generator installed" test -x "$R/usr/sbin/unitotem-first-boot-cert"
 chk "first-boot certificate service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-first-boot-cert.service"
+chk "device suffix and host name script installed" test -x "$R/usr/sbin/unitotem-hostname"
+chk "device suffix and host name service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-hostname.service"
+chk "the host name service runs before NetworkManager and the manager" file_has "$R/etc/systemd/system/unitotem-hostname.service" 'Before=.*NetworkManager.service.*unitotem-manager.service'
+chk "the image ships an empty /etc/machine-id (each device generates its own on the first boot)" bash -c "[ -f '$R/etc/machine-id' ] && [ ! -s '$R/etc/machine-id' ]"
+chk "/var/lib/dbus/machine-id is a link to /etc/machine-id" bash -c "[ \"\$(readlink '$R/var/lib/dbus/machine-id')\" = /etc/machine-id ]"
 chk "the generator runs before the manager" file_has "$R/etc/systemd/system/unitotem-first-boot-cert.service" 'Before=.*unitotem-manager.service'
 chk "no SSH host key in the image's /etc/ssh is relied on (unitotem-ssh-hostkey regenerates)" test -x "$R/usr/sbin/unitotem-ssh-hostkey"
 

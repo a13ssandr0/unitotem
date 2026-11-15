@@ -131,7 +131,11 @@ native_recovery_initrd() {
         --engine "${DIR}/deploy/script/ota-engine.sh" --list "${DIR}/unitotem/files/ota-initrd.list" --work "${work}"
 }
 
+# NATIVE_BUILD=1 (arm64): stages 0-3 in the unitotem-nbuilder image (Dockerfile.nbuild) with the host dpkg/apt working on the target
+# tree and the native initramfs builders; no binfmt, no qemu chroot (docs/system/build.md, Native arm64 build). Default 0.
+NATIVE_BUILD="${NATIVE_BUILD:-0}"
 NATIVE_INITRD="${NATIVE_INITRD:-0}"
+if [ "${NATIVE_BUILD}" = 1 ]; then NATIVE_INITRD=1; PI_NATIVE_BUILD=0; fi
 
 # ONLY_RECOVERY with NATIVE_INITRD=1 runs no Docker at all: skip the daemon check and the builder image.
 if [ "${NATIVE_INITRD}" = 1 ] && [ -n "${ONLY_RECOVERY:-}" ]; then
@@ -142,15 +146,22 @@ else
         exit 1
     fi
 
-    # Register QEMU binfmt for arm64 cross-compilation
-    echo ">>> Setting up QEMU binfmt handlers..."
-    ${DOCKER} run --rm --privileged tonistiigi/binfmt --install arm64 2>/dev/null \
-        || ${DOCKER} run --rm --privileged multiarch/qemu-user-static --reset -p yes \
-        || echo "Warning: could not register binfmt handlers (may already be registered)"
+    if [ "${NATIVE_BUILD}" = 1 ] && [ "${ARCHES}" = arm64 ]; then
+        echo ">>> NATIVE_BUILD=1: no binfmt handler is registered"
+    else
+        # Register QEMU binfmt for arm64 cross-compilation
+        echo ">>> Setting up QEMU binfmt handlers..."
+        ${DOCKER} run --rm --privileged tonistiigi/binfmt --install arm64 2>/dev/null \
+            || ${DOCKER} run --rm --privileged multiarch/qemu-user-static --reset -p yes \
+            || echo "Warning: could not register binfmt handlers (may already be registered)"
+    fi
 
     # Build the builder image
     echo ">>> Building unitotem builder image..."
     ${DOCKER} build -f "${DIR}/Dockerfile.unitotem" -t unitotem-builder "${DIR}"
+    if [ "${NATIVE_BUILD}" = 1 ]; then
+        ${DOCKER} build -f "${DIR}/Dockerfile.nbuild" -t unitotem-nbuilder "${DIR}"
+    fi
 fi
 
 mkdir -p "${DIR}/build" "${DIR}/deploy"
@@ -208,9 +219,17 @@ for ARCH in ${ARCHES}; do
 
     mkdir -p "${DIR}/build/${ARCH}" "${DIR}/deploy/${ARCH}" "${DIR}/build/apt-cache" "${DIR}/unitotem/locks"
 
+    BUILDER=unitotem-builder
+    NB_OPTS=()
+    if [ "${NATIVE_BUILD}" = 1 ] && [ "${ARCH}" = arm64 ]; then
+        BUILDER=unitotem-nbuilder
+        # top priority for the build container (project rule); no UniTotem service runs on a build PC
+        NB_OPTS=(-e NATIVE_BUILD=1 --cpu-shares=8192 --blkio-weight=1000)
+    fi
     RUN_OPTS=(
         --rm
         --privileged
+        "${NB_OPTS[@]}"
         -v /dev:/dev
         -v "${DIR}/build:/work"
         -v "${DIR}/deploy:/deploy"
@@ -281,7 +300,7 @@ for ARCH in ${ARCHES}; do
         if [ "${NATIVE_INITRD}" = 1 ]; then
             native_recovery_initrd
         else
-            ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage1-recovery-initrd.sh
+            ${DOCKER} run "${RUN_OPTS[@]}" "${BUILDER}" /unitotem/stage1-recovery-initrd.sh
         fi
         continue
     fi
@@ -289,14 +308,14 @@ for ARCH in ${ARCHES}; do
     # Stage 0: Bootstrap
     if should_run 0; then
         echo "[${ARCH}] Stage 0: Bootstrap..."
-        ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage0-bootstrap.sh
+        ${DOCKER} run "${RUN_OPTS[@]}" "${BUILDER}" /unitotem/stage0-bootstrap.sh
     fi
 
     # Stage 1: Packages
     STAGE1_RAN=0
     if should_run 1; then
         echo "[${ARCH}] Stage 1: Installing packages..."
-        ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage1-packages.sh
+        ${DOCKER} run "${RUN_OPTS[@]}" "${BUILDER}" /unitotem/stage1-packages.sh
         STAGE1_RAN=1
     fi
 
@@ -308,7 +327,7 @@ for ARCH in ${ARCHES}; do
         if [ "${NATIVE_INITRD}" = 1 ]; then
             native_recovery_initrd
         else
-            ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage1-recovery-initrd.sh
+            ${DOCKER} run "${RUN_OPTS[@]}" "${BUILDER}" /unitotem/stage1-recovery-initrd.sh
         fi
     else
         echo "[${ARCH}] Stage 1b: skipping (recovery.manifest exists)"
@@ -317,13 +336,13 @@ for ARCH in ${ARCHES}; do
     # Stage 2: Configure
     if should_run 2; then
         echo "[${ARCH}] Stage 2: Configuring system..."
-        ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage2-configure.sh
+        ${DOCKER} run "${RUN_OPTS[@]}" "${BUILDER}" /unitotem/stage2-configure.sh
         echo "${AB_LAYOUT:-1}" > "${DIR}/build/${ARCH}/stage2.layout"
     fi
 
     # Stage 3: Create disk image (always runs to produce fresh image)
     echo "[${ARCH}] Stage 3: Creating disk image..."
-    ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage3-image.sh
+    ${DOCKER} run "${RUN_OPTS[@]}" "${BUILDER}" /unitotem/stage3-image.sh
 
     adopt_lock
     echo "[${ARCH}] Done! Image in: deploy/${ARCH}/"

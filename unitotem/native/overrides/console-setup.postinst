@@ -1,0 +1,66 @@
+#!/bin/sh
+# Native build: DPKG_ROOT-aware replacement of the postinst (docs/system/build.md, Native arm64 build). The original works on
+# absolute paths and runs setupcon on the builder's console. debconf answers: the config script (not run here) selects these
+# for a UTF-8 image locale; they are set here. The console cache (/etc/console-setup/cached_*) is not written: the boot script
+# /usr/lib/console-setup/console-setup.sh runs setupcon --save when the cache is missing, so the first boot writes it.
+set -e
+: "${DPKG_ROOT:?}"
+root="$DPKG_ROOT"
+
+. /usr/share/debconf/confmodule
+db_version 2.0
+
+CONFIGFILE="${root}/etc/default/console-setup"
+
+# turn around bug in dpkg (#17624): the doc directory becomes a symlink
+if [ ! -L "${root}/usr/share/doc/console-setup" ] && [ -d "${root}/usr/share/doc/console-setup" ]; then
+    if rmdir "${root}/usr/share/doc/console-setup" 2>/dev/null; then
+        ln -sf keyboard-configuration "${root}/usr/share/doc/console-setup"
+    fi
+fi
+
+if [ "$1" = "configure" ] && [ ! -L "$CONFIGFILE" ]; then
+    db_set console-setup/charmap47 UTF-8
+    db_set console-setup/codeset47 "Guess optimal character set"
+    db_set console-setup/codesetcode guess
+    db_set console-setup/fontface47 Fixed
+    db_set console-setup/fontsize 8x16
+    db_set console-setup/fontsize-text47 8x16
+    db_set console-setup/fontsize-fb47 8x16
+    db_set console-setup/store_defaults_in_debconf_db true
+
+    db_get console-setup/codesetcode
+    codeset="$RET"
+    db_get console-setup/fontface47
+    fontface="$RET"
+    db_get console-setup/fontsize
+    fontsize="$RET"
+    db_get console-setup/charmap47
+    charmap="${RET:-UTF-8}"
+
+    if [ ! -e "$CONFIGFILE" ]; then
+        sed 's|^ *ACTIVE_CONSOLES=.*|ACTIVE_CONSOLES="/dev/tty[1-6]"|' \
+            "${root}/usr/share/console-setup/console-setup" > "$CONFIGFILE"
+    fi
+
+    # the variables the file must carry (added when the admin removed them)
+    for var in ACTIVE_CONSOLES CHARMAP CODESET FONTFACE FONTSIZE; do
+        if ! grep "^ *${var}=" "$CONFIGFILE" >/dev/null; then
+            echo "${var}=" >> "$CONFIGFILE"
+        fi
+    done
+
+    cp -a -f "$CONFIGFILE" "$CONFIGFILE.tmp"
+    sed \
+        -e "s|^ *ACTIVE_CONSOLES=.*|ACTIVE_CONSOLES=\"/dev/tty[1-6]\"|" \
+        -e "s|^ *CHARMAP=.*|CHARMAP=\"$charmap\"|" \
+        -e "s|^ *CODESET=.*|CODESET=\"$codeset\"|" \
+        -e "s|^ *FONTFACE=.*|FONTFACE=\"$fontface\"|" \
+        -e "s|^ *FONTSIZE=.*|FONTSIZE=\"$fontsize\"|" \
+        < "$CONFIGFILE" > "$CONFIGFILE.tmp"
+    mv -f "$CONFIGFILE.tmp" "$CONFIGFILE"
+fi
+
+db_stop
+
+exit 0

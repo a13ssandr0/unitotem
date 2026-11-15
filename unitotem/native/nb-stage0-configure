@@ -1,0 +1,23 @@
+#!/bin/bash
+# usage: nb-stage0-configure ROOT
+# Stage 0 (mmdebstrap, chrootless) configures netbase, readline-common, kmod and ifupdown with the host dpkg before any
+# replacement exists: their maintainer scripts wrote absolute paths of the builder (/etc/networks, /etc/modules, /etc/inputrc,
+# /etc/network/interfaces, the netdev group). This runs the replacement rules of nb-install again against ROOT, as a fresh
+# install (configure, no second argument). Idempotent: each step creates a file or group only when it is absent.
+# Docs: docs/system/build.md, Native arm64 build.
+set -euo pipefail
+R="${1:?usage: nb-stage0-configure ROOT}"
+OV=/unitotem/native/overrides
+INFO="$R/var/lib/dpkg/info"
+
+for p in netbase readline-common kmod ifupdown; do
+    if [ -f "$OV/$p.postinst.sed" ]; then
+        sed -f "$OV/$p.postinst.sed" "$INFO/$p.postinst" | DPKG_ROOT="$R" sh -s configure
+    elif [ -f "$OV/$p.postinst" ]; then
+        DPKG_ROOT="$R" sh -s configure < "$OV/$p.postinst"
+    else
+        echo "nb-stage0-configure: no replacement for $p.postinst" >&2
+        exit 1
+    fi
+    echo "nb-stage0-configure: $p.postinst configured under ROOT"
+done

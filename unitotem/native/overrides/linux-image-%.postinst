@@ -1,0 +1,16 @@
+#!/bin/sh
+# Native build: kernel image postinst for any linux-image-<version>. The original runs depmod and linux-update-symlinks with
+# absolute paths and the kernel hooks (initramfs, raspi-firmware); here the module index is built with the host depmod -b,
+# the /vmlinuz link is made, and the hooks' work is nb_kernel_post / stage 2.
+set -e
+[ "$1" = configure ] || exit 0
+v=${DPKG_MAINTSCRIPT_PACKAGE#linux-image-}
+[ -d "${DPKG_ROOT}/lib/modules/$v" ] || exit 0
+depmod -a -b "${DPKG_ROOT:-/}" "$v"
+if [ -L "${DPKG_ROOT}/vmlinuz" ]; then
+    cur=$(readlink "${DPKG_ROOT}/vmlinuz")
+    [ "$cur" = "boot/vmlinuz-$v" ] || ln -sfn "$cur" "${DPKG_ROOT}/vmlinuz.old"
+fi
+ln -sfn "boot/vmlinuz-$v" "${DPKG_ROOT}/vmlinuz"
+rm -f "${DPKG_ROOT}/lib/modules/$v/.fresh-install"
+exit 0

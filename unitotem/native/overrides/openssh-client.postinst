@@ -1,0 +1,76 @@
+#!/bin/sh
+# Native build: DPKG_ROOT-aware replacement of the postinst (docs/system/build.md, Native arm64 build). The original works
+# on absolute paths (the builder's root, not the target) and calls the target's chmod/chgrp by name. Same end state for a
+# fresh install: group _ssh, /usr/bin/ssh-agent owned by root:_ssh with mode 2755, the openssh-client tmpfiles entries.
+# The ssh-agent user unit is not enabled here, as in the original when DPKG_ROOT is set.
+set -e
+: "${DPKG_ROOT:?}"
+root="$DPKG_ROOT"
+action="$1"
+
+umask 022
+
+# adduser ignores DPKG_ROOT: a system group is made with groupadd -R at the lowest free GID of SYS_GID_MIN (as adduser does)
+nb_sysgroup() {
+    grep -q "^$1:" "${root}/etc/group" && return 0
+    gid=$(awk '$1 == "SYS_GID_MIN" { print $2 }' "${root}/etc/login.defs"); gid=${gid:-101}
+    while cut -d: -f3 "${root}/etc/group" | grep -qx "$gid"; do gid=$((gid + 1)); done
+    groupadd -R "$root" -g "$gid" "$1"
+}
+
+update_ssh_group_name() {
+    # the _ssh group used to be called ssh (upgrades only; a fresh image never has the old name)
+    if grep -q '^ssh:' "${root}/etc/group" && ! grep -q '^_ssh:' "${root}/etc/group"; then
+        groupmod -R "$root" -n _ssh ssh
+    fi
+}
+
+set_ssh_agent_permissions() {
+    nb_sysgroup _ssh
+    if ! dpkg-statoverride --admindir="${root}/var/lib/dpkg" --list /usr/bin/ssh-agent >/dev/null 2>&1; then
+        gid=$(awk -F: '$1 == "_ssh" { print $3 }' "${root}/etc/group")
+        [ -n "$gid" ] || { echo "openssh-client: group _ssh missing" >&2; exit 1; }
+        chgrp "$gid" "${root}/usr/bin/ssh-agent"
+        chmod 2755 "${root}/usr/bin/ssh-agent"
+    fi
+}
+
+remove_obsolete_alternatives() {
+    update-alternatives --remove rcp /usr/bin/scp
+    update-alternatives --remove rlogin /usr/bin/slogin
+    update-alternatives --remove rsh /usr/bin/ssh
+}
+
+if [ "$action" = configure ]; then
+    if dpkg --compare-versions "$2" lt-nl 1:8.4p1-6~; then
+        update_ssh_group_name
+    fi
+    set_ssh_agent_permissions
+    if dpkg --compare-versions "$2" lt-nl 1:9.1p1-1~; then
+        remove_obsolete_alternatives
+    fi
+fi
+
+# dh_installsystemduser: not run here (DPKG_ROOT set); the same line makes nb-finalize enable the user unit
+if [ -z "$DPKG_ROOT" ] ; then
+	# The following line should be removed in trixie or trixie+1
+	deb-systemd-helper --user unmask 'ssh-agent.socket' >/dev/null || true
+	# was-enabled defaults to true, so new installations run enable.
+	if deb-systemd-helper --quiet --user was-enabled 'ssh-agent.socket' ; then
+		deb-systemd-helper --user enable 'ssh-agent.socket' >/dev/null || true
+	else
+		deb-systemd-helper --user update-state 'ssh-agent.socket' >/dev/null || true
+	fi
+fi
+
+# dh_installtmpfiles
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+    if [ -x "$(command -v systemd-tmpfiles)" ]; then
+        systemd-tmpfiles --root="$root" --create openssh-client.conf || true
+    fi
+fi
+
+# dh_installdeb
+dpkg-maintscript-helper rm_conffile /etc/ssh/moduli 1:7.9p1-8\~ -- "$@"
+
+exit 0

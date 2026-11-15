@@ -1,0 +1,103 @@
+#!/usr/bin/python3 -I
+"""Native build: adduser/addgroup for the target tree (the packaged tools ignore DPKG_ROOT).
+
+Handles the options the packages' maintainer scripts use: --system --group --quiet --force-badname --disabled-password
+--disabled-login --no-create-home --gecos TEXT --home DIR --shell SH --ingroup GROUP --uid N --gid N, `addgroup [--system] GROUP`,
+`adduser --system [--group] USER`. System ids are the lowest free one from 100 (as adduser does). Applied with groupadd/useradd -P.
+"""
+import os
+import subprocess
+import sys
+
+ROOT = os.environ["NB_ROOT"]
+name = os.path.basename(sys.argv[0])
+args = sys.argv[1:]
+opts = {"system": False, "group": False, "home": None, "shell": None, "gecos": "", "ingroup": None, "uid": None, "gid": None,
+        "nohome": False}
+pos = []
+i = 0
+while i < len(args):
+    a = args[i]
+    if a in ("--home", "--shell", "--gecos", "--ingroup", "--uid", "--gid", "--firstuid", "--lastuid"):
+        v = args[i + 1]
+        if a in ("--home", "--shell", "--gecos", "--ingroup", "--uid", "--gid"):
+            opts[a[2:]] = v
+        i += 2
+        continue
+    if a == "--system":
+        opts["system"] = True
+    elif a == "--group":
+        opts["group"] = True
+    elif a == "--no-create-home":
+        opts["nohome"] = True
+    elif a.startswith("--"):
+        pass  # --quiet, --force-badname, --disabled-password, --disabled-login, ...
+    else:
+        pos.append(a)
+    i += 1
+
+
+def table(path):
+    rows = []
+    with open(os.path.join(ROOT, path)) as f:
+        for line in f:
+            p = line.rstrip("\n").split(":")
+            if len(p) > 2:
+                rows.append(p)
+    return rows
+
+
+def free_id(rows, col):
+    used = {int(r[col]) for r in rows if r[col].isdigit()}
+    n = 100
+    while n in used:
+        n += 1
+    return n
+
+
+def run(cmd):
+    subprocess.run(cmd, check=True)
+
+
+def ensure_group(g, gid=None):
+    rows = table("etc/group")
+    for r in rows:
+        if r[0] == g:
+            return int(r[2])
+    n = gid if gid is not None else (free_id(rows, 2) if opts["system"] else max([1000] + [int(r[2]) + 1 for r in rows if 1000 <= int(r[2]) < 60000]))
+    run(["groupadd", "-P", ROOT, "-g", str(n), g])
+    return n
+
+
+if name == "addgroup" and not (len(pos) == 2):
+    ensure_group(pos[0], int(opts["gid"]) if opts["gid"] else None)
+    sys.exit(0)
+if name == "addgroup":  # addgroup USER GROUP
+    ensure_group(pos[1])
+    run(["usermod", "-P", ROOT, "-aG", pos[1], pos[0]])
+    sys.exit(0)
+
+user = pos[0]
+rows = table("etc/passwd")
+if any(r[0] == user for r in rows):
+    sys.exit(0)
+uid = int(opts["uid"]) if opts["uid"] else (free_id(rows, 2) if opts["system"] else max([1000] + [int(r[2]) + 1 for r in rows if 1000 <= int(r[2]) < 60000]))
+if opts["ingroup"]:
+    gid = ensure_group(opts["ingroup"])
+elif opts["group"] or not opts["system"]:
+    grows = table("etc/group")
+    gid = uid if not any(int(r[2]) == uid for r in grows) else None
+    gid = ensure_group(user, gid)
+else:
+    gid = ensure_group("nogroup")
+cmd = ["useradd", "-P", ROOT, "-u", str(uid), "-g", str(gid), "-c", opts["gecos"],
+       "-s", opts["shell"] or ("/usr/sbin/nologin" if opts["system"] else "/bin/bash")]
+if opts["system"]:
+    cmd.append("-r")
+cmd += ["-d", opts["home"] or ("/nonexistent" if opts["system"] else "/home/" + user)]
+cmd.append("-M" if (opts["nohome"] or opts["system"]) else "-m")
+cmd.append(user)
+run(cmd)
+if len(pos) == 2:
+    ensure_group(pos[1])
+    run(["usermod", "-P", ROOT, "-aG", pos[1], user])

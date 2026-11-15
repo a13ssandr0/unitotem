@@ -1,0 +1,41 @@
+#!/bin/sh
+# Native build (NATIVE_BUILD=1): stand-in for a target (arm64) program that a maintainer script calls by name while dpkg runs
+# on the host with --force-script-chrootless. Installed as a symlink named like the program in a directory first in PATH
+# (common.sh nb_setup). The ONE target binary is run by qemu-user inside a chroot of the target tree, so its file accesses
+# land in the target; no other target code is emulated (docs/system/build.md, Native arm64 build).
+name=${0##*/}
+root=${NB_ROOT:?NB_ROOT is not set}
+for p in /usr/sbin /sbin /usr/bin /bin; do
+    [ -x "${root}${p}/${name}" ] && { bin="${p}/${name}"; break; }
+done
+[ "$name" = linux-run-hooks ] && bin=""
+case "$name" in
+adduser|addgroup)
+    exec python3 -I /unitotem/native/nb-adduser "$@"
+    ;;
+py3compile|py3clean)
+    exec python3 -I /unitotem/native/nb-pycompile "$name" "$@"
+    ;;
+nb-pycompile)
+    exec python3 -I /unitotem/native/nb-pycompile files "$@"
+    ;;
+linux-run-hooks)
+    # kernel hooks (/etc/kernel/*.d) use absolute paths and the target's initramfs tooling: the work they do (slot initramfs,
+    # raspi-firmware files in /boot/firmware, module index) is done by nb_kernel_post in common.sh / stage 2
+    exit 0
+    ;;
+ldconfig)
+    # the target tree is the chroot: drop the -r ROOT of the caller; no target ldconfig yet (libc-bin unpacked later): nothing to do
+    [ -n "${bin:-}" ] || exit 0
+    args=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        -r) shift; [ $# -gt 0 ] && shift ;;
+        *) args="$args '$1'"; shift ;;
+        esac
+    done
+    eval "set -- $args"
+    ;;
+esac
+[ -n "${bin:-}" ] || { echo "nb-shim: ${name}: not in the target tree" >&2; exit 127; }
+exec env -u DPKG_ROOT chroot "$root" /usr/bin/qemu-aarch64-static "$bin" "$@"

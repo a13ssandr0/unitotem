@@ -1,0 +1,101 @@
+#!/bin/bash
+# Native build: the cache and state updates that the packages' triggers and guarded postinst blocks perform in a real chroot
+# but cannot perform under dpkg --force-script-chrootless (absolute paths, target programs). Run once, after the last package
+# transaction. Every step is data-only (host tool with a root argument) except the marked target programs, which run one by
+# one under qemu-user in a chroot (nb_qemu). Docs: docs/system/build.md, Native arm64 build.
+set -euo pipefail
+R="${ROOTFS:?ROOTFS is not set}"
+TRIPLET=aarch64-linux-gnu
+INFO="$R/var/lib/dpkg/info"
+export DPKG_ROOT="$R"
+
+step() { echo ">>> nb-finalize: $*"; }
+# nb_qemu PROGRAM ARGS: a target program, run alone by qemu-user inside a chroot of the tree
+nb_qemu() { local p="$1"; shift; env -u DPKG_ROOT chroot "$R" /usr/bin/qemu-aarch64-static "$p" "$@"; }
+has() { [ -x "$R$1" ]; }
+
+step "ldconfig (target program)"
+nb_qemu /sbin/ldconfig
+
+step "fontconfig caches"
+fc-cache --sysroot="$R" -s -f
+
+step "shared MIME database"
+update-mime-database "$R/usr/share/mime"
+
+step "GSettings schemas"
+/usr/lib/x86_64-linux-gnu/glib-2.0/glib-compile-schemas "$R/usr/share/glib-2.0/schemas"
+
+step "icon caches"
+for d in "$R"/usr/share/icons/*/; do
+    [ -f "${d}index.theme" ] || continue
+    gtk-update-icon-cache -q -f -t "$d"
+done
+
+step "GIO modules, GdkPixbuf loaders, GTK input methods (target programs)"
+has /usr/lib/$TRIPLET/glib-2.0/gio-querymodules && nb_qemu /usr/lib/$TRIPLET/glib-2.0/gio-querymodules /usr/lib/$TRIPLET/gio/modules
+has /usr/lib/$TRIPLET/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders \
+    && nb_qemu /usr/lib/$TRIPLET/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders --update-cache
+has /usr/lib/$TRIPLET/libgtk-3-0t64/gtk-query-immodules-3.0 \
+    && nb_qemu /usr/lib/$TRIPLET/libgtk-3-0t64/gtk-query-immodules-3.0 --update-cache
+
+step "CA certificates"
+update-ca-certificates --fresh --sysroot "$R"
+# the links carry the sysroot: make them target paths
+find "$R/etc/ssl/certs" -type l | while read -r l; do
+    t=$(readlink "$l")
+    case "$t" in "$R"/*) ln -sfn "/${t#"$R"//}" "$l" ;; esac
+done
+
+step "udev hardware database"
+systemd-hwdb --root="$R" --usr update
+
+step "SysV init links"
+# "update-rc.d NAME defaults" calls of the packages' postinst, guarded by tests on absolute paths
+{ grep -h -o -E 'update-rc\.d [a-zA-Z0-9._+-]+ defaults( [0-9]+)?' "$INFO"/*.postinst || true; } | sort -u | while read -r _ name _; do
+    [ -f "$R/etc/init.d/$name" ] && update-rc.d "$name" defaults >/dev/null
+done
+
+step "user units enabled by the packages (guarded by DPKG_ROOT in their postinst)"
+for f in "$INFO"/*.postinst; do
+    pkg=$(basename "$f" .postinst); pkg=${pkg%%:*}
+    export DPKG_MAINTSCRIPT_PACKAGE="$pkg"
+    { grep -o -E "deb-systemd-helper --user unmask '[^']+'" "$f" || true; } | sort -u | sed "s/.*'\(.*\)'/\1/" | while read -r unit; do
+        deb-systemd-helper --user unmask "$unit" >/dev/null || true
+        if deb-systemd-helper --quiet --user was-enabled "$unit"; then
+            deb-systemd-helper --user enable "$unit" >/dev/null || true
+        else
+            deb-systemd-helper --user update-state "$unit" >/dev/null || true
+        fi
+    done
+done
+unset DPKG_MAINTSCRIPT_PACKAGE
+
+step "X11 font indexes"
+if has /usr/sbin/update-fonts-dir; then
+    # xfonts-utils postinst: the file update-fonts-alias reads
+    mkdir -p -m 755 "$R/var/lib/xfonts"
+    [ -f "$R/var/lib/xfonts/excluded-aliases" ] || echo '!! Excluded alias files to be ignored by update-fonts-alias(8)' > "$R/var/lib/xfonts/excluded-aliases"
+    # xfonts-utils is a perl script suite working on absolute paths: run the host copy on the target's directories
+    unshare -m bash -c '
+        set -e
+        for d in /usr/share/fonts /usr/share/X11 /etc/X11 /var/lib/xfonts /usr/share/xfonts; do
+            [ -d "$0$d" ] && { mkdir -p "$d"; mount --bind "$0$d" "$d"; }
+        done
+        update-fonts-dir --x11r7-layout misc
+        update-fonts-alias --include /etc/X11/fonts/misc/xfonts-base.alias misc
+        update-fonts-scale Type1
+        update-fonts-dir --x11r7-layout Type1
+        update-fonts-alias --include /etc/X11/fonts/Type1/fonts-urw-base35.alias Type1
+    ' "$R"
+fi
+
+step "modes the packages set with absolute paths"
+[ -f "$R/etc/sudoers" ] && chmod 0440 "$R/etc/sudoers"
+[ -f "$R/etc/machine-id" ] && chmod 0444 "$R/etc/machine-id"
+
+# dbus-uuidgen --ensure of the dbus-daemon postinst: the machine id copy for D-Bus
+mkdir -p "$R/var/lib/dbus"
+[ -e "$R/var/lib/dbus/machine-id" ] || ln -s /etc/machine-id "$R/var/lib/dbus/machine-id"
+
+step "done"

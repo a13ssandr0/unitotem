@@ -1,0 +1,23 @@
+# Builder image of the native arm64 build (NATIVE_BUILD=1, docs/system/build.md "Native arm64 build"): trixie, so the
+# host dpkg/apt/adduser/ca-certificates tools understand DPKG_ROOT, plus the stage 2-3 tools. qemu-user-static
+# provides only the binary used for the per-binary exceptions; no binfmt handler is registered.
+FROM debian:trixie
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        mmdebstrap fakeroot debootstrap dpkg-dev apt apt-utils gnupg \
+        qemu-user-static \
+        fontconfig libglib2.0-bin libgdk-pixbuf2.0-bin shared-mime-info ca-certificates openssl \
+        locales libc-bin systemd kmod \
+        dosfstools e2fsprogs gdisk parted kpartx util-linux xz-utils pigz aria2 zstd curl wget rsync git \
+        partclone device-tree-compiler initramfs-tools-core cpio python3 python3-pil binutils file \
+        libgtk-3-bin xfonts-utils sgml-base xml-core init-system-helpers openssh-client fdisk \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY unitotem/ /unitotem/
+COPY deploy/script/ota-engine.sh /unitotem/files/ota-engine.sh
+COPY tools/pkglock.py /unitotem/pkglock.py
+RUN chmod +x /unitotem/*.sh /unitotem/files/ota-engine.sh /unitotem/pkglock.py
+
+VOLUME ["/work", "/deploy"]

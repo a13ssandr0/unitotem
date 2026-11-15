@@ -220,8 +220,8 @@ def _builtin_module_files(root, dest, kver):
             _copy_p(src, os.path.join(dest, "lib/modules", kver, name))
 
 
-def _module_names_from_file(path, mods):
-    # add_modules_from_file: first word of each non-comment line
+def _module_names_from_file(path, mods, forced=None):
+    # add_modules_from_file: first word of each non-comment line; force_load also records "module args" in /conf/modules
     if not os.path.isfile(path):
         return
     with open(path, encoding="utf-8") as fh:
@@ -232,6 +232,8 @@ def _module_names_from_file(path, mods):
             if len(words) > 1:
                 raise RuntimeError(f"{path}: module options are not ported: {line.strip()}")
             mods.add([words[0]])
+            if forced is not None:
+                forced.append(words[0] + " ")
 
 
 def _ld_so_conf(root, dest):
@@ -250,8 +252,11 @@ def _ld_so_conf(root, dest):
             shutil.copy2(src, dst)
 
 
-def build(root, dest, arch, kver, engine, logo_dir, list_path, hook, warn=_warn):
-    """Fills dest (empty, created here if missing) from the target tree root. Returns the zstd level."""
+def build(root, dest, arch, kver, engine, logo_dir, list_path, hook, warn=_warn, slot=False):
+    """Fills dest (empty, created here if missing) from the target tree root. Returns the zstd level.
+
+    slot=True builds the initramfs of the installed system (what update-initramfs makes): the rootfs's own init-premount
+    scripts are used and initramfs.conf is kept as is; slot=False builds the resident fallback."""
     os.umask(0o022)  # entry modes as mkinitramfs makes them (its umask is 022)
     import modules as modules_mod
     import stage as stage_mod
@@ -284,11 +289,12 @@ def build(root, dest, arch, kver, engine, logo_dir, list_path, hook, warn=_warn)
     st = stage_mod.Stage(root, dest, arch, kver, warn=warn)
     mods = modules_mod.Modules(st)
 
-    _module_names_from_file(os.path.join(conf_dir, "modules"), mods)
+    forced = []
+    _module_names_from_file(os.path.join(conf_dir, "modules"), mods, forced)
     mods_d = os.path.join(root, SHARE, "modules.d")
     if os.path.isdir(mods_d):
         for name in sorted(os.listdir(mods_d)):
-            _module_names_from_file(os.path.join(mods_d, name), mods)
+            _module_names_from_file(os.path.join(mods_d, name), mods, forced)
 
     conf = _read_conf(root)
     compress = conf.get("COMPRESS", "")
@@ -304,16 +310,21 @@ def build(root, dest, arch, kver, engine, logo_dir, list_path, hook, warn=_warn)
 
     _copy_p(os.path.join(root, SHARE, "init"), os.path.join(dest, "init"))
     _copy_scripts(root, dest)
-    _install_premount(dest)
+    if not slot:
+        _install_premount(dest)
 
     os.makedirs(os.path.join(dest, "conf"), exist_ok=True)
     with open(os.path.join(conf_dir, "initramfs.conf"), encoding="utf-8") as fh:
         text = fh.read()
-    text = re.sub(r"^MODULES=.*$", "MODULES=most", text, flags=re.M)
+    if not slot:
+        text = re.sub(r"^MODULES=.*$", "MODULES=most", text, flags=re.M)
     with open(os.path.join(dest, "conf", "initramfs.conf"), "w", encoding="utf-8") as fh:
         fh.write(text)
     with open(os.path.join(dest, "conf", "arch.conf"), "w", encoding="utf-8") as fh:
         fh.write(f"DPKG_ARCH={arch}\n")
+    if forced:
+        with open(os.path.join(dest, "conf", "modules"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(forced) + "\n")
     os.makedirs(os.path.join(dest, "conf", "conf.d"), exist_ok=True)
     for _, path in _conf_d_files(root):
         st.copy_file("config", "/" + os.path.relpath(path, root), "/conf/conf.d")

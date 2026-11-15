@@ -1,0 +1,95 @@
+#!/bin/sh
+# Native build replacement (docs/system/build.md, Native arm64 build). Inspired by sgml-base (GPL): the same steps as the
+# package postinst with every absolute path under DPKG_ROOT. update-catalog is the package's perl script, run on the host
+# with its paths rebased to DPKG_ROOT (nb_update_catalog); no target program runs.
+## ----------------------------------------------------------------------
+set -e
+
+R="${DPKG_ROOT}"
+
+# nb_count PATTERN COUNT FILE: the rebase below must find exactly its lines, else stop.
+nb_count() {
+    [ "$(grep -c -F -- "$1" "$3")" = "$2" ] || { echo "sgml-base: $1 not found $2 time(s) in $3" >&2; exit 1; }
+}
+
+# nb_update_catalog ARGS: update-catalog from the target tree, catalog paths under DPKG_ROOT.
+nb_update_catalog() {
+    f="$R/usr/sbin/update-catalog"
+    nb_count '$path = $token;' 1 "$f"
+    nb_count 'opendir(CATDIR, $catdir)' 1 "$f"
+    nb_count 'check_catalog($catfile) or next' 1 "$f"
+    nb_count 'my($supercat)="/var/lib/sgml-base/supercatalog";' 1 "$f"
+    sed -e 's|\$path = \$token;|$path = $ENV{NB_TARGET} . $token;|' \
+        -e 's|opendir(CATDIR, \$catdir)|opendir(CATDIR, $ENV{NB_TARGET} . $catdir)|' \
+        -e 's|check_catalog(\$catfile) or next|check_catalog($ENV{NB_TARGET} . $catfile) or next|' \
+        -e 's|my(\$supercat)="/var/lib/sgml-base/supercatalog";|my($supercat)=$ENV{NB_TARGET}."/var/lib/sgml-base/supercatalog";|' \
+        "$f" | NB_TARGET="$R" perl - "$@"
+}
+
+## ----------------------------------------------------------------------
+if [ "$1" = "configure" ]
+then
+    ## clean up /usr/lib/sgml (absent in the image; kept for the same end state)
+    rm -f "$R/usr/lib/sgml/catalog"
+    if [ -f "$R/usr/lib/sgml/transitional.cat" ]
+    then
+        mv -f "$R/usr/lib/sgml/transitional.cat" "$R/etc/sgml/transitional.cat"
+        if [ -f "$R/usr/lib/sgml/transitional.cat.old" ]
+        then
+            mv -f "$R/usr/lib/sgml/transitional.cat.old" "$R/etc/sgml/transitional.cat.old"
+        fi
+    fi
+    rmdir --ignore-fail-on-non-empty "$R/usr/lib/sgml" 2>/dev/null || true
+
+    ## evolve legacy /etc/sgml.catalog
+    OCATALOG="$R/etc/sgml.catalog"
+    if [ -f "$OCATALOG" ]
+    then
+        TRANSCAT="$R/etc/sgml/transitional.cat"
+        if [ -f "$TRANSCAT" ]
+        then
+            cp "$TRANSCAT" "$TRANSCAT.old"
+        else
+            cp "$R/usr/share/sgml-base/transitional.cat" "$TRANSCAT"
+        fi
+        sed -e '1,10d' < "$OCATALOG" >> "$TRANSCAT"
+        rm -f "$OCATALOG"
+        if [ -f "$OCATALOG.old" ]
+        then
+            sed -e '1,10d' < "$OCATALOG.old" >> "$TRANSCAT.old"
+            rm -f "$OCATALOG.old"
+        fi
+    fi
+
+    nb_update_catalog --quiet --update-super
+    ln -sf /var/lib/sgml-base/supercatalog "$R/etc/sgml/catalog"
+fi
+if [ "$1" = "triggered" ]
+then
+    nb_update_catalog --quiet --update-super
+fi
+
+## ----------------------------------------------------------------------
+## dh_usrlocal: the directories the package creates under /usr/local (root:root 0755, or staff 02775 when the image has
+## /etc/staff-group-for-usr-local)
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ]; then
+    mode=0755
+    gid=0
+    if [ -e "$R/etc/staff-group-for-usr-local" ]; then
+        mode=02775
+        gid=$(awk -F: '$1 == "staff" { print $3; exit }' "$R/etc/group")
+    fi
+    for d in /usr/local/share /usr/local/share/sgml /usr/local/share/sgml/declaration /usr/local/share/sgml/dtd \
+             /usr/local/share/sgml/entities /usr/local/share/sgml/misc /usr/local/share/sgml/stylesheet
+    do
+        if [ ! -e "$R$d" ]; then
+            if mkdir "$R$d" 2>/dev/null; then
+                if chown "0:$gid" "$R$d"; then
+                    chmod "$mode" "$R$d" || true
+                fi
+            fi
+        fi
+    done
+fi
+
+exit 0

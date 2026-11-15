@@ -1,0 +1,90 @@
+#!/usr/bin/python3 -I
+"""Native build: byte-compiles and cleans Python files of the target tree with the host interpreter.
+
+usage: nb-pycompile py3compile [-p PACKAGE] [-V VER] [-O] [-q] [PATH...]
+       nb-pycompile py3clean   [-p PACKAGE] [-V VER] [PATH...]
+       nb-pycompile files      FILE...        (replaces `python3.13 py_compile.py FILE...` of a maintainer script)
+
+Paths are target paths (as the maintainer script sees them); the root is NB_ROOT. Byte code is architecture independent;
+the source name stored in the .pyc is the target path, as when the target's own interpreter compiles in the chroot.
+Inspired by py3compile/py3clean (python3-minimal) and py_compile (CPython).
+"""
+import importlib.util
+import os
+import py_compile
+import re
+import subprocess
+import sys
+
+ROOT = os.environ["NB_ROOT"]
+PUBLIC = re.compile(r"^/usr/lib/python3(\.\d+)?/")
+
+
+def pkg_files(pkg):
+    out = subprocess.run(["dpkg-query", "--admindir=" + os.path.join(ROOT, "var/lib/dpkg"), "-L", pkg],
+                         capture_output=True, text=True, check=True).stdout
+    return out.splitlines()
+
+
+def walk(path):
+    full = ROOT + path
+    if os.path.isdir(full):
+        for d, _, files in os.walk(full):
+            for f in files:
+                yield os.path.join(d, f)[len(ROOT):]
+    elif os.path.exists(full):
+        yield path
+
+
+def pyc_of(path):
+    return importlib.util.cache_from_source(path)
+
+
+def compile_files(files):
+    rc = 0
+    for f in files:
+        try:
+            py_compile.compile(ROOT + f, cfile=ROOT + pyc_of(f), dfile=f, doraise=True)
+        except (py_compile.PyCompileError, OSError) as e:
+            print("nb-pycompile: %s: %s" % (f, e), file=sys.stderr)
+            rc = 1
+    return rc
+
+
+def parse(args):
+    pkg, paths, i = None, [], 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-p", "--package", "-V", "-X", "--exclude", "-e"):
+            if a in ("-p", "--package"):
+                pkg = args[i + 1]
+            i += 2
+        elif a.startswith("-"):
+            i += 1
+        else:
+            paths.append(a)
+            i += 1
+    return pkg, paths
+
+
+def main():
+    mode, args = sys.argv[1], sys.argv[2:]
+    if mode == "files":
+        return compile_files([a for a in args if a.endswith(".py")])
+    pkg, paths = parse(args)
+    if paths:
+        files = [f for p in paths for f in walk(p)]
+    else:
+        files = [f for f in pkg_files(pkg) if PUBLIC.match(f)] if pkg else []
+    files = [f for f in files if f.endswith(".py")]
+    if mode == "py3compile":
+        return compile_files(files)
+    for f in files:  # py3clean
+        try:
+            os.remove(ROOT + pyc_of(f))
+        except FileNotFoundError:
+            pass
+    return 0
+
+
+sys.exit(main())
