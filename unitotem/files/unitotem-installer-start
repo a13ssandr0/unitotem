@@ -2,7 +2,7 @@
 # Entry point of the installer initramfs (init-premount, replaces the recovery initrd's `zz-unitotem-ota`): network,
 # ssh in open mode, and the console screen: address for remote install and the menu. Never returns.
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-export TERMINFO=/lib/terminfo
+export TERMINFO=/usr/share/terminfo
 . /usr/lib/unitotem/ota-engine.sh      # configure_networking_ota, ota_logo, ota_frame (the OTA recovery screen)
 set +eEu +o pipefail; trap - ERR
 STATE=/run/unitotem-installer.state
@@ -28,7 +28,7 @@ printf 'root::19000:0:99999:7:::\n' > /etc/shadow; chmod 600 /etc/shadow
 printf '/bin/sh\n/bin/bash\n' > /etc/shells
 cat > /etc/profile <<'PROFILE'
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-export TERMINFO=/lib/terminfo
+export TERMINFO=/usr/share/terminfo
 PS1='# '
 printf 'UniTotem installer\nTo install UniTotem run: install\n'
 PROFILE

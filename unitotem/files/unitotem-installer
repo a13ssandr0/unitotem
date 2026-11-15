@@ -8,7 +8,7 @@
 # Exit codes: 0 done, 1 failed, 2 usage, 3 no terminal, 4 refused disk, 5 cancelled (changes=none), 6 media not found,
 # 7 already running. Nothing is written before the questions are answered y (or -y with a validated --disk).
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-export TERMINFO=/lib/terminfo
+export TERMINFO=/usr/share/terminfo
 LOG=/run/unitotem-installer.log
 MEDIA=/run/installer-media
 MEDIA_LABEL=UNITOTEM_ISO

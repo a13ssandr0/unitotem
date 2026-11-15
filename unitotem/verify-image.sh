@@ -216,6 +216,8 @@ echo "== The recovery environment carries every command the OTA engine runs"
 RINIT="$FAT/unitotem/recovery-initrd.img"; [ "$ARCH" = arm64 ] && RINIT="$FAT/recovery-initrd.img"
 chk "recovery initrd has every external command ota-engine.sh runs (tr and cmp were missing: amd64 set-default-recovery and --secure-boot shim died mid-deploy)" \
     bash "$(dirname "${BASH_SOURCE[0]}")/check-recovery-commands.sh" "$R" "$RINIT" "$ENG"
+chk "recovery initrd carries the linux terminfo entry (without it whiptail draws in mono with ASCII borders)" \
+    bash -c "lsinitramfs '$RINIT' 2>/dev/null | grep -q 'usr/share/terminfo/l/linux'"
 chk "recovery initrd carries the current ota-engine.sh (a stale copy had no static address for the fallback)" \
     bash "$(dirname "${BASH_SOURCE[0]}")/check-engine-copy.sh" "$RINIT" "$ENG"
 # the slot initramfs is built by the same hook and runs the same engine at every boot (build 61: no `sort`, root not found)
