@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Host-side test of the recovery-file source of the deploy write-bootfile step (deploy/script/remote-deploy.sh):
 recovery_from_image takes the recovery kernel, initrd and recovery.sha256 from the image's boot tarball, verifies
-them against the tarball's recovery.sha256, and falls back to the host copies in deploy/<arch>/ with a warning when the
+them against the tarball's recovery.sha256, and refuses (nothing taken from the host) when the
 tarball lacks a member. Functions are cut out of the real script text and run under bash. Temporary directories only;
 no device, no /etc, no /run, no network.
 
@@ -153,49 +153,28 @@ with tempfile.TemporaryDirectory() as td:
         ("unitotem/recovery.sha256", nol)])
     check("a file without a checksum line in the tarball: refused", st == "refused" and rc == "RC=1", (r.stdout, r.stderr))
 
-    # ---- 6. tarball lacks the members: host fallback with a warning ----------------------------------------------------------
-    r, st, rc, out, dep = run_case(td, "amd64-missing", "amd64", [("unitotem/other.bin", b"x")])
-    check("tarball without recovery members: host fallback (status host, rc 0)", st == "host" and rc == "RC=0", (r.stdout, r.stderr))
-    check("host fallback: warning on stderr", "WARN: the image's boot partition has no recovery" in r.stderr, r.stderr)
-    check("host fallback: kernel and initrd are the host copies", read(os.path.join(out, "recovery-vmlinuz")) == KERNEL_HOST
-          and read(os.path.join(out, "recovery-initrd.img")) == INITRD_HOST)
-    hsum = sha_file([(sha(KERNEL_HOST), "recovery-vmlinuz"), (sha(INITRD_HOST), "recovery-initrd.img")])
-    check("host fallback: recovery.sha256 describes the files written", read(os.path.join(out, "recovery.sha256")) == hsum,
-          read(os.path.join(out, "recovery.sha256")))
-    check("host fallback: stdout is only the status word and rc line", r.stdout == "host\nRC=0\n", r.stdout)
+    # ---- 6. the image has no usable recovery files: refused, nothing taken from the host ------------------------------------------
+    def refused(tag, arch, members_, why, **kw):
+        r, st, rc, out, dep = run_case(td, tag, arch, members_, **kw)
+        check(why + ": status missing, rc 1, warning", st == "missing" and rc == "RC=1" and "WARN" in r.stderr, (r.stdout, r.stderr))
+        check(why + ": no file written", not os.path.exists(os.path.join(out, "recovery-vmlinuz")), os.listdir(out))
+    refused("amd64-missing", "amd64", [("unitotem/other.bin", b"x")], "tarball without recovery members")
+    refused("amd64-nosha", "amd64", [("unitotem/recovery-vmlinuz", KERNEL_TB), ("unitotem/recovery-initrd.img", INITRD_TB)], "tarball without recovery.sha256")
+    refused("arm64-wrongnames", "arm64", members, "arm64 with unitotem/ names")
+    refused("amd64-notar", "amd64", members, "stream file absent", tar_at=False)
+    refused("amd64-nohost", "amd64", [("unitotem/other.bin", b"x")], "no tarball member, no host copy", host=False)
 
-    # tarball has the kernel and initrd but no recovery.sha256: host fallback too
-    r, st, rc, out, dep = run_case(td, "amd64-nosha", "amd64", [
-        ("unitotem/recovery-vmlinuz", KERNEL_TB), ("unitotem/recovery-initrd.img", INITRD_TB)])
-    check("tarball without recovery.sha256: host fallback with warning", st == "host" and "WARN" in r.stderr
-          and read(os.path.join(out, "recovery-vmlinuz")) == KERNEL_HOST, (r.stdout, r.stderr))
-
-    # arm64 tarball with amd64-style names (unitotem/ prefix): not a match, host fallback
-    r, st, rc, out, dep = run_case(td, "arm64-wrongnames", "arm64", members)
-    check("arm64 with unitotem/ names: no match, host fallback", st == "host" and rc == "RC=0", (r.stdout, r.stderr))
-
-    # ---- 7. no tarball at all (manifest names a stream file that is absent) ------------------------------------------------
-    r, st, rc, out, dep = run_case(td, "amd64-notar", "amd64", members, tar_at=False)
-    check("stream file absent: host fallback with warning", st == "host" and "WARN" in r.stderr, (r.stdout, r.stderr))
-
-    # ---- 8. no host copy and no tarball member: missing, rc 1, nothing half-written as a parts file ------------------------
-    r, st, rc, out, dep = run_case(td, "amd64-nohost", "amd64", [("unitotem/other.bin", b"x")], host=False)
-    check("no tarball member and no host copy: status missing, rc 1", st == "missing" and rc == "RC=1", (r.stdout, r.stderr))
-
-    # ---- 9. the parts dir itself absent ----------------------------------------------------------------------------------------
+    # ---- 9. the descriptor dir itself absent ---------------------------------------------------------------------------------------
     harness = f'''set -euo pipefail
 warn() {{ echo "WARN: $*" >&2; }}
-DIR="{os.path.join(td, 'absent')}"
-mkdir -p "$DIR/build/amd64/recovery" "{os.path.join(td, 'absent-out')}"
-printf k > "$DIR/build/amd64/recovery/recovery-vmlinuz-amd64"; printf i > "$DIR/build/amd64/recovery/recovery-initrd-amd64.img"
+mkdir -p "{os.path.join(td, 'absent-out')}"
 {fn(RD_TEXT, "recovery_member")}
 {fn(RD_TEXT, "recovery_extract")}
 {fn(RD_TEXT, "recovery_from_image")}
-recovery_from_image "{os.path.join(td, 'no-such-parts')}" amd64 "{os.path.join(td, 'absent-out')}"
+recovery_from_image "{os.path.join(td, 'no-such-parts')}" amd64 "{os.path.join(td, 'absent-out')}" || true
 '''
     r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
-    check("parts dir absent: host fallback, status host", r.returncode == 0 and r.stdout == "host\n" and "WARN" in r.stderr,
-          (r.stdout, r.stderr))
+    check("descriptor dir absent: status missing", r.returncode == 0 and r.stdout == "missing\n" and "WARN" in r.stderr, (r.stdout, r.stderr))
 
     # ---- 10. recovery_member matches names with and without ./ and nothing else ----------------------------------------------
     harness = f'''set -euo pipefail

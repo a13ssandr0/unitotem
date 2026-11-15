@@ -3,41 +3,48 @@
 # sshd, then dropbear on port 2222 in the fallback initramfs, see ota_ssh() in lib.sh); bulk partition data goes
 # over a separate netcat connection (serve_file_once/wait_port_bound in lib.sh), never through SSH. The partitions are read
 # straight from the disk image (deploy/<arch>/unitotem-<date>-<arch>.img.xz, a full A/B image): see image-lib.sh. The script
-# runs as root for deploy and recover (loop device, mount): started as a user it asks sudo and runs again with the same environment and
-# directory; probe, changes, disarm and --help need no root.
+# runs as root for deploy (loop device, mount): started as a user it asks sudo and runs again with the same environment and directory;
+# probe, changes, disarm and --help need no root.
 #
-# Usage:
-#   ./deploy/script/remote-deploy.sh probe   root@host
-#   ./deploy/script/remote-deploy.sh changes root@host [--json]
-#   ./deploy/script/remote-deploy.sh deploy  root@host [--image FILE] [--disk BYID]
-#                                     [--port N] [--wipe-data] [--backup-dir DIR] [--no-backup]
-#                                     [--admin-user NAME --admin-password-file FILE [--timezone ZONE]]
-#                                     [--no-firmware-update]
-#   ./deploy/script/remote-deploy.sh recover HOST[:PORT] ... [--net-dns "A;B;C"]
-#                                     [--console STR] [--yes]
-#                                     [--accept-changes DIGEST]
-#   ./deploy/script/remote-deploy.sh disarm  root@host
-#   ./deploy/script/remote-deploy.sh --help
-#
-#   ./deploy/script/remote-deploy.sh recover HOST[:PORT] [--fallback-user NAME] [--image FILE] ...
-#
-# Exit codes of `changes`: 0 no changes, 1 changes found, 2 check failed on the target, 3 target has no unitotem-ota-changes.
-#
-# OTA fallback credentials (port 2222), read from the environment only (deploy/script/lib.sh, ota_auth_for):
-#   OTA_FALLBACK_KEY=PATH       private key (default: the per-target key of the host, created when arming)
-#   OTA_FALLBACK_USER=NAME      login user (default root); --fallback-user NAME sets it
-#   OTA_FALLBACK_PASSWORD=...   password, when no key is available
-#   OTA_FALLBACK_OPEN=1         empty password: first access to a device with no admin and no key
+# Usage and the rules of the login: --help and docs/system/deploy-and-recovery.md.
 #
 # Machine-readable contract for `changes` and `--accept-changes` (used by the web interface): docs/system/deploy-and-recovery.md.
 set -euo pipefail
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Help needs nothing: no root, no tools.
+usage() { cat <<'USAGE'
+Usage: remote-deploy.sh COMMAND [USER@]HOST[:PORT] [options]
+
+  deploy    write the image (uses the fallback if there is one, else arms)
+  probe     show what the target is
+  changes   list local changes on the target [--json]
+  disarm    undo the arming
+
+deploy options:
+  --image FILE          full image (required)
+  --disk BYID           target disk
+  --yes                 do not ask
+  --wipe-data           do not keep DATA
+  --no-backup           no backup
+  --backup-dir DIR      where the backup goes
+  --port N              data port (9700)
+  --timezone ZONE       time zone of a migrated system
+  --net-dns "A;B;C"     DNS servers of a node with a fixed address
+  --console STR         console of the fallback
+  --no-firmware-update  Raspberry: do not update the firmware
+  --fallback-only       arm and stop
+  --accept-changes DIGEST
+
+:PORT is the ssh port of the fallback (2222). Its login: your keys,
+then open, then a password (asked). A migrated system gets the
+administrator USER (admin), password asked.
+USAGE
+}
 case "${1:-}" in
-    -h|--help|help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    -h|--help|help) usage; exit 0 ;;
 esac
-# deploy and recover read the image through a loop device, so they need root. The script runs again through sudo with the variables it
+# deploy reads the image through a loop device, so it needs root. The script runs again through sudo with the variables it
 # reads (sudo-rs ignores -E): the OTA_* credentials, UNITOTEM_*, the state directory, the ssh agent and the locale; sudo keeps the
 # working directory.
 reexec_as_root() {
@@ -48,13 +55,13 @@ reexec_as_root() {
     exec sudo env "${vars[@]}" "${BASH}" "$@"
 }
 case "${1:-}" in
-    deploy|recover) [ "$(id -u)" = 0 ] || reexec_as_root "${BASH_SOURCE[0]}" "$@" ;;
+    deploy) [ "$(id -u)" = 0 ] || reexec_as_root "${BASH_SOURCE[0]}" "$@" ;;
 esac
-source "${DIR}/deploy/script/lib.sh"
-source "${DIR}/deploy/script/image-lib.sh"
+source "${HERE}/lib.sh"
+source "${HERE}/image-lib.sh"
 
 require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip base64 curl
-case "${1:-}" in deploy|recover) require_cmd losetup partclone.extfs partclone.fat dumpe2fs blkid sfdisk pv findmnt ;; esac
+case "${1:-}" in deploy) require_cmd losetup partclone.extfs partclone.fat dumpe2fs blkid sfdisk pv findmnt ;; esac
 
 # The sudo askpass helper holds the target password, so it must not outlive the run (including failure or
 # Ctrl-C). No-op when logged in as root or when sudo is passwordless.
@@ -71,22 +78,38 @@ trap 'clear_target_privilege; [ -z "${RECOVERY_TMP:-}" ] || rm -rf -- "${RECOVER
 # ---------------------------------------------------------------------------
 SUBCMD="${1:-}"; shift || true
 
+# The target: [USER@]HOST[:PORT]. PORT (deploy only) is the ssh port of the fallback.
+TARGET_USER="" TARGET_HOST="" TARGET_FB_PORT=""
+parse_target() {
+    local spec="$1"
+    [[ "$spec" =~ ^(([a-z_][a-z0-9_-]{0,31})@)?([A-Za-z0-9][A-Za-z0-9._-]*)(:([0-9]{1,5}))?$ ]] \
+        || die "invalid target '${spec}' ([USER@]HOST[:PORT])"
+    TARGET_USER="${BASH_REMATCH[2]}"; TARGET_HOST="${BASH_REMATCH[3]}"; TARGET_FB_PORT="${BASH_REMATCH[5]}"
+    TARGET_USERHOST="${TARGET_USER:+${TARGET_USER}@}${TARGET_HOST}"
+    if [ -n "$TARGET_FB_PORT" ]; then
+        (( 10#$TARGET_FB_PORT >= 1 && 10#$TARGET_FB_PORT <= 65535 )) || die "port out of range: ${TARGET_FB_PORT}"
+        OTA_PORT=$((10#$TARGET_FB_PORT))
+    fi
+    OTA_PORT="${OTA_PORT:-2222}"
+    # OTA_SSH_OPTS (deploy/script/lib.sh) is built at source time: replace the port value after its -p flag.
+    local i
+    for i in "${!OTA_SSH_OPTS[@]}"; do
+        [ "${OTA_SSH_OPTS[i]}" = -p ] && OTA_SSH_OPTS[i+1]="$OTA_PORT"
+    done
+    return 0
+}
 case "$SUBCMD" in
     probe|deploy|disarm|changes)
-        TARGET_USERHOST="${1:-}"; shift || true
-        [ -n "$TARGET_USERHOST" ] || { echo "Usage: $0 $SUBCMD user@host [options]" >&2; exit 1; }
+        [ -n "${1:-}" ] || { echo "Usage: $0 $SUBCMD [USER@]HOST [options]" >&2; exit 1; }
+        parse_target "$1"; shift || true
         ;;
-    recover)
-        RECOVER_HOSTPORT="${1:-}"; shift || true
-        [ -n "$RECOVER_HOSTPORT" ] || { echo "Usage: $0 recover HOST[:PORT] [options]" >&2; exit 1; }
-        ;;
-    *) echo "Usage: $0 {probe|deploy|changes|disarm|recover} ... [options]" >&2; exit 1 ;;
+    *) usage >&2; exit 1 ;;
 esac
 
 OPT_IMAGE="" IMG_DESC="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
-# Backup of the UniTotem data of a target that already runs UniTotem, taken before anything is overwritten (default: backups/ in the repository).
-OPT_BACKUP_DIR="${UNITOTEM_BACKUP_DIR:-${DIR}/backups}" OPT_NO_BACKUP=0
-OPT_ADMIN_USER="" OPT_ADMIN_PWFILE="" OPT_TIMEZONE="" LEGACY_ARCHIVE=""
+# Backup of the UniTotem data of a target that already runs UniTotem, taken before anything is overwritten (default: your state directory).
+OPT_BACKUP_DIR="${UNITOTEM_BACKUP_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/unitotem-deploy/backups}" OPT_NO_BACKUP=0
+OPT_TIMEZONE="" LEGACY_ARCHIVE=""
 OPT_NO_FIRMWARE_UPDATE=0
 OPT_NET_DNS=""
 # Empty by default: build_legacy_cmdline() picks the console per architecture (tty0 for amd64, tty1 +
@@ -106,14 +129,10 @@ while [ $# -gt 0 ]; do
         --no-backup)  OPT_NO_BACKUP=1; shift ;;
         --no-firmware-update) OPT_NO_FIRMWARE_UPDATE=1; shift ;;
         --net-dns)    OPT_NET_DNS="$2"; shift 2 ;;
-        --admin-user) OPT_ADMIN_USER="$2"; shift 2 ;;
-        --admin-password-file) OPT_ADMIN_PWFILE="$2"; shift 2 ;;
         --timezone)   OPT_TIMEZONE="$2"; shift 2 ;;
         --console)    OPT_CONSOLE="$2"; shift 2 ;;
         --yes)        OPT_YES=1; shift ;;
         --fallback-only) OPT_FALLBACK_ONLY=1; shift ;;
-        --fallback-user) [[ "${2:-}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "--fallback-user: invalid user name '${2:-}'"
-                         OTA_FALLBACK_USER="$2"; shift 2 ;;
         --accept-changes) OPT_ACCEPT_CHANGES="$2"; shift 2 ;;
         --json)       OPT_JSON=1; shift ;;
         *) die "Unknown option: $1" ;;
@@ -396,10 +415,9 @@ recovery_extract() {
 }
 
 # Source of the fallback kernel, initrd and level marker written to the boot partition (write-bootfile).
-# The image's boot partition (its file-level tar in the descriptor) is the source; the host copies in build/<arch>/recovery/ are
-# used only when the tarball lacks a member. Usage: recovery_from_image DESCRIPTOR_DIR ARCH OUT_DIR.
+# The image's boot partition (its file-level tar in the descriptor) is the only source. Usage: recovery_from_image DESCRIPTOR_DIR ARCH OUT_DIR.
 # Writes OUT_DIR/<FAT name> for the kernel, the initrd and recovery.sha256 and prints one word on stdout:
-# image | host (fallback, warned on stderr) | refused (tarball checksum mismatch) | missing (no host copy).
+# image | refused (tarball checksum mismatch) | missing (the image has none).
 # Returns 1 for refused and missing.
 recovery_from_image() {
     local parts="$1" arch="$2" out="$3"
@@ -417,17 +435,9 @@ recovery_from_image() {
     m_s=$(recovery_member "$list" "${prefix}recovery.sha256")
 
     if [ -z "$m_k" ] || [ -z "$m_i" ] || [ -z "$m_s" ]; then
-        warn "the image's boot partition has no recovery kernel/initrd/recovery.sha256: using the host copies in build/${arch}/recovery"
-        cp -- "${DIR}/build/${arch}/recovery/recovery-vmlinuz-${arch}" "${out}/${kname}" 2>/dev/null \
-            && cp -- "${DIR}/build/${arch}/recovery/recovery-initrd-${arch}.img" "${out}/${iname}" 2>/dev/null \
-            || { echo missing; return 1; }
-        # The host copies carry no level: the sums describe the files written, level 0 (next confirmed boot refreshes).
-        hk=$(sha256sum "${out}/${kname}" | awk '{print $1}')
-        hi=$(sha256sum "${out}/${iname}" | awk '{print $1}')
-        printf '%s  %s\n' "$hk" "$kname" > "${out}/recovery.sha256"
-        printf '%s  %s\n' "$hi" "$iname" >> "${out}/recovery.sha256"
-        echo host
-        return 0
+        warn "the image's boot partition has no recovery kernel, initrd and recovery.sha256"
+        echo missing
+        return 1
     fi
 
     if ! recovery_extract "$tb" "$m_s" "${out}/recovery.sha256" \
@@ -454,18 +464,18 @@ recovery_from_image() {
 # entry (GRUB) or a config.txt swap (Pi).
 # ---------------------------------------------------------------------------
 push_recovery_kernel() {
-    # No image is open before the target is armed, so the host copies are the only source here.
-    local vmlinuz="${DIR}/build/${ARCH}/recovery/recovery-vmlinuz-${ARCH}"
-    local initrd="${DIR}/build/${ARCH}/recovery/recovery-initrd-${ARCH}.img"
-    [ -f "$vmlinuz" ] && [ -f "$initrd" ] \
-        || die "recovery kernel/initrd missing for ${ARCH}: run ./build-unitotem.sh first (it also produces stage 1b)"
-
+    local kname=recovery-vmlinuz iname=recovery-initrd.img rsrc
+    [ "$ARCH" = arm64 ] && kname=recovery8.img
+    RECOVERY_TMP=$(mktemp -d)
+    rsrc=$(recovery_from_image "$IMG_DESC" "$ARCH" "$RECOVERY_TMP") \
+        || die "the recovery files of the image cannot be used (${rsrc:-error}): the target was not changed"
     log "Copying the fallback kernel/initrd to ${P[BOOTMNT]}..."
     ssh_t "mount -o remount,rw '${P[BOOTMNT]}' 2>/dev/null; true"
-    scp_root "$vmlinuz" "${P[BOOTMNT]}/unitotem-recovery-vmlinuz" \
+    scp_root "${RECOVERY_TMP}/${kname}" "${P[BOOTMNT]}/unitotem-recovery-vmlinuz" \
         || die "copying the fallback kernel failed"
-    scp_root "$initrd"  "${P[BOOTMNT]}/unitotem-recovery-initrd.img" \
+    scp_root "${RECOVERY_TMP}/${iname}" "${P[BOOTMNT]}/unitotem-recovery-initrd.img" \
         || die "copying the fallback initrd failed"
+    rm -rf -- "$RECOVERY_TMP"; RECOVERY_TMP=""
 }
 
 # $1 = public key line of the fallback ("ssh-ed25519 BASE64"), armed as unitotem.ota.authkey=<base64 of the line>.
@@ -693,7 +703,7 @@ run_ota_sequence() {
 
     local recreate_table=0
     if [ "${RECOVER_MODE:-0}" = 1 ]; then
-        # recover: the caller already judged the disk (see cmd_recover); the table is rewritten only when unusable
+        # deploy from a fallback: the caller already judged the disk (see deploy_from_fallback); the table is rewritten only when unusable
         [ "${RECOVER_KEEP_TABLE:-0}" = 1 ] || recreate_table=1
     else
         [ "${P[HAVE_UNITOTEM]:-0}" = 1 ] && [ "$OPT_WIPE_DATA" != 1 ] || recreate_table=1
@@ -722,7 +732,6 @@ run_ota_sequence() {
     local rsrc
     rsrc=$(recovery_from_image "$IMG_DESC" "$ARCH" "$RECOVERY_TMP") \
         || die "the recovery files of the image cannot be used (${rsrc:-error}): the target was not changed"
-    [ "$rsrc" = image ] || log "Fallback files taken from the host copies (build/${ARCH}/recovery): the image has none."
 
     log "=== Stage 1: installing the fallback ==="
     if [ "$recreate_table" = 1 ]; then
@@ -880,9 +889,7 @@ run_ota_sequence() {
 
 # ---------------------------------------------------------------------------
 load_image() {
-    [ -n "$OPT_IMAGE" ] || OPT_IMAGE=$(ls -t "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}".img.xz "${DIR}/deploy/${ARCH}/"unitotem-2*-"${ARCH}".img 2>/dev/null | head -1 || true)
-    [ -n "$OPT_IMAGE" ] && [ -f "$OPT_IMAGE" ] \
-        || die "no image found for ${ARCH} (use --image FILE: the full A/B image deploy/${ARCH}/unitotem-<date>-${ARCH}.img.xz)"
+    [ -f "$OPT_IMAGE" ] || die "image not found: ${OPT_IMAGE}"
     image_open "$OPT_IMAGE" || die "cannot open the image ${OPT_IMAGE}"
     IMG_DESC=$(mktemp -d "${IMG_TMPFS}/unitotem-desc.XXXXXX")
     log "Reading the partitions of $(basename "$OPT_IMAGE")..."
@@ -972,22 +979,28 @@ post_deploy_probe() {
     return 1
 }
 
-# Migration of the settings of the earlier system: the archive written by backup_legacy_system is the only input; tools/migrate-legacy.py creates the
+# Migration of the settings of the earlier system: the archive written by backup_legacy_system is the only input; migrate-legacy.py (beside this script) creates the
 # first administrator (when the new system has none) and imports settings, media, hostname, time zone and the marked crontab lines as they were.
 migrate_legacy() {
     local ip="$1"
     [ -n "${LEGACY_ARCHIVE:-}" ] || return 0
-    if [ -z "$OPT_ADMIN_USER" ] || [ -z "$OPT_ADMIN_PWFILE" ]; then
-        warn "the settings of the earlier system are in ${LEGACY_ARCHIVE}; give --admin-user and --admin-password-file to migrate them"
+    # The first administrator of the new system is USER (the name in USER@HOST, "admin" without one): its password is typed here, like ssh.
+    local admin="${TARGET_USER:-admin}" pw pw2 pwfile tty_in=/dev/stdin
+    if [ -r /dev/tty ] && : < /dev/tty 2>/dev/null; then tty_in=/dev/tty; elif [ ! -t 0 ]; then
+        warn "the settings of the earlier system are in ${LEGACY_ARCHIVE}; there is no terminal to ask the password of the new administrator: run migrate-legacy.py later"
         return 0
     fi
-    [ -r "$OPT_ADMIN_PWFILE" ] || die "cannot read ${OPT_ADMIN_PWFILE}"
-    local args=(--archive "$LEGACY_ARCHIVE" --host "$ip" --admin-user "$OPT_ADMIN_USER" --admin-password-file "$OPT_ADMIN_PWFILE")
+    printf 'Password of the new administrator %s: ' "$admin" >&2; IFS= read -rs pw < "$tty_in" || return 0; echo >&2
+    printf 'Again: ' >&2; IFS= read -rs pw2 < "$tty_in" || return 0; echo >&2
+    [ "$pw" = "$pw2" ] && [ -n "$pw" ] || { warn "the passwords differ or are empty: the settings stay in ${LEGACY_ARCHIVE}, run migrate-legacy.py later"; return 0; }
+    pwfile=$(mktemp "${IMG_TMPFS}/unitotem-pw.XXXXXX"); printf '%s\n' "$pw" > "$pwfile"
+    local args=(--archive "$LEGACY_ARCHIVE" --host "$ip" --admin-user "$admin" --admin-password-file "$pwfile")
     [ -z "$OPT_TIMEZONE" ] || args+=(--timezone "$OPT_TIMEZONE")
     log "Migrating the settings of the earlier system to ${ip}..."
-    python3 -I "${DIR}/tools/migrate-legacy.py" "${args[@]}" \
+    python3 -I "${HERE}/migrate-legacy.py" "${args[@]}" \
         && log "Settings migrated and verified." \
-        || warn "the migration failed: the settings are intact in ${LEGACY_ARCHIVE}; run tools/migrate-legacy.py again"
+        || warn "the migration failed: the settings are intact in ${LEGACY_ARCHIVE}; run migrate-legacy.py again"
+    rm -f -- "$pwfile"
 }
 
 # The A/B layout on a Raspberry Pi 4/5 needs tryboot, which the running VideoCore firmware announces (probe: TRYBOOT) and an old one does not.
@@ -1032,7 +1045,7 @@ ensure_tryboot_firmware() {
     log "Firmware of ${host} supports tryboot."
 }
 
-cmd_deploy() {
+deploy_from_system() {
     do_probe
     ensure_tryboot_firmware
     select_disk
@@ -1108,7 +1121,7 @@ cmd_deploy() {
 }
 
 # ---------------------------------------------------------------------------
-# recover: when the disk is about to be laid out again (DATA not kept) but DATA still mounts, its content is saved first. A DATA that does not
+# deploy from a fallback: when the disk is about to be laid out again (DATA not kept) but DATA still mounts, its content is saved first. A DATA that does not
 # mount cannot be saved: that is reported and the recovery goes on (the operator already confirmed it).
 backup_fallback_data() {
     local host="$1" ts; ts=$(date +%Y%m%d-%H%M%S)
@@ -1141,25 +1154,17 @@ recover_net_from_cmdline() {   # $1 = /proc/cmdline of the fallback
     return 0
 }
 
-cmd_recover() {
+deploy_from_fallback() {
     # The target is already in the OTA fallback (both slots unusable, or an unrepairable boot failure): nothing to
     # arm, everything is learned from the engine's probe. DATA is kept when the partition table still has the
     # expected shape and DATA passes a read-only fsck; otherwise (or with --wipe-data) the disk is laid out again
     # and DATA is lost.
-    local host port
-    [[ "$RECOVER_HOSTPORT" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*)(:([0-9]{1,5}))?$ ]] \
-        || die "recover: invalid address '${RECOVER_HOSTPORT}' (HOST or HOST:PORT)"
-    host="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[3]:-${OTA_PORT:-2222}}"
-    (( 10#$port >= 1 && 10#$port <= 65535 )) || die "recover: port out of range: ${port}"
-    # OTA_SSH_OPTS (deploy/script/lib.sh) is built at source time: replace the port value after its -p flag.
-    local i
-    for i in "${!OTA_SSH_OPTS[@]}"; do
-        [ "${OTA_SSH_OPTS[i]}" = -p ] && OTA_SSH_OPTS[i+1]="$((10#$port))"
-    done
-    log "Connecting to the target in fallback (${host}:$((10#$port)))..."
-    # Credentials: ota_ssh (ota_auth_for) uses the per-target key of this host when it exists, else OTA_FALLBACK_KEY,
-    # OTA_FALLBACK_OPEN=1 or OTA_FALLBACK_PASSWORD from the environment; --fallback-user sets the login user.
-    ota_ssh "$host" true || die "cannot reach ${host} on the OTA session (port 2222): check the fallback credentials (OTA_FALLBACK_KEY, or OTA_FALLBACK_USER with OTA_FALLBACK_PASSWORD, or OTA_FALLBACK_OPEN=1)"
+    local host="$TARGET_HOST"
+    log "Connecting to the target in fallback (${host}:${OTA_PORT})..."
+    ota_auth_resolve "$host" "$TARGET_USER" \
+        || die "cannot log in to the fallback of ${host}: no key of yours is accepted, the login is not open, and no password was given"
+    log "Logged in to the fallback as ${OTA_RESOLVED_USER} ($OTA_RESOLVED_MODE)."
+    ota_ssh "$host" true || die "cannot reach ${host} on the OTA session (port ${OTA_PORT})"
 
     # Disk: --disk, else the one that carries our partitions, else the only disk.
     local disk="$OPT_DISK" cand d
@@ -1235,6 +1240,21 @@ cmd_recover() {
     [ -z "${P[NETADDR]:-}" ] || log "The installed system keeps the fixed address ${P[NETADDR]} (gateway ${P[NETGW]:-none}, DNS ${P[NETDNS]:-none})."
     run_ota_sequence "$host" "$disk"
     log "Recovery sequence sent: the target reboots into the restored system."
+}
+
+# Is there a fallback (dropbear) answering on HOST:PORT?
+ota_fallback_present() {
+    timeout 4 bash -c "exec 3<>/dev/tcp/$1/$2 && head -c 20 <&3" 2>/dev/null | grep -q 'SSH-2.0-dropbear'
+}
+
+cmd_deploy() {
+    [ -n "$OPT_IMAGE" ] || die "--image FILE is required (the full A/B image of the target's architecture)"
+    [ -f "$OPT_IMAGE" ] || die "image not found: ${OPT_IMAGE}"
+    if ota_fallback_present "$TARGET_HOST" "$OTA_PORT"; then
+        deploy_from_fallback
+    else
+        deploy_from_system
+    fi
 }
 
 # What has changed on the target since its image was built. An OTA replaces ROOT wholesale, so local edits are lost.
@@ -1363,5 +1383,4 @@ case "$SUBCMD" in
     changes) cmd_changes ;;
     deploy)  cmd_deploy ;;
     disarm)  cmd_disarm ;;
-    recover) cmd_recover ;;
 esac

@@ -1,6 +1,6 @@
 # Import of a 2.x node
 
-`tools/import-unitotem2.py` (Python 3, stdlib only) copies the settings of a UniTotem 2.x node into a running 3.x manager through its web API. Test: `tools/release/test_import_unitotem2.py` (fake manager over HTTPS and websocket; run in a `python:3` container).
+`deploy/script/import-unitotem2.py` (Python 3, stdlib only) copies the settings of a UniTotem 2.x node into a running 3.x manager through its web API. Test: `tools/release/test_import_unitotem2.py` (fake manager over HTTPS and websocket; run in a `python:3` container).
 
 Paths: relative to the repository root.
 
@@ -18,7 +18,7 @@ Unknown keys in the file or in an item are logged as WARNING and ignored.
 
 ```
 UNITOTEM_URL=https://HOST UNITOTEM_USER=ADMIN UNITOTEM_PASSWORD_FILE=/path/pw \
-  tools/import-unitotem2.py --source DIR [--fingerprint SHA256] [--playlist NAME] [--crontab FILE] [--screen-schedule HH:MM-HH:MM [--screen-days DOW] [--screen-mechanism M]] [--dry-run]
+  deploy/script/import-unitotem2.py --source DIR [--fingerprint SHA256] [--playlist NAME] [--crontab FILE] [--screen-schedule HH:MM-HH:MM [--screen-days DOW] [--screen-mechanism M]] [--dry-run]
 ```
 
 - The user is an administrator (system account) of the 3.x device. Without `UNITOTEM_PASSWORD_FILE` the password is the first line of stdin. It is never an argument and never logged.

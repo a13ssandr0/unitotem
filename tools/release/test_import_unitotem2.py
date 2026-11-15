@@ -1,4 +1,4 @@
-"""Tests of tools/import-unitotem2.py against a fake manager (HTTPS + websocket) that follows the 3.x API semantics.
+"""Tests of deploy/script/import-unitotem2.py against a fake manager (HTTPS + websocket) that follows the 3.x API semantics.
 
 Run: python3 -m unittest -v tools/release/test_import_unitotem2.py   (needs the openssl command for the certificate)
 """
@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location('imp2', HERE.parent / 'import-unitotem2.py')
+spec = importlib.util.spec_from_file_location('imp2', HERE.parent.parent / 'deploy' / 'script' / 'import-unitotem2.py')
 imp2 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(imp2)
 

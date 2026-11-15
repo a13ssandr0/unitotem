@@ -617,7 +617,8 @@ def make_formatter():
 
 class Context:
     def __init__(self, payload, state_dir, key_path, timeout_minutes, template=TEMPLATE,
-                 out=None, clock=time.monotonic, poll_interval=1.0, keep_approvals=False, term=None, colors=None):
+                 out=None, clock=time.monotonic, poll_interval=1.0, keep_approvals=False, term=None, colors=None, image=None):
+        self.image = image
         self.state_dir = prepare_dir(os.path.abspath(state_dir))
         self.machines_dir = prepare_dir(os.path.join(self.state_dir, 'machines'))
         self.keep_approvals = keep_approvals
@@ -868,27 +869,14 @@ class Context:
             k = self.keys.get(machine)
         return k['line'] if (ok and k) else None
 
-    def find_image(self):
-        # Newest full A/B image under deploy/amd64 (every amd64 image carries the BIOS boot partition, so it serves UEFI and BIOS PCs).
-        base = os.path.join(REPO_ROOT, 'deploy', 'amd64')
-        try:
-            names = sorted((n for n in os.listdir(base)
-                            if re.fullmatch(r'unitotem-[0-9-]+-amd64\.img(\.xz)?', n) and os.path.isfile(os.path.join(base, n))), reverse=True)
-        except OSError:
-            names = []
-        return os.path.join('deploy', 'amd64', names[0]) if names else None
-
     def next_command(self, machine):
         with self.lock:
             rec = self.inventories.get(machine)
             k = self.keys.get(machine)
         if not rec or not k:
             return ''
-        image = self.find_image()
-        if image is None:
-            self.emit('no image found under deploy/amd64', logging.WARNING, rec['hostname'])
-            image = '<image>'
-        return 'OTA_FALLBACK_KEY=%s deploy/script/remote-deploy.sh recover %s --image %s --yes' % (
+        image = self.image or '<image>'
+        return 'OTA_FALLBACK_KEY=%s remote-deploy.sh deploy %s --image %s --yes' % (
             k['priv'] or '<private key>', rec['client_ip'], image)
 
     def add_status(self, data, client_ip=''):
@@ -1321,6 +1309,7 @@ def parse_args(argv):
     p.add_argument('--advertise', type=ip_arg, default=None)
     p.add_argument('--payload', default=DEFAULT_PAYLOAD)
     p.add_argument('--authorized-key', default=None, metavar='FILE')
+    p.add_argument('--image', default=None, metavar='FILE', help='the image named in the deploy command it prints')
     p.add_argument('--keep-approvals', action='store_true',
                    help='restore approvals after a restart (default: they must be given again)')
     p.add_argument('--timeout-minutes', type=int_arg(1, 1440), default=60)
@@ -1373,7 +1362,7 @@ def main(argv=None):
         LOGGER.addHandler(fh)
     try:
         ctx = Context(args.payload, args.state_dir, args.authorized_key, args.timeout_minutes,
-                      keep_approvals=args.keep_approvals, term=term, colors=colors)
+                      keep_approvals=args.keep_approvals, term=term, colors=colors, image=args.image)
     except (OSError, ValueError) as e:
         print('error: ' + str(e), file=sys.stderr)
         return 2

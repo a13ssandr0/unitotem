@@ -850,7 +850,7 @@ class MachineKeyTests(ServerCase):
 
     def test_next_command_printed_after_approval(self):
         self.approve()
-        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' deploy/script/remote-deploy.sh recover 127.0.0.1 --image ' + (self.ctx.find_image() or '<image>') + ' --yes',
+        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' remote-deploy.sh deploy 127.0.0.1 --image <image> --yes',
                       self.output())
 
     def test_second_inventory_reuses_the_key(self):
@@ -1012,25 +1012,14 @@ class StateFileTests(ServerCase):
 
 
 class NextCommandTests(ServerCase):
-    def test_real_image_path_when_present_and_warning_when_not(self):
-        base = os.path.join(self.tmp, 'repo')
-        d = os.path.join(base, 'deploy', 'amd64')
-        os.makedirs(d)
-        for name in ('unitotem-2026-11-07-amd64.img.xz', 'unitotem-2026-11-09-amd64.img.xz', 'unitotem-2026-11-12-amd64-flash.img.xz'):
-            open(os.path.join(d, name), 'w').close()
-        old = srv.REPO_ROOT
-        srv.REPO_ROOT = base
-        try:
-            self.post_json('/inventory', inventory())
-            self.assertEqual(self.ctx.find_image(), 'deploy/amd64/unitotem-2026-11-09-amd64.img.xz')
-            self.assertIn('--image deploy/amd64/unitotem-2026-11-09-amd64.img.xz --yes', self.ctx.next_command('MACHINE-AAAA'))
-            srv.REPO_ROOT = os.path.join(self.tmp, 'empty')
-            cmd = self.ctx.next_command('MACHINE-AAAA')
-            self.assertIn('--image <image> --yes', cmd)
-            self.assertNotIn('DIR', cmd)
-            self.assertTrue(any(' WARNING ' in l and 'no image found under deploy/amd64' in l for l in self.lines))
-        finally:
-            srv.REPO_ROOT = old
+    def test_image_named_by_the_operator(self):
+        self.post_json('/inventory', inventory())
+        self.ctx.image = '/srv/images/unitotem-2026-11-14-amd64.img.xz'
+        self.assertIn('--image /srv/images/unitotem-2026-11-14-amd64.img.xz --yes', self.ctx.next_command('MACHINE-AAAA'))
+        self.ctx.image = None
+        cmd = self.ctx.next_command('MACHINE-AAAA')
+        self.assertIn('--image <image> --yes', cmd)
+        self.assertNotIn('DIR', cmd)
 
 
 class PtyTests(unittest.TestCase):
