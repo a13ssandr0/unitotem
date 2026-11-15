@@ -47,6 +47,7 @@ check "ROOT_A: cloner extfs, used bytes as dumpe2fs says" bash -c "[ '$(blk 2 UN
 check "BIOS partition: label from the GPT type, cloner dd" bash -c "[ '$(blk 5 UNITOTEM_PART_LABEL)' = BIOS ] && [ '$(blk 5 UNITOTEM_PART_CLONER)' = dd ]"
 check "the boot partition keeps its FAT serial" [ "$(blk 1 UNITOTEM_PART_VOLID)" = "$EFI_VOLID" ]
 check "the table is the image's" bash -c "diff <(grep -E '^/dev' $D/layout.sfdisk | sed -E 's#^/dev/loop[0-9]+p##') <(grep -E '^/dev' /tmp/src.table | sed -E 's#^/dev/loop[0-9]+p##')"
+check "UNITOTEM_TABLE of a GPT image is gpt" [ "$(mf UNITOTEM_TABLE)" = gpt ]
 check "the MBR boot code is 440 bytes" bash -c "[ \$(stat -c %s $D/bootcode.bin) = 440 ]"
 mkdir -p /tb; tar -C /tb -xf $D/p1-EFI.bootfs.tar.xz
 check "the boot partition tar holds its files" bash -c "[ \"\$(md5sum /tb/EFI/BOOT/BOOTX64.EFI | cut -d' ' -f1)\" = '$EFI_MD5' ] && [ -f /tb/unitotem/recovery-vmlinuz ]"
@@ -78,9 +79,11 @@ rm -rf /tmpfs/dos5; mkdir -p /tmpfs/dos5; cp $D/layout.sfdisk $D/bootcode.bin /t
 image_table_dos /tmpfs/dos5 2>/dev/null; DOS5=$?
 check "a table of five partitions is refused as MBR" [ "$DOS5" != 0 ]
 rm -rf /tmpfs/dos; mkdir -p /tmpfs/dos; grep -v 'name="BIOS"' $D/layout.sfdisk > /tmpfs/dos/layout.sfdisk; cp $D/bootcode.bin /tmpfs/dos/
+printf 'UNITOTEM_TABLE=gpt\n' > /tmpfs/dos/parts.manifest
 image_table_dos /tmpfs/dos; DOSRC=$?
 check "four partitions convert" [ "$DOSRC" = 0 ]
 check "the converted table is dos, boot code dropped" bash -c "grep -qx 'label: dos' /tmpfs/dos/layout.sfdisk && [ ! -e /tmpfs/dos/bootcode.bin ]"
+check "the manifest says dos after the conversion" [ "$(awk -F= '/^UNITOTEM_TABLE=/{print $2}' /tmpfs/dos/parts.manifest)" = dos ]
 truncate -s 2G $W/tgt.img; sfdisk -q $W/tgt.img < /tmpfs/dos/layout.sfdisk 2>/dev/null
 sfdisk -d $W/tgt.img | grep ' : start=' | sed -E 's#^[^ ]+ : start= *([0-9]+), size= *([0-9]+),? *type=([0-9a-f]+).*#\1 \2 \3#' > /tmp/dos.got
 grep '^/dev' $D/layout.sfdisk | grep -v BIOS | sed -E 's#^[^ ]+ : start= *([0-9]+), size= *([0-9]+),.*name="([^"]*)".*#\1 \2 \3#; s# (FIRMWARE|EFI)$# c#; s# (ROOT_A|ROOT_B|DATA)$# 83#' > /tmp/dos.exp

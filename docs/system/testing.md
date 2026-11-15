@@ -14,6 +14,9 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_boot_guard.py` | `unitotem-update` boot health gate, boot counter, status fields, `slot_dev`: 42 checks |
 | `tools/release/test_bootcount.sh` | Initramfs boot counter gate and fallback credentials without DATA (`ota-engine.sh`): 55 checks |
 | `tools/release/test_first_boot_layout_dos.sh` | First-boot layout on DOS (MBR) disks (`layout_mbr`, power cuts, GPT unchanged), Docker `--privileged`: 46 checks |
+| `tools/release/test_make_flash_image.sh` (+ `test_make_flash_image_inside.sh`) | Flash image: arm64 DOS table (type, label-id, start, size, bootable, bytes), `layout_mbr` completion to four primaries, amd64 GPT; Docker `--privileged`: 30 checks |
+| `tools/release/test_deploy_table_mbr.py` | Deploy MBR conversion (`load_image`, `image_table_dos`) and `restore-table` tail on MBR and GPT: 16 checks |
+| `tools/release/test_grow_data.sh` (+ `test_grow_data_inside.sh`) | `layout_complete` and `grow_data` on GPT and DOS, flash images, interruptions (`resize2fs` kill, `e2fsck -fy`); Docker `--privileged` |
 | `tools/release/test_overlay_status.sh` | Overlay hook under dash, mocked tools: 38 checks |
 | `tools/release/test_overlay_volatile.sh` | Volatile overlays without DATA (`volatile_overlays`), Docker `--privileged`: 47 checks |
 | `tools/release/test_deploy_backup.py` | `backup_stream` (`deploy/script/lib.sh`), `backup_running_system` (`deploy/script/remote-deploy.sh`) |
@@ -99,6 +102,7 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 | Python tests | python3 stdlib; `test_rpi_backend.py`: mtools, `mkfs.fat`, `mke2fs`, `sgdisk`, `dd`, `truncate`; deploy/secure-boot tests: bash, awk |
 | Loopback, A/B, arm64, bootcount | docker, root-capable host, `debian:bookworm` |
 | Volatile overlays, DOS layout | docker, `--privileged`, local `debian:trixie` image (`--pull never`) |
+| Flash image, `grow_data` | docker, `--privileged` (loop devices inside the container only) |
 | Real SD card | docker, the card attached to the host |
 | Power cut | qemu-system-x86_64 with KVM, qemu-img, OVMF, sgdisk, sshpass, `deploy/script/lib.sh` |
 | Low-resolution OTA | qemu-system-x86_64, OVMF, mtools, sfdisk, xz |

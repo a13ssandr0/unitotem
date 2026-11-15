@@ -353,7 +353,12 @@ cmd_restore_table() {
     tail_start=$(printf '%s\n' "$patched" | grep -E "(^|[^0-9])${tail_part}[[:space:]]*:" | head -1 \
         | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
     [ -n "$tail_start" ] || fail "cannot find partition ${tail_part} in the supplied table"
-    local tail_size=$((disk_sectors - tail_start - 34))
+    # GPT: the backup table takes 33 sectors and the alignment 1 more at the end. MBR (every Raspberry Pi): no backup table, and the
+    # size field is 32 bits, so the tail partition is capped at 2 TiB.
+    local reserve=34 max_size=0
+    if grep -qx 'label: dos' <<< "$patched"; then reserve=0; max_size=4294967295; fi
+    local tail_size=$((disk_sectors - tail_start - reserve))
+    if [ "$max_size" -gt 0 ] && [ "$tail_size" -gt "$max_size" ]; then tail_size=$max_size; fi
     [ "$tail_size" -gt 0 ] || fail "disk too small for the table (final partition would be negative)"
 
     patched=$(printf '%s\n' "$patched" | awk -v tp="$tail_part" -v sz="$tail_size" '

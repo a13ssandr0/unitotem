@@ -109,7 +109,7 @@ _img_label() {   # $1 node, $2 number
 }
 
 image_describe() {   # $1 directory, $2 arch
-    local out="$1" arch="$2" n dev label fstype action cloner used sectors start nparts=0 data_part="" bootfs_part="" layout=1 total_used=0 min_disk
+    local out="$1" arch="$2" n dev label fstype action cloner used sectors start nparts=0 data_part="" bootfs_part="" layout=1 total_used=0 min_disk table_type
     local raw_size; raw_size=$(blockdev --getsize64 "$IMG_LOOP")
     mkdir -p -- "$out"
     sfdisk --dump "$IMG_LOOP" > "$out/layout.sfdisk"
@@ -145,13 +145,14 @@ image_describe() {   # $1 directory, $2 arch
         total_used=$((total_used + used))
         { echo "UNITOTEM_PART_USED_BYTES=$used"; echo "UNITOTEM_PART_COMP=xz"; echo ""; } >> "$out/parts.manifest.partial"
     done
+    table_type=$(awk -F': *' '/^label:/{print $2; exit}' "$out/layout.sfdisk")
     min_disk=$raw_size
     if [ -n "$data_part" ]; then
         min_disk=$(( ($(cat "/sys/class/block/$(basename -- "$(image_node "$data_part")")/start") + 2048 + 33) * 512 ))
     fi
     {
         echo "UNITOTEM_LAYOUT=$layout"; echo "UNITOTEM_ARCH=$arch"; echo "UNITOTEM_RAW_SIZE=$raw_size"
-        echo "UNITOTEM_MIN_DISK_BYTES=$min_disk"; echo "UNITOTEM_TABLE=gpt"; echo "UNITOTEM_SECTOR_SIZE=512"
+        echo "UNITOTEM_MIN_DISK_BYTES=$min_disk"; echo "UNITOTEM_TABLE=$table_type"; echo "UNITOTEM_SECTOR_SIZE=512"
         echo "UNITOTEM_NPARTS=$nparts"; echo "UNITOTEM_DATA_PART=${data_part:-0}"; echo "UNITOTEM_BOOTFS_PART=${bootfs_part:-1}"
         echo "UNITOTEM_TOTAL_USED_BYTES=$total_used"; echo ""
         cat "$out/parts.manifest.partial"
@@ -159,9 +160,10 @@ image_describe() {   # $1 directory, $2 arch
     rm -f -- "$out/parts.manifest.partial"
 }
 
-# The table of the descriptor as an MBR (a GPT image for a board whose ROM reads MBR only): same start and size of every partition, type c
-# for the FAT firmware partition, 83 for the others, disk id taken from the GPT disk GUID; the MBR boot code of a GPT disk is empty, so
-# bootcode.bin is dropped. Four primaries at most.
+# The table of the descriptor as an MBR (a GPT image): same start and size of every partition, type c for the FAT firmware partition,
+# 83 for the others, disk id taken from the GPT disk GUID; the MBR boot code of a GPT disk is empty, so bootcode.bin is dropped.
+# Four primaries at most. Called by load_image for every Raspberry Pi (arm64, FIRMWARE=rpi); the Pi 3 / Zero 2 ROM reads MBR only.
+# parts.manifest (UNITOTEM_TABLE) follows the table.
 image_table_dos() {   # $1 descriptor directory
     local d="$1" f="$1/layout.sfdisk" id n=0 line st sz name t out
     [ "$(awk -F': *' '/^label:/{print $2}' "$f")" = gpt ] || return 0
@@ -177,6 +179,7 @@ image_table_dos() {   # $1 descriptor directory
     done < "$f"
     printf '%s' "$out" > "$f"
     rm -f -- "$d/bootcode.bin"
+    if [ -f "$d/parts.manifest" ]; then sed -i 's/^UNITOTEM_TABLE=gpt$/UNITOTEM_TABLE=dos/' -- "$d/parts.manifest"; fi
 }
 
 # One partition on stdout. extfs and fat: partclone's stream; dd: the raw partition. Compressed with xz (the engine's default

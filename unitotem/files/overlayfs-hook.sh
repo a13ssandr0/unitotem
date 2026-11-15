@@ -5,14 +5,16 @@ prereqs() { echo "$PREREQ"; }
 # grow_data DEV: grow the DATA partition into the free space after it, up to the disk end, and its ext4 to
 # fill the partition. Offline (DATA unmounted), idempotent: every decision is derived from the disk (sysfs
 # sizes, partition table, filesystem superblock), no flag file. Each step leaves a consistent disk:
-#   1. sgdisk -e      moves the backup GPT to the disk end (valid table before and after);
-#   2. sfdisk -N      rewrites the entry of DATA only (type, GUID, name, attributes kept) in one table write;
+#   1. sgdisk -e      GPT only: moves the backup GPT to the disk end (valid table before and after);
+#   2. sfdisk -N      rewrites the entry of DATA only (type, GUID or label-id, name or flags kept) in one table write;
 #   3. partx -u       tells the kernel the new size of that one partition (others, e.g. the mounted root, untouched);
 #   4. e2fsck -f + resize2fs   grows the filesystem. A cut after 2 or 3 is finished by the next boot (the
 #      filesystem is smaller than its partition); a cut inside resize2fs leaves metadata that one e2fsck -fy
 #      (only in this state) repairs before the growth resumes.
-# Acts only when DATA is the last partition by start sector, the disk is GPT, DATA is ext4 and at least 64 MiB
-# are free after it. Never moves or removes another partition. Any failure logs one line and returns 0.
+# Acts only when DATA is the last partition by start sector, the disk is GPT or DOS (MBR), DATA is ext4 and at least
+# 64 MiB are free after it. DOS: DATA must be a primary (1-4); there is no backup table, so the free space is the
+# disk size minus the end of DATA, and sgdisk is not called. Never moves or removes another partition. Any failure
+# logs one line and returns 0.
 GROW_MIN_FREE=131072   # sectors (64 MiB)
 GROW_MIN_FS_GAP=65536  # sectors (32 MiB): filesystem this much smaller than its partition is grown
 grow_data() {
@@ -34,20 +36,29 @@ grow_data() {
     gd_end=$((gd_start + gd_psz))
 
     [ "$(blkid -s TYPE -o value "$gd_dev" 2>/dev/null)" = ext4 ] || { log_warning_msg "grow: DATA is not ext4, skipping"; return 0; }
-    [ "$(blkid -p -s PTTYPE -o value "$gd_ddev" 2>/dev/null)" = gpt ] || { log_warning_msg "grow: $gd_disk is not GPT, skipping"; return 0; }
+    gd_pt=$(blkid -p -s PTTYPE -o value "$gd_ddev" 2>/dev/null)
+    case "$gd_pt" in
+        gpt|dos) ;;
+        *) log_warning_msg "grow: $gd_disk is not GPT or DOS, skipping"; return 0 ;;
+    esac
+    if [ "$gd_pt" = dos ] && [ "$gd_num" -gt 4 ]; then log_warning_msg "grow: DATA is a logical partition, skipping"; return 0; fi
     for gd_p in "$gd_par"/*/start; do
         [ -r "$gd_p" ] || continue
         [ "$(cat "$gd_p")" -gt "$gd_start" ] && { log_warning_msg "grow: DATA is not the last partition, skipping"; return 0; }
     done
 
-    # 1-3: the partition. The 33 sectors before the disk end hold the backup GPT.
-    gd_free=$((gd_dsz - 34 - gd_end))
+    # 1-3: the partition. GPT: the 33 sectors before the disk end hold the backup GPT. DOS: no backup table.
+    if [ "$gd_pt" = gpt ]; then gd_free=$((gd_dsz - 34 - gd_end)); else gd_free=$((gd_dsz - gd_end)); fi
     if [ "$gd_free" -ge "$GROW_MIN_FREE" ]; then
-        sgdisk -e "$gd_ddev" >/dev/null 2>&1 || { log_warning_msg "grow: sgdisk -e failed, skipping"; return 0; }
+        if [ "$gd_pt" = gpt ]; then
+            sgdisk -e "$gd_ddev" >/dev/null 2>&1 || { log_warning_msg "grow: sgdisk -e failed, skipping"; return 0; }
+        fi
         echo ", +" | sfdisk --no-reread --no-tell-kernel --wipe never --wipe-partitions never -q -N "$gd_num" "$gd_ddev" >/dev/null 2>&1 \
             || { log_warning_msg "grow: partition table write failed, skipping"; return 0; }
-        sgdisk -v "$gd_ddev" 2>&1 | grep -q "No problems found" \
-            || { log_warning_msg "grow: GPT check failed after the write, skipping"; return 0; }
+        if [ "$gd_pt" = gpt ]; then
+            sgdisk -v "$gd_ddev" 2>&1 | grep -q "No problems found" \
+                || { log_warning_msg "grow: GPT check failed after the write, skipping"; return 0; }
+        fi
         partx -u --nr "$gd_num" "$gd_ddev" >/dev/null 2>&1 || true
         gd_psz=$(cat "$gd_sys/size")
         if [ "$((gd_start + gd_psz))" -le "$gd_end" ]; then

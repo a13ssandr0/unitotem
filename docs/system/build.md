@@ -19,7 +19,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | `unitotem/files/ota-initrd.list` | Names the fallback initrd carries (directive table in [Native recovery initrd](#native-recovery-initrd)); read by `ota-hook` and by the native builder |
 | `unitotem/stage2-configure.sh` | Hostname, locale, timezone, root first-access state, boot config, fstab, NetworkManager, services, initramfs, arm64 FIRMWARE files -> `stage2.tar.gz` |
 | `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, flash image, xz |
-| `unitotem/make-flash-image.sh` | Flash image from the full image |
+| `unitotem/make-flash-image.sh` | Flash image from the full image: DOS table on arm64, GPT on amd64 |
 | `unitotem/verify-image.sh` | Static rule checks on the mounted image (PASS/FAIL) |
 | `unitotem/check-recovery-commands.sh` | Every external command of `ota-engine.sh` exists in the recovery initrd |
 | `unitotem/check-engine-copy.sh` | The `ota-engine.sh` inside an initramfs is the repository's (verify-image: recovery initrd and slot initramfs) |
@@ -100,13 +100,43 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Services enabled, `update-initramfs -u -k all`, arm64 slim initramfs, `kernel8.img`, `initramfs8`, `bcm27*.dtb` copied to FIRMWARE.
   - Removes the build-time TLS certificate (each device generates its own).
 - Stage 3:
-  - `truncate` to `IMAGE_SIZE`; partition (sgdisk amd64, parted arm64); `losetup --partscan`; `mkfs`; rsync rootfs into ROOT_A.
+  - `truncate` to `IMAGE_SIZE`; partition (sgdisk amd64, parted arm64; GPT on both); `losetup --partscan`; `mkfs`; rsync rootfs into ROOT_A.
   - Recovery kernel and initrd copied to the boot FAT under the names of `boot.md#recovery-set`, with `recovery.sha256` (level line, then sha256 per file). The level must be 14 digits or the build stops.
   - The same set goes to `usr/share/unitotem/recovery/` in the root (`vmlinuz`, `initrd.img`, `manifest`; arm64 also `dtb/*.dtb` copied from the top-level FIRMWARE dtbs). Written into the mounted root after the rootfs rsync and before the partitions are cut, so ROOT_A carries it.
   - arm64 A/B: kernel, initramfs, cmdline move to `slota/`; `config.txt` gets `os_prefix=slota/`; dtbs and overlays copied into `slota/`.
   - amd64: `grub-install` for EFI and BIOS (`--removable --no-uefi-secure-boot`), the signed Secure Boot chain installed in `EFI/BOOT` (shim as `BOOTX64.EFI`), `grub-mkconfig` (A/B: `grub.cfg` and `grubenv` in `unitotem-grub/` on the ESP).
   - Boot assertions (kernel magic, dtb parse, initramfs `/init`, `config.txt` references), release-version, change baseline, `verify-image.sh`, fsck of all partitions.
-  - A/B: `unitotem/make-flash-image.sh` writes the flash image from the full one (fresh GPT, partitions except ROOT_B and DATA copied unchanged, sgdisk/sha256/fsck verification), `xz -T0`; then `xz -T0` of the full image. The raw `.img` files are removed.
+  - A/B: `unitotem/make-flash-image.sh` writes the flash image from the full one (partitions except ROOT_B and DATA copied unchanged; arm64 DOS table, amd64 GPT; sfdisk/sgdisk, sha256 and fsck verification), `xz -T0`; then `xz -T0` of the full image. The raw `.img` files are removed.
+
+### Native arm64 build
+
+`NATIVE_BUILD=1` (arm64 only, default 0) builds the whole image on an amd64 PC with no binfmt handler and no qemu chroot: `FORCE_STAGE=0 NATIVE_BUILD=1 ARCHES=arm64 PI_HOST= ./build-unitotem.sh`. Stages 0-3 run in the `unitotem-nbuilder` image (`Dockerfile.nbuild`, Debian trixie: host dpkg 1.22, apt, mmdebstrap, adduser, ca-certificates, fontconfig, shared-mime-info, GLib/GTK tools, xfonts-utils, sgml-base, xml-core, openssh-client, partclone, kmod, qemu-user-static as a plain binary). The container runs `--privileged`, `--cpu-shares=8192`. The recovery initrd is the native builder ([Native recovery initrd](#native-recovery-initrd)) and the slot initramfs is the same builder with `--slot-out`.
+
+Principle: packages are only downloaded, unpacked and configured, so the host `dpkg --root=ROOT --force-script-chrootless` does it; the maintainer scripts run on the host with `DPKG_ROOT=ROOT`. Only a target (arm64) binary that a script must run is emulated, alone, by `qemu-aarch64-static` inside a chroot of the tree (`unitotem/native/nb-shim`, `nb-finalize`): there is no nested exec, so such a program may not start another target program.
+
+| Step | Was (qemu chroot) | Native replacement |
+|---|---|---|
+| Stage 0 `debootstrap --second-stage` | dpkg and scripts in qemu | `mmdebstrap --mode=chrootless --variant=important` (apt config `Dir ROOT`, `DPkg::Path` with the shim directory first); `ischroot` shim: the disposable container is the chroot mmdebstrap asks for |
+| apt transactions of stage 1 (install, dist-upgrade, purge) | apt, dpkg, scripts in qemu | `unitotem/native/nb-install`: `apt-get -s` gives the order (Inst, Conf, Remv, Purg), apt downloads, the host dpkg replays unpack batches, configure batches, removals and pending triggers; `apt-mark auto/manual` writes what apt would |
+| dpkg `--force-depends --purge`, `dpkg-query`, `dpkg-statoverride` | in the chroot | host tools with `--root` / `--admindir` (`rootfs_dpkg*` in `common.sh`) |
+| scripts that are not DPKG_ROOT aware (they test and write absolute builder paths) | ran in the chroot | `unitotem/native/overrides/<package>.<script>` replaces the installed script after unpack, or `<package>.<script>.sed` patches it; a `%` in the name matches any text; checked against the reference rootfs |
+| `ldconfig` (libc-bin trigger) | qemu | shim: target `ldconfig` alone under qemu (the host one ignores arm64 libraries) |
+| `adduser`, `addgroup` | qemu | `nb-adduser` (groupadd/useradd `-P ROOT`, lowest free system id like adduser) |
+| `py3compile`, `py3clean`, `python3.13 py_compile.py` | python under qemu | `nb-pycompile`: host Python 3.13 compiles the target files, `dfile` is the target path (byte code is architecture independent) |
+| `linux-run-hooks`, `update-initramfs` in postinst | initramfs-tools in qemu | no-op shim and override; `nb_kernel_post` copies dtbs, overlays and `kernel8.img` to `/boot/firmware`; the slot initramfs is built in stage 2 |
+| trigger caches: fontconfig, shared-mime-info, GSettings schemas, icon caches, CA certificates, udev hwdb, SysV `update-rc.d`, user units (`deb-systemd-helper --user`, guarded by DPKG_ROOT in the postinst), X11 font indexes | triggers in qemu | `nb-finalize`, once after the last transaction: host tools with a root argument (`fc-cache --sysroot`, `update-mime-database`, `glib-compile-schemas`, `gtk-update-icon-cache`, `update-ca-certificates --sysroot`, `systemd-hwdb --root`, `update-rc.d` with DPKG_ROOT), `unshare -m` with the target's data directories bound over the host's for the X11 font tools |
+| GIO modules, GdkPixbuf loaders, GTK input method caches | qemu | target programs, one by one under qemu (they `dlopen` target modules): the documented exception |
+| stage 2 `locale-gen` | qemu | host `localedef --prefix` on the target's locale sources |
+| stage 2 `dpkg-reconfigure tzdata` | qemu | the two files it writes (`/etc/timezone`, `/etc/localtime`) |
+| stage 2 `groupadd`, `passwd -d`, `usermod`, `addgroup` | qemu | host `groupadd -P`, `passwd -R`, `usermod -P` |
+| stage 2 `pam-auth-update` | qemu | host script in `unshare -m` with the target's `/etc/pam.d`, `/usr/share/pam-configs`, `/var/lib/pam` bound over the host's |
+| stage 2 `systemctl enable/mask` | qemu | `systemctl --root` (`SYSTEMCTL_SKIP_SYSV=1`: the SysV links are made by `nb-finalize`) |
+| stage 2 `update-initramfs -u -k all` | mkinitramfs in qemu | `build-recovery-initrd.py --slot-out` (the native builder; the rootfs's own scripts and `initramfs.conf`), then `slim-initramfs.py` on the host |
+| stage 3 | host tools | unchanged (no emulation: partitioning, mkfs, partclone, verify) |
+
+Every qemu use left: `ldconfig` (stage 1 and `nb-finalize`), the GIO/GdkPixbuf/GTK cache programs. Diagnostics in the stage 1 log: `NB-SURVEY-FAILED` (only with `NB_SURVEY=1`, which continues after a failing script and writes the tarball anyway; lab use), `NB-HOST-TOUCHED` (builder-root files written by maintainer scripts: a script that is not DPKG_ROOT aware).
+
+Lab tools: `tools/nb-compare-rootfs.py REF.tar.gz NEW.tar.gz --out DIR` compares two rootfs tarballs (paths, type, mode, owner, link target, sha256).
 
 ### Native recovery initrd
 
@@ -209,6 +239,8 @@ Partition layouts:
 | arm64 A/B | FIRMWARE (FAT32) | ROOT_A | ROOT_B | DATA | - |
 | amd64 single | EFI | BOOT | ROOT | DATA | BIOS |
 | arm64 single | FIRMWARE | ROOT | DATA | - | - |
+
+The full image is GPT on both architectures. The arm64 flash image and every Raspberry Pi table that the deploy writes are MBR, primaries only; the partition numbers are the same ([storage](storage-and-persistence.md#layout)).
 
 Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. Stage scripts `set -e`. `verify-image.sh` 1 on any FAIL. `pkglock.py check` (lock gate): 0 nothing newer and 10 updates without security fixes continue with the lock; 20 renews the lock; 2 warns and continues; any other code (crash, missing python3) stops that arch with exit 1.
 
