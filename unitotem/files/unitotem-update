@@ -11,8 +11,8 @@ Everything is JSON with --json; progress for long operations goes to /run/unitot
 line rewritten atomically. `fetch` runs detached (systemd-run) unless --foreground, so a manager restart
 does not interrupt it; poll `status`.
 """
-import argparse, datetime, fcntl, glob, hashlib, json, os, re, shutil, signal, ssl, struct, subprocess, sys, tempfile, time
-import urllib.request, urllib.error
+import argparse, datetime, fcntl, glob, hashlib, json, os, re, shutil, signal, socket, ssl, struct, subprocess, sys, tempfile, time
+import urllib.parse, urllib.request, urllib.error
 sys.path.insert(0, "/usr/lib/unitotem")          # unitotem_identity (the account merge)
 
 CONF_DEFAULTS = {
@@ -976,16 +976,24 @@ def cmd_confirm(a, conf):
 
 
 def health_ok(conf):
-    """GET the health URL, verified against the manager's own certificate (UPDATE_HEALTH_CA): the server
-    certificate must chain to that exact self-signed certificate. The hostname is not checked: the
-    certificate has no name for localhost, and the pinned trust anchor already identifies the server.
-    A missing or unreadable certificate file counts as unhealthy."""
+    """GET the health URL from the manager answering with exactly the certificate in UPDATE_HEALTH_CA (the first certificate of that
+    PEM: the file holds certificate and key). The certificate is pinned by its bytes, not chain-verified: its validity dates mean nothing
+    here (a new device can start with a wrong clock, and a Raspberry without RTC at 1970), and the pin already identifies the server. The
+    hostname is not checked. A missing, unreadable or unparsable certificate file counts as unhealthy."""
     url = conf["UPDATE_HEALTH_URL"]
     if not url:
         return True
     try:
-        ctx = ssl.create_default_context(cafile=conf["UPDATE_HEALTH_CA"])
-        ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_REQUIRED
+        pem = re.search(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", open(conf["UPDATE_HEALTH_CA"]).read(), re.S)
+        if pem is None:
+            return False
+        want = ssl.PEM_cert_to_DER_cert(pem.group(0))
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+        u = urllib.parse.urlsplit(url)
+        with socket.create_connection((u.hostname, u.port or 443), timeout=5) as raw, ctx.wrap_socket(raw, server_hostname=u.hostname) as tls:
+            if tls.getpeercert(binary_form=True) != want:
+                return False
         with urllib.request.urlopen(url, timeout=5, context=ctx) as r:
             return r.status == 200
     except (urllib.error.URLError, OSError, ValueError):
