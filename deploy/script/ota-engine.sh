@@ -1332,6 +1332,19 @@ ota_status_set() {
     : > "$OTA_PCT_FILE" 2>/dev/null || true
 }
 
+# The three header lines of the progress dialog live in a file, so the address can be filled in once the network is up (the feed
+# runs in its own process). A step with a progress value: ota_phase TEXT [PERCENT].
+OTA_HDR_FILE=/run/unitotem-ota.header
+ota_phase() {
+    ota_status_set "$1"
+    [ -z "${2:-}" ] || printf '%s\n' "$2" > "$OTA_PCT_FILE" 2>/dev/null || true
+}
+ota_header_address() {   # ota_header_address ADDRESS: third header line
+    local l1="" l2=""
+    { IFS= read -r l1; IFS= read -r l2; } < "$OTA_HDR_FILE" 2>/dev/null || true
+    printf '%s\n%s\nAddress: %s   Port: 2222\n' "$l1" "$l2" "$1" > "$OTA_HDR_FILE" 2>/dev/null || true
+}
+
 # Feeds whiptail's gauge protocol: an XXX-delimited block carrying the new percentage and text.
 ota_ui_feed() {
     local phase pct
@@ -1348,7 +1361,7 @@ ota_ui_feed() {
         [ "$pct" -le 100 ] 2>/dev/null || pct=100
         # Header (3 lines) + a blank separator + the phase = 5 lines, the height ota_ui_start sizes the text area for;
         # anything beyond it is dropped.
-        printf 'XXX\n%s\n%s\n\n%s\nXXX\n' "$pct" "${OTA_UI_HEADER:-}" "${phase:-Waiting for commands over SSH...}"
+        printf 'XXX\n%s\n%s\n\n%s\nXXX\n' "$pct" "$(cat "$OTA_HDR_FILE" 2>/dev/null)" "${phase:-Waiting for commands over SSH...}"
         sleep 1
     done
 }
@@ -1359,7 +1372,7 @@ ota_ui_feed() {
 OTA_UI_FIFO=/run/unitotem-ota.gauge
 
 ota_ui_start() {
-    OTA_UI_HEADER="$1"
+    printf '%s\n' "$1" > "$OTA_HDR_FILE" 2>/dev/null || true
     [ -w /dev/tty1 ] || return 0
     command -v whiptail >/dev/null 2>&1 || return 0
     command -v setsid  >/dev/null 2>&1 || return 0
@@ -1380,12 +1393,14 @@ ota_ui_start() {
 
 configure_one_iface() {
     local iface="$1"
+    ota_phase "Bringing up $iface" 50
     ip link set "$iface" up 2>/dev/null || true
     udevadm settle --timeout=5 2>/dev/null || true
 
     if [ "${OTA_NET_LINK:-wired}" = wifi ] && [ -n "${OTA_WIFI_SSID_B64:-}" ]; then
         local ssid psk
         ssid=$(printf '%s' "$OTA_WIFI_SSID_B64" | base64 -d)
+        ota_phase "Joining the Wi-Fi network $ssid..." 55
         psk=$(printf '%s' "${OTA_WIFI_PSK_B64:-}" | base64 -d)
         wpa_passphrase "$ssid" "$psk" > /tmp/wpa.conf
         wpa_supplicant -B -i "$iface" -c /tmp/wpa.conf 2>/dev/null || warn "wpa_supplicant failed"
@@ -1393,6 +1408,7 @@ configure_one_iface() {
     fi
 
     if [ "${OTA_NET_MODE:-dhcp}" = static ] && [ -n "${OTA_NET_ADDR:-}" ] && [ "$iface" = "${OTA_NET_IFACE:-$iface}" ]; then
+        ota_phase "Setting the address $OTA_NET_ADDR on $iface" 70
         ip addr add "$OTA_NET_ADDR" dev "$iface" || true
         [ -n "${OTA_NET_GW:-}" ] && ip route replace default via "$OTA_NET_GW" dev "$iface" || true
     else
@@ -1403,6 +1419,7 @@ configure_one_iface() {
             # the call is backgrounded and killed by PID after a wall-clock budget (the address is read back with `ip addr show`).
             # Its stdout goes to /dev/kmsg so it does not leak into `myip=$(configure_networking_ota ...)`.
             local cn_rc=0 cn_pid cn_waited=0 cn_budget=30
+            ota_phase "Requesting an address on $iface (DHCP)..." 70
             set +u
             ( IP=dhcp DEVICE="$iface" configure_networking 2>&1 \
                 | while IFS= read -r cn_line; do
@@ -1468,6 +1485,7 @@ ota_net_from_cmdline() {
 
 configure_networking_ota() {
     local conf=/boot-ota/unitotem-ota.conf iface addr="" ifs="" i w=0 first nw found
+    ota_phase "Starting the network" 5
     [ -f "$conf" ] && read_kv_lines < "$conf"
     ota_net_from_cmdline
     # Do not rely on udev's coldplug having bound a driver yet (virtio_net could be present but not loaded).
@@ -1486,6 +1504,7 @@ configure_networking_ota() {
     # physical Ethernet device before concluding there is none.
     nw=0
     while [ "$nw" -lt 30 ]; do
+        ota_phase "Waiting for a network device (${nw}s)" $((5 + nw / 2))
         found=0
         for i in /sys/class/net/*; do
             i=${i##*/}
@@ -1516,6 +1535,7 @@ configure_networking_ota() {
     fi
     # give the links a few seconds to negotiate, then order: with carrier first, the configured interface first among them
     while [ "$w" -lt 12 ]; do
+        ota_phase "Waiting for the cable${ifs:+ on${ifs}} (${w}s)" $((25 + w * 2))
         for i in $ifs; do [ "$(cat /sys/class/net/$i/carrier 2>/dev/null)" = 1 ] && break 2; done
         sleep 1; w=$((w + 1))
     done
@@ -1530,9 +1550,12 @@ configure_networking_ota() {
         addr=${addr%%$'\n'*}
         if [ -n "$addr" ]; then
             kmsg "unitotem-ota/net: address $addr on $i"
+            ota_header_address "$addr"
+            ota_status_set ""
             printf '%s\n' "$addr"
             return 0
         fi
+        ota_phase "No address on $i, trying the next interface" 80
         warn "no address on $i, trying the next interface"
     done
     return 1
@@ -1590,9 +1613,14 @@ ota_idle_watchdog() {
     reboot -f
 }
 
-# ota_splash TITLE LINE : paint the console right away (logo, what is happening, what to expect) so the screen is not
-# empty while the network comes up (about ten seconds). Plain text on tty1, best effort.
-# ota_logo writes the UniTotem wordmark of the manager's Plymouth theme, pre-rendered (tools/gen-logo.py) to raw pixels,
+
+# The last thing an update shows before the machine restarts.
+ota_final_status() {
+    ota_status_set "Update written. Restarting into the new system..."
+    echo 100 > "$OTA_PCT_FILE" 2>/dev/null || true
+}
+
+# ota_logo writes the UniTotem wordmark of the manager's Plymouth theme, rendered at build time (unitotem/logo/gen-logo.py) to raw pixels and runs,
 # straight to the framebuffer (this initramfs has no image decoder). Returns 1 if there is no usable framebuffer or logo,
 # so the caller falls back to text.
 OTA_LOGO_DIR=${OTA_LOGO_DIR:-/usr/lib/unitotem}
@@ -1619,33 +1647,6 @@ ota_logo() {
     return 0
 }
 
-ota_splash() {
-    [ -w /dev/tty1 ] || return 0
-    printf '\033[2J\033[H\033[?25l' > /dev/tty1 2>/dev/null || true
-    local row=2
-    if ota_logo; then
-        row=12     # below the bitmap (16 px text rows at 640x480; the logo spans rows 2..7 there, 2..13 at native size)
-        printf '\033[%d;1H' "$row" > /dev/tty1 2>/dev/null || true
-    else
-        {
-            printf '\033[1;36m\n\n\n'
-            printf '      _   _       _ _____       _\n'
-            printf '     | | | |_ __ (_)_   _|__ __| |_ ___ _ __ ___\n'
-            printf '     | | | | '"'"'_ \| | | |/ _ \ _|  _/ _ \ '"'"'_ ` _ \\\n'
-            printf '     | |_| | | | | | | | (_) | |_| ||  __/ | | | | |\n'
-            printf '      \___/|_| |_|_| |_|\___/ \__|\__\___|_| |_| |_|\n'
-            printf '\033[0m'
-        } > /dev/tty1 2>/dev/null || true
-    fi
-    printf '\n\n     %s\n\n     %s\n' "${1:-}" "${2:-}" > /dev/tty1 2>/dev/null || true
-}
-
-# The last thing an update shows before the machine restarts.
-ota_final_status() {
-    ota_status_set "Update written. Restarting into the new system..."
-    echo 100 > "$OTA_PCT_FILE" 2>/dev/null || true
-}
-
 cmd_serve_fallback() {
     parse_args "$@"
     # The screen is the progress dialog: kernel messages only for emergencies, and this process's own stdout/stderr go to
@@ -1654,17 +1655,22 @@ cmd_serve_fallback() {
     exec >> /run/ota-serve.log 2>&1
     local reason="${ARG[reason]:-requested explicitly}"
     log "OTA mode: $reason"
-    if [ "${ARG[kind]:-update}" = recovery ]; then
-        ota_splash "OTA recovery mode" "A fault was detected: $reason. Starting the network, please wait..."
-    else
-        ota_splash "OTA update mode" "Starting the network, please wait..."
-    fi
+    # The progress dialog is up before the network: its phase line follows the bring-up, the address is filled in when known.
+    # "recovery" in the title is reserved for faults the device detected itself; an update is the default.
+    local kind_title="OTA update mode"
+    [ "${ARG[kind]:-update}" = recovery ] && kind_title="OTA recovery mode"
+    ota_ui_start "${kind_title}
+Reason: ${reason//$'\n'/ }
+Address: waiting for the network   Port: 2222" || true
+    ota_phase "Starting the network" 5
+    ( sleep 2; ota_logo ) </dev/null >/dev/null 2>&1 &
     # Default wait for a host is 10 minutes; callers override it with idle-timeout (`recover` waits forever).
     ( ota_idle_watchdog "${ARG[idle-timeout]:-600}" ) </dev/null >/dev/null 2>&1 &
 
     ota_led_maintenance
 
     local myip; myip=$(configure_networking_ota || true)
+    [ -n "$myip" ] || ota_phase "No address yet: retrying (check the cable)"
     # No address yet (an adapter that appears late): keep trying in the background for about 35 minutes. dropbear listens on
     # every interface, so it answers as soon as one has an address.
     if [ -z "$myip" ]; then
@@ -1687,18 +1693,6 @@ cmd_serve_fallback() {
     mkdir -p /run/systemd
 
     # Fallback root credentials are written at run time by fallback_auth_setup, called right before dropbear.
-
-    # The gauge stays up for the whole session (a one-shot --infobox would be overwritten; /dev/console is the serial
-    # port, see ota_ui_start). `|| true` is required: a `||` context suppresses errexit and the ERR trap for the whole
-    # function body, so a broken UI can fail to draw but never aborts serve-fallback.
-    # "recovery" in the title is reserved for faults the device detected itself; an update is the default.
-    local kind_title="OTA update mode"
-    [ "${ARG[kind]:-update}" = recovery ] && kind_title="OTA recovery mode"
-    ota_ui_start "${kind_title}
-Reason: ${reason}
-Address: ${myip:-none}   Port: 2222" || true
-    # the progress screen clears the console when it starts: put the logo back above it once it is up
-    ( sleep 2; ota_logo ) </dev/null >/dev/null 2>&1 &
 
     # Fallback credentials and mode. The `||` context keeps a failed DATA or boot mount from aborting here: the
     # credentials then stay locked (FALLBACK_OPEN=0).
