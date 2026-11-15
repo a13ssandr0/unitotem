@@ -26,6 +26,8 @@ tar -I pigz -C "${ROOTFS}" -xf "${STAGE1}"
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 # The hook that builds the initrd and the logo it carries are refreshed the same way.
 install -m 755 /unitotem/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
+mkdir -p "${ROOTFS}/usr/share/unitotem-ota"
+install -m 644 /unitotem/files/ota-initrd.list "${ROOTFS}/usr/share/unitotem-ota/ota-initrd.list"
 python3 /unitotem/logo/gen-logo.py "${ROOTFS}/usr/lib/unitotem" >/dev/null || { echo "ERROR: logo rendering failed" >&2; exit 1; }
 
 ensure_qemu

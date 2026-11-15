@@ -244,6 +244,9 @@ ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
 python3 /unitotem/logo/gen-logo.py "${ROOTFS}/usr/lib/unitotem" >/dev/null || { echo "ERROR: logo rendering failed" >&2; exit 1; }
 
 install -m 755 /unitotem/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
+# the names the hook copies (read by the hook and by unitotem/ninitrd/lists.py); image-owned, so under /usr/share
+mkdir -p "${ROOTFS}/usr/share/unitotem-ota"
+install -m 644 /unitotem/files/ota-initrd.list "${ROOTFS}/usr/share/unitotem-ota/ota-initrd.list"
 # zstd -19 instead of the gzip that mkinitramfs falls back to when zstd is missing in the chroot: ~25% smaller, the Pi kernel has CONFIG_RD_ZSTD.
 mkdir -p "${ROOTFS}/etc/initramfs-tools/conf.d"
 printf 'COMPRESS=zstd\nCOMPRESSLEVEL=19\n' > "${ROOTFS}/etc/initramfs-tools/conf.d/unitotem-compress"
