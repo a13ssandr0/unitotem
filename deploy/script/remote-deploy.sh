@@ -904,7 +904,7 @@ load_image() {
     # The Pi 3 ROM does not read GPT: the same partitions, written as an MBR (primaries; FAT type c for the firmware, 83 for the rest).
     if [ "${PI3:-0}" = 1 ]; then
         image_table_dos "$IMG_DESC" || die "cannot convert the partition table of ${OPT_IMAGE} to MBR"
-        log "Target is a Raspberry Pi 3 / Zero 2: the partition table is written as MBR."
+        log "Target is a ${P[MODEL]:-Raspberry Pi 3 / Zero 2}: the partition table is written as MBR."
     fi
 
     P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
@@ -1251,7 +1251,8 @@ deploy_from_fallback() {
         aarch64) ARCH=arm64; FIRMWARE=rpi; TRYBOOT_CAPABLE="${E[UNITOTEM_TRYBOOT]:-0}"
                  # Pi 3 / Zero 2 (see do_probe): the model is read here, not from the engine, which may be older than this script
                  PI3=0
-                 if ota_ssh "$host" "tr -d '\\0' < /proc/device-tree/model 2>/dev/null" | grep -qiE "raspberry pi (3|.*zero 2)"; then PI3=1; TRYBOOT_CAPABLE=1; fi ;;
+                 P[MODEL]=$(ota_ssh "$host" "tr -d '\\0' < /proc/device-tree/model 2>/dev/null" || true)
+                 if echo "${P[MODEL]}" | grep -qiE "raspberry pi (3|.*zero 2)"; then PI3=1; TRYBOOT_CAPABLE=1; fi ;;
         x86_64)  ARCH=amd64; FIRMWARE=$([ "${E[UNITOTEM_EFI]:-0}" = 1 ] && echo uefi || echo bios); TRYBOOT_CAPABLE=0 ;;
         *) die "unrecognised target architecture: ${E[UNITOTEM_ARCH_HOST]:-?}" ;;
     esac
@@ -1264,13 +1265,18 @@ deploy_from_fallback() {
     data_start_exp=$(grep -E "(^|[^0-9])${P_DATA_PART}[[:space:]]*:" "${IMG_DESC}/layout.sfdisk" | head -1 | grep -oE 'start=[[:space:]]*[0-9]+' | grep -oE '[0-9]+' || true)
     # asked here, not of the engine: the recovery initrd on the target may be older than this script
     E[UNITOTEM_DATA_START]=$(ota_ssh "$host" 'd=$(blkid -L DATA 2>/dev/null) && cat /sys/class/block/${d##*/}/start' 2>/dev/null || true)
+    # DATA is kept only when every condition holds; the first one that fails is the reason shown
     local keep=1 why=""
-    [ "$OPT_WIPE_DATA" != 1 ]                                  || { keep=0; why="--wipe-data requested"; }
-    [ "${E[UNITOTEM_HAVE_DATA]:-0}" = 1 ]                      || { keep=0; why="the DATA partition is not readable"; }
-    [ "${E[UNITOTEM_DATA_FSCK]:-x}" = 0 ]                      || { keep=0; why="DATA fails the read-only check (fsck=${E[UNITOTEM_DATA_FSCK]:-n/a})"; }
-    [ "$(echo ${E[UNITOTEM_DATA_PARTN]:-x})" = "$P_DATA_PART" ]    || { keep=0; why="DATA is not on the expected partition ${P_DATA_PART}"; }
-    [ "${E[UNITOTEM_DATA_START]:-x}" = "$data_start_exp" ]     || { keep=0; why="DATA does not start at the expected sector (${E[UNITOTEM_DATA_START]:-?} instead of ${data_start_exp})"; }
-    [ "${E[UNITOTEM_NPARTS]:-0}" = "$nparts_exp" ]             || { keep=0; why="the table has ${E[UNITOTEM_NPARTS]:-0} partitions, ${nparts_exp} are needed"; }
+    no_keep() { keep=0; [ -n "$why" ] || why="$1"; }
+    [ "$OPT_WIPE_DATA" != 1 ]                              || no_keep "--wipe-data requested"
+    if [ "${E[UNITOTEM_HAVE_DATA]:-0}" != 1 ]; then
+        if [ -n "$(ota_ssh "$host" 'blkid -L DATA 2>/dev/null' || true)" ]; then no_keep "the DATA partition does not mount"
+        else no_keep "there is no DATA partition (${E[UNITOTEM_NPARTS]:-0} partition(s) on the disk)"; fi
+    fi
+    [ "${E[UNITOTEM_DATA_FSCK]:-x}" = 0 ]                  || no_keep "DATA fails the read-only check (fsck=${E[UNITOTEM_DATA_FSCK]:-n/a})"
+    [ "$(echo ${E[UNITOTEM_DATA_PARTN]:-x})" = "$P_DATA_PART" ] || no_keep "DATA is not on the expected partition ${P_DATA_PART}"
+    [ "${E[UNITOTEM_DATA_START]:-x}" = "$data_start_exp" ] || no_keep "DATA does not start at the expected sector (${E[UNITOTEM_DATA_START]:-?} instead of ${data_start_exp})"
+    [ "${E[UNITOTEM_NPARTS]:-0}" = "$nparts_exp" ]         || no_keep "the table has ${E[UNITOTEM_NPARTS]:-0} partitions, ${nparts_exp} are needed"
     RECOVER_MODE=1; RECOVER_KEEP_TABLE=$keep
     RECOVER_BOOTFS_FRESH=0
     if [ "${E[UNITOTEM_HAVE_BOOTFS]:-0}" != 1 ] || { [ -n "${E[UNITOTEM_BOOTFS_FSCK]:-}" ] && [ "${E[UNITOTEM_BOOTFS_FSCK]}" != 0 ]; }; then
@@ -1281,7 +1287,7 @@ deploy_from_fallback() {
     P[SSHCLIENT]="${OTA_HOSTIP:-none}"   # OTA_HOSTIP: the address the target reaches this machine at, when it is not the one routing to it (QEMU NAT, tests)
 
     echo ""
-    echo "Recovery    : ${host}  disk ${disk}  (${ARCH}/${FIRMWARE})"
+    echo "Recovery    : ${host}  disk ${disk}  (${P[MODEL]:-${ARCH}/${FIRMWARE}})"
     echo "Image       : $(basename "$OPT_IMAGE")"
     if [ "$keep" = 1 ]; then
         echo "DATA        : INTACT, will be PRESERVED (table unchanged)"
