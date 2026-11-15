@@ -49,6 +49,16 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
 - **Overlay and counter status**: `status` reports `overlay`, `volatile` and `boot_attempts` (see the Status JSON below and [boot.md](boot.md#boot-counter)).
 - **Lock**: `/run/unitotem-update.lock` (flock); busy exits 12. The file is never unlinked: release closes the descriptor, so no waiter can lock a stale inode. Progress: `/run/unitotem-update.progress` (one JSON line, atomic rename).
 
+### Payload
+
+- `root.ext4.pc.xz` is a full-size slot filesystem: 5 GiB (`SLOT_BYTES` of `unitotem-release`, `ROOT_SLOT_SIZE` of `unitotem/common.sh`), whatever the size of ROOT_A in the build image.
+- The build image holds ROOT_A shrunk to its minimum (partition = filesystem + 16 MiB). `build-ab` extracts it with `dd conv=sparse` and `truncate` to the exact partition length, runs `e2fsck -fp`, then grows the copy: `truncate` to the slot size, `resize2fs`, `e2fsck -fn` (must be clean). Only then it relabels (`ROOT_NEW`, new UUID) and streams it with `partclone.extfs | xz`.
+- A ROOT_A already at the slot size is not grown. A filesystem larger than the slot is refused. `--slot-bytes N` sets another size (multiple of 1 MiB; tests use it).
+- The updater needs no grow step: `partclone.restore` writes the payload into the slot, and the slot is the same size.
+- Payload size is the used data (partclone skips free blocks), not the slot size. Measured, same 600 MiB tree on a 1.2 GB ROOT_A: grown 314 670 800 bytes, slot = partition 314 658 632 bytes. `build-ab` 13.5 s grown, 13.6 s without a grow (within noise). The grown temp file takes 602 MiB on disk before and after the grow (sparse). Temp space: the used data of ROOT_A plus the payload, not 5 GiB.
+- Repair does not grow: `clone_into_slot` copies the running slot's full filesystem into the damaged slot, which has the same size.
+- Tests: `tools/release/test_release_build.py` (shrunk ROOT_A, full 5 GiB ROOT_A, refusals, tree and `e2fsck` after restore), `tools/release/test_rpi_backend.py` (arm64 fixture shrunk; root restores to 5 GiB).
+
 ### Slot devices and repair writes
 
 `slot_dev` (`unitotem-update`) resolves a slot, first match wins:
@@ -206,7 +216,7 @@ Boot interfaces:
 
 ## Tests
 
-Host (repo root, no device): `python3 tools/release/test_auto.py`, `test_repair.py`, `test_identity_merge.py`, `test_boot_orientation.py`, `test_io_friendly.py`, `test_rpi_backend.py` (needs mtools, e2fsprogs; served by `tools/release/fake-github.py`).
+Host (repo root, no device): `python3 tools/release/test_auto.py`, `test_repair.py`, `test_identity_merge.py`, `test_boot_orientation.py`, `test_io_friendly.py`, `test_release_build.py` (no root; sparse 5 GiB files), `test_rpi_backend.py` (needs mtools, e2fsprogs; served by `tools/release/fake-github.py`).
 
 Slot devices and repair writes: `python3 tools/release/test_repair.py` (60 checks, includes `clone_into_slot` on a file and `slot_dev` with fake sysfs), `bash tools/release/test_slot_pick.sh` (44 checks, engine `slot_pick`), `bash tools/release/test_slot_dup.sh` (privileged Docker, 548 checks: duplicate labels and interrupted writes, GPT and DOS, `metadata_csum` on and off). Details: [testing.md](testing.md).
 

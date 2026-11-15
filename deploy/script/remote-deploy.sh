@@ -827,13 +827,16 @@ run_ota_sequence() {
                 used="${block[UNITOTEM_PART_USED_BYTES]}"
                 comp="${block[UNITOTEM_PART_COMP]:-xz}"
                 log "Restoring partition ${partnum} (${label}, ${cloner})..."
+                # A minimal image's ROOT_A is restored into the slot and grown to it on the target (fs check, then resize)
+                local grow_args=""
+                if [ "${P_SYNTH:-0}" = 1 ] && [ "$label" = ROOT_A ]; then grow_args="--fstype ext4 --grow 1"; fi
                 # The partition is read from the image into a pipe while the target pulls it: nothing is stored.
                 local fifo="${IMG_DESC}/stream.${partnum}"; mkfifo -- "$fifo"
                 image_stream "$partnum" > "$fifo" &
                 local ppid=$!
                 local pid; pid=$(serve_data "$host" "$fifo")
                 wait_data_ready "partition ${partnum}"
-                ota_ssh "$host" "unitotem-ota-engine restore-part --disk '${disk}' --part '${partnum}' --cloner '${cloner}' --comp '${comp}' --used-bytes '${used}' --data-host '${hostip}' --data-port '${OPT_PORT}'"
+                ota_ssh "$host" "unitotem-ota-engine restore-part --disk '${disk}' --part '${partnum}' --cloner '${cloner}' --comp '${comp}' --used-bytes '${used}' --data-host '${hostip}' --data-port '${OPT_PORT}' ${grow_args}"
                 data_wait "$pid"
                 wait "$ppid" || die "reading partition ${partnum} from the image failed"
                 rm -f -- "$fifo"
@@ -910,6 +913,8 @@ load_image() {
 
     P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
     P_BOOTFS_PART=$(awk -F= '/^UNITOTEM_BOOTFS_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
+    # 1 for a minimal image: ROOT_A is grown to the slot on the target, ROOT_B and DATA are made by the deploy
+    P_SYNTH=$(awk -F= '/^UNITOTEM_SYNTH=/{print $2; exit}' "${IMG_DESC}/parts.manifest")
     # Partition number for a label: remember the last UNITOTEM_PART= seen, print it at the matching label line.
     part_num_for_label() {
         awk -F= -v want="$1" '
@@ -919,7 +924,7 @@ load_image() {
     }
     P_LAYOUT=$(awk -F= '/^UNITOTEM_LAYOUT=/{print $2; exit}' "${IMG_DESC}/parts.manifest")
     [ "$P_LAYOUT" = 2 ] || die "the image is not A/B (no ROOT_A): only A/B images are supported"
-    [ "${P_DATA_PART:-0}" != 0 ] || die "the image has no DATA partition: use the full image (unitotem-<date>-${ARCH}.img.xz), not the flash image"
+    [ "${P_DATA_PART:-0}" != 0 ] || die "the image has no DATA partition and no ROOT_B to lay it out from: use the full image (unitotem-<date>-${ARCH}.img.xz)"
     [ "$ARCH" = amd64 ] || { [ "$ARCH" = arm64 ] && [ "$FIRMWARE" = rpi ] && [ "$TRYBOOT_CAPABLE" = 1 ]; } \
         || die "the A/B layout is supported on amd64 (UEFI and legacy BIOS) and on Raspberry with tryboot (target: ${ARCH}/${FIRMWARE}, tryboot=${TRYBOOT_CAPABLE:-0}); Raspberry without tryboot is not supported"
     P_ROOT_PART=$(part_num_for_label ROOT_A)

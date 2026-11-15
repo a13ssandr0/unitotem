@@ -9,5 +9,5 @@ rc=0
 docker build -q -f "${DIR}/tools/release/Dockerfile.test" -t unitotem-test-tools "${DIR}/tools/release" >/dev/null
 docker run --rm --privileged -v "${DIR}:/repo:ro" -v "${DIR}/work/image-lib-test:/work" --workdir /work \
     unitotem-test-tools:latest bash /repo/tools/release/test_image_lib_inside.sh || rc=$?
-docker run --rm -v "${DIR}/work:/w" debian:trixie sh -c 'rm -f -- /w/image-lib-test/src.img /w/image-lib-test/src.img.xz /w/image-lib-test/tgt.img' || true
+docker run --rm -v "${DIR}/work:/w" debian:trixie sh -c 'rm -f -- /w/image-lib-test/src.img /w/image-lib-test/src.img.xz /w/image-lib-test/tgt.img /w/image-lib-test/min.img /w/image-lib-test/minarm.img /w/image-lib-test/mindos.img /w/image-lib-test/minarm-dst.img /w/image-lib-test/minarm.pc.xz /w/image-lib-test/grow.img /w/image-lib-test/bad1.img /w/image-lib-test/bad2.img /w/image-lib-test/bad3.img /w/image-lib-test/bad1.err /w/image-lib-test/bad3.err' || true
 exit "$rc"

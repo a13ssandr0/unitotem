@@ -12,5 +12,5 @@ docker run --name make-flash-image-test --privileged \
     -v "${DIR}:/repo:ro" -v "${DIR}/work/mbr-all/flash-image-test:/work" --workdir /work \
     debian:trixie bash /repo/tools/release/test_make_flash_image_inside.sh "$@" || rc=$?
 docker rm -f make-flash-image-test >/dev/null 2>&1 || true
-docker run --rm -v "${DIR}/work/mbr-all:/w" debian:trixie rm -rf -- /w/flash-image-test/arm64-full.img /w/flash-image-test/arm64-flash.img /w/flash-image-test/amd64-full.img /w/flash-image-test/amd64-flash.img /w/flash-image-test/disk.img || true
+docker run --rm -v "${DIR}/work/mbr-all:/w" debian:trixie rm -rf -- /w/flash-image-test/arm64-full.img /w/flash-image-test/arm64-flash.img /w/flash-image-test/amd64-full.img /w/flash-image-test/amd64-flash.img /w/flash-image-test/arm64-min-full.img /w/flash-image-test/arm64-min-flash.img /w/flash-image-test/amd64-min-full.img /w/flash-image-test/amd64-min-flash.img /w/flash-image-test/disk.img || true
 exit "$rc"

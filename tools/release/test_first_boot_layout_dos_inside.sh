@@ -258,5 +258,44 @@ chk "(g) GPT: no DOS type (da/db), GPT valid" t_g_gpt
 umount /mnt/r; losetup -d "$LOOP"; LOOP=
 rm -f -- $W/gpt.img
 
+# ---------------------------------------------------------------- (h) minimal image: ROOT_A shrunk and cut, grown offline
+# A flash image as make-flash-image writes it: ROOT_A's filesystem shrunk (resize2fs -M), the partition cut to fs + 16 MiB,
+# the file ends 1 MiB after ROOT_A. The first boot grows ROOT_A to 5 GiB before the table is laid out (grow_root).
+echo "=== (h) minimal DOS image on a 16 GB disk: ROOT_A grown to 5 GiB offline, ROOT_B and DATA created"
+mkdisk $W/dos-min.img 16G 'start=2048, size=1048576, type=c\nstart=1050624, size=10485760, type=83' '2:ROOT_A'
+LOOP=$(losetup --find --show --partscan $W/dos-min.img)
+e2fsck -fy ${LOOP}p2 >/dev/null 2>&1; resize2fs -M ${LOOP}p2 >/dev/null 2>&1 || bad "(h) resize2fs -M failed"
+mshrunk=$(dumpe2fs -h ${LOOP}p2 2>/dev/null | awk '/^Block count/{c=$3} /^Block size/{s=$3} END{print c*s/512}')
+losetup -d "$LOOP"; LOOP=
+mpart=$(( (mshrunk + 32768 + 2047) / 2048 * 2048 ))
+echo ", $mpart" | sfdisk --no-reread --no-tell-kernel --wipe never --wipe-partitions never -q -N 2 $W/dos-min.img >/dev/null 2>&1 || bad "(h) cut of ROOT_A failed"
+truncate -s $(( (1050624 + mpart + 2048) * 512 )) $W/dos-min.img
+cp --sparse=always $W/dos-min.img $W/t.img; truncate -s 16G $W/t.img
+LOOP=$(losetup --find --show --partscan $W/t.img)
+echo "    minimal ROOT_A: $mpart sectors"; sfdisk -d $LOOP | sed 's/^/    table: /' | tail -n 2
+hd0=$(dd if=${LOOP}p1 bs=1M status=none | sha256sum)
+runlay; sed 's/^/    log: /' "$LOGF"
+chk "(h) one growth line and one creation line, rc=0" bash -c "grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' '$LOGF' && grep -q '^I: layout: created DATA ROOT_B\$' '$LOGF' && [ \"\$(grep -c '^W:' '$LOGF')\" = 0 ] && grep -q '^rc=0' '$LOGF'"
+h_root_a()  { [ "$(blockdev --getsz ${LOOP}p2)" = 10485760 ] && [ "$(pfield 2 start)" = 1050624 ]; }
+h_fill()    { [ "$(blockdev --getsz ${LOOP}p2)" = "$(( $(dumpe2fs -h ${LOOP}p2 2>/dev/null | awk '/^Block count/{c=$3} /^Block size/{s=$3} END{print c*s/512}') ))" ] && e2fsck -fn ${LOOP}p2 >/dev/null 2>&1; }
+h_geom()    { [ "$(pfield 3 start)" = 11536384 ] && [ "$(pfield 3 size)" = 10485760 ] && [ "$(pfield 4 start)" = 22022144 ] \
+              && [ "$(plabel 3)" = ROOT_B ] && [ "$(plabel 4)" = DATA ] && [ "$(ptype 3)" = 83 ] && [ "$(ptype 4)" = 83 ]; }
+h_end()     { [ $(( $(blockdev --getsz $LOOP) - 22022144 - $(blockdev --getsz ${LOOP}p4) )) -lt 2048 ]; }
+h_valid()   { sfdisk -V $LOOP >/dev/null 2>&1 && [ "$(ptype 1)" = c ] && ! sfdisk -d $LOOP | grep -Eq 'type=(da|db)(,|$)'; }
+h_fsck()    { e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1; }
+h_boot()    { [ "$hd0" = "$(dd if=${LOOP}p1 bs=1M status=none | sha256sum)" ]; }
+chk "(h) ROOT_A is 5 GiB (10485760 sectors), start unchanged" h_root_a
+chk "(h) ROOT_A filesystem fills its partition and e2fsck -fn is clean" h_fill
+chk "(h) ROOT_B 5 GiB at 11536384 (1 MiB after ROOT_A), DATA at 22022144, labels ROOT_B and DATA, types 83" h_geom
+chk "(h) DATA reaches the disk end (< 2048 sectors short)" h_end
+chk "(h) DOS table verifies, FIRMWARE still type c, no pending type" h_valid
+chk "(h) ROOT_B and DATA e2fsck -fn clean" h_fsck
+chk "(h) boot partition byte-identical" h_boot
+tb=$(sfdisk -d $LOOP); : > "$LOGF"; runlay
+chk "(h) second run is a no-op (no log)" [ "$(grep -vc '^rc=' "$LOGF")" = 0 ]
+chk "(h) second run leaves the table unchanged" [ "$(sfdisk -d $LOOP)" = "$tb" ]
+losetup -d "$LOOP"; LOOP=
+rm -f -- $W/t.img $W/dos-min.img
+
 echo "RESULT: $pass passed, $failn failed"
 [ "$failn" = 0 ]

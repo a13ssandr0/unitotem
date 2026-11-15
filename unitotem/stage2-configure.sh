@@ -211,6 +211,10 @@ done
 
 install -m 755 /unitotem/files/overlayfs-hook.sh \
     "${ROOTFS}/etc/initramfs-tools/scripts/init-bottom/setup-overlays"
+# the same file as local-premount: ROOT_A grown and ROOT_B/DATA created before the root is mounted
+mkdir -p "${ROOTFS}/etc/initramfs-tools/scripts/local-premount"
+install -m 755 /unitotem/files/overlayfs-hook.sh \
+    "${ROOTFS}/etc/initramfs-tools/scripts/local-premount/unitotem-layout"
 echo "overlay" >> "${ROOTFS}/etc/initramfs-tools/modules"
 echo "FRAMEBUFFER=y" >> "${ROOTFS}/etc/initramfs-tools/initramfs.conf"
 

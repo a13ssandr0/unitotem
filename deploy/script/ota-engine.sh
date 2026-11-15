@@ -443,8 +443,16 @@ cmd_restore_part() {
     exec 4<&-
 
     if [ "${ARG[cloner]}" != dd ]; then
-        e2fsck -fy "$part_dev" >/dev/null 2>&1 || true
-        [ "${ARG[fstype]:-}" = ext4 ] && [ -n "${ARG[grow]:-}" ] && resize2fs "$part_dev" >/dev/null 2>&1 || true
+        if [ "${ARG[fstype]:-}" = ext4 ] && [ -n "${ARG[grow]:-}" ]; then
+            # Grow to the partition: the restored filesystem must check clean (rc 0 or 1 = repaired), then resize2fs fills the
+            # partition. A failed resize keeps the restored size and is reported.
+            local frc=0
+            e2fsck -fy "$part_dev" >/dev/null 2>&1 || frc=$?
+            [ "$frc" -le 1 ] || fail "e2fsck found uncorrected errors on $part_dev (rc=$frc): not grown"
+            if ! resize2fs "$part_dev" >/dev/null 2>&1; then warn "resize2fs failed on $part_dev: the filesystem keeps its restored size"; fi
+        else
+            e2fsck -fy "$part_dev" >/dev/null 2>&1 || true
+        fi
     fi
     echo "UNITOTEM_PART_RESTORED=${ARG[part]}"
 }

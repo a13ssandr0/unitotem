@@ -450,9 +450,9 @@ layout_scenario() {  # layout_scenario NAME ARCH DISKSIZE
     if [ "$LAYOUT_DOS" = 1 ]; then
         chk "$name: slot_sound's lookup finds ROOT_B (blkid LABEL, MBR has no PARTLABEL) and it holds no system" dos_slot_lookup
     else
-        chk "$name: slot_sound's lookup finds ROOT_B (blkid -t PARTLABEL, LABEL) and it holds no system" bash -c "[ \"\$(blkid -t PARTLABEL=ROOT_B -o device)\" = ${LOOP}p3 ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && mkdir -p /mnt/b && mount -o ro ${LOOP}p3 /mnt/b && ! test -e /mnt/b/usr/share/unitotem/release-version; r=\$?; umount /mnt/b; exit \$r"
+        chk "$name: slot_sound's lookup finds ROOT_B (blkid -t PARTLABEL, LABEL) and it holds no system" bash -c "sfdisk -d ${LOOP} | grep \"^${LOOP}p3 \" | grep -q 'name=\"ROOT_B\"' && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && mkdir -p /mnt/b && mount -o ro ${LOOP}p3 /mnt/b && ! test -e /mnt/b/usr/share/unitotem/release-version; r=\$?; umount /mnt/b; exit \$r"
     fi
-    chk "$name: only one filesystem labelled ROOT_A (no stale copy)" bash -c "[ \$(blkid | grep -c 'LABEL=\"ROOT_A\"') = 1 ]"
+    chk "$name: only one filesystem labelled ROOT_A (no stale copy)" bash -c "[ \$(for d in ${LOOP}p*; do blkid -s LABEL -o value \$d; done | grep -c '^ROOT_A\$') = 1 ]"
     chk "$name: ROOT_A still mounted and readable" bash -c "ls /mnt/r/lost+found >/dev/null"
     umount /mnt/r
     chk "$name: ROOT_A byte-identical" [ "$hroot" = "$(part_hash ${LOOP}p$rootp)" ]
@@ -519,7 +519,7 @@ dd if=${LOOP}p2 of=$LOOP bs=512 seek=$B count=16384 conv=notrunc status=none    
 dd if=${LOOP}p2 of=$LOOP bs=512 seek=$((B+10485760)) count=16384 conv=notrunc status=none  # and where DATA will start
 partx -u $LOOP 2>/dev/null; mount -o ro ${LOOP}p2 /mnt/r
 runlay
-chk "stale ROOT_A copies are gone: one ROOT_A, ROOT_B and DATA labelled right" bash -c "[ \$(blkid | grep -c 'LABEL=\"ROOT_A\"') = 1 ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p4)\" = DATA ]"
+chk "stale ROOT_A copies are gone: one ROOT_A, ROOT_B and DATA labelled right" bash -c "[ \$(for d in ${LOOP}p*; do blkid -s LABEL -o value \$d; done | grep -c '^ROOT_A\$') = 1 ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p4)\" = DATA ]"
 done_
 
 echo "=== ROOT_A is not the last partition"
@@ -547,6 +547,193 @@ f1=$(dumpe2fs -h $W/f1.img 2>/dev/null | grep -E '^(Filesystem features|Inode si
 echo "    stage3 : $(echo "$f1" | tr '\n' '|')"; echo "    no conf: $(echo "$f2" | tr '\n' '|')"
 chk "mke2fs without mke2fs.conf yields the same features, inode size, journal as stage3's mkfs.ext4" [ "$f1" = "$f2" ]
 rm -f $W/f1.img $W/f2.img
+
+# ---------------------------------------------------------------- phase 3: minimal images (ROOT_A shrunk, cut to fs + 16 MiB)
+# make_min ARCH FILE [MB]: the boot partition and ROOT_A (ext4 holding MB MiB of files, default 300), ROOT_A shrunk to its
+# minimum and cut to the filesystem + 16 MiB; the file ends 1 MiB after ROOT_A (GPT backup inside it), as the flash image.
+MIN_A_START=1050624   # 1 MiB aligned, the start of ROOT_A on both table kinds
+make_min() {
+    local arch=$1 img=$2 mb=${3:-300} fsz part
+    rm -f -- "$img"; truncate -s 6G "$img"
+    if [ "$arch" = amd64 ]; then
+        sgdisk -Z "$img" >/dev/null
+        sgdisk -n "1:0:+${EFI_SIZE}" -t 1:ef00 -c 1:EFI "$img" >/dev/null
+        sgdisk -n "2:0:+${ROOT_SLOT_SIZE}" -t 2:8300 -c 2:ROOT_A "$img" >/dev/null
+        sgdisk -n "5:34:2047" -t 5:ef02 -c 5:BIOS "$img" >/dev/null
+    else
+        printf 'label: dos\nstart=2048, size=1048576, type=c\nstart=1050624, size=10485760, type=83\n' | sfdisk -q "$img" >/dev/null 2>&1
+    fi
+    LOOP=$(losetup --find --show --partscan "$img")
+    if [ "$arch" = amd64 ]; then mkfs.fat -F32 -n EFI ${LOOP}p1 >/dev/null; else mkfs.fat -F32 -n FIRMWARE ${LOOP}p1 >/dev/null; fi
+    mkfs.ext4 -q -F -L ROOT_A ${LOOP}p2
+    mkdir -p /mnt/m; mount ${LOOP}p2 /mnt/m
+    for i in 1 2 3; do head -c $((mb * 1048576 / 3)) /dev/urandom > /mnt/m/f$i; done
+    mkdir -p /mnt/m/usr/share && cp /etc/passwd /mnt/m/usr/share/
+    (cd /mnt/m && find . -type f -exec sha256sum {} + | sort -k2) > "${img%.img}.sums"
+    umount /mnt/m
+    e2fsck -fy ${LOOP}p2 >/dev/null 2>&1; resize2fs -M ${LOOP}p2 >/dev/null 2>&1 || { echo "resize2fs -M failed"; return 1; }
+    fsz=$(dumpe2fs -h ${LOOP}p2 2>/dev/null | awk '/^Block count/{c=$3} /^Block size/{s=$3} END{print c*s/512}')
+    losetup -d "$LOOP"
+    part=$(( (fsz + 32768 + 2047) / 2048 * 2048 ))          # filesystem + 16 MiB, 1 MiB aligned
+    echo ", $part" | sfdisk --no-reread --no-tell-kernel --wipe never --wipe-partitions never -q -N 2 "$img" >/dev/null 2>&1 || return 1
+    truncate -s $(( (MIN_A_START + part + 2048) * 512 )) "$img"
+    [ "$arch" = amd64 ] && sgdisk -e "$img" >/dev/null
+    return 0
+}
+min_run() {  # min_run ARCH DISKSIZE : a copy of the minimal image on a disk of DISKSIZE, attached as LOOP (nothing mounted)
+    cp --sparse=always $W/min-$1.img $W/t.img; truncate -s "$2" $W/t.img
+    LOOP=$(losetup --find --show --partscan $W/t.img); nodes
+}
+min_detach() { umount /mnt/r 2>/dev/null; umount /mnt/d 2>/dev/null; losetup -d "$LOOP" 2>/dev/null; rm -f -- $W/t.img; }
+min_sys() { cat /sys/class/block/${LOOP##*/}p$1/$2; }
+min_expect() {  # min_expect NAME ARCH [SUMS] : ROOT_A at the slot size and clean, ROOT_B and DATA at the contract positions
+    local name=$1 arch=$2 sums=${3:-$W/min-$2.sums} a_st a_sz b_st b_sz d_st d_sz dend bc bs
+    a_st=$(min_sys 2 start); a_sz=$(min_sys 2 size)
+    bc=$(dumpe2fs -h ${LOOP}p2 2>/dev/null | sed -n 's/^Block count: *//p'); bs=$(dumpe2fs -h ${LOOP}p2 2>/dev/null | sed -n 's/^Block size: *//p')
+    chk "$name: ROOT_A is 5 GiB (10485760 sectors)" [ "$a_sz" = 10485760 ]
+    chk "$name: ROOT_A filesystem fills its partition ($((bc*bs/512)) of $a_sz sectors)" [ "$((bc*bs/512))" = "$a_sz" ]
+    chk "$name: ROOT_A e2fsck -fn clean" e2fsck -fn ${LOOP}p2 >/dev/null 2>&1
+    mount -o ro ${LOOP}p2 /mnt/r
+    chk "$name: ROOT_A file checksums unchanged" bash -c "cd /mnt/r && find . -type f -exec sha256sum {} + | sort -k2 | cmp -s - '$sums'"
+    umount /mnt/r
+    b_st=$(min_sys 3 start); b_sz=$(min_sys 3 size)
+    d_st=$(min_sys 4 start); d_sz=$(min_sys 4 size)
+    chk "$name: ROOT_B is 5 GiB, starts on the 1 MiB boundary after ROOT_A" bash -c "[ $b_sz = 10485760 ] && [ $b_st = $(( (a_st + a_sz + 2047) / 2048 * 2048 )) ]"
+    chk "$name: DATA starts on the 1 MiB boundary after ROOT_B" [ "$d_st" = $(( (b_st + b_sz + 2047) / 2048 * 2048 )) ]
+    if [ "$arch" = amd64 ]; then dend=$(( $(blockdev --getsz $LOOP) - 34 )); else dend=$(blockdev --getsz $LOOP); fi
+    chk "$name: DATA reaches the last usable sector ($((d_st + d_sz)) vs $dend)" [ $((dend - d_st - d_sz)) -lt 2048 ]
+    chk "$name: ROOT_B and DATA e2fsck -fn clean" bash -c "e2fsck -fn ${LOOP}p3 >/dev/null 2>&1 && e2fsck -fn ${LOOP}p4 >/dev/null 2>&1"
+    if [ "$arch" = amd64 ]; then
+        chk "$name: GPT valid, names ROOT_B and DATA, no pending flag" bash -c "sgdisk -v $LOOP 2>&1 | grep -q 'No problems found' && sgdisk -p $LOOP | grep -qE '^ +3 .*ROOT_B' && sgdisk -p $LOOP | grep -qE '^ +4 .*DATA' && ! sfdisk -d $LOOP | grep -q GUID:48"
+    else
+        chk "$name: DOS types p1 c, p2 83, p3 83, p4 83, no pending type" bash -c "[ \"\$(sfdisk -d $LOOP | grep '^${LOOP}p1 ' | sed -n 's/.*type=\([0-9a-fA-F]*\).*/\1/p')\" = c ] && [ \$(sfdisk -d $LOOP | grep -cE 'type=83(,|\$)') = 3 ] && ! sfdisk -d $LOOP | grep -Eq 'type=(da|db)(,|\$)' && sfdisk -V $LOOP >/dev/null 2>&1"
+    fi
+}
+min_hash_boot() { part_hash ${LOOP}p1; }
+fs_sectors() { local bc bs; bc=$(dumpe2fs -h ${LOOP}p2 2>/dev/null | sed -n 's/^Block count: *//p'); bs=$(dumpe2fs -h ${LOOP}p2 2>/dev/null | sed -n 's/^Block size: *//p'); echo $((bc * bs / 512)); }
+tbl_of() { if [ "$1" = amd64 ]; then sgdisk -p "$LOOP"; else sfdisk -d "$LOOP"; fi; }
+tbl_cmp() { tbl_of "$1" | cmp -s - "$2"; }
+# runroot LOOP : grow_root alone on ROOT_A of a GPT disk (timing); the same shell setup as runfn
+runroot() {
+    : > "$LOGF"
+    PATH=/tmp/blkidshim:$PATH GLOGF="$LOGF" GSRC="$SRC" dash -c 'log_warning_msg() { echo "W: $*" >> "$GLOGF"; }; log_success_msg() { echo "I: $*" >> "$GLOGF"; }
+        UNITOTEM_SOURCE_ONLY=1; . "$GSRC"; s=/sys/class/block/${1##*/}p2; grow_root "$1" "$s" "$(dirname "$(readlink -f "$s")")" gpt; echo "rc=$?" >> "$GLOGF"' _ "$1"
+}
+echo "=== minimal images: ROOT_A grown offline by local-premount (grow_root), ROOT_B and DATA created"
+for arch in amd64 arm64; do
+    make_min $arch $W/min-$arch.img || { bad "make_min $arch failed"; continue; }
+    echo "--- minimal $arch: $(stat -c %s $W/min-$arch.img) bytes"
+    if [ "$arch" = amd64 ]; then sgdisk -p $W/min-$arch.img | sed -n '/Number/,$p'; else sfdisk -d $W/min-$arch.img; fi
+    chk "min-$arch: ROOT_A is cut below the slot size" [ "$(sfdisk -d $W/min-$arch.img | grep -c 'start=')" -ge 2 ]
+    min_run $arch 20G
+    tbl_of $arch > $W/min.t0
+    hb0=$(min_hash_boot); hbios0=""; [ "$arch" = amd64 ] && hbios0=$(part_hash ${LOOP}p5)
+    t0=$(date +%s.%N); runlay; t1=$(date +%s.%N)
+    sed 's/^/    log: /' $LOGF; echo "    layout_complete + grow_data total: $(awk "BEGIN{print $t1-$t0}") s"
+    chk "min-$arch: log has the growth and the creation, no warning" bash -c "grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' $LOGF && grep -q '^I: layout: created' $LOGF && ! grep -q '^W:' $LOGF"
+    min_expect "min-$arch" $arch
+    chk "min-$arch: boot partition byte-identical" [ "$hb0" = "$(min_hash_boot)" ]
+    [ "$arch" = amd64 ] && chk "min-$arch: BIOS-boot partition byte-identical" [ "$hbios0" = "$(part_hash ${LOOP}p5)" ]
+    tbl_of $arch > $W/min.t1
+    runlay
+    chk "min-$arch: second run is a no-op (no log)" [ "$(lines)" = 0 ]
+    chk "min-$arch: second run leaves the table unchanged" tbl_cmp $arch $W/min.t1
+    min_detach
+done
+
+echo "=== minimal images: ROOT_A mounted (init-bottom): not touched, nothing created"
+min_run amd64 20G; mount -o ro ${LOOP}p2 /mnt/r; tbl_of amd64 > /tmp/min.t0; s0=$(min_sys 2 size)
+runlay
+chk "ROOT_A mounted: no log" [ "$(lines)" = 0 ]
+chk "ROOT_A mounted: ROOT_A size unchanged" [ "$s0" = "$(min_sys 2 size)" ]
+chk "ROOT_A mounted: table unchanged, no ROOT_B" tbl_cmp amd64 /tmp/min.t0
+umount /mnt/r
+min_detach
+
+echo "=== minimal images: disk too small (5 GiB less than the room needed): one warning, nothing changed"
+for arch in amd64 arm64; do
+    sz=$(( $(stat -c %s $W/min-$arch.img) / 1048576 + 5120 ))M
+    min_run $arch $sz
+    tbl_of $arch > $W/min.t0; s0=$(min_sys 2 size); hb0=$(min_hash_boot)
+    runlay
+    chk "tight $arch: exactly one warning, rc=0" bash -c "[ \"\$(grep -vc '^rc=' $LOGF)\" = 1 ] && grep -qxF 'W: layout: not enough free space to grow ROOT_A, skipping' $LOGF && grep -q '^rc=0' $LOGF"
+    chk "tight $arch: table unchanged" tbl_cmp $arch $W/min.t0
+    chk "tight $arch: ROOT_A size unchanged" [ "$s0" = "$(min_sys 2 size)" ]
+    chk "tight $arch: boot partition unchanged" [ "$hb0" = "$(min_hash_boot)" ]
+    min_detach
+done
+
+echo "=== interruption: table written, resize2fs fails (cut before the filesystem growth): next run finishes it"
+min_run amd64 20G
+mkdir -p /tmp/shim; printf '#!/bin/sh\nexit 1\n' > /tmp/shim/resize2fs; chmod +x /tmp/shim/resize2fs
+PATH=/tmp/shim:$PATH runlay; sed 's/^/    log: /' $LOGF
+chk "after the cut: ROOT_A partition is 5 GiB" [ "$(min_sys 2 size)" = 10485760 ]
+chk "after the cut: filesystem still smaller than its partition" [ "$(fs_sectors)" -lt 10485760 ]
+chk "after the cut: ROOT_B and DATA exist (the layout went on)" bash -c "[ \"\$(blkid -s LABEL -o value ${LOOP}p3)\" = ROOT_B ] && [ \"\$(blkid -s LABEL -o value ${LOOP}p4)\" = DATA ]"
+runlay; sed 's/^/    log: /' $LOGF
+chk "next run: one growth line for ROOT_A" bash -c "grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' $LOGF && [ \"\$(grep -c 'grow: ROOT_A' $LOGF)\" = 1 ]"
+min_expect "resumed" amd64
+min_detach
+rm -rf -- /tmp/shim
+
+echo "=== interruption: SIGKILL inside resize2fs (ROOT_A's table and kernel size already at 5 GiB), next run repairs and grows"
+min_run amd64 20G
+sgdisk -e $LOOP >/dev/null; echo ", 10485760" | sfdisk --no-reread --no-tell-kernel --wipe never --wipe-partitions never -q -N 2 $LOOP >/dev/null 2>&1; partx -u --nr 2 $LOOP
+cp --sparse=always $W/t.img $W/min-pr.img
+min_detach
+delays=(0.02 0.03 0.04 0.05 0.06); N=80; found=0; tries=0
+for ((i=0; i<N; i++)); do
+    d=${delays[$((i%5))]}; tries=$((i+1))
+    cp --sparse=always $W/min-pr.img $W/t.img
+    LOOP=$(losetup --find --show --partscan $W/t.img); nodes
+    resize2fs ${LOOP}p2 >/dev/null 2>&1 & rp=$!; sleep $d; kill -9 $rp 2>/dev/null; wait $rp 2>/dev/null
+    e2fsck -fn ${LOOP}p2 >/dev/null 2>&1; rc=$?
+    if [ "$rc" = 4 ]; then found=1; break; fi
+    min_detach
+done
+if [ "$found" = 1 ]; then
+    echo "    attempts: $tries (delay $d)"
+    chk "damage is the resize inode one: e2fsck -fn rc 4" [ "$rc" = 4 ]
+    runlay; sed 's/^/    log: /' $LOGF
+    chk "repair run: one repair line, one growth line" bash -c "grep -qxF 'I: grow: repaired ROOT_A after an interrupted resize' $LOGF && grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' $LOGF"
+    min_expect "repaired" amd64
+    min_detach
+else
+    bad "interrupted resize: no damage produced in $N attempts"
+    min_detach
+fi
+rm -f -- $W/min-pr.img
+
+echo "=== premount dispatch: the file named unitotem-layout runs layout_complete only; 'prereqs' is answered with nothing"
+mkdir -p /scripts $W/premount; cp /repo/unitotem/files/overlayfs-hook.sh $W/premount/unitotem-layout; chmod +x $W/premount/unitotem-layout
+printf 'log_warning_msg() { echo "W: $*" >> /tmp/grow.log; }\nlog_success_msg() { echo "I: $*" >> /tmp/grow.log; }\n' > /scripts/functions
+min_run amd64 20G; tbl_of amd64 > /tmp/min.t0
+chk "prereqs: prints nothing, rc 0, disk untouched" bash -c "[ -z \"\$(dash $W/premount/unitotem-layout prereqs)\" ] && dash $W/premount/unitotem-layout prereqs >/dev/null && sgdisk -p $LOOP | cmp -s - /tmp/min.t0"
+: > $LOGF
+PATH=/tmp/blkidshim:$PATH LOOP=$LOOP dash $W/premount/unitotem-layout; echo "rc=$?" >> $LOGF
+sed 's/^/    log: /' $LOGF
+min_expect "premount" amd64
+chk "premount run: one growth line and one creation line, rc=0" bash -c "grep -q '^I: grow: ROOT_A grown to 5120 MiB\$' $LOGF && grep -q '^I: layout: created ROOT_B DATA' $LOGF && grep -q '^rc=0' $LOGF"
+min_detach
+rm -f -- /scripts/functions
+
+echo "=== timing: ROOT_A of ~2.5 GiB (filesystem) grown to 5 GiB"
+make_min amd64 $W/min-2g-amd64.img 2300 || bad "make_min 2.5 GiB failed"
+sgdisk -p $W/min-2g-amd64.img | sed -n '/Number/,$p'
+cp --sparse=always $W/min-2g-amd64.img $W/t.img; truncate -s 20G $W/t.img
+LOOP=$(losetup --find --show --partscan $W/t.img); nodes
+t0=$(date +%s.%N); runroot $LOOP; t1=$(date +%s.%N)
+echo "TIME grow_root, ROOT_A ~2.5 GiB -> 5 GiB: $(awk "BEGIN{print $t1-$t0}") s"; sed 's/^/    log: /' $LOGF
+chk "timing run: ROOT_A 5 GiB" [ "$(min_sys 2 size)" = 10485760 ]
+chk "timing run: ROOT_A e2fsck -fn clean" e2fsck -fn ${LOOP}p2
+min_detach
+cp --sparse=always $W/min-2g-amd64.img $W/t.img; truncate -s 20G $W/t.img
+LOOP=$(losetup --find --show --partscan $W/t.img); nodes
+t0=$(date +%s.%N); runlay; t1=$(date +%s.%N)
+echo "TIME layout_complete + grow_data, same image: $(awk "BEGIN{print $t1-$t0}") s"
+min_expect "timing" amd64 $W/min-2g-amd64.sums
+min_detach
+rm -f -- $W/min-2g-amd64.img
 
 if [ "$BIG" = 1 ]; then
     echo "=== timing: flash image on a 400 GB disk (ROOT_B 5 GiB + DATA ~395 GB created at first boot)"

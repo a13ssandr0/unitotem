@@ -56,10 +56,18 @@ with tempfile.TemporaryDirectory() as td:
     uu.slot_sound = lambda c, s: (False, "empty")
     st = uu.slots_state(conf)
     st["b"] = {"version": None, "valid": False}; uu.write_state(conf, "slots.json", st)
+    # No real disk may be found or written here: an empty sysfs and no blkid/findmnt (a host has real partitions).
+    old_sys_env, old_run_out = os.environ.get("UNITOTEM_SYS_BLOCK"), uu.run_out
+    os.environ["UNITOTEM_SYS_BLOCK"] = os.path.join(td, "no-sys-block"); os.makedirs(os.environ["UNITOTEM_SYS_BLOCK"])
+    uu.run_out = lambda *cmd, check=True: ""
     try:
         uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf); reached = False
     except uu.Fail as e:
         reached = e.code == "no-slot-device"          # it got as far as looking for the partitions: an unsound other slot is rebuilt
+    finally:
+        uu.run_out = old_run_out
+        if old_sys_env is None: os.environ.pop("UNITOTEM_SYS_BLOCK", None)
+        else: os.environ["UNITOTEM_SYS_BLOCK"] = old_sys_env
     check("auto: an unsound other slot (even one never valid, e.g. empty after a recovery) is rebuilt", reached)
     uu.slot_sound = lambda c, s: (True, "ok")
     st["b"] = {"version": "1", "valid": True}; uu.write_state(conf, "slots.json", st)

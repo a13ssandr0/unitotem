@@ -98,10 +98,7 @@ with tempfile.TemporaryDirectory() as td:
     check("whitelist: re-import overwrites (change between fetch and apply)", open(data + "/upper/etc.b/unitotem/update.conf").read() == "v2\n")
 
     # ---- release builder (arm64) + bootfiles install, via the fake server ----
-    img = os.path.join(td, "arm.img")
-    sh("truncate", "-s", "400M", img)
-    sh("sgdisk", "-Z", img); sh("sgdisk", "-n", "1:2048:+64M", "-t", "1:0700", "-c", "1:FIRMWARE", img)
-    sh("sgdisk", "-n", "2:0:+64M", "-t", "2:8300", "-c", "2:ROOT_A", img)
+    MIB = 1 << 20
     fat = os.path.join(td, "fat.img"); sh("mkfs.fat", "-C", "-F32", "-n", "FIRMWARE", fat, "65536")
     src = os.path.join(td, "slotsrc"); os.makedirs(src + "/overlays")
     for f, c in (("kernel8.img", "K" * 5000), ("initramfs8", "I" * 7000), ("bcm2711-rpi-4-b.dtb", "D" * 300), ("overlays/vc4.dtbo", "O" * 80),
@@ -111,11 +108,26 @@ with tempfile.TemporaryDirectory() as td:
     for f in ("kernel8.img", "initramfs8", "bcm2711-rpi-4-b.dtb", "cmdline.txt"): sh("mcopy", "-i", fat, os.path.join(src, f), "::slota/")
     sh("mmd", "-i", fat, "::slota/overlays"); sh("mcopy", "-i", fat, src + "/overlays/vc4.dtbo", "::slota/overlays/")
     rootdir = os.path.join(td, "rootdir"); os.makedirs(rootdir + "/usr/share/unitotem"); open(rootdir + "/usr/share/unitotem/release-version", "w").write("9.9.9\n")
-    ext = os.path.join(td, "ext.img"); sh("truncate", "-s", "64M", ext); sh("mke2fs", "-q", "-t", "ext4", "-L", "ROOT_A", "-d", rootdir, ext)
-    for p, f in ((1, fat), (2, ext)):
-        info = sh("sgdisk", "-i", str(p), img).stdout
-        first = int(next(l for l in info.splitlines() if l.startswith("First sector")).split(":")[1].split()[0])
-        sh("dd", f"if={f}", f"of={img}", "bs=512", f"seek={first}", "conv=notrunc", "status=none")
+    # Build image layout: ROOT_A shrunk to its minimum, partition = filesystem + 16 MiB (as the build leaves it).
+    def arm_image(name, shrink):
+        ext = os.path.join(td, name + "-ext.img"); sh("truncate", "-s", "64M", ext)
+        sh("mke2fs", "-q", "-t", "ext4", "-L", "ROOT_A", "-d", rootdir, ext)
+        if shrink:
+            sh("e2fsck", "-fn", ext); sh("resize2fs", "-M", ext)
+        p2 = (int(next(l for l in sh("tune2fs", "-l", ext).stdout.splitlines() if l.startswith("Block count")).split(":")[1]) * 4096
+              + MIB - 1) // MIB + (16 if shrink else 0)
+        img = os.path.join(td, name + ".img")
+        sh("truncate", "-s", str(2048 * 512 + 64 * MIB + p2 * MIB + 4 * MIB), img)
+        sh("sgdisk", "-Z", img); sh("sgdisk", "-n", "1:2048:+64M", "-t", "1:0700", "-c", "1:FIRMWARE", img)
+        sh("sgdisk", "-n", f"2:0:+{p2}M", "-t", "2:8300", "-c", "2:ROOT_A", img)
+        for p, f in ((1, fat), (2, ext)):
+            info = sh("sgdisk", "-i", str(p), img).stdout
+            first = int(next(l for l in info.splitlines() if l.startswith("First sector")).split(":")[1].split()[0])
+            sh("dd", f"if={f}", f"of={img}", "bs=512", f"seek={first}", "conv=notrunc,sparse", "status=none")
+        return img, p2 * MIB
+
+    img, _ = arm_image("arm-shrunk", shrink=True)
+    full_img, full_bytes = arm_image("arm-full", shrink=False)
 
     keys = os.path.join(td, "keys"); rel = os.path.join(td, "rel")
     R_ = os.path.join(HERE, "unitotem-release")
@@ -125,6 +137,19 @@ with tempfile.TemporaryDirectory() as td:
        "--keys-json", td + "/keys.json", "--out", rel)
     man = json.load(open(rel + "/v9.9.9/manifest.json"))
     check("arm64 release has root and bootfiles", sorted(p["role"] for p in man["parts"]) == ["bootfiles", "root"])
+    # The shrunk ROOT_A is grown to the 5 GiB slot: the root payload restores to a full-size filesystem.
+    pc_raw = os.path.join(td, "root-restore.img"); pc = os.path.join(td, "root-restore.pc")
+    with open(pc, "wb") as f: subprocess.run(["xz", "-dc", rel + "/v9.9.9/root.ext4.pc.xz"], stdout=f, check=True)
+    sh("truncate", "-s", str(5 * 1024 ** 3), pc_raw)
+    sh("partclone.restore", "-C", "-q", "-L", "/dev/null", "-s", pc, "-O", pc_raw)
+    blocks = int(next(l for l in sh("tune2fs", "-l", pc_raw).stdout.splitlines() if l.startswith("Block count")).split(":")[1])
+    check("arm64 root payload restores to a 5 GiB filesystem", blocks * 4096 == 5 * 1024 ** 3, str(blocks))
+    check("arm64 root payload: release-version intact", sh("debugfs", "-R", "cat /usr/share/unitotem/release-version", pc_raw).stdout.strip() == "9.9.9")
+    # Full-size ROOT_A (no shrink, no grow): the same release path with --slot-bytes equal to the partition.
+    relf = os.path.join(td, "rel-full")
+    sh(R_, "build-ab", "--image", full_img, "--version", "9.9.9", "--arch", "arm64", "--slot-bytes", str(full_bytes),
+       "--release-key", keys + "/release.key", "--keys-json", td + "/keys.json", "--out", relf)
+    check("arm64 full-size ROOT_A: release built without grow", sorted(os.listdir(relf + "/v9.9.9")) == sorted(os.listdir(rel + "/v9.9.9")))
 
     port = 18099
     srv = subprocess.Popen([sys.executable, os.path.join(HERE, "fake-github.py"), "--root", rel, "--bind", "127.0.0.1", "--port", str(port)],

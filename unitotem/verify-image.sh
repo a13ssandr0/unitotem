@@ -133,6 +133,16 @@ chk "layout_complete runs before DATA is looked up by label" before "$HOOK_BOTTO
 chk "init-bottom hook defines grow_data (DATA grown to the disk end)" file_has "$HOOK_BOTTOM" '^grow_data\(\)'
 chk "grow_data runs before DATA is mounted" before "$HOOK_BOTTOM" '^grow_data "\$DATA_DEV"' '^if ! mount -t ext4'
 chk "only partitions flagged by layout_complete are formatted (GPT attribute bit 48)" file_has "$HOOK_BOTTOM" 'GUID:48'
+HOOK_PREMOUNT=$R/etc/initramfs-tools/scripts/local-premount/unitotem-layout
+chk "local-premount copy of the hook is installed (ROOT_A grown before the root is mounted)" test -x "$HOOK_PREMOUNT"
+chk "local-premount copy is identical to the init-bottom hook" cmp -s "$HOOK_PREMOUNT" "$HOOK_BOTTOM"
+chk "premount copy runs layout_complete for its own name (unitotem-layout)" file_has "$HOOK_PREMOUNT" 'case "\$\{0##\*/\}" in unitotem-layout\)'
+chk "init-bottom hook defines grow_root (ROOT_A grown to the slot size, offline)" file_has "$HOOK_BOTTOM" '^grow_root\(\)'
+chk "layout_complete grows ROOT_A before it reads the table" before "$HOOK_BOTTOM" '^    grow_root "\$lc_ddev"' 'lc_dump=.*sfdisk -d'
+if [ "$AB" = 1 ]; then
+chk "the boot FAT carries unitotem-layout (the slot size of the target layout)" test -s "$FAT/unitotem-layout"
+chk "unitotem-layout holds UNITOTEM_SLOT_SECTORS equal to the hook's LAYOUT_SLOT_SECTORS" bash -c "[ \"\$(cat '$FAT/unitotem-layout')\" = \"UNITOTEM_SLOT_SECTORS=\$(sed -n 's/^LAYOUT_SLOT_SECTORS=\([0-9][0-9]*\).*/\1/p' '$HOOK_BOTTOM' | head -n 1)\" ]"
+fi
 for _t in sgdisk sfdisk partx resize2fs e2fsck dumpe2fs mke2fs blkid readlink dd udevadm; do
     chk "$_t is in the initramfs hook list (layout and growth of DATA)" file_has "$R/usr/share/unitotem-ota/ota-initrd.list" "(^|[[:space:]])${_t}([[:space:]]|\$)"
 done
