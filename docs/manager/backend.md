@@ -93,7 +93,7 @@ HTTP:
 |---|---|---|
 | GET `/health` | loopback | `{status, version}` |
 | GET `/unitotem-first-boot`, `/unitotem-no-assets` | loopback, else 404 | viewer pages |
-| GET `/unitotem-first-boot/address` | loopback | SSE: address changes |
+| GET `/unitotem-first-boot/address` | loopback | SSE: the address now and at every network change; both idle pages (welcome and no assets) listen to it and rewrite `#ip` |
 | GET `/pdf-view`, POST `/pdf-view/failed` | loopback | PDF page; failure raises `pdf.render.<file>` |
 | GET `/api/schema` | session | API schema |
 | GET `/login`, `/login/users`, POST `/auth/token`, GET `/logout` | none | login (form: `username`, `password`, `src`, `remember_me`) |
