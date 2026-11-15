@@ -15,6 +15,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 | `Papi/date_time.py` | `Settings/DateTime/*` |
 | `Papi/power.py` | `Power/*` |
 | `Papi/updater.py` | `Settings/Update/*`, status polling |
+| `Papi/firmware.py` | `Settings/Firmware/*`, status polling |
 | `Papi/vnc.py` | `Vnc/*` |
 | `Papi/display*.py` | display API ([screens-and-touch.md](screens-and-touch.md)) |
 | `Psystem/network/networkmanager.py` | NetworkManager over D-Bus: devices, connections, activation, Wi-Fi profiles |
@@ -25,6 +26,8 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 | `Psystem/audio.py` | PulseAudio sinks (pulsectl) |
 | `Psystem/updater.py` | client of `unitotem-update --json`, availability, notifications |
 | `Psystem/update_progress.py` | inotify on `/run`, pushes progress and the bell progress bar |
+| `Psystem/firmware.py` | client of `unitotem-firmware --json` (Raspberry Pi firmware card) |
+| `Psystem/firmware_progress.py` | inotify on `/run` (helpers shared with the updater), pushes `Settings/Firmware/status` and the bell progress bar |
 | `Psystem/timer_actions.py` | timers loop, action execution, `MinuteClock` |
 | `Psystem/suspend.py` | suspend with scheduled wake, logind sleep signals |
 | `Psystem/wake.py` | wake-time computation (pure, croniter) |
@@ -41,7 +44,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 
 ## How it works
 
-- Start-up: stale VNC sessions swept; tasks for screens (wake, probe), touch mapping, timers loop, sleep watch, hostname watch, date and time watch (`datetime_watch`), update progress watch, daily update check (first after 180 s, then every 24 h), desktop notifications.
+- Start-up: stale VNC sessions swept; tasks for screens (wake, probe), touch mapping, timers loop, sleep watch, hostname watch, date and time watch (`datetime_watch`), update progress watch, firmware progress watch, daily update check (first after 180 s, then every 24 h), desktop notifications.
 - First boot: with no default IPv4 route the hotspot starts. `first_boot_context` returns SSID, password and QR while it is active.
 - Hotspot: NM profile id `UniTotem first boot hotspot`, mode `ap`, IPv4 `shared`. Its UUID is `hotspot_uuid` in `/etc/unitotem/unitotem.env` (generated once). Default SSID = hostname cut to 32 bytes; default password = last 8 hex digits of the Wi-Fi MAC, uppercase. Recreated when the requested SSID/password differ from the stored ones. SSID 1-32 bytes, passphrase 8-63 characters; an out-of-range value raises `ValueError` before anything is read or written.
 - Hotspot stop: after a successful `activate_connection` or `connect_wifi` when the hotspot is active and IPv4 is up, and at manager shutdown. The Wi-Fi device is disconnected only if the hotspot is its active connection; then the profile is deleted.
@@ -52,6 +55,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - Audio: a missing sound server gives `available: false` and an empty list, not an error. Volume is a 0.0-1.0 level: values outside are clamped; NaN, infinity and non-numbers are refused (`ValueError`) and nothing is sent to Pulse.
 - Updates: the manager never downloads or writes images. It runs `unitotem-update --json <cmd>` (timeout 180 s). `fetch`, `apply`, `repair` detach and return at once; `Settings/Update/status` is pushed every 2 s while `status.op` is set.
 - Update progress: inotify on `/run` for `unitotem-update.progress` (trailing throttle 1 s). Whether an operation runs is decided by `status.op`, not by the file: it stays after the end and a killed updater leaves a "running" one. Slot names in every text are capitals (A, B).
+- Firmware: `unitotem-firmware --json <cmd>` (`status`, `check`, `apply --files --eeprom`); the manager only starts it and reads its answers. Exit codes 0 ok, 10 nothing to do, 12 busy, 14 blocked (`blockers`), 2 failed, 127 absent (`supported: false`). `apply` returns at once; `Settings/Firmware/status` is pushed every 2 s while `status.op` is set, on each progress file change, and after each `check`. Progress: `/run/unitotem-firmware.progress`, same inotify watch as the updater.
 - Availability: a successful check stores `{available, version, checked_at}` and raises or resolves `update.available`. A failed check keeps the previous value.
 - Timers: the loop wakes at each minute boundary or on resume. Actions: `pwr` logind PowerOff, `reb` logind Reboot, `sus` suspend with wake, `scr_on` / `scr_off` screen power (`system/screens/control.set_power`).
 - Suspend is refused when the clock has no wake-up alarm (`wakealarm` absent): a machine without RTC, such as the Raspberry Pi 4, cannot suspend with wake.
@@ -72,9 +76,15 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - `Settings/Timers/` (admin): `jobs()` returns `jobs`, `actions`; `add_job(command, minute, hour, day_of_month, month, day_of_week, output?, mechanism='auto', wake?)`; `edit_job(uuid, ...)`; `set_job_enabled(uuid, state)`; `delete_job(uuid)` (malformed id: `Invalid job`; unknown: `Not found`). `edit_job`: an omitted `output`/`wake` is kept, an empty string clears it (the manager then validates the result, e.g. a screen timer keeps its output).
 - Job fields: `uuid, command, minute, hour, day_of_month, month, day_of_week, enabled, output, mechanism, wake`; for `sus` also `next_suspend, next_wake, wake_problem`. Commands: `pwr`, `reb`, `sus`, `scr_on`, `scr_off`.
 - `Power/`: `reboot()` (power or admin); `poweroff()`; `suspend_support()` returns `available, reason, rtc, rtc_local, min_sleep, max_sleep, last_refusal`; `suspend(wake_at)` with `YYYY-MM-DDTHH:MM` in node local time.
+- `Settings/Firmware/` (admin): `status()`, `check()` (reply key `check`), `apply(files=True, eeprom=True)` (reply key `result`; both false answers `nothing-selected`). Event: `Settings/Firmware/status`. Helper contract: [system/firmware.md](../system/firmware.md).
 - `Settings/Update/` (admin; `availability` any user): `status()`, `check()`, `fetch(force=False)`, `apply(reboot=True)`, `confirm()`, `rollback(reboot=True)`, `cancel()`, `copy_to_other()`, `set_policy(mode, time='04:00')` (mode: `off`, `download`, `stage`, `reboot`, `scheduled`), `availability()`. Events: `Settings/Update/status`, `Settings/Update/availability`.
 - `Vnc/outputs()` (admin) returns `outputs[{name, width, height, x, y}]` (active outputs) and `available` (`wayvnc` installed).
 - Errors: `WSResponse(error=..., extra=...)`, e.g. `Invalid timer`, `Not found`, `Unknown action`, `Cannot suspend`, `Cannot use this suspend timer`.
+
+### Firmware status (`unitotem-firmware`)
+
+- Keys used: `supported`, `kind`, `family`, `op` (`check`|`apply`|null), `phase`, `percent`, `error`, `reboot_required`, `blockers`, `files`, `eeprom`, `returncode`. Helper output: [system/firmware.md](../system/firmware.md).
+- Notification keys: `firmware.progress` (persistent bar), `firmware.failed` (error), `firmware.done` (info; the restart text when `reboot_required`).
 
 ### Updater status (`unitotem-update`; slot names are capitals)
 
@@ -98,7 +108,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - Crontab import (once, when `timers.json` is missing): root crontab lines marked `unitotem:-)` and `screen_control.json`. The crontab is not modified.
 - `/etc/unitotem/unitotem.env`: `hotspot_uuid`.
 - `UNITOTEM_VNC_IDLE_TIMEOUT`: seconds, default 0 (never).
-- Read/written: `/sys/class/rtc/rtcN/wakealarm`, `/sys/class/rtc/rtcN/device/power/wakeup`, `/etc/adjtime` (line 3 `UTC`|`LOCAL`), `/etc/hosts`, `/run/unitotem-update.progress`, `/run/unitotem-vnc/`, `/usr/sbin/unitotem-update`, `/usr/bin/wayvnc`.
+- Read/written: `/sys/class/rtc/rtcN/wakealarm`, `/sys/class/rtc/rtcN/device/power/wakeup`, `/etc/adjtime` (line 3 `UTC`|`LOCAL`), `/etc/hosts`, `/run/unitotem-update.progress`, `/run/unitotem-firmware.progress`, `/run/unitotem-vnc/`, `/usr/sbin/unitotem-update`, `/usr/sbin/unitotem-firmware`, `/usr/bin/wayvnc`.
 - D-Bus (system bus): `org.freedesktop.NetworkManager`; `org.freedesktop.login1.Manager` (Reboot, PowerOff, Suspend, CanSuspend, PrepareForSleep); `org.freedesktop.hostname1`; `org.freedesktop.timedate1` (ListTimezones, SetTimezone, SetNTP; properties Timezone, NTP, CanNTP, NTPSynchronized).
 - Serves `org.freedesktop.Notifications` on the user bus and the system bus, each only if the name is free. Capabilities: `actions`, `body`, `persistence`.
 - Notification keys: `update.available` (info), `update.progress` (persistent bar), `update.failed` (error), `update.repaired` (info), `suspend.problem` (warning, link `/settings/timers`).

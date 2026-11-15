@@ -33,7 +33,7 @@ Pages (`webui/src/pages/`):
 | `settings/users.vue` | `/settings/users` | accounts, permissions, add, password and delete dialogs with `PasswordChecklist`, login page user list switch, Certificates card (`allow_insecure_certs`) |
 | `settings/timers.vue` | `/settings/timers` | scheduled jobs (shutdown, reboot, suspend, screen on/off) |
 | `settings/network.vue` | `/settings/network` | hostname, devices, saved connections, Wi-Fi scan and connect |
-| `settings/updates.vue` | `/settings/updates` | A/B slots, check, download, install, rollback, automatic policy |
+| `settings/updates.vue` | `/settings/updates` | A/B slots, check, download, install, rollback, automatic policy, Firmware card (`components/FirmwareCard.vue`, Raspberry Pi only: boot files, EEPROM, check, update, restart; `Settings/Firmware/status`) |
 | `settings/backup.vue` | `/settings/backup` | backup, restore, reset of parts |
 | `settings/datetime.vue` | `/settings/datetime` | server time zone (searchable selector), NTP switch and status |
 

@@ -121,7 +121,7 @@ Ownership of boot partition files:
 | arm64 `start*.elf`, `fixup*.dat`, `bootcode.bin`, `overlays/` | image, via deploy | Never synced (see below) |
 | amd64 `EFI/`, ESP `unitotem-grub/` | image, via deploy | Not written by the recovery sync. ESP `grub.cfg` has its own sync (`ab-updates.md`) |
 
-Not synced, arm64 firmware: `start*.elf`, `fixup*.dat`, `bootcode.bin` and `overlays/` are read by every boot, including the normal slot, and `start4.elf` and `fixup4.dat` must match each other. A FAT cannot swap two files atomically, so a power cut between the renames could leave a Pi that does not start at all. Firmware reaches a device only through deploy. The Pi EEPROM is a separate update path and is not touched.
+Not synced, arm64 firmware: `start*.elf`, `fixup*.dat`, `bootcode.bin` and `overlays/` are read by every boot, including the normal slot, and `start4.elf` and `fixup4.dat` must match each other. A FAT cannot swap two files atomically, so a power cut between the renames could leave a Pi that does not start at all. Firmware reaches a device only through deploy. The Pi EEPROM is a separate update path and is not touched. The firmware card of the Updates page swaps them in place: [firmware.md](firmware.md).
 
 Not synced, `config.txt`: the runtime rewrites it whole (`set-default-recovery`, `set-trial-boot`, `promote-default`: `os_prefix`, trial state). A marked section edited by the sync would race those rewrites. Image changes to `config.txt` reach only the built `.img` and fresh deploys; device options go in `config-extra.txt` (`dtoverlay`, `dtparam`).
 
