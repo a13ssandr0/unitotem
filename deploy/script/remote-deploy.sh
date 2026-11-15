@@ -29,6 +29,9 @@ deploy options:
   --no-backup           no backup
   --backup-dir DIR      where the backup goes
   --port N              data port (9700)
+  --admin NAME          administrator of the new system
+  --admin-password-file FILE   its password (or $UNITOTEM_ADMIN_PASSWORD)
+  --copy-key            install your ssh key for it
   --timezone ZONE       time zone of a migrated system
   --net-dns "A;B;C"     DNS servers of a node with a fixed address
   --console STR         console of the fallback
@@ -36,9 +39,10 @@ deploy options:
   --fallback-only       arm and stop
   --accept-changes DIGEST
 
-:PORT is the ssh port of the fallback (2222). Its login: your keys,
-then open, then a password (asked). A migrated system gets the
-administrator USER (admin), password asked.
+:PORT is the ssh port of the fallback (2222). Its login: your key,
+then open, then a password (asked). The administrator, its password
+and the key copy are asked unless given as options. Your key
+~/.ssh/id_ed25519 is created when missing.
 USAGE
 }
 case "${1:-}" in
@@ -109,7 +113,7 @@ esac
 OPT_IMAGE="" IMG_DESC="" OPT_DISK="" OPT_PORT="9700" OPT_WIPE_DATA=0
 # Backup of the UniTotem data of a target that already runs UniTotem, taken before anything is overwritten (default: your state directory).
 OPT_BACKUP_DIR="${UNITOTEM_BACKUP_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/unitotem-deploy/backups}" OPT_NO_BACKUP=0
-OPT_TIMEZONE="" LEGACY_ARCHIVE=""
+OPT_TIMEZONE="" LEGACY_ARCHIVE="" OPT_ADMIN="" OPT_ADMIN_PWFILE="" OPT_COPY_KEY=0
 OPT_NO_FIRMWARE_UPDATE=0
 OPT_NET_DNS=""
 # Empty by default: build_legacy_cmdline() picks the console per architecture (tty0 for amd64, tty1 +
@@ -130,6 +134,9 @@ while [ $# -gt 0 ]; do
         --no-firmware-update) OPT_NO_FIRMWARE_UPDATE=1; shift ;;
         --net-dns)    OPT_NET_DNS="$2"; shift 2 ;;
         --timezone)   OPT_TIMEZONE="$2"; shift 2 ;;
+        --admin)      OPT_ADMIN="$2"; shift 2 ;;
+        --admin-password-file) OPT_ADMIN_PWFILE="$2"; shift 2 ;;
+        --copy-key)   OPT_COPY_KEY=1; shift ;;
         --console)    OPT_CONSOLE="$2"; shift 2 ;;
         --yes)        OPT_YES=1; shift ;;
         --fallback-only) OPT_FALLBACK_ONLY=1; shift ;;
@@ -983,8 +990,27 @@ post_deploy_probe() {
 # to it. Enter at the name leaves the account to the setup page. Without a terminal nothing is asked.
 ADMIN_NAME="" ADMIN_PW="" ADMIN_COPY_KEY=0
 ask_admin() {
-    local tty_in pw2 a
-    if [ -r /dev/tty ] && : < /dev/tty 2>/dev/null; then tty_in=/dev/tty; else log "No terminal: the administrator is created on the setup page of the new system."; return 0; fi
+    local tty_in pw2 a have_tty=0
+    if [ -r /dev/tty ] && : < /dev/tty 2>/dev/null; then tty_in=/dev/tty; have_tty=1; fi
+    if [ -n "$OPT_ADMIN" ]; then
+        ADMIN_NAME=$OPT_ADMIN ADMIN_COPY_KEY=$OPT_COPY_KEY
+        [[ "$ADMIN_NAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && [ "$ADMIN_NAME" != root ] || die "invalid administrator name '${ADMIN_NAME}'"
+        if [ -n "$OPT_ADMIN_PWFILE" ]; then
+            [ -f "$OPT_ADMIN_PWFILE" ] || die "password file not found: ${OPT_ADMIN_PWFILE}"
+            IFS= read -r ADMIN_PW < "$OPT_ADMIN_PWFILE" || true
+        else
+            ADMIN_PW="${UNITOTEM_ADMIN_PASSWORD:-}"
+        fi
+        if [ -z "$ADMIN_PW" ]; then
+            [ "$have_tty" = 1 ] || die "no password for the administrator ${ADMIN_NAME}: use --admin-password-file or UNITOTEM_ADMIN_PASSWORD"
+            printf 'Password of %s: ' "$ADMIN_NAME" >&2; IFS= read -rs ADMIN_PW < "$tty_in" || die "no password"; echo >&2
+            [ -n "$ADMIN_PW" ] || die "empty password"
+        fi
+        [ "$ADMIN_COPY_KEY" != 1 ] || ota_user_key >/dev/null
+        return 0
+    fi
+    [ "$OPT_COPY_KEY" != 1 ] || die "--copy-key needs --admin"
+    [ "$have_tty" = 1 ] || { log "No terminal: the administrator is created on the setup page of the new system."; return 0; }
     echo "Administrator account of the new UniTotem (used for the web page and ssh; created when the system has none)." >&2
     while :; do
         printf 'Name (Enter: create it later on the setup page): ' >&2; IFS= read -r ADMIN_NAME < "$tty_in" || { ADMIN_NAME=""; return 0; }
@@ -998,12 +1024,8 @@ ask_admin() {
         [ -n "$ADMIN_PW" ] && [ "$ADMIN_PW" = "$pw2" ] && break
         echo "the passwords differ or are empty" >&2
     done
-    if [ -f "${HOME}/.ssh/id_ed25519.pub" ]; then
-        printf 'Copy your ssh key (%s) to %s? [y/N] ' "${HOME}/.ssh/id_ed25519.pub" "$ADMIN_NAME" >&2; IFS= read -r a < "$tty_in" || a=n
-        case "$a" in [yY]*) ADMIN_COPY_KEY=1 ;; esac
-    else
-        echo "No ssh key ${HOME}/.ssh/id_ed25519: create it with  ssh-keygen -t ed25519  to log in without a password." >&2
-    fi
+    printf 'Copy your ssh key (%s/.ssh/id_ed25519.pub) to %s? [y/N] ' "$HOME" "$ADMIN_NAME" >&2; IFS= read -r a < "$tty_in" || a=n
+    case "$a" in [yY]*) ADMIN_COPY_KEY=1; ota_user_key >/dev/null ;; esac
 }
 
 # Waits up to 10 minutes for the new system to answer on HTTPS; returns 1 when it does not.

@@ -204,12 +204,17 @@ OTA_SSH_OPTS=(-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountM
 # without it (the identity files of the user's home are still tried).
 if [ -n "${SUDO_UID:-}" ]; then SSH_OPTS+=(-F /dev/null); SCP_OPTS+=(-F /dev/null); OTA_SSH_OPTS+=(-F /dev/null); fi
 
-# The key of the operator: ~/.ssh/id_ed25519, the one ssh uses. The fallback is armed with its public line and logged in with it; no other key
+# The key of the operator: ~/.ssh/id_ed25519, the one ssh uses (made without a passphrase when missing). The fallback is armed with its public line and logged in with it; no other key
 # is made, so a target never depends on a key that only exists in a state directory.
 ota_user_key() {
     local key="${HOME}/.ssh/id_ed25519"
-    [ -f "$key" ] || die "no ssh key ${key}: create it with  ssh-keygen -t ed25519  and run this again"
-    [ -f "$key.pub" ] || die "no public key ${key}.pub: derive it with  ssh-keygen -y -f ${key} > ${key}.pub"
+    if [ ! -f "$key" ]; then
+        ( umask 077 && mkdir -p -m 0700 "${HOME}/.ssh" && ssh-keygen -q -t ed25519 -N '' -C "$(id -un)@$(hostname)" -f "$key" </dev/null ) \
+            || die "cannot create the ssh key ${key}"
+        log "Created the ssh key ${key}." >&2
+    fi
+    [ -f "$key.pub" ] || ( umask 077 && ssh-keygen -y -f "$key" > "$key.pub" ) || die "cannot derive ${key}.pub"
+    if [ -n "${SUDO_UID:-}" ]; then chown "${SUDO_UID}:${SUDO_GID:-$SUDO_UID}" -- "${HOME}/.ssh" "$key" "$key.pub" 2>/dev/null || true; fi
     echo "$key"
 }
 
