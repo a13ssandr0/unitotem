@@ -51,14 +51,14 @@ menuentry "$unitotem_title_a" --id slot-a {
     insmod part_gpt
     insmod ext2
     search --no-floppy --set=root --label ROOT_A
-    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash loglevel=3 ahci.mobile_lpm_policy=1 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=a ${unitotem_video}
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=a ${unitotem_video}
     initrd /initrd.img
 }
 menuentry "$unitotem_title_b" --id slot-b {
     insmod part_gpt
     insmod ext2
     search --no-floppy --set=root --label ROOT_B
-    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash loglevel=3 ahci.mobile_lpm_policy=1 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=b ${unitotem_video}
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=b ${unitotem_video}
     initrd /initrd.img
 }
 menuentry 'UniTotem (Slot A, OTA recovery)' --id slot-a-recover {
@@ -86,6 +86,6 @@ menuentry 'UniTotem OTA fallback' --id ota-recovery {
     insmod fat
     unitotem_lowres
     search --no-floppy --set=root --label EFI
-    linux /unitotem/recovery-vmlinuz nomodeset quiet loglevel=3 ahci.mobile_lpm_policy=1 fbcon=font:TER16x32 unitotem.ota=1 console=tty0 console=ttyS0,115200
+    linux /unitotem/recovery-vmlinuz nomodeset quiet loglevel=3 fbcon=font:TER16x32 unitotem.ota=1 console=tty0 console=ttyS0,115200
     initrd /unitotem/recovery-initrd.img
 }
