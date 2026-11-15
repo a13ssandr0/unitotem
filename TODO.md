@@ -52,6 +52,8 @@
 - [manager/system] Same card on amd64 with `fwupd` over D-Bus (user, 2026-11-15): devices, updates from LVFS, apply (UEFI capsule needs the ESP and a reboot); `fwupd` is not in the image yet.
 - [system] Evaluate vendor BIOS ROMs for `fwupd` (user, 2026-11-15): tools that take the ROM downloaded from the vendor site (Lenovo and others), unpack it and repack it as a cabinet for `fwupdmgr` (done by hand on a ThinkPad E15).
 
+- [system/build] Smaller deploy image (user, 2026-11-15): the full A/B image holds only the boot partition(s) and ROOT_A, with the ROOT_A filesystem shrunk to its minimum (`resize2fs -M`); ROOT_B and DATA are created at deploy time (as `layout_complete` already does on the first boot of a flash image) and ROOT_A is grown to the slot size on the target. Touches `stage3-image.sh`, `image-lib.sh` (`image_describe`, streams, `image_table_dos`), the engine (`restore-table`, `restore-part`, grow) and `write-sd.sh`.
+
 ## To verify on hardware
 - [system] Pi HDMI audio: verified end to end through the capture card (1 kHz tone, FFT peak 1000.0 Hz, silence baseline zero), but when the Pi boots WITHOUT a display and the display appears later, WirePlumber offers only profile `off`/`pro-audio` and no HDMI sink until `systemctl --user restart wireplumber`. Re-test with the newer PipeWire 1.6 / WirePlumber 0.5.12 (backports); if it persists, restart the user WirePlumber when an output appears (event, not polling).
 - [system/viewer] Pi 4 video decode is probably software: a 1080p30 H.264 file uses ~82 % of one core in the renderer, no V4L2 decoder client open, no decoder line in the journal. Find out whether CEF on the Pi can use the V4L2 stateless decoder (flags, `--enable-features`), and measure CPU and dropped frames with the capture card.

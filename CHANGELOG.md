@@ -14,6 +14,7 @@
 - Fallback screen: the hand-drawn frame is gone (`ota_frame`, frame blobs, `tools/gen-frame.py`); whiptail draws its own; the logo is rendered at build time from the transparent wordmark (`unitotem/logo/gen-logo.py`, blobs no longer committed) and drawn run by run, so only the lettering is written and the background is untouched.
 - `ONLY_RECOVERY=1` rebuilds only the recovery kernel and initrd (stage 1b refreshes the hook too).
 - Fallback progress screen starts before the network and follows its phases (device, cable, DHCP/static/Wi-Fi, retries) in the phase line and the gauge; the address appears in the header when known; the separate splash is gone.
+- Image expansion in tmpfs: `dd iflag=fullblock` (a pipe gives short reads; without it `conv=sparse` ran at ~20 MB/s): 14 GiB in 12 s instead of about 10 minutes.
 - Directory layout: `build/` for every compilation temporary (stage tarballs, apt cache, extra debs, recovery kernel and initrd), `deploy/<arch>/` for ready images only, `deploy/script/` for the deploy tooling (moved from `deploy/`); new `deploy/script/write-sd.sh` writes an image to a card or disk (partition table, partitions, `partclone` per partition, `pv` progress) with `tools/release/test_write_sd.sh`.
 - Graphics profile of the first-boot welcome page on three outputs and DevTools profiling tools (`tools/ubuntu-proto/`, `docs/manager/viewer.md`).
 - Ubuntu 26.04 base and NVIDIA 580/595 driver extensions evaluated under Secure Boot (`docs/system/ubuntu-gpu-evaluation.md`, `tools/ubuntu-proto/`).
