@@ -253,6 +253,14 @@ for ARCH in ${ARCHES}; do
         return 1
     }
 
+    # ONLY_RECOVERY=1: only the recovery (fallback) kernel+initrd is rebuilt from the existing stage 1 tarball.
+    if [ -n "${ONLY_RECOVERY:-}" ]; then
+        [ -f "${DIR}/build/${ARCH}/stage1.tar.gz" ] || { echo "[${ARCH}] ONLY_RECOVERY needs build/${ARCH}/stage1.tar.gz" >&2; exit 1; }
+        echo "[${ARCH}] Building only the recovery (fallback) kernel+initrd..."
+        ${DOCKER} run "${RUN_OPTS[@]}" unitotem-builder /unitotem/stage1-recovery-initrd.sh
+        continue
+    fi
+
     # Stage 0: Bootstrap
     if should_run 0; then
         echo "[${ARCH}] Stage 0: Bootstrap..."
