@@ -21,6 +21,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 | `unitotem/files/unitotem-manager-wayland.conf` | Drop-in: manager waits for the Wayland socket |
 | `unitotem/files/unitotem-ssh-hostkey` (+ `.service`) | Per-device SSH host keys on DATA |
 | `unitotem/files/unitotem-first-boot-cert` (+ `.service`) | Per-device TLS certificate |
+| `unitotem/files/unitotem-hostname` (+ `.service`) | First boot: device suffix and default host name `unitotem-<suffix>` |
 | `unitotem/files/unitotem-persist-paths` (+ `.service`) | Bind-mounts user data from DATA |
 | `unitotem/files/unitotem-boot-ok` (+ `.service`), `unitotem-update-auto.*` | See `ab-updates.md` |
 | `unitotem/files/journald.conf` | Journal limits |
@@ -65,6 +66,10 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 - `/etc/netplan/00-default.yaml` is mode 600.
 - `i2c-dev` is loaded at boot (`modules-load.d/unitotem-i2c.conf`); without it DDC/CI and CEC report unavailable.
 - Headless: with no reachable display the viewer logs a warning, signals ready and polls every 5 s until a Wayland display appears; a node with no monitor is a supported state.
+
+## Device suffix and host name
+
+`unitotem-hostname` runs once on the first boot (before NetworkManager, avahi and the manager; skipped when `/etc/unitotem/device-suffix` exists). The suffix is the last three bytes of the machine UUID, six capital hex digits: the DMI `product_uuid`; a Raspberry Pi (no DMI) uses the serial number of its device tree; `/etc/machine-id` is the last resort. DMI placeholders (all zeros, all ones, `03000200-0400-0500-0006-000700080009`, `12345678-1234-5678-90ab-cddeefaabbcc`, `11111111-...`, `01234567-89ab-cdef-fedc-ba9876543210`) are skipped. It writes the suffix to `/etc/unitotem/device-suffix` and, when the host name is still the default `unitotem` (or empty), sets `unitotem-<suffix>` in lower case (`/etc/hostname`, the `127.0.1.1` line of `/etc/hosts`). A host name chosen by the owner is never replaced. The first-boot hotspot SSID is `unitotem-<SUFFIX>` from the same file (`docs/manager/node-system.md`). Examples: DMI `cb564e80-f9a0-11f0-af0f-e5067d51b600` gives `51B600`; Pi serial `100000004844dc32` gives `44DC32`.
 
 ## NVIDIA (amd64)
 
