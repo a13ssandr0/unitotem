@@ -359,7 +359,7 @@ HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]*')
 
 
 def deploy_key_path(host):
-    # Same per-target key location as ota_key_path in deploy/script/lib.sh.
+    # Per-PC key of the Windows install, in the state directory of the operator; passed to deploy as OTA_FALLBACK_KEY.
     if HOST_RE.fullmatch(host) is None:
         raise ValueError('invalid host for the OTA key')
     base = os.environ.get('XDG_STATE_HOME') or os.path.join(os.path.expanduser('~'), '.local', 'state')
@@ -367,7 +367,7 @@ def deploy_key_path(host):
 
 
 def ensure_machine_key(host):
-    # Creates the per-target key when missing (like ota_key_ensure); returns (private path, public line).
+    # Creates the per-PC key when missing; returns (private path, public line).
     key = deploy_key_path(host)
     d = os.path.dirname(key)
     os.makedirs(d, mode=0o700, exist_ok=True)
