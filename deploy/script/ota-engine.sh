@@ -426,19 +426,21 @@ cmd_restore_part() {
     local have_pv=0
     command -v pv >/dev/null 2>&1 && have_pv=1
     # cloner dd (the BIOS-boot partition holding GRUB's core.img): the stream is the raw partition content.
-    local -a restore_cmd=(partclone.restore "${restore_flags[@]}" -F -B)
+    local plog=/run/ota-partclone.log
+    : > "$plog" 2>/dev/null || plog=/dev/null
+    local -a restore_cmd=(partclone.restore "${restore_flags[@]}" -F -B -q)
     [ "${ARG[cloner]}" = dd ] && restore_cmd=(dd "of=${part_dev}" bs=512 conv=fsync status=none)
     case "${ARG[comp]:-xz}" in
         xz|zstd)
             local dec=(unxz -dc); [ "${ARG[comp]:-xz}" = zstd ] && dec=(unzstd -dc)
             if [ "$have_pv" = 1 ]; then
-                "${dec[@]}" <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | "${restore_cmd[@]}"
+                "${dec[@]}" <&4 | pv -n -s "$used_bytes" 2>"$OTA_PCT_FILE" | "${restore_cmd[@]}" 2>>"$plog"
             else
-                "${dec[@]}" <&4 | "${restore_cmd[@]}"
+                "${dec[@]}" <&4 | "${restore_cmd[@]}" 2>>"$plog"
             fi
             ;;
         *)    fail "unknown compression: ${ARG[comp]:-}" ;;
-    esac || fail "restore failed on $part_dev"
+    esac || { tail -n 5 "$plog" >&2 2>/dev/null; fail "restore failed on $part_dev"; }
     ota_status_set "Checking the filesystem of partition ${ARG[part]}..."
     exec 4<&-
 
@@ -572,7 +574,7 @@ cmd_populate_bootfs() {
     # archive ("./name"), so only the top-level files are protected.
     local anch="" pre=""
     if [ "${ARG[layout]:-1}" = ab ]; then anch="--anchored"; pre="./"; fi
-    unxz -dc <&4 | tar -C "$mnt" -xf - $anch \
+    unxz -dc <&4 | tar -C "$mnt" --warning=no-timestamp -xf - $anch \
         --exclude="${pre}recovery8.img" --exclude="${pre}recovery-vmlinuz" --exclude="${pre}recovery-initrd.img" \
         --exclude="${pre}recovery.sha256" --exclude="${pre}unitotem/*" \
         --exclude="${pre}unitotem-ota.conf" --exclude="${pre}unitotem-ota.state" --exclude="${pre}unitotem-ota.request" \

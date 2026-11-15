@@ -291,13 +291,16 @@ image_table_dos() {   # $1 descriptor directory
 
 # One partition on stdout. extfs and fat: partclone's stream; dd: the raw partition. Compressed with xz (the engine's default
 # decoder), quickly: the transfer is the limit, not the ratio.
+# With pv installed and a terminal on stderr, a progress bar (percent, rate, time left) is shown while the partition is read; its size is
+# IMG_STREAM_USED, the bytes in use of the partition, when the caller knows it.
 image_stream() {   # $1 partition number
-    local n="$1" dev label cloner
+    local n="$1" dev label cloner pvc=(cat)
+    if command -v pv >/dev/null 2>&1 && [ -t 2 ]; then pvc=(pv -pterb -N "partition $n" ${IMG_STREAM_USED:+-s "$IMG_STREAM_USED"}); fi
     dev=$(image_node "$n") || { _img_err "no partition $n in the image"; return 1; }
     label=$(_img_label "$dev" "$n"); cloner=$(_img_cloner "$label")
     case "$cloner" in
-        dd)       dd if="$dev" bs=512 status=none | xz -T0 -1 --check=sha256 ;;
-        extfs|fat) "partclone.${cloner}" -c -s "$dev" -o - -F -B 2>/dev/null | xz -T0 -1 --check=sha256 ;;
+        dd)       dd if="$dev" bs=512 status=none | "${pvc[@]}" | xz -T0 -1 --check=sha256 ;;
+        extfs|fat) "partclone.${cloner}" -c -s "$dev" -o - -F -B 2>/dev/null | "${pvc[@]}" | xz -T0 -1 --check=sha256 ;;
         *)        _img_err "partition $n ($label) has no stream"; return 1 ;;
     esac
 }

@@ -57,6 +57,16 @@ bytes_human() {
     }'
 }
 
+# confirm TEXT: asks "TEXT (y/n) " on stdin; y or yes (any case) accepts, anything else (and end of input) declines. The one confirmation
+# of every deploy script.
+confirm() {
+    local a
+    printf '%s (y/n) ' "$1" >&2
+    IFS= read -r a || { echo >&2; return 1; }
+    case "${a,,}" in y|yes) return 0 ;; esac
+    return 1
+}
+
 # ssh/scp wrappers for the ORIGINAL system and for the OTA session (dropbear inside the fallback/recovery
 # initramfs, port 2222, host key generated fresh every boot: accept-new is the trust model there).
 # OTA_PASSWORD: the login password of the ADOPTED system (not the fallback's).
@@ -199,7 +209,7 @@ scp_root() {
 # the trial system, which disappears mid-session; without keepalive ssh would wait on the dead connection.
 # With it the dead peer is noticed in ~15s.
 OTA_SSH_OPTS=(-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
-              -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p "${OTA_PORT:-2222}")
+              -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p "${OTA_PORT:-2222}")
 # Started through sudo (remote-deploy.sh), ssh would refuse a ~/.ssh/config owned by the user; the options of this file are complete
 # without it (the identity files of the user's home are still tried).
 if [ -n "${SUDO_UID:-}" ]; then SSH_OPTS+=(-F /dev/null); SCP_OPTS+=(-F /dev/null); OTA_SSH_OPTS+=(-F /dev/null); fi

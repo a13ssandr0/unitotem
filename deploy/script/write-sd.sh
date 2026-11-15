@@ -104,7 +104,7 @@ if [ "$YES" != 1 ]; then
     lsblk -o NAME,SIZE,MODEL,TRAN,TYPE -- "$DEVICE" >&2
     printf 'Erase %s and write %s? (y/n) ' "$DEVICE" "$IMAGE" >&2
     read -r answer
-    [ "$answer" = y ] || die "cancelled"
+    case "${answer,,}" in y|yes) ;; *) die "cancelled" ;; esac
 fi
 
 START=$(date +%s)
