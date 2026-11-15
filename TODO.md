@@ -46,6 +46,7 @@
 - [manager] CEF vendor: .gitmodules `branch = cefpython147-qt` is 19 commits behind the pinned commit (on `wayland-views`); wheels in vendor/cefpython-wheels are cp313 only while build-cef-wheels.sh builds 3.10-3.14 and debian/rules/python3-cefpython3 pin 3.13.
 - [system] Local tools `work/pi-test/{reflash-clean,resume-ab,redeploy-ab}.sh` call `ota_ssh`: they need `OTA_FALLBACK_KEY`/`OTA_FALLBACK_USER` in the environment, and `reflash-clean.sh` runs `unitotem-ota-arm --port 2222 --wipe-data` without `--authkey-file`.
 
+- [system/build] Stage 1 of the arm64 image runs the whole package configuration in a qemu-user chroot (about 50 of 65 minutes). Evaluate unpacking and configuring with the host dpkg (`--root`, `--force-architecture`, `--force-script-chrootless`, or mmdebstrap chrootless), emulating only the target binaries that maintainer scripts and triggers call (`ldconfig`, `fc-cache`, `glib-compile-schemas`, `update-ca-certificates`); measure which of our packages configure that way (user, 2026-11-15).
 
 ## To verify on hardware
 - [system] Pi HDMI audio: verified end to end through the capture card (1 kHz tone, FFT peak 1000.0 Hz, silence baseline zero), but when the Pi boots WITHOUT a display and the display appears later, WirePlumber offers only profile `off`/`pro-audio` and no HDMI sink until `systemctl --user restart wireplumber`. Re-test with the newer PipeWire 1.6 / WirePlumber 0.5.12 (backports); if it persists, restart the user WirePlumber when an output appears (event, not polling).
