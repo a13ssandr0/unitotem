@@ -298,6 +298,8 @@ chk "/etc/timezone is UTC or Etc/UTC" bash -c "t=\$(cat '$R/etc/timezone' 2>/dev
 echo "== Update machinery"
 chk "the automatic update policy: timer enabled, service runs at the lowest priority" bash -c "test -L '$R/etc/systemd/system/timers.target.wants/unitotem-update-auto.timer' && grep -q '^Nice=19' '$R/etc/systemd/system/unitotem-update-auto.service' && grep -q '^IOSchedulingClass=idle' '$R/etc/systemd/system/unitotem-update-auto.service'"
 chk "unitotem-boot-orientation is installed (boot screen orientation: Pi cmdline.txt of both slots / grubenv)" test -x "$R/usr/sbin/unitotem-boot-orientation"
+chk "unitotem-firmware is installed and executable with cmd_apply (firmware card helper)" bash -c "test -x '$R/usr/sbin/unitotem-firmware' && grep -q 'def cmd_apply' '$R/usr/sbin/unitotem-firmware'"
+chk "gpgv is installed (verifies the Raspberry Pi InRelease for unitotem-firmware)" test -x "$R/usr/bin/gpgv"
 chk "unitotem-update has the policy/auto/reboot commands" bash -c "grep -q 'def cmd_auto' '$R/usr/sbin/unitotem-update' && grep -q 'def cmd_policy' '$R/usr/sbin/unitotem-update'"
 chk "unitotem-update installed" test -x "$R/usr/sbin/unitotem-update"
 chk "unitotem-update can rebuild a damaged slot from the running one (repair + failover bookkeeping)" bash -c "grep -q 'def do_repair' $R/usr/sbin/unitotem-update && grep -q 'def note_failover' $R/usr/sbin/unitotem-update"

@@ -1,0 +1,1070 @@
+#!/usr/bin/env python3
+"""unitotem-firmware - Raspberry Pi boot firmware and EEPROM: status, check and apply (see docs/system/boot.md).
+
+Commands: status (no network), check (fetches the Raspberry Pi archive over HTTPS and caches the result),
+apply [--files] [--eeprom] (detached: fetches and verifies again, swaps the boot FAT files, stages the EEPROM).
+Raspberry Pi only: kind "pi" with family pi3, pi4 or pi5; any other device reports kind "none".
+check verifies the signed InRelease with gpgv against the image keyring, then the SHA-256 and size of
+Packages and of every .deb it reads, and extracts only the files it needs into a private directory.
+
+Exit codes: 0 ok / update available   10 nothing to do   12 operation already running
+            14 blocked                 2 failed           127 (shell) command absent.
+Output: one JSON object on the last stdout line. Errors: {"error": text, "error_code": slug}.
+"""
+import argparse, calendar, fcntl, glob, hashlib, http.client, io, json, lzma, os, re, shutil, struct
+import subprocess, sys, tarfile, tempfile, time, urllib.error, urllib.request, zlib
+
+DEFAULTS = {
+    "UNITOTEM_FW_BOOT": "/boot/firmware",                  # the FAT the firmware reads
+    "UNITOTEM_FW_RUN": "/run",                             # progress, lock, check cache
+    "UNITOTEM_FW_STATE": "/var/lib/unitotem-firmware",     # reserved for apply
+    "UNITOTEM_FW_DT": "/proc/device-tree",
+    "UNITOTEM_FW_DPKG_STATUS": "/var/lib/dpkg/status",     # reserved for apply
+    "UNITOTEM_FW_KEYRING": "",                             # empty = first existing of KEYRINGS
+    "UNITOTEM_FW_VCGENCMD": "/usr/bin/vcgencmd",
+    "UNITOTEM_FW_UPDATE": "/usr/sbin/unitotem-update",
+    "UNITOTEM_FW_EEPROM_CONF": "/etc/default/rpi-eeprom-update",
+    "UNITOTEM_FW_OS_RELEASE": "/etc/os-release",
+    "UNITOTEM_FW_APT_SOURCES": "/etc/apt/sources.list.d",
+    "UNITOTEM_FW_BASE_URL": "https://archive.raspberrypi.com/debian",
+}
+KEYRINGS = ("/etc/apt/trusted.gpg.d/raspberrypi.gpg", "/usr/share/keyrings/raspberrypi-archive-keyring.gpg")
+
+CHECK_BUDGET = 120                       # seconds, whole check
+APPLY_BUDGET = 900                       # seconds, whole apply run (download included)
+FETCH_TIMEOUT = 60                       # seconds, one request
+INRELEASE_CAP = 1 << 20
+INDEX_CAP = 8 << 20                      # Packages.gz / .xz as downloaded
+PACKAGES_CAP = 32 << 20                  # Packages after decompression
+PACKAGE_CAPS = {"raspi-firmware": 64 << 20, "rpi-eeprom": 32 << 20}
+DATA_TAR_CAP = 256 << 20                 # data.tar after decompression
+MEMBER_CAP = 16 << 20                    # one extracted file
+
+# Pairs the firmware loads together (a start file needs its own fixup file). Inspired by rpi-eeprom
+# and the raspi-firmware package: the set below is the one shipped under usr/lib/raspi-firmware/.
+PAIRS = (("start.elf", "fixup.dat"), ("start_cd.elf", "fixup_cd.dat"), ("start_db.elf", "fixup_db.dat"),
+         ("start_x.elf", "fixup_x.dat"), ("start4.elf", "fixup4.dat"), ("start4cd.elf", "fixup4cd.dat"),
+         ("start4db.elf", "fixup4db.dat"), ("start4x.elf", "fixup4x.dat"))
+FW_NAMES = tuple(n for pair in PAIRS for n in pair) + ("bootcode.bin",)
+FW_DIR = "usr/lib/raspi-firmware/"
+EE_DIR = {"pi4": "bootloader-2711", "pi5": "bootloader-2712"}
+EE_SIZE = {"pi4": 524288, "pi5": 2097152}
+EE_CHIP = {"pi4": "2711", "pi5": "2712"}
+EE_TOOL = "usr/bin/rpi-eeprom-config"
+PIE_RE = re.compile(r"pieeprom-[0-9]{4}-[0-9]{2}-[0-9]{2}\.bin")
+# Every name apply may write as <name>.new on the boot FAT (stale ones are removed first).
+STAGED_NAMES = FW_NAMES + ("unitotem-firmware.json", "pieeprom.upd", "pieeprom.sig", "recovery.bin")
+EE_RE = re.compile(r"usr/lib/firmware/raspberrypi/bootloader-(2711|2712)/(default|latest)/"
+                   r"(pieeprom-[0-9]{4}-[0-9]{2}-[0-9]{2}\.bin|recovery\.bin|vl805-[0-9a-f]+\.bin)")
+CHANNELS = {"default": "default", "critical": "default", "latest": "latest", "stable": "latest"}
+PI3_RE = re.compile(r"Raspberry Pi (?:3 Model [AB]|Compute Module 3\+?|Zero 2 W)\b")
+PI4_RE = re.compile(r"Raspberry Pi (?:4 Model B|400|Compute Module 4S?)\b")
+PI5_RE = re.compile(r"Raspberry Pi (?:5 Model B|Compute Module 5)\b")
+FILENAME_RE = re.compile(r"[A-Za-z0-9._+~/-]+")
+VERSION_RE = re.compile(r"[A-Za-z0-9.+~:-]+")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+class Fail(Exception):
+    def __init__(self, code, msg, rc=2, **extra):
+        super().__init__(msg); self.code = code; self.rc = rc; self.extra = extra
+
+
+def conf():
+    c = dict(DEFAULTS)
+    for k in c:
+        if k in os.environ:
+            c[k] = os.environ[k]
+    return c
+
+
+# ---------- small plumbing ----------
+
+def atomic_json(path, obj):
+    tmp = path + ".new"
+    with open(tmp, "w") as f:
+        json.dump(obj, f); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            obj = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def run_tool(argv, timeout=10):
+    """stdout of a tool, or None when it cannot run or fails. Argument list, no shell."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def iso_date(ts):
+    return None if ts is None else time.strftime("%Y-%m-%d", time.gmtime(ts))
+
+
+def progress_path(c):
+    return os.path.join(c["UNITOTEM_FW_RUN"], "unitotem-firmware.progress")
+
+
+def cache_path(c):
+    return os.path.join(c["UNITOTEM_FW_RUN"], "unitotem-firmware.check.json")
+
+
+def write_progress(c, **kw):
+    kw.setdefault("reboot_required", False)
+    atomic_json(progress_path(c), kw)
+
+
+def read_progress(c):
+    return read_json(progress_path(c))
+
+
+def lock_path(c):
+    return os.path.join(c["UNITOTEM_FW_RUN"], "unitotem-firmware.lock")
+
+
+def lock_held(c):
+    """True while another process holds the operation lock (probe only, the lock is released again)."""
+    try:
+        f = open(lock_path(c), "a+")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return False
+    except OSError:
+        return True
+    finally:
+        f.close()
+
+
+class OpLock:
+    """One firmware operation at a time. The file is never unlinked: closing the descriptor releases it."""
+    def __init__(self, c):
+        self.path = lock_path(c); self.f = None
+
+    def __enter__(self):
+        f = open(self.path, "a+")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            raise Fail("busy", "another firmware operation is running", rc=12)
+        f.seek(0); f.truncate(); f.write(str(os.getpid())); f.flush()
+        self.f = f
+        return self
+
+    def __exit__(self, *e):
+        self.f.close()
+
+
+# ---------- device ----------
+
+def read_model(c):
+    try:
+        with open(os.path.join(c["UNITOTEM_FW_DT"], "model"), "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    return raw.replace(b"\x00", b"").decode("utf-8", "replace").strip() or None
+
+
+def classify(model):
+    """(kind, family): ("pi", "pi3"|"pi4"|"pi5") or ("none", None)."""
+    if model:
+        if PI3_RE.match(model): return "pi", "pi3"
+        if PI4_RE.match(model): return "pi", "pi4"
+        if PI5_RE.match(model): return "pi", "pi5"
+    return "none", None
+
+
+def pairs_present(boot):
+    return [f"{a}+{b}" for a, b in PAIRS
+            if os.path.isfile(os.path.join(boot, a)) and os.path.isfile(os.path.join(boot, b))]
+
+
+def installed_version(c):
+    rec = read_json(os.path.join(c["UNITOTEM_FW_BOOT"], "unitotem-firmware.json"))
+    v = rec.get("version") if rec else None
+    return v if isinstance(v, str) else None
+
+
+def fs_writable(path):
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return False
+    if st.f_flag & os.ST_RDONLY:
+        return False
+    return os.access(path, os.W_OK)
+
+
+def read_throttled(c):
+    out = run_tool([c["UNITOTEM_FW_VCGENCMD"], "get_throttled"])
+    m = re.search(r"throttled=0x([0-9a-fA-F]{1,8})\b", out or "")
+    return int(m.group(1), 16) if m else None
+
+
+def pending_confirm(c):
+    """True/False from the updater; None when the updater is absent. Unreadable output counts as pending."""
+    try:
+        r = subprocess.run([c["UNITOTEM_FW_UPDATE"], "--json", "status"], capture_output=True, text=True,
+                           timeout=30, check=False)
+    except FileNotFoundError:
+        return None
+    except (OSError, subprocess.SubprocessError):
+        return True
+    try:
+        obj = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return True
+    v = obj.get("pending_confirm") if isinstance(obj, dict) else None
+    return v if isinstance(v, bool) else True
+
+
+def parse_version_date(line):
+    try:
+        return calendar.timegm(time.strptime(" ".join(line.split()), "%b %d %Y %H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def eeprom_installed_ts(c):
+    """Build time of the running EEPROM bootloader (epoch), or None. Device-tree first, then vcgencmd."""
+    try:
+        with open(os.path.join(c["UNITOTEM_FW_DT"], "chosen", "bootloader", "build-timestamp"), "rb") as f:
+            raw = f.read()
+        if len(raw) == 4:
+            return struct.unpack(">I", raw)[0]
+    except OSError:
+        pass
+    out = run_tool([c["UNITOTEM_FW_VCGENCMD"], "bootloader_version"])
+    if not out:
+        return None
+    for line in out.splitlines():
+        if line.startswith("timestamp "):
+            try:
+                return int(line.split()[1])
+            except (ValueError, IndexError):
+                return None
+    return parse_version_date(out.splitlines()[0])
+
+
+def eeprom_channel(c):
+    try:
+        with open(c["UNITOTEM_FW_EEPROM_CONF"]) as f:
+            text = f.read()
+    except OSError:
+        text = ""
+    m = re.search(r'^FIRMWARE_RELEASE_STATUS="?([a-z]+)"?\s*$', text, re.M)
+    return CHANNELS.get(m.group(1), "default") if m else "default"
+
+
+# ---------- blockers ----------
+
+def power_blockers(thr):
+    """Blockers from get_throttled (None = unreadable)."""
+    if thr is None:
+        return ["no-power-info"]
+    return ["under-voltage"] if thr & 1 else []
+
+
+def blockers_of(c, thr, locked):
+    blk = power_blockers(thr)
+    if pending_confirm(c):
+        blk.append("pending-confirm")
+    if not fs_writable(c["UNITOTEM_FW_BOOT"]):
+        blk.append("not-writable")
+    if locked:
+        blk.append("busy")
+    return blk
+
+
+# ---------- status ----------
+
+def files_block(c, fw):
+    boot = c["UNITOTEM_FW_BOOT"]
+    return {"installed": installed_version(c),
+            "available": fw.get("version") if fw else None,
+            "update": fw.get("update") if fw else None,
+            "pairs": pairs_present(boot),
+            "bak": bool(glob.glob(os.path.join(glob.escape(boot), "*.bak")))}
+
+
+def eeprom_block(c, family, ee):
+    if family not in EE_DIR:
+        return None
+    inst = eeprom_installed_ts(c)
+    avail = ee.get("build_timestamp") if ee else None
+    upd = (avail > inst) if (inst is not None and avail is not None) else None
+    return {"installed": iso_date(inst),
+            "available": ee.get("version") if ee else None,
+            "update": upd,
+            "pending": os.path.isfile(os.path.join(c["UNITOTEM_FW_BOOT"], "pieeprom.upd")),
+            "channel": eeprom_channel(c)}
+
+
+def cmd_status(c):
+    model = read_model(c)
+    kind, family = classify(model)
+    if kind == "none":
+        return 0, {"kind": "none", "supported": False}
+    cache = read_json(cache_path(c)) or {}
+    fw = cache.get("firmware") if isinstance(cache.get("firmware"), dict) else None
+    ee = cache.get("eeprom") if isinstance(cache.get("eeprom"), dict) else None
+    prog = read_progress(c)
+    locked = lock_held(c)
+    if prog and not locked:
+        error = prog.get("error") if prog.get("state") == "failed" else None
+    else:
+        error = None
+    if locked and prog:
+        op, phase, percent = prog.get("op"), prog.get("phase"), prog.get("percent")
+    elif prog and prog.get("state") in ("done", "failed"):
+        op, phase, percent = None, prog.get("phase"), prog.get("percent")
+    else:
+        op, phase, percent = None, None, None
+    thr = read_throttled(c)
+    blk = blockers_of(c, thr, locked)
+    eeprom = eeprom_block(c, family, ee)
+    reboot = bool(prog and prog.get("reboot_required")) or bool(eeprom and eeprom["pending"])
+    return 0, {"kind": "pi", "supported": True, "model": model, "family": family,
+               "op": op, "phase": phase, "percent": percent, "error": error,
+               "throttled": None if thr is None else "0x%x" % thr,
+               "under_voltage": bool(thr and thr & 1),
+               "files": files_block(c, fw), "eeprom": eeprom,
+               "blockers": blk, "checked_at": cache.get("checked_at"),
+               "reboot_required": reboot}
+
+
+# ---------- HTTPS fetch ----------
+
+def require_https(url):
+    if not isinstance(url, str) or not url.startswith("https://") or re.search(r"[\s\x00]", url):
+        raise Fail("insecure-url", "only https:// URLs are fetched")
+
+
+class _NoDowngrade(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        require_https(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_NoDowngrade)
+
+
+def http_get(url, max_bytes, timeout=FETCH_TIMEOUT):
+    """Body of an https URL, at most max_bytes. Redirects to any other scheme are refused."""
+    require_https(url)
+    buf = bytearray()
+    try:
+        with _OPENER.open(url, timeout=timeout) as r:
+            while len(buf) <= max_bytes:
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
+        raise Fail("network", f"fetch failed: {type(e).__name__}")
+    if len(buf) > max_bytes:
+        raise Fail("too-large", "download exceeds its size limit")
+    return bytes(buf)
+
+
+# ---------- verification and index ----------
+
+def read_suite(c):
+    try:
+        with open(c["UNITOTEM_FW_OS_RELEASE"]) as f:
+            text = f.read()
+    except OSError:
+        text = ""
+    m = re.search(r'^VERSION_CODENAME="?([a-z]+)"?\s*$', text, re.M)
+    if m:
+        return m.group(1)
+    for path in sorted(glob.glob(os.path.join(glob.escape(c["UNITOTEM_FW_APT_SOURCES"]), "*raspi*"))):
+        try:
+            with open(path) as f:
+                for line in f:
+                    m = re.match(r"\s*deb\s+(?:\[[^\]]*\]\s*)?https?://archive\.raspberrypi\.(?:com|org)/debian/?\s+"
+                                 r"([a-z]+)\s", line)
+                    if m:
+                        return m.group(1)
+        except OSError:
+            continue
+    raise Fail("no-suite", "cannot tell the Debian suite of the image")
+
+
+def keyring_path(c):
+    if c["UNITOTEM_FW_KEYRING"]:
+        path = c["UNITOTEM_FW_KEYRING"]
+    else:
+        path = next((k for k in KEYRINGS if os.path.isfile(k)), "")
+    if not path or not os.path.isfile(path):
+        raise Fail("no-keyring", "the Raspberry Pi archive keyring is not in the image")
+    return path
+
+
+def verify_inrelease(data, keyring, work):
+    """Signed text of InRelease, checked by gpgv against the keyring only (isolated homedir)."""
+    src = os.path.join(work, "InRelease")
+    out = os.path.join(work, "InRelease.txt")
+    home = os.path.join(work, "gnupg")
+    with open(src, "wb") as f:
+        f.write(data)
+    os.mkdir(home, 0o700)
+    try:
+        r = subprocess.run(["gpgv", "--homedir", home, "--keyring", keyring, "--status-fd", "1",
+                            "--output", out, src], capture_output=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        raise Fail("verify-failed", "gpgv is not available")
+    status = r.stdout.decode("utf-8", "replace")
+    if r.returncode != 0 or not re.search(r"^\[GNUPG:\] GOODSIG [0-9A-F]+", status, re.M):
+        raise Fail("bad-signature", "InRelease is not signed by the Raspberry Pi archive key")
+    with open(out, "rb") as f:
+        return f.read()
+
+
+def release_table(plain):
+    """{path: (sha256, size)} of the SHA256 section of the signed InRelease."""
+    lines = plain.decode("utf-8", "replace").splitlines()
+    if "SHA256:" not in lines:
+        raise Fail("bad-release", "InRelease has no SHA256 section")
+    table = {}
+    for line in lines[lines.index("SHA256:") + 1:]:
+        if not line.startswith(" "):
+            break
+        parts = line.split()
+        if len(parts) == 3 and SHA256_RE.fullmatch(parts[0]) and parts[1].isdigit():
+            table[parts[2]] = (parts[0], int(parts[1]))
+    return table
+
+
+def inflate(kind, data, cap):
+    """Bounded decompression of gz or xz data: Fail when the output would exceed cap."""
+    dec = zlib.decompressobj(zlib.MAX_WBITS | 16) if kind == "gz" else lzma.LZMADecompressor()
+    out = bytearray()
+    pending = data
+    while True:
+        chunk = dec.decompress(pending, 1 << 20)
+        out += chunk
+        if len(out) > cap:
+            raise Fail("too-large", "decompressed data exceeds its size limit")
+        if dec.eof:
+            break
+        if not chunk:
+            raise Fail("bad-package", "compressed data is truncated")
+        pending = dec.unconsumed_tail if kind == "gz" else b""
+    return bytes(out)
+
+
+def parse_stanzas(text):
+    rows = []
+    for block in re.split(r"\n[ \t]*\n", text):
+        row = {}
+        for line in block.splitlines():
+            m = re.match(r"^([A-Za-z0-9-]+): ?(.*)$", line)
+            if m and m.group(1) not in row:
+                row[m.group(1)] = m.group(2)
+        if row:
+            rows.append(row)
+    return rows
+
+
+def fetch_packages(base, suite, table, timeout=FETCH_TIMEOUT):
+    path = next((p for p in ("main/binary-arm64/Packages.xz", "main/binary-arm64/Packages.gz") if p in table), None)
+    if path is None:
+        raise Fail("bad-release", "InRelease lists no arm64 Packages index")
+    sha, size = table[path]
+    if size > INDEX_CAP:
+        raise Fail("too-large", "Packages index exceeds its size limit")
+    raw = http_get(f"{base}/dists/{suite}/{path}", INDEX_CAP, timeout=timeout)
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != sha:
+        raise Fail("hash-mismatch", "Packages index does not match the signed InRelease")
+    text = inflate("gz" if path.endswith(".gz") else "xz", raw, PACKAGES_CAP)
+    return parse_stanzas(text.decode("utf-8", "replace"))
+
+
+def select_package(rows, name):
+    hits = [r for r in rows if r.get("Package") == name and r.get("Architecture") in ("all", "arm64")]
+    if not hits:
+        raise Fail("package-missing", f"{name} is not in the Raspberry Pi archive for arm64")
+    if len(hits) > 1:
+        raise Fail("package-ambiguous", f"{name} is listed more than once")
+    r = hits[0]
+    fn, ver, sha, size = r.get("Filename", ""), r.get("Version", ""), r.get("SHA256", ""), r.get("Size", "")
+    if (not FILENAME_RE.fullmatch(fn) or fn.startswith("/") or ".." in fn or not fn.startswith("pool/")):
+        raise Fail("unsafe-filename", f"unsafe Filename for {name}")
+    if not VERSION_RE.fullmatch(ver):
+        raise Fail("bad-version", f"unsafe Version for {name}")
+    if not SHA256_RE.fullmatch(sha):
+        raise Fail("bad-package", f"no SHA256 for {name}")
+    if not size.isdigit() or int(size) == 0 or int(size) > PACKAGE_CAPS[name]:
+        raise Fail("too-large", f"{name} exceeds its size limit")
+    return {"name": name, "filename": fn, "version": ver, "sha256": sha, "size": int(size)}
+
+
+def fetch_deb(base, row, timeout=FETCH_TIMEOUT):
+    raw = http_get(f"{base}/{row['filename']}", PACKAGE_CAPS[row["name"]], timeout=timeout)
+    if len(raw) != row["size"]:
+        raise Fail("size-mismatch", f"{row['name']} size differs from Packages")
+    if hashlib.sha256(raw).hexdigest() != row["sha256"]:
+        raise Fail("hash-mismatch", f"{row['name']} does not match Packages")
+    return raw
+
+
+# ---------- .deb extraction ----------
+
+def ar_members(blob):
+    if blob[:8] != b"!<arch>\n":
+        raise Fail("bad-package", "not an ar archive")
+    members, off = {}, 8
+    while off < len(blob):
+        if off + 60 > len(blob) or blob[off + 58:off + 60] != b"`\n":
+            raise Fail("bad-package", "malformed ar header")
+        name = blob[off:off + 16].decode("ascii", "replace").rstrip(" ")
+        if name.endswith("/"):
+            name = name[:-1]
+        try:
+            size = int(blob[off + 48:off + 58].decode("ascii").strip())
+        except ValueError:
+            raise Fail("bad-package", "malformed ar size")
+        start = off + 60
+        if size < 0 or start + size > len(blob) or name in members:
+            raise Fail("bad-package", "malformed ar member")
+        members[name] = blob[start:start + size]
+        off = start + size + (size & 1)
+    if members.get("debian-binary") != b"2.0\n":
+        raise Fail("bad-package", "not a Debian binary package")
+    return members
+
+
+def deb_data_tar(blob):
+    members = ar_members(blob)
+    if "data.tar.gz" in members:
+        kind, body = "gz", members["data.tar.gz"]
+    elif "data.tar.xz" in members:
+        kind, body = "xz", members["data.tar.xz"]
+    else:
+        raise Fail("unsupported-package", "data member is not gz or xz")
+    return tarfile.open(fileobj=io.BytesIO(inflate(kind, body, DATA_TAR_CAP)), mode="r:")
+
+
+def safe_name(name):
+    if name.startswith("./"):
+        name = name[2:]
+    if not name or name.startswith("/") or "\\" in name or "\x00" in name or ".." in name.split("/"):
+        raise Fail("unsafe-member", "unsafe path in package")
+    return name
+
+
+def fw_wanted(name):
+    return name.startswith(FW_DIR) and name[len(FW_DIR):] in FW_NAMES
+
+
+def index_members(tar):
+    """{name: TarInfo}. Refuses unsafe paths and device nodes anywhere, links where a wanted file is expected."""
+    out = {}
+    for m in tar.getmembers():
+        if m.name in (".", "./"):
+            continue
+        name = safe_name(m.name)
+        if m.isdev():
+            raise Fail("unsafe-member", "device node in package")
+        if (m.issym() or m.islnk()) and (fw_wanted(name) or EE_RE.fullmatch(name)):
+            raise Fail("unsafe-member", "link where a file is expected")
+        out[name] = m
+    return out
+
+
+def pick_eeprom(members, family, channel):
+    d = f"usr/lib/firmware/raspberrypi/{EE_DIR[family]}/{channel}/"
+    names = [n for n in members if n.startswith(d) and "/" not in n[len(d):]
+             and members[n].isfile()]
+    base = lambda n: n[len(d):]
+    pies = sorted((n for n in names if re.fullmatch(r"pieeprom-[0-9]{4}-[0-9]{2}-[0-9]{2}\.bin", base(n))
+                   and members[n].size == EE_SIZE[family]), reverse=True)
+    recs = [n for n in names if base(n) == "recovery.bin"]
+    if not pies or not recs:
+        raise Fail("bad-package", f"no EEPROM image or recovery.bin in {d}")
+    picks = [pies[0], recs[0]]
+    if family == "pi4":
+        vl = sorted((n for n in names if re.fullmatch(r"vl805-[0-9a-f]+\.bin", base(n))), reverse=True)
+        if vl:
+            picks.append(vl[0])
+    return picks
+
+
+def extract(tar, members, picks, dest, cap):
+    """Writes the picked regular files into dest (private dir), returns [{name, path, sha256, size}]."""
+    out = []
+    for name in picks:
+        if name not in members:
+            raise Fail("bad-package", f"wanted member {name} is missing")
+        m = members[name]
+        if not m.isfile():
+            raise Fail("unsafe-member", "wanted member is not a regular file")
+        if m.size > cap:
+            raise Fail("too-large", "package member exceeds its size limit")
+        data = tar.extractfile(m).read()
+        if len(data) != m.size:
+            raise Fail("bad-package", "short member")
+        base = os.path.basename(name)
+        path = os.path.join(dest, base)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        out.append({"name": base, "path": path, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+    return out
+
+
+def build_timestamp(path):
+    with open(path, "rb") as f:
+        m = re.search(rb"BUILD_TIMESTAMP=([0-9]+)", f.read())
+    if not m:
+        raise Fail("bad-package", "EEPROM image has no BUILD_TIMESTAMP")
+    return int(m.group(1))
+
+
+def public_table(files):
+    return [{"name": f["name"], "sha256": f["sha256"], "size": f["size"]} for f in files]
+
+
+def fat_differs(boot, table):
+    """True when a pair file or bootcode.bin present on the FAT differs from the package."""
+    for f in table:
+        path = os.path.join(boot, f["name"])
+        if os.path.isfile(path) and sha256_file(path) != f["sha256"]:
+            return True
+    return False
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+# ---------- check ----------
+
+def fetch_and_stage(c, family, work, deadline, op="check", eeprom=True):
+    """Fetch, verify and extract the wanted files into work. Returns (fw_row, fw_files, ee, ee_dir).
+    ee and ee_dir are None unless the EEPROM is wanted on this family."""
+    def left():
+        t = deadline - time.monotonic()
+        if t <= 0:
+            raise Fail("timeout", f"{op} exceeded its time budget")
+        return min(FETCH_TIMEOUT, t)
+
+    base = c["UNITOTEM_FW_BASE_URL"]
+    require_https(base)
+    suite = read_suite(c)
+    if not re.fullmatch(r"[a-z]+", suite):
+        raise Fail("no-suite", "unsafe suite name")
+    keyring = keyring_path(c)
+    write_progress(c, op=op, phase="fetch", percent=10, state="running", error=None)
+    inrelease = http_get(f"{base}/dists/{suite}/InRelease", INRELEASE_CAP, timeout=left())
+    write_progress(c, op=op, phase="verify", percent=40, state="running", error=None)
+    plain = verify_inrelease(inrelease, keyring, work)
+    table = release_table(plain)
+    rows = fetch_packages(base, suite, table, timeout=left())
+    write_progress(c, op=op, phase="fetch", percent=60, state="running", error=None)
+    fw_row = select_package(rows, "raspi-firmware")
+    fw_deb = fetch_deb(base, fw_row, timeout=left())
+    ee_row = select_package(rows, "rpi-eeprom") if family in EE_DIR and eeprom else None
+    ee_deb = fetch_deb(base, ee_row, timeout=left()) if ee_row else None
+    write_progress(c, op=op, phase="stage", percent=75, state="running", error=None)
+    fw_dir = os.path.join(work, "firmware")
+    os.mkdir(fw_dir, 0o700)
+    tar = deb_data_tar(fw_deb)
+    members = index_members(tar)
+    fw_files = extract(tar, members, [FW_DIR + n for n in FW_NAMES], fw_dir, MEMBER_CAP)
+    ee = ee_dir = None
+    if ee_deb is not None:
+        ee_dir = os.path.join(work, "eeprom")
+        os.mkdir(ee_dir, 0o700)
+        channel = eeprom_channel(c)
+        tar = deb_data_tar(ee_deb)
+        members = index_members(tar)
+        picks = pick_eeprom(members, family, channel)
+        ee_files = extract(tar, members, picks, ee_dir, MEMBER_CAP)
+        extract(tar, members, [EE_TOOL], ee_dir, MEMBER_CAP)
+        pie = next(f for f in ee_files if PIE_RE.fullmatch(f["name"]))
+        ts = build_timestamp(pie["path"])
+        ee = {"version": iso_date(ts), "build_timestamp": ts, "channel": channel,
+              "package": ee_row["version"], "files": public_table(ee_files)}
+    return fw_row, fw_files, ee, ee_dir
+
+
+def cmd_check(c):
+    model = read_model(c)
+    kind, family = classify(model)
+    if kind != "pi":
+        raise Fail("unsupported", "not a Raspberry Pi: nothing to check")
+    deadline = time.monotonic() + CHECK_BUDGET
+    with OpLock(c):
+        work = tempfile.mkdtemp(prefix="unitotem-fw-check-", dir=c["UNITOTEM_FW_RUN"])
+        try:
+            fw_row, fw_files, ee, _ = fetch_and_stage(c, family, work, deadline)
+            fw_update = fat_differs(c["UNITOTEM_FW_BOOT"], fw_files)
+            now = int(time.time())
+            cache = {"checked_at": now,
+                     "firmware": {"version": fw_row["version"], "update": fw_update, "files": public_table(fw_files)},
+                     "eeprom": ee}
+            atomic_json(cache_path(c), cache)
+            write_progress(c, op="check", phase="done", percent=100, state="done", error=None)
+        except Fail as e:
+            write_progress(c, op="check", phase=None, percent=None, state="failed",
+                           error={"error": str(e), "error_code": e.code})
+            raise
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    fw = cache["firmware"]
+    eeprom = eeprom_block(c, family, ee)
+    update = bool(fw["update"]) or bool(eeprom and eeprom["update"])
+    out = {"checked": True, "files": files_block(c, fw), "eeprom": eeprom, "checked_at": now}
+    return (0 if update else 10), out
+
+
+# ---------- apply ----------
+
+def fsync_dir(d):
+    fd = os.open(d, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def stage_file(path, data):
+    """path + ".new" written and fsynced. An old .new is removed first; O_EXCL never reuses one."""
+    new = path + ".new"
+    if os.path.lexists(new):
+        os.unlink(new)
+    fd = os.open(new, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data); f.flush(); os.fsync(f.fileno())
+    fsync_dir(os.path.dirname(path))
+
+
+def replace_file(path, data):
+    stage_file(path, data)
+    fs_replace(path + ".new", path)
+    fsync_dir(os.path.dirname(path))
+
+
+def fs_replace(src, dst):
+    """rename(2) over an existing dst: atomic, dst always exists (tests hook this call)."""
+    os.replace(src, dst)
+
+
+def clean_stale(boot):
+    """Removes the .new files of an interrupted run (the operation is repeated, never resumed)."""
+    removed = False
+    for p in [os.path.join(boot, n + sfx) for n in STAGED_NAMES for sfx in (".new", ".bak.new")]:
+        if os.path.lexists(p):
+            os.unlink(p)
+            removed = True
+    if removed:
+        fsync_dir(boot)
+
+
+def swap_plan(boot, table):
+    """Pairs present on the FAT (both files) whose files differ from the package; bootcode.bin last.
+    A pair is swapped as a whole: start4.elf and fixup4.dat always come from the same package."""
+    def differs(n):
+        p = os.path.join(boot, n)
+        return os.path.isfile(p) and sha256_file(p) != table[n]["sha256"]
+    plan = [pair for pair in PAIRS
+            if os.path.isfile(os.path.join(boot, pair[0])) and os.path.isfile(os.path.join(boot, pair[1]))
+            and (differs(pair[0]) or differs(pair[1]))]
+    if differs("bootcode.bin"):
+        plan.append(("bootcode.bin",))
+    return plan
+
+
+def apply_step(c, phase, percent):
+    write_progress(c, op="apply", phase=phase, percent=percent, state="running", error=None)
+
+
+def swap_files(c, fw_row, fw_files):
+    """Stages <name>.new for every differing pair, verifies them by read-back, keeps a copy of every old
+    file as <name>.bak, then replaces the names pair by pair with os.replace(<name>.new, <name>).
+    A name is never absent: replace is atomic and the old content survives in .bak. The only window left
+    is between the two files of one pair (start4.elf new, fixup4.dat still old); the next run repeats the
+    whole operation from the FAT as it is. A failure undoes the replaces in reverse with the .bak copies."""
+    boot = c["UNITOTEM_FW_BOOT"]
+    table = {f["name"]: f for f in fw_files}
+    apply_step(c, "stage", 80)
+    clean_stale(boot)
+    plan = swap_plan(boot, table)
+    names = [n for pair in plan for n in pair]
+    for n in names:
+        stage_file(os.path.join(boot, n), read_bytes(table[n]["path"]))
+    apply_step(c, "verify", 85)
+    for n in names:
+        if sha256_file(os.path.join(boot, n) + ".new") != table[n]["sha256"]:
+            clean_stale(boot)
+            raise Fail("verify-failed", f"{n} does not read back as written")
+    blk = power_blockers(read_throttled(c))
+    if blk:
+        clean_stale(boot)
+        raise Fail("blocked", f"firmware swap refused: {blk[0]}", blockers=blk)
+    apply_step(c, "swap", 90)
+    created_bak = [n for n in names if not os.path.lexists(os.path.join(boot, n + ".bak"))]
+    done = []
+    try:
+        for n in names:
+            replace_file(os.path.join(boot, n + ".bak"), read_bytes(os.path.join(boot, n)))
+        for pair in plan:
+            for n in pair:
+                fs_replace(os.path.join(boot, n + ".new"), os.path.join(boot, n))
+                done.append(n)
+                fsync_dir(boot)
+    except OSError as e:
+        rolled = undo_replaced(boot, done)
+        clean_stale(boot)
+        if rolled:
+            for n in created_bak:
+                if os.path.lexists(os.path.join(boot, n + ".bak")):
+                    os.unlink(os.path.join(boot, n + ".bak"))
+            fsync_dir(boot)
+        raise Fail("swap-failed", f"firmware swap failed: {e}", rolled_back=rolled)
+    replace_file(os.path.join(boot, "unitotem-firmware.json"),
+                 json.dumps({"version": fw_row["version"], "installed_at": int(time.time())}).encode())
+    cache = read_json(cache_path(c))
+    if cache and isinstance(cache.get("firmware"), dict):
+        cache["firmware"]["update"] = False
+        atomic_json(cache_path(c), cache)
+    return names
+
+
+def undo_replaced(boot, done):
+    """Restores the replaced names from their .bak copies, newest first. False when one cannot be restored."""
+    ok = True
+    for n in reversed(done):
+        try:
+            fs_replace(os.path.join(boot, n + ".bak"), os.path.join(boot, n))
+            fsync_dir(boot)
+        except OSError:
+            ok = False
+    return ok
+
+
+def run_config_tool(tool, args):
+    """rpi-eeprom-config from the rpi-eeprom package: isolated Python, list arguments, no shell."""
+    try:
+        r = subprocess.run([sys.executable, "-I", tool] + args, capture_output=True, timeout=180, check=False)
+    except (OSError, subprocess.SubprocessError):
+        raise Fail("eeprom-config", "rpi-eeprom-config cannot run")
+    if r.returncode != 0:
+        raise Fail("eeprom-config", "rpi-eeprom-config failed")
+
+
+def under_voltage_check(c, what):
+    blk = power_blockers(read_throttled(c))
+    if blk:
+        raise Fail("blocked", f"{what} refused: {blk[0]}", blockers=blk)
+
+
+def mark_pending(c):
+    """No suspend until reboot while an EEPROM update waits (rpi-eeprom: resuming is unsafe)."""
+    run = c["UNITOTEM_FW_RUN"]
+    if os.path.isdir(os.path.join(run, "systemd", "system")):
+        d = os.path.join(run, "systemd", "sleep.conf.d")
+        os.makedirs(d, exist_ok=True)
+        replace_file(os.path.join(d, "40-unitotem-firmware-pending.conf"), b"[Sleep]\nAllowSuspend=no\n")
+
+
+def eeprom_done(c, family, ee_dir, tool, ts, rec_sha, conf):
+    """True when pieeprom.upd, its sig and recovery.bin already hold this update (and config, when embedded)."""
+    boot = c["UNITOTEM_FW_BOOT"]
+    upd, sig, rec = (os.path.join(boot, n) for n in ("pieeprom.upd", "pieeprom.sig", "recovery.bin"))
+    if not all(os.path.isfile(p) for p in (upd, sig, rec)):
+        return False
+    try:
+        if build_timestamp(upd) != ts:
+            return False
+    except (Fail, OSError):
+        return False
+    if sha256_file(rec) != rec_sha:
+        return False
+    lines = read_bytes(sig).decode("utf-8", "replace").splitlines()
+    if not lines or lines[0] != sha256_file(upd):
+        return False
+    if conf is not None:
+        out = os.path.join(ee_dir, "pending.conf")
+        run_config_tool(tool, [upd, "--out", out])
+        if read_bytes(out) != conf:
+            return False
+    return True
+
+
+# Inspired by rpi-eeprom (rpi-eeprom-update): the running config is embedded into the new image, which is
+# staged as pieeprom.upd, pieeprom.sig (sha256, ts, target-soc) and recovery.bin. The ROM flashes it at the
+# next reboot. Nothing is flashed here. Returns True when files were written, False when already staged.
+def eeprom_stage(c, family, ee, ee_dir):
+    boot = c["UNITOTEM_FW_BOOT"]
+    by = {f["name"]: f for f in ee["files"]}
+    pie = next((n for n in by if PIE_RE.fullmatch(n)), None)
+    if pie is None or "recovery.bin" not in by:
+        raise Fail("bad-package", "EEPROM image or recovery.bin missing from the package")
+    tool = os.path.join(ee_dir, "rpi-eeprom-config")
+    if not os.path.isfile(tool):
+        raise Fail("bad-package", "rpi-eeprom-config missing from the package")
+    cur = os.path.join(ee_dir, "running.conf")
+    run_config_tool(tool, ["--out", cur])
+    conf = read_bytes(cur)
+    embed = len(conf.splitlines()) >= 3          # shorter configs are not propagated (as rpi-eeprom)
+    ts = ee["build_timestamp"]
+    if eeprom_done(c, family, ee_dir, tool, ts, by["recovery.bin"]["sha256"], conf if embed else None):
+        return False
+    under_voltage_check(c, "EEPROM staging")
+    new = os.path.join(ee_dir, "pieeprom-new.upd")
+    args = ["--timestamp", str(int(time.time())), "--out", new, os.path.join(ee_dir, pie)]
+    if embed:
+        args = ["--config", cur] + args
+    run_config_tool(tool, args)
+    image = read_bytes(new)
+    if len(image) != EE_SIZE[family] or build_timestamp(new) != ts:
+        raise Fail("bad-package", "embedded EEPROM image is not valid")
+    sig = f"{hashlib.sha256(image).hexdigest()}\nts: {int(time.time())}\ntarget-soc: {EE_CHIP[family]}\n"
+    replace_file(os.path.join(boot, "pieeprom.sig"), sig.encode())
+    replace_file(os.path.join(boot, "pieeprom.upd"), image)
+    replace_file(os.path.join(boot, "recovery.bin"), read_bytes(os.path.join(ee_dir, "recovery.bin")))
+    mark_pending(c)
+    return True
+
+
+def start_detached(argv):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        raise Fail("start-failed", "cannot start the apply run")
+    if r.returncode != 0:
+        raise Fail("start-failed", "systemd-run refused the apply run")
+
+
+def select_targets(family, files_flag, eeprom_flag):
+    """No flag: both that apply (the EEPROM only on pi4 and pi5)."""
+    if not files_flag and not eeprom_flag:
+        return True, family != "pi3"
+    return files_flag, eeprom_flag
+
+
+def fail_progress(c, e):
+    prev = read_progress(c) or {}
+    same = prev.get("op") == "apply"
+    err = {"error": str(e), "error_code": e.code}
+    err.update(e.extra)
+    write_progress(c, op="apply", phase=prev.get("phase") if same else None,
+                   percent=prev.get("percent") if same else None, state="failed", error=err,
+                   reboot_required=False)
+
+
+def run_apply(c, family, files, eeprom):
+    """The detached run (also --foreground). Holds the operation lock for its whole length."""
+    deadline = time.monotonic() + APPLY_BUDGET
+    with OpLock(c):
+        work = tempfile.mkdtemp(prefix="unitotem-fw-apply-", dir=c["UNITOTEM_FW_RUN"])
+        try:
+            blk = blockers_of(c, read_throttled(c), False)
+            if blk:
+                raise Fail("blocked", f"apply refused: {blk[0]}", rc=14, blockers=blk)
+            fw_row, fw_files, ee, ee_dir = fetch_and_stage(c, family, work, deadline, op="apply", eeprom=eeprom)
+            names = swap_files(c, fw_row, fw_files) if files else []
+            staged = False
+            if eeprom:
+                apply_step(c, "eeprom", 95)
+                staged = eeprom_stage(c, family, ee, ee_dir)
+            pending = eeprom and os.path.isfile(os.path.join(c["UNITOTEM_FW_BOOT"], "pieeprom.upd"))
+            reboot = bool(names) or bool(pending)
+            write_progress(c, op="apply", phase="done", percent=100, state="done", error=None,
+                           reboot_required=reboot)
+        except Fail as e:
+            fail_progress(c, e)
+            raise
+        except OSError as e:
+            f = Fail("io", str(e))
+            fail_progress(c, f)
+            raise f
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    return 0, {"applied": True, "op": "apply", "files": files, "eeprom": eeprom, "swapped": names,
+               "eeprom_staged": staged, "reboot_required": reboot}
+
+
+def cmd_apply(c, a):
+    model = read_model(c)
+    kind, family = classify(model)
+    if kind != "pi":
+        raise Fail("unsupported", "not a Raspberry Pi: nothing to apply")
+    if a.eeprom and family == "pi3":
+        raise Fail("no-eeprom", "Raspberry Pi 3 has no EEPROM to update")
+    files, eeprom = select_targets(family, a.files, a.eeprom)
+    if a.foreground:
+        return run_apply(c, family, files, eeprom)
+    if lock_held(c):
+        raise Fail("busy", "another firmware operation is running", rc=12)
+    cache = read_json(cache_path(c)) or {}
+    fw = cache.get("firmware") if isinstance(cache.get("firmware"), dict) else None
+    ee = cache.get("eeprom") if isinstance(cache.get("eeprom"), dict) else None
+    files_need = files and not (fw and fw.get("update") is False)
+    eeprom_need = eeprom and not (ee and ee.get("update") is False)
+    blk = blockers_of(c, read_throttled(c), False)
+    if blk:
+        raise Fail("blocked", f"apply refused: {blk[0]}", rc=14, blockers=blk)
+    if not files_need and not eeprom_need:
+        raise Fail("nothing-to-do", "no firmware update is available", rc=10)
+    # lowest CPU and idle I/O priority: the kiosk keeps playing while the files are written
+    argv = ["systemd-run", "--unit", "unitotem-firmware-apply", "--collect", "--quiet",
+            "-p", "Nice=19", "-p", "IOSchedulingClass=idle",
+            sys.executable, os.path.abspath(__file__), "--json", "apply", "--foreground"]
+    argv += ["--files"] if files_need else []
+    argv += ["--eeprom"] if eeprom_need else []
+    start_detached(argv)
+    return 0, {"started": True, "op": "apply", "files": bool(files_need), "eeprom": bool(eeprom_need)}
+
+
+# ---------- entry ----------
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true", help="accepted; the output is always JSON")
+    sp = ap.add_subparsers(dest="cmd", required=True)
+    sp.add_parser("status")
+    sp.add_parser("check")
+    ap_apply = sp.add_parser("apply")
+    ap_apply.add_argument("--files", action="store_true", help="swap the boot FAT firmware files")
+    ap_apply.add_argument("--eeprom", action="store_true", help="stage the EEPROM update (Pi 4 and Pi 5)")
+    ap_apply.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
+    a = ap.parse_args(argv)
+    c = conf()
+    handlers = {"status": lambda: cmd_status(c), "check": lambda: cmd_check(c), "apply": lambda: cmd_apply(c, a)}
+    try:
+        rc, out = handlers[a.cmd]()
+    except Fail as e:
+        rc, out = e.rc, {"error": str(e), "error_code": e.code}
+        out.update(e.extra)
+    except OSError as e:
+        rc, out = 2, {"error": str(e), "error_code": "io"}
+    print(json.dumps(out))
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

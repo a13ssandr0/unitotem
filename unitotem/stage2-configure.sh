@@ -223,6 +223,7 @@ install -m 755 /unitotem/files/unitotem-first-boot-cert "${ROOTFS}/usr/sbin/unit
 install -m 644 /unitotem/files/unitotem-first-boot-cert.service "${ROOTFS}/etc/systemd/system/unitotem-first-boot-cert.service"
 install -m 755 /unitotem/files/unitotem-update "${ROOTFS}/usr/sbin/unitotem-update"
 install -m 755 /unitotem/files/unitotem-boot-orientation "${ROOTFS}/usr/sbin/unitotem-boot-orientation"
+install -m 755 /unitotem/files/unitotem-firmware "${ROOTFS}/usr/sbin/unitotem-firmware"
 install -m 644 /unitotem/files/unitotem-update-auto.service "${ROOTFS}/etc/systemd/system/unitotem-update-auto.service"
 install -m 644 /unitotem/files/unitotem-update-auto.timer "${ROOTFS}/etc/systemd/system/unitotem-update-auto.timer"
 install -d "${ROOTFS}/usr/lib/unitotem"
