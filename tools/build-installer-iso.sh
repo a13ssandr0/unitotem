@@ -63,6 +63,7 @@ set -o pipefail
 IMGP="$W/esp-region.img@@$((ESP_START * 512))"
 export MTOOLS_SKIP_CHECK=1
 mkdir -p "$W/x"
+mcopy -i "$IMGP" ::unitotem-layout "$W/x/unitotem-layout" || { echo "unitotem-layout not found in $base" >&2; exit 1; }
 mcopy -i "$IMGP" ::unitotem/recovery-vmlinuz ::unitotem/recovery-initrd.img ::unitotem/recovery.sha256 "$W/x/"
 mcopy -i "$IMGP" ::EFI/BOOT/BOOTX64.EFI "$ESPDIR/shimx64.efi"; for f in mmx64.efi grubx64.efi; do mcopy -i "$IMGP" "::EFI/BOOT/$f" "$ESPDIR/$f"; done
 [ -z "$KERNEL" ] || cp -- "$KERNEL" "$W/x/recovery-vmlinuz"
@@ -81,12 +82,20 @@ XZ_SHA=$(sha256sum -- "$FLASH" | cut -d' ' -f1)
 RAW_BYTES=$(xz --robot -l -- "$FLASH" | awk '$1 == "totals" {print $5}')
 RAW_SHA=$(xz -dc -- "$FLASH" | sha256sum | cut -d' ' -f1)
 [[ $RAW_SHA =~ ^[0-9a-f]{64}$ && $RAW_BYTES =~ ^[0-9]+$ ]] || { echo "cannot hash the flash image" >&2; exit 1; }
+# minimum disk: ESP, two slots and 256 MiB (the A/B layout). The slot size is data read from unitotem-layout on the ESP.
+LAYOUT_LINE=$(head -n 1 -- "$W/x/unitotem-layout")
+[[ $LAYOUT_LINE =~ ^UNITOTEM_SLOT_SECTORS=([0-9]{1,12})$ ]] || { echo "unitotem-layout of $base is not usable" >&2; exit 1; }
+SLOT_SECTORS=$((10#${BASH_REMATCH[1]}))
+(( SLOT_SECTORS >= 1048576 && SLOT_SECTORS <= 2147483648 )) || { echo "unitotem-layout of $base: slot out of bounds ($SLOT_SECTORS sectors)" >&2; exit 1; }
+MIN_DISK_BYTES=$(( ESP_START * 512 + ESP_SIZE * 512 + 2 * SLOT_SECTORS * 512 + 268435456 ))
+echo "min disk bytes $MIN_DISK_BYTES"
 cat > "$TREE/unitotem/payload.info" <<EOF
 image=$base
 xz_sha256=$XZ_SHA
 xz_bytes=$XZ_BYTES
 raw_sha256=$RAW_SHA
 raw_bytes=$RAW_BYTES
+min_disk_bytes=$MIN_DISK_BYTES
 EOF
 
 echo "== installer initramfs (the recovery initramfs, reduced)"

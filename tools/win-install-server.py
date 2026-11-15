@@ -13,6 +13,7 @@ import os
 import random
 import re
 import secrets
+import shlex
 import signal
 import shutil
 import socket
@@ -46,13 +47,12 @@ HOST_RE = re.compile(r'[A-Za-z0-9-]{1,15}')
 LOG_LIMIT = 4000
 STATE_MAX_AGE = 7 * 24 * 3600  # state files older than this are discarded (reason=stale)
 
-# Operator answers: y approves (asked twice), n cancels; nothing else is accepted.
-YES = 'y'
+# Operator answer to the one (y/n) question: y or yes in any case approves, n or no cancels; anything else is asked again.
+YES_ANSWERS = ('y', 'yes')
 APPROVE_FILE_RE = re.compile(r'approve(?: ([A-Za-z0-9-]{8,64}))?')
-NO = 'n'
+NO_ANSWERS = ('n', 'no')
 INVALID_ANSWER = 'Invalid answer, type y or n'
 Q_FIRST = 'Erase this disk and install UniTotem? (y/n)'
-Q_LAST = 'Last chance: erase this disk? (y/n)'
 
 # Partition types as reported by Get-Partition (.Type) and Win32_DiskPartition (.Type), shown with a clearer label.
 TYPE_LABELS = {
@@ -649,7 +649,6 @@ class Context:
         self.keys = {}
         self.colors = colors or HostColors()
         self.color = use_color()
-        self.stage = 0
         self.last_machine = None
         self.served_path = payload
         self.size, self.sha = file_digest(self.served_path)
@@ -760,7 +759,7 @@ class Context:
                 continue
             try:
                 if self.explicit_key is not None:
-                    priv = self.key_path[:-4] if self.key_path.endswith('.pub') else None
+                    priv = None  # shared key file: its private key is not known
                     line = self.explicit_key
                 else:
                     priv, line = ensure_machine_key(ip)
@@ -803,7 +802,7 @@ class Context:
                     self.active_since = self.wall()
             return self.inventories[rec['machine']]  # idempotent: nothing changes, no new question
         if self.explicit_key is not None:
-            priv = self.key_path[:-4] if self.key_path.endswith('.pub') else None
+            priv = None  # shared key file: its private key is not known
             line = self.explicit_key
         else:
             priv, line = ensure_machine_key(client_ip)
@@ -815,7 +814,6 @@ class Context:
             self.active = rec['machine']
             self.active_since = self.wall()
             self.last_machine = rec['machine'] if rec['plan']['where'] != 'none' else None
-            self.stage = 0
         self.save_machine(rec['machine'])
         self.emit('inventory received machine=%s client=%s firmware=%s' % (clean(rec['machine'], 64), clean(client_ip, 45), clean(rec['firmware'], 10)), host=rec['hostname'])
         self.emit(render_block(rec), raw=True)
@@ -875,9 +873,11 @@ class Context:
             k = self.keys.get(machine)
         if not rec or not k:
             return ''
-        image = self.image or '<image>'
-        return 'OTA_FALLBACK_KEY=%s remote-deploy.sh deploy %s --image %s --yes' % (
-            k['priv'] or '<private key>', rec['client_ip'], image)
+        image = shlex.quote(os.path.abspath(self.image)) if self.image else '<image>'
+        cmd = 'deploy/script/remote-deploy.sh deploy %s --image %s --yes' % (shlex.quote(rec['client_ip']), image)
+        if k['priv'] is not None:
+            cmd = 'OTA_FALLBACK_KEY=%s %s' % (shlex.quote(k['priv']), cmd)
+        return cmd
 
     def add_status(self, data, client_ip=''):
         st = parse_status(data)
@@ -916,7 +916,7 @@ class Context:
         return YELLOW + text + RESET if self.color else text
 
     def apply_answer(self, text, source):
-        # The operator answers y twice for the PC that reported last; n cancels; anything else is asked again.
+        # The one (y/n) question for the PC that reported last: y or yes approves, n or no cancels.
         text = text.strip().lower()
         approved = None
         again = None
@@ -927,24 +927,18 @@ class Context:
             rec = self.inventories.get(machine) if machine else None
             if rec is not None:
                 host = rec['hostname']
-            if rec is None:
+            if rec is None or self.current_question is None:
                 msg = 'no PC is waiting'
                 level = logging.WARNING
-            elif text not in (YES, NO):
+            elif text not in YES_ANSWERS + NO_ANSWERS:
                 msg = INVALID_ANSWER
                 level = logging.WARNING
                 again = self.current_question
-            elif text == NO:
-                self.stage = 0
+            elif text in NO_ANSWERS:
                 self.active = None
                 msg = 'cancelled changes=none'
                 again = False
-            elif self.stage == 0:
-                self.stage = 1
-                msg = None
-                again = disk_question(rec, Q_LAST)
             else:
-                self.stage = 0
                 self.active_since = self.wall()
                 sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
                 self.approved[machine] = {'disk': sysd['number'], 'serial': sysd['serial']}
@@ -960,7 +954,16 @@ class Context:
         if again:
             self.question(again)
         if approved is not None:
-            self.emit('next: ' + self.next_command(approved), logging.INFO, host)
+            self.emit_next(approved, host)
+
+    def emit_next(self, machine, host):
+        # Deploy command of an approved PC. With --authorized-key the private key is unknown: the file is named instead.
+        self.emit('next: ' + self.next_command(machine), logging.INFO, host)
+        with self.lock:
+            k = self.keys.get(machine)
+        if k is not None and k['priv'] is None and self.explicit_key is not None:
+            self.emit('the login key is the private key matching ' + clean(os.path.abspath(self.key_path), 200),
+                      logging.INFO, host)
 
     def approve_direct(self, machine, source):
         # `-y`: approves without the two questions; same binding to machine id + disk number + serial.
@@ -981,7 +984,6 @@ class Context:
             else:
                 sysd = [d for d in rec['disks'] if d['number'] == rec['system_disk']][0]
                 self.approved[machine] = {'disk': sysd['number'], 'serial': sysd['serial']}
-                self.stage = 0
                 self.active = machine
                 self.active_since = self.wall()
                 msg = 'approved disk=%d serial=%s' % (sysd['number'], clean(sysd['serial'], 40))
@@ -993,7 +995,7 @@ class Context:
                 self.question(None)
         self.emit(msg, level, host)
         if approved is not None:
-            self.emit('next: ' + self.next_command(approved), logging.INFO, host)
+            self.emit_next(approved, host)
 
     def poll_approvals_once(self):
         for name in sorted(os.listdir(self.approvals_dir)):

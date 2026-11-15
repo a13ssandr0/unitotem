@@ -351,46 +351,54 @@ class ApprovalTests(ServerCase):
         super().setUp()
         self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
 
-    def y_twice(self):
-        self.ctx.apply_answer('y', 'stdin')
-        self.ctx.apply_answer('y', 'stdin')
+    def answer(self, word, serial='S4EVNX0N123456A '):
+        # A fresh inventory (new serial) asks the question again; then the answer is given.
+        self.assertEqual(self.post_json('/inventory', inventory(serial=serial))[0], 200)
+        self.ctx.apply_answer(word, 'stdin')
 
-    def test_two_y_approve_and_bind_machine_disk_serial(self):
+    def test_y_approves_and_binds_machine_disk_serial(self):
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
-        self.ctx.apply_answer('y', 'stdin')
-        self.assertIn('Last chance: erase this disk? (y/n)', self.output())
-        self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
+        self.assertIn('Erase this disk and install UniTotem? (y/n)', self.output())
         self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-AAAA'),
                          {'state': 'approved', 'machine': 'MACHINE-AAAA', 'disk': 0, 'serial': 'S4EVNX0N123456A'})
         self.assertIn('(DESKTOP-ABC) approved disk=0', self.output())
+        self.assertNotIn('Last chance', self.output())
 
-    def test_n_cancels_and_needs_two_again(self):
-        self.ctx.apply_answer('y', 'stdin')
+    def test_yes_in_any_case_approves(self):
+        for i, word in enumerate(('yes', 'Y', 'YES', ' Yes ')):
+            with self.subTest(word=word):
+                self.answer(word, serial='S4EVNX0N1234%02d' % i)
+                self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
+
+    def test_n_cancels_and_a_later_answer_is_refused(self):
         self.ctx.apply_answer('n', 'stdin')
         self.assertIn('cancelled changes=none', self.output())
+        self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
         self.ctx.apply_answer('y', 'stdin')
+        self.assertIn('no PC is waiting', self.lines[-1])
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
 
-    def test_upper_case_accepted(self):
-        self.ctx.apply_answer('Y', 'stdin')
-        self.ctx.apply_answer('Y', 'stdin')
-        self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
+    def test_no_in_any_case_cancels(self):
+        for i, word in enumerate(('no', 'N', 'NO', ' No ')):
+            with self.subTest(word=word):
+                self.answer(word, serial='S4EVNX0N5678%02d' % i)
+                self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
+                self.assertIn('cancelled changes=none', self.output())
 
     def test_other_answers_are_asked_again_without_cancelling(self):
-        self.ctx.apply_answer('y', 'stdin')          # now at the last-chance question
-        for bad in ('yes', 'no', 'maybe', 'yy', '1'):
+        for bad in ('maybe', 'yy', '1', 'ye', 'nope'):
             before = len(self.lines)
             self.ctx.apply_answer(bad, 'stdin')
             new = self.lines[before:]
             self.assertIn('Invalid answer, type y or n', new[0])
-            self.assertIn('Last chance: erase this disk? (y/n)', new[1])
+            self.assertIn('Erase this disk and install UniTotem? (y/n)', new[1])
             self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
-        self.ctx.apply_answer('y', 'stdin')          # still at the second question
+        self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
 
-    def test_invalid_first_answer_repeats_the_first_question(self):
-        self.ctx.apply_answer('yes', 'stdin')
+    def test_invalid_first_answer_repeats_the_question(self):
+        self.ctx.apply_answer('maybe', 'stdin')
         self.assertIn('Invalid answer, type y or n', self.output())
         self.assertIn('Erase this disk and install UniTotem? (y/n)', self.lines[-1])
 
@@ -400,7 +408,6 @@ class ApprovalTests(ServerCase):
         self.assertEqual(os.listdir(self.ctx.approvals_dir), [])
         self.assertEqual(self.approval('MACHINE-AAAA'),
                          {'state': 'approved', 'machine': 'MACHINE-AAAA', 'disk': 0, 'serial': 'S4EVNX0N123456A'})
-        self.assertNotIn('Last chance', self.output())
 
     def test_dash_y_for_a_specific_machine(self):
         self.assertEqual(self.post_json('/inventory', inventory(machine='MACHINE-BBBB', hostname='LAPTOP-XYZ',
@@ -431,12 +438,12 @@ class ApprovalTests(ServerCase):
         self.assertEqual(self.post_json('/inventory',
                                         inventory(machine='MACHINE-BBBB', hostname='LAPTOP-XYZ',
                                                   serial='OTHER123'))[0], 200)
-        self.y_twice()
+        self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-BBBB')['state'], 'approved')
         self.assertEqual(self.req('GET', '/approval?machine=MACHINE-AAAA')[0], 409)
 
     def test_new_inventory_revokes_approval(self):
-        self.y_twice()
+        self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
         self.assertEqual(self.post_json('/inventory', inventory(serial='ZZZZ9999'))[0], 200)
         self.assertEqual(self.approval('MACHINE-AAAA'), {'state': 'wait'})
@@ -577,7 +584,6 @@ class RestartTests(ServerCase):
     def test_restart_restores_inventory_not_approvals(self):
         self.post_json('/inventory', inventory())
         self.ctx.apply_answer('y', 'stdin')
-        self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.approval('MACHINE-AAAA')['state'], 'approved')
         ctx, lines = self.new_ctx()
         self.assertIn('MACHINE-AAAA', ctx.inventories)
@@ -586,14 +592,12 @@ class RestartTests(ServerCase):
         self.assertIn('state restored machines=1 approvals=dropped', text)
         self.assertIn('Erase this disk and install UniTotem? (y/n)', text)
         ctx.apply_answer('y', 'stdin')
-        ctx.apply_answer('y', 'stdin')
         self.assertEqual(ctx.get_approval('MACHINE-AAAA')['state'], 'approved')
         ctx.close()
 
     def test_keep_approvals_restores_them(self):
         ctx, _ = self.new_ctx(keep=True)
         ctx.add_inventory(inventory(), '127.0.0.1')
-        ctx.apply_answer('y', 'stdin')
         ctx.apply_answer('y', 'stdin')
         ctx.close()
         ctx2, lines = self.new_ctx(keep=True)
@@ -604,7 +608,6 @@ class RestartTests(ServerCase):
     def test_changed_disk_invalidates_a_kept_approval(self):
         ctx, _ = self.new_ctx(keep=True)
         ctx.add_inventory(inventory(), '127.0.0.1')
-        ctx.apply_answer('y', 'stdin')
         ctx.apply_answer('y', 'stdin')
         path = os.path.join(self.state, 'machines', 'MACHINE-AAAA.json')
         with open(path, encoding='utf-8') as f:
@@ -626,7 +629,6 @@ class RestartTests(ServerCase):
 
     def test_same_inventory_again_is_idempotent(self):
         self.post_json('/inventory', inventory())
-        self.ctx.apply_answer('y', 'stdin')
         self.ctx.apply_answer('y', 'stdin')
         before = len(self.lines)
         self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
@@ -814,7 +816,6 @@ class MachineKeyTests(ServerCase):
     def approve(self, machine='MACHINE-AAAA'):
         self.post_json('/inventory', inventory(machine=machine))
         self.ctx.apply_answer('y', 'stdin')
-        self.ctx.apply_answer('y', 'stdin')
 
     def key_files(self):
         base = os.path.join(self.home, '.local', 'state', 'unitotem-deploy', '127.0.0.1')
@@ -833,7 +834,6 @@ class MachineKeyTests(ServerCase):
         self.post_json('/inventory', inventory())
         self.assertEqual(self.req('GET', '/key?machine=MACHINE-AAAA')[0], 403)
         self.ctx.apply_answer('y', 'stdin')
-        self.ctx.apply_answer('y', 'stdin')
         status, _, body = self.req('GET', '/key?machine=MACHINE-AAAA')
         self.assertEqual(status, 200)
         with open(self.key_files()[1] + '.pub') as f:
@@ -850,8 +850,8 @@ class MachineKeyTests(ServerCase):
 
     def test_next_command_printed_after_approval(self):
         self.approve()
-        self.assertIn('OTA_FALLBACK_KEY=' + self.key_files()[1] + ' remote-deploy.sh deploy 127.0.0.1 --image <image> --yes',
-                      self.output())
+        self.assertIn('next: OTA_FALLBACK_KEY=' + self.key_files()[1]
+                      + ' deploy/script/remote-deploy.sh deploy 127.0.0.1 --image <image> --yes', self.output())
 
     def test_second_inventory_reuses_the_key(self):
         self.post_json('/inventory', inventory())
@@ -863,7 +863,6 @@ class MachineKeyTests(ServerCase):
 
     def test_other_machine_gets_no_key(self):
         self.post_json('/inventory', inventory(machine='MACHINE-AAAA'))
-        self.ctx.apply_answer('y', 'stdin')
         self.ctx.apply_answer('y', 'stdin')
         self.assertEqual(self.req('GET', '/key?machine=MACHINE-AAAA')[0], 200)
         self.assertEqual(self.req('GET', '/key?machine=MACHINE-BBBB')[0], 409)
@@ -1021,6 +1020,33 @@ class NextCommandTests(ServerCase):
         self.assertIn('--image <image> --yes', cmd)
         self.assertNotIn('DIR', cmd)
 
+    def test_image_path_made_absolute_and_quoted(self):
+        self.post_json('/inventory', inventory())
+        self.ctx.image = 'images/my image;rm.img.xz'
+        cmd = self.ctx.next_command('MACHINE-AAAA')
+        self.assertIn("--image '" + os.path.abspath('images/my image;rm.img.xz') + "' --yes", cmd)
+        self.assertTrue(cmd.startswith('OTA_FALLBACK_KEY='))
+        self.assertIn(' deploy/script/remote-deploy.sh deploy 127.0.0.1 --image ', cmd)
+
+
+class SharedKeyTests(ServerCase):
+    # --authorized-key: the shared public key; its private key is not known, so no OTA_FALLBACK_KEY is printed.
+    def setUp(self):
+        self.shared_dir = tempfile.mkdtemp(prefix='win-srv-shared-')
+        self.addCleanup(shutil.rmtree, self.shared_dir, True)
+        self.key_file = os.path.join(self.shared_dir, 'shared.pub')
+        with open(self.key_file, 'w', encoding='ascii') as f:
+            f.write(KEY_LINE + '\n')
+        super().setUp()
+
+    def test_next_command_names_the_key_file_instead(self):
+        self.assertEqual(self.post_json('/inventory', inventory())[0], 200)
+        self.ctx.apply_answer('y', 'stdin')
+        self.assertIn('next: deploy/script/remote-deploy.sh deploy 127.0.0.1 --image <image> --yes', self.output())
+        self.assertNotIn('OTA_FALLBACK_KEY', self.output())
+        self.assertIn('INFO (DESKTOP-ABC) the login key is the private key matching ' + os.path.abspath(self.key_file),
+                      self.output())
+
 
 class PtyTests(unittest.TestCase):
     # The real server on a pseudo-terminal: a log line arriving while the prompt waits goes above it and the
@@ -1081,8 +1107,6 @@ class PtyTests(unittest.TestCase):
             out = self.read_until(master, b'Invalid answer, type y or n')
             self.assertIn(b'Invalid answer, type y or n', out)
             os.write(master, b'y\r')
-            self.assertIn(b'Last chance: erase this disk? (y/n)', self.read_until(master, b'Last chance: erase this disk? (y/n) '))
-            os.write(master, b'Y\r')
             self.assertIn(b'(DESKTOP-ABC) approved disk=0', self.read_until(master, b'(DESKTOP-ABC) approved disk=0'))
         finally:
             proc.terminate()

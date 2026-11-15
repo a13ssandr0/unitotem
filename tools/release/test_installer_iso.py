@@ -1,24 +1,33 @@
 #!/usr/bin/env python3
 """Installer ISO test in user-mode QEMU (no root, no real disk, no libvirt).
 
-Usage: test_installer_iso.py ISO FLASH_IMG.xz [--scenarios bios,uefi,multi,sb,screen] [--work DIR] [--boot-timeout S]
-Scenarios (default: bios,uefi,multi,sb,screen):
+Usage: test_installer_iso.py ISO FLASH_IMG.xz [--scenarios bios,uefi,multi,sb,screen,small] [--work DIR] [--boot-timeout S]
+Scenarios (default: bios,uefi,multi,sb,screen,small):
   bios    serial-console entry, one disk: address on the screen, ssh without password, motd, manual start from the menu
           closes ssh (open sessions too), n reopens it, start from ssh blocks the menu, concurrent start refused,
-          y y installs, disk-only boot
-  uefi    OVMF, ISO on a USB stick, default entry: ssh only; boot media refused, no terminal refused, ssh -t install y y
-  multi   OVMF, two disks (virtio, NVMe): picker over ssh, install --disk DEV -y, the other disk untouched
+          y installs (q invalid, n cancels first), disk-only boot
+  uefi    OVMF, ISO on a USB stick, default entry: ssh only; boot media refused, no terminal refused, ssh -t install:
+          x (invalid), n (cancel, nothing written), YES accepted
+  multi   OVMF, three disks: 24 GiB virtio (/dev/vda), 24 GiB NVMe, 8 GiB virtio (/dev/vdb, below the minimum): picker
+          lists (too small) for vdb and refuses it, install --disk /dev/vdb -y refused (exit 4, changes=none), picker
+          over ssh, install --disk /dev/vda -y, the other two disks untouched
   sb      OVMF with Secure Boot enforcing: console install, the written image boots through its own signed chain
   screen  BIOS, default entry (tty1): screenshots of the screen to DIR/screen-*.png
+  small   OVMF, one 8 GiB virtio disk (below the minimum), nothing else: install --disk /dev/vda -y refused (exit 4,
+          too small, changes=none), picker refuses the only disk without a question, first MiB and sample unchanged
 Checks: written bytes equal the decompressed flash image (chunk by chunk), the 16 MiB after the image and the last MiB are
 zero, hashes of untouched disks unchanged, the disk boots alone and the web interface answers, first boot created ROOT_B
 and DATA. Sessions are logged to DIR/serial-<scenario>-<phase>.log.
+Disk images: DIR, or with the env var ISOWIN_TMP set work/iso-win/isowin-iso-tmp (sparse, named isowin-*); all removed at exit.
 Needs qemu-system-x86_64, OVMF (/usr/share/OVMF), sgdisk, mke2fs, ssh, socat, python3-pexpect, python3-pil. KVM when writable.
 """
-import argparse, hashlib, os, re, shutil, ssl, subprocess, sys, time, urllib.request
+import argparse, atexit, hashlib, os, re, shutil, ssl, subprocess, sys, time, urllib.request
 import pexpect
 
 OVMF = '/usr/share/OVMF'
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+ISOWIN_TMP_DIR = os.path.join(REPO, 'work', 'iso-win', 'isowin-iso-tmp')
+DISK_FILES = []
 RESULTS = []
 
 
@@ -205,24 +214,23 @@ def clean(text):
 
 
 Q1 = r'Erase /dev/\w+ and install UniTotem\? \(y/n\)'
-Q2 = r'Last chance: erase this disk\? \(y/n\)'
 
 
 def answers_cancel(c, name, tag):
-    """At Q1: invalid answers ask again, n cancels; again to Q2: invalid, n cancels. Child c is at Q1."""
-    for bad_answer in ('x', 'Y', 'yes'):
-        c.send(bad_answer + '\r')
-        c.expect('Invalid answer, type y or n', timeout=30)
-        c.expect(Q1, timeout=30)
-    ok(f'{name}: {tag}: invalid answers (x, Y, yes) ask again')
+    """At Q1: invalid answer x asks again, n cancels (nothing written). Child c is at Q1."""
+    c.send('x\r')
+    c.expect('Invalid answer, type y or n', timeout=30)
+    c.expect(Q1, timeout=30)
+    ok(f'{name}: {tag}: invalid answer (x) asks again')
     c.send('n\r'); c.expect('changes=none', timeout=30)
 
 
-def full_answers(c, timeout=1800):
-    """At Q1: y, y, then waits for the end of the write; returns timings."""
+def full_answers(c, name, answer='y', timeout=1800):
+    """At Q1: one confirmation (answer), then waits for the end of the write; returns timings."""
     t0 = time.time(); tm = {}
-    c.send('y\r'); c.expect(Q2, timeout=30); c.send('y\r')
+    c.send(answer + '\r')
     c.expect('Checking', timeout=60)
+    check(f'{name}: {answer} is the only question, no Last chance question', 'Last chance' not in c.before)
     c.expect('Writing', timeout=600); tm['check_s'] = time.time() - t0; t1 = time.time()
     c.expect('Verifying', timeout=timeout); tm['write_s'] = time.time() - t1; t2 = time.time()
     c.expect('install ok', timeout=timeout); tm['verify_s'] = time.time() - t2
@@ -272,12 +280,26 @@ def finish(work, name, mode, chosen, port, tm):
     print(f'timing {name}: ' + ', '.join(f'{k}={v:.0f}' for k, v in tm.items()), flush=True)
 
 
+def new_disk(work, name, i, gib, kind):
+    """Disk file isowin-<name>-disk<i>.img in ISOWIN_TMP (when set) or in work; removed by cleanup_disks."""
+    base = ISOWIN_TMP_DIR if os.environ.get('ISOWIN_TMP') else work
+    os.makedirs(base, exist_ok=True)
+    p = os.path.join(base, f'isowin-{name}-disk{i}.img'); DISK_FILES.append(p)
+    make_disk(p, gib)
+    return (p, kind)
+
+
 def new_disks(work, name, n):
-    disks = []
-    for i in range(n):
-        p = os.path.join(work, f'{name}-disk{i}.img'); make_disk(p, 24)
-        disks.append((p, 'virtio' if i == 0 else 'nvme'))
-    return disks
+    return [new_disk(work, name, i, 24, 'virtio' if i == 0 else 'nvme') for i in range(n)]
+
+
+def cleanup_disks():
+    """Removes the throwaway disks, and the ISOWIN_TMP folder when it is empty."""
+    for p in DISK_FILES:
+        if os.path.exists(p):
+            os.remove(p)
+    if os.environ.get('ISOWIN_TMP') and os.path.isdir(ISOWIN_TMP_DIR) and not os.listdir(ISOWIN_TMP_DIR):
+        os.rmdir(ISOWIN_TMP_DIR)
 
 
 def scenario_console(work, flash, name, mode, port):
@@ -313,12 +335,11 @@ def scenario_console(work, flash, name, mode, port):
         check(f'{name}: ssh reopened after n', t is not None)
         st, out = ssh_run(SSH, 'cat /run/unitotem-installer.log')
         check(f'{name}: log has the closed and reopened lines', 'INFO ssh closed reason=local install' in out and 'INFO ssh reopened' in out)
-        # y then n at the second question
-        c.send('\r'); c.expect(Q1, timeout=60); c.send('y\r'); c.expect(Q2, timeout=30)
-        c.send('q\r'); c.expect('Invalid answer, type y or n', timeout=30); c.expect(Q2, timeout=30)
+        # invalid answer q, then n
+        c.send('\r'); c.expect(Q1, timeout=60); c.send('q\r'); c.expect('Invalid answer, type y or n', timeout=30); c.expect(Q1, timeout=30)
         c.send('n\r'); c.expect('changes=none', timeout=30)
         c.expect(r'Remote install: ssh root@10\.0\.2\.15', timeout=60)
-        check(f'{name}: disks untouched after n and after y, n', hashes(disks) == before)
+        check(f'{name}: disks untouched after n (q invalid first)', hashes(disks) == before)
         # start from ssh: the console menu is replaced by the progress notice
         wait_ssh(SSH, 30)
         r1 = ssh(SSH, tty=True); r1.expect('# ', timeout=30); r1.sendline('install'); r1.expect(Q1, timeout=60)
@@ -333,7 +354,7 @@ def scenario_console(work, flash, name, mode, port):
         check(f'{name}: disks untouched after the remote n', hashes(disks) == before)
         # the real install from the console
         c.send('\r'); c.expect(Q1, timeout=60)
-        tm.update(full_answers(c))
+        tm.update(full_answers(c, name))
         ok(f'{name}: console install finished')
         time.sleep(1)
     finally:
@@ -366,7 +387,7 @@ def scenario_uefi_usb(work, flash, name, port):
         answers_cancel(s, name, 'ssh')
         check(f'{name}: disks untouched after n', hashes(disks) == before)
         s.sendline('install'); s.expect(Q1, timeout=60)
-        tm.update(full_answers(s))
+        tm.update(full_answers(s, name, 'YES'))
         ok(f'{name}: ssh install finished')
         s.send('\r')
         time.sleep(3)
@@ -380,20 +401,28 @@ def scenario_uefi_usb(work, flash, name, port):
 def scenario_multi(work, flash, name, port):
     print(f'=== {name}', flush=True)
     SSH = port; WEB = port + 1
-    disks = new_disks(work, name, 2); before = hashes(disks)
+    disks = new_disks(work, name, 2)
+    disks.append(new_disk(work, name, 2, 8, 'virtio'))  # 8 GiB: below the A/B minimum, listed as (too small)
+    before = hashes(disks)
     vm = VM(work, name, 'uefi', disks, iso=work_iso, fwd=[(SSH, 22)])
     vm.start('install'); tm = {}
     try:
         t = wait_ssh(SSH, 300)
         check(f'{name}: default entry up, ssh without password', t is not None)
         s = ssh(SSH, tty=True); s.expect('# ', timeout=30); s.sendline('install')
-        s.expect(r'1\) /dev/nvme0n1', timeout=60); s.expect(r'2\) /dev/vda'); s.expect('Select the disk')
-        ok(f'{name}: picker lists both disks')
-        s.send('9\r'); s.expect('Invalid answer, type a number from 1 to 2 or q', timeout=15)
+        s.expect(r'1\) /dev/nvme0n1', timeout=60); s.expect(r'2\) /dev/vda'); s.expect(r'3\) /dev/vdb .*\(too small\)')
+        s.expect('Select the disk')
+        ok(f'{name}: picker lists three disks, 8 GiB one as (too small)')
+        s.send('9\r'); s.expect('Invalid answer, type a number from 1 to 3 or q', timeout=15)
+        s.send('3\r'); s.expect(r'WARNING disk=/dev/vdb too small min=\d+', timeout=15); s.expect('Select the disk \\(1-3', timeout=15)
+        ok(f'{name}: picker refuses the (too small) disk and asks again')
         s.send('2\r'); s.expect(Q1, timeout=30)
         answers_cancel(s, name, 'picker')
-        s.sendline('install'); s.expect('Select the disk \\(1-2', timeout=60); s.send('q\r'); s.expect('cancelled changes=none', timeout=15)
+        s.sendline('install'); s.expect('Select the disk \\(1-3', timeout=60); s.send('q\r'); s.expect('cancelled changes=none', timeout=15)
         check(f'{name}: disks untouched after n and q', hashes(disks) == before)
+        st, out = ssh_run(SSH, 'install --disk /dev/vdb -y', timeout=60)
+        check(f'{name}: install --disk /dev/vdb -y refused (exit 4, too small min=, changes=none)',
+              st == 4 and re.search(r'too small min=\d+ changes=none', out) is not None)
         s.sendline('exit'); s.expect(pexpect.EOF, timeout=15)
         t0 = time.time()
         st, out = ssh_run(SSH, 'install --disk /dev/vda -y', timeout=1800)
@@ -402,8 +431,34 @@ def scenario_multi(work, flash, name, port):
               st == 0 and 'target=/dev/vda' in out and 'GiB' in out and 'install ok disk=/dev/vda' in out)
     finally:
         vm.stop()
-    verify_written(name, 'uefi', flash, disks, disks[0][0], before, others=[disks[1][0]])
+    verify_written(name, 'uefi', flash, disks, disks[0][0], before, others=[disks[1][0], disks[2][0]])
     finish(work, name, 'uefi', disks[0][0], WEB, tm)
+    for p, _ in disks:
+        os.remove(p)
+
+
+def scenario_small(work, flash, name, port):
+    """One 8 GiB disk, below the minimum, nothing else: refused by --disk and by the picker, nothing written."""
+    print(f'=== {name}', flush=True)
+    SSH = port
+    disks = [new_disk(work, name, 0, 8, 'virtio')]; before = hashes(disks)
+    vm = VM(work, name, 'uefi', disks, iso=work_iso, usb=True, fwd=[(SSH, 22)])
+    vm.start('install')
+    try:
+        t = wait_ssh(SSH, 300)
+        check(f'{name}: default entry up, ssh without password' + (f' after {t:.0f}s' if t else ''), t is not None)
+        st, out = ssh_run(SSH, 'install --disk /dev/vda -y')
+        check(f'{name}: install --disk /dev/vda -y refused (exit 4, too small min=, changes=none)',
+              st == 4 and re.search(r'ERROR disk=/dev/vda too small min=\d+ changes=none', out) is not None)
+        s = ssh(SSH, tty=True); s.expect('# ', timeout=30); s.sendline('install')
+        i = s.expect([Q1, r'WARNING disk=/dev/vda too small min=\d+ changes=none'], timeout=60)
+        check(f'{name}: picker refuses the only disk, no question asked', i == 1)
+        s.expect('cancelled changes=none', timeout=15)
+        ok(f'{name}: picker prints cancelled changes=none')
+        s.sendline('exit'); s.expect(pexpect.EOF, timeout=15)
+        check(f'{name}: 8 GiB disk untouched (first MiB and sample)', hashes(disks) == before)
+    finally:
+        vm.stop()
     for p, _ in disks:
         os.remove(p)
 
@@ -433,19 +488,21 @@ def main():
     global work_iso, BOOT_TIMEOUT
     ap = argparse.ArgumentParser()
     ap.add_argument('iso'); ap.add_argument('flash')
-    ap.add_argument('--scenarios', default='bios,uefi,multi,sb,screen')
+    ap.add_argument('--scenarios', default='bios,uefi,multi,sb,screen,small')
     ap.add_argument('--work', default='work/installer-iso-test')
     ap.add_argument('--boot-timeout', type=int, default=900, help='seconds to wait for the web interface of the installed disk')
     a = ap.parse_args()
     BOOT_TIMEOUT = a.boot_timeout
     work_iso = os.path.abspath(a.iso); flash = os.path.abspath(a.flash)
     os.makedirs(a.work, exist_ok=True); work = os.path.abspath(a.work)
+    atexit.register(cleanup_disks)
     for s in a.scenarios.split(','):
         if s == 'bios': scenario_console(work, flash, 'bios', 'bios', 2200)
         elif s == 'uefi': scenario_uefi_usb(work, flash, 'uefi', 2210)
         elif s == 'multi': scenario_multi(work, flash, 'multi', 2220)
         elif s == 'sb': scenario_console(work, flash, 'sb', 'sb', 2230)
         elif s == 'screen': scenario_screen(work)
+        elif s == 'small': scenario_small(work, flash, 'small', 2240)
         else: sys.exit(f'unknown scenario {s}')
     print(f'{sum(1 for r in RESULTS if r[0])} passed, {sum(1 for r in RESULTS if not r[0])} failed')
     sys.exit(1 if any(not r[0] for r in RESULTS) else 0)

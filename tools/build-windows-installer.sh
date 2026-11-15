@@ -24,7 +24,7 @@ mkdir -p "$DIR/build"
 WORK=$(mktemp -d "$DIR/build/winins.XXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT
 STAGE="$WORK/unitotem-windows-installer"
-mkdir -p "$STAGE/payload" "$OUT"
+mkdir -p "$STAGE/payload" "$OUT"; OUT=$(cd "$OUT" && pwd)
 
 # EFI System partition of the flash image: start and size from the GPT in the first MiB.
 xz -dc -- "$IMAGE" | head -c 1048576 > "$WORK/head.img" || true   # SIGPIPE from head is expected

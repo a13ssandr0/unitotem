@@ -1,8 +1,9 @@
-# Booting the UniTotem OTA environment from a running Windows 11 (lab findings)
+# Booting the UniTotem OTA environment from a running Windows 11
 
-Verified facts from the lab in `tools/win-lab/` (Windows 11 Pro 24H2 under OVMF with Secure Boot and Microsoft keys, swtpm TPM 2.0, 100 MB ESP).
+Lab findings (Windows 11 under OVMF, 2026-10); measurements of an older recovery build.
+Lab: Windows 11 Pro 24H2 under OVMF with Secure Boot and Microsoft keys, swtpm TPM 2.0, 100 MB ESP. Scripts: `tools/win-lab/README.md`.
 OVMF is not an OEM firmware: everything below holds for standard UEFI behaviour only and says nothing about specific vendors' firmware.
-Windows installation is not a shipped deploy path; these notes document what the platform allows.
+The shipped Windows path and its current procedure: [windows-installer.md](windows-installer.md). The deploy into the OTA environment: [deploy-and-recovery.md](deploy-and-recovery.md).
 
 ## Boot entry created from Windows
 
@@ -38,7 +39,7 @@ bcdedit /set {fwbootmgr} bootsequence {GUID}               :: one-shot
 
 - Kernel + initrd from the FAT32 partition (`linux ($root)/vmlinuz unitotem.ota=1 nomodeset console=tty0 console=ttyS0,115200`, `initrd ($root)/initrd.img`) (the deploy tool appends `unitotem.ota.authkey=<base64 public key>` to that command line: the fallback has no fixed password) through the signed chain with Secure Boot on: the OTA environment starts, gets an address by DHCP (same IP and MAC as Windows), shows `OTA update mode ... Port: 2222`, and answers `ota_ssh`; `unitotem-ota-engine probe` works.
 - The `unitotem.ota=1` path uses DHCP on the first interface; it does not read `unitotem-ota.conf`, and the recovery initrd has no Wi-Fi driver or firmware (only the Pi's `brcmfmac`). Wired Ethernet is required.
-- A full install with `run_ota_sequence()` / `populate_bootfs_step()` (driven by `tools/win-lab/recover-driver.sh`; the signed chain is in the ESP content) rewrites the GPT, restores ESP + ROOT_A + ROOT_B + DATA and boots UniTotem with Secure Boot on. The orphan `Boot#### "UniTotem OTA"` entry stays in NVRAM.
+- The full install from the OTA environment is the deploy of [deploy-and-recovery.md](deploy-and-recovery.md). An install that was run from the lab left the orphan `Boot#### "UniTotem OTA"` entry in NVRAM.
 
 ## Windows-side facts
 
@@ -51,13 +52,11 @@ bcdedit /set {fwbootmgr} bootsequence {GUID}               :: one-shot
 
 ## Limits
 
-- Wi-Fi-only PCs, legacy BIOS/MBR and Windows on ARM are not covered by the UniTotem OTA environment.
+- Wi-Fi-only PCs and Windows on ARM are not covered by the OTA environment. These findings cover the UEFI method only; the legacy BIOS route (GRUB4DOS) is in [windows-installer.md](windows-installer.md).
 - The OTA environment listens on SSH port 2222 while armed, with no fixed password: the armed key (`unitotem.ota.authkey=` token or boot-FAT file) or the administrator accounts of the installed system; see [fallback authentication](deploy-and-recovery.md#fallback-authentication). It can erase the disk: use it only on trusted networks.
 - Once disk writes begin, Windows is destroyed and there is no way back.
 - Firmware that ignores `BootNext` simply starts Windows again, with nothing destroyed.
 
-## Lab tools
+## Lab scripts
 
-- `tools/win-lab/lab.sh start|wait|stop|revert [SNAP]|snap NAME|list|ssh CMD|put LOCAL [REMOTE]|shot FILE.png`; `winkeys.py text|ustext|key|shot`; `gcmd.sh 'cmd' [shot]`; `serialcap.sh LOG SECONDS`; `recover-driver.sh HOST DISK_BYID PARTS_DIR` (hardcodes an absolute repository path in `DIR`).
-- Windows probes (Administrator): `probe-windows.ps1 [-MountEsp]`, `nvram-var.ps1 -Boot`. Restore the NVRAM-inclusive baseline snapshot before each experiment.
-- libvirt does not revert raw NVRAM on snapshot revert (NVRAM must be qcow2); TPM state is outside disk snapshots.
+The scripts that drive the libvirt lab (`lab.sh`, `winkeys.py`, `gcmd.sh`, `serialcap.sh`) and the Windows probes (`probe-windows.ps1`, `nvram-var.ps1`) are described in `tools/win-lab/README.md`. They need a Windows 11 ISO to build the lab VM.

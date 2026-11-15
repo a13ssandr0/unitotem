@@ -294,6 +294,16 @@ function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     return ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
+# Native CPU architecture: a 32-bit process reports the real one in PROCESSOR_ARCHITEW6432.
+function Get-NativeArchitecture {
+    if ($env:PROCESSOR_ARCHITEW6432) { return [string]$env:PROCESSOR_ARCHITEW6432 }
+    return [string]$env:PROCESSOR_ARCHITECTURE
+}
+# Windows on ARM (ARM64) is refused: the installer and its boot files support x64 and x86 only.
+function Test-SupportedArchitecture {
+    param([string]$Architecture)
+    return ($Architecture -notmatch '^ARM')
+}
 # 1 = UEFI (winload.efi), 0 = legacy BIOS (winload.exe); locale independent.
 function Get-FirmwareKind {
     $cur = (Invoke-Native 'bcdedit.exe' @('/enum', '{current}')) -join "`n"
@@ -1368,6 +1378,7 @@ function Invoke-Remote {
         Invoke-Undo
         return
     }
+    if (-not (Test-SupportedArchitecture (Get-NativeArchitecture))) { Stop-Script 'Windows on ARM is not supported' $Script:Exit.Unsupported }
     $fw = Get-FirmwareKind
     if ($fw -ne 'uefi' -and $fw -ne 'bios') { Stop-Script 'cannot tell the firmware type' $Script:Exit.Unsupported }
     Set-Step 'read the machine id'
@@ -1412,6 +1423,7 @@ function Main {
     if ($Script:Opt.Unattended) { $Script:Status.Mode = '' }
     if (-not (Test-IsAdmin)) { Stop-Script 'not elevated' $Script:Exit.NotAdmin }
     Say 'start'
+    if (-not (Test-SupportedArchitecture (Get-NativeArchitecture))) { Stop-Script 'Windows on ARM is not supported' $Script:Exit.Unsupported }
     $fw = Get-FirmwareKind
     if ($fw -ne 'uefi' -and $fw -ne 'bios') { Stop-Script 'cannot tell the firmware type' $Script:Exit.Unsupported }
     try { $null = Get-Disk | Select-Object -First 1 } catch { Stop-Script 'the storage service is unavailable; restart Windows in normal mode' $Script:Exit.Unsupported }
