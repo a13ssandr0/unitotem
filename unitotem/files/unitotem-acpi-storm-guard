@@ -1,0 +1,38 @@
+#!/bin/sh
+# Masks an ACPI general-purpose event that fires in a storm. Some firmwares (measured: HP 250 G5, GPE 03) raise one event about 10000 times
+# a second: irq/9-acpi and kacpid then take more than a CPU and the machine runs hot. The kernel does not stop it. The event number is
+# specific to a firmware, so no fixed number is masked: the counters of /sys/firmware/acpi/interrupts are sampled for a second and
+# every event above LIMIT per second is masked (until the next boot) and logged. A normal machine is left untouched.
+#
+#   UNITOTEM_ACPI_DIR=<dir>          the interrupts directory (default /sys/firmware/acpi/interrupts)
+#   UNITOTEM_ACPI_STORM_LIMIT=<n>    events per second (default 2000)
+#   UNITOTEM_ACPI_SAMPLE=<s>         sample length in seconds (default 1)
+set -eu
+DIR=${UNITOTEM_ACPI_DIR:-/sys/firmware/acpi/interrupts}
+LIMIT=${UNITOTEM_ACPI_STORM_LIMIT:-2000}
+SAMPLE=${UNITOTEM_ACPI_SAMPLE:-1}
+[ -d "$DIR" ] || exit 0
+case "$LIMIT$SAMPLE" in *[!0-9]*|"") echo "unitotem-acpi-storm-guard: invalid limit or sample" >&2; exit 1 ;; esac
+[ "$SAMPLE" -ge 1 ] || exit 1
+
+T=$(mktemp -d)
+trap 'rm -rf -- "$T"' EXIT
+snap() {   # "<count> <name>" for every general-purpose event (gpe00 .. gpeFF; gpe_all and the others are not events)
+    for f in "$DIR"/gpe[0-9A-Fa-f][0-9A-Fa-f]; do
+        [ -r "$f" ] || continue
+        printf '%s %s\n' "$(awk '{print $1; exit}' "$f")" "${f##*/}"
+    done
+}
+snap > "$T/a"
+sleep "$SAMPLE"
+snap > "$T/b"
+awk -v lim="$LIMIT" -v s="$SAMPLE" 'NR==FNR { a[$2] = $1; next } ($2 in a) { d = ($1 - a[$2]) / s; if (d > lim) printf "%s %d\n", $2, d }' "$T/a" "$T/b" > "$T/storm"
+while read -r name rate; do
+    [ -n "$name" ] || continue
+    if echo mask > "$DIR/$name" 2>/dev/null; then
+        msg="masked ACPI event $name: $rate events per second (limit $LIMIT)"
+    else
+        msg="ACPI event $name fires $rate times per second (limit $LIMIT) and cannot be masked"
+    fi
+    logger -t unitotem-acpi-storm-guard -p daemon.warning -- "$msg" 2>/dev/null || echo "unitotem-acpi-storm-guard: $msg" >&2
+done < "$T/storm"

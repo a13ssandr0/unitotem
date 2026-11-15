@@ -1,0 +1,12 @@
+[Unit]
+Description=UniTotem - look for an ACPI event storm
+
+[Timer]
+# A storm usually starts at boot (measured on an HP laptop); one can also start later (AC adapter, lid), so the check goes on every 30 s.
+OnBootSec=20s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=unitotem-acpi-storm-guard.service
+
+[Install]
+WantedBy=timers.target
