@@ -1,0 +1,15 @@
+[Unit]
+Description=UniTotem - device suffix and default host name from the machine UUID on first boot
+ConditionPathExists=!/etc/unitotem/device-suffix
+DefaultDependencies=no
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=network-pre.target NetworkManager.service avahi-daemon.service unitotem-manager.service
+RequiresMountsFor=/etc
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unitotem-hostname
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
