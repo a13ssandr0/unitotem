@@ -36,7 +36,6 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `work/loopback-test/run-real-sd.sh`, `inside-real-sd.sh` | Same sequence on a real SD card |
 | `work/loopback-test/powercut-ab.sh` | QEMU power-cut scenarios and stress for A/B |
 | `work/loopback-test/test-ota-lowres-amd64.sh` | QEMU screendump: OTA entries at low resolution |
-| `work/loopback-test/test-frame.sh` | `ota_frame` layout on fake framebuffers, PNGs in `scratch-frame/` |
 | `work/loopback-test/whiptail-geometry.py` | Reports whiptail gauge geometry in a pty |
 | `tools/pi-sd-guard.sh` | SD write-rate guard for a real device |
 
@@ -48,7 +47,7 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 - `inside*.sh`: root in a `--privileged` `debian:bookworm` container; a loop device (or real device) stands in for the disk. The `ota-engine.sh` subcommand order mirrors `run_ota_sequence`. Each step is a `check`; the run ends `ALL CHECKS PASSED` or `SOME CHECKS FAILED`.
 - Fallback authentication (`fallback_auth_setup`, dropbear options): a scratch harness in a container, not in the repository. Covers the credential sources, key-line and name validation, and the `-F -E -p 2222 -r <host key> -T 3 -j -k` option set (`-B` in open mode). See [deploy-and-recovery](deploy-and-recovery.md#fallback-authentication).
 - `powercut-ab.sh`: each scenario starts from a qcow2 overlay, sets `UPDATE_CRASHPOINT`, kills QEMU with SIGKILL on a marker, reboots the disk, checks that the system comes up and the update completes. Results in `work/powercut/`.
-- `verify-image.sh`: runs every check, prints `PASS:`/`FAIL:`, exits 1 on any failure. Groups: English screen strings, packages removed/required, logo and frame blobs, Wayland session, Plymouth theme, Pi initramfs size and Wi-Fi module, device identity (no keys or passwords baked in), mount robustness, update machinery, A/B layout, Pi boot properties, amd64 GRUB entries.
+- `verify-image.sh`: runs every check, prints `PASS:`/`FAIL:`, exits 1 on any failure. Groups: English screen strings, packages removed/required, logo blobs, Wayland session, Plymouth theme, Pi initramfs size and Wi-Fi module, device identity (no keys or passwords baked in), mount robustness, update machinery, A/B layout, Pi boot properties, amd64 GRUB entries.
 - `pi-sd-guard.sh`: every 30 s reads `/sys/block/mmcblk0/stat` field 7 (x512 bytes) over SSH; a rate above the limit stops `pwr-writer` and every `*-testload.service`.
 
 ## Interfaces
@@ -71,7 +70,6 @@ Image check: `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`; boot FAT un
 | `powercut-ab.sh par N NAME... \| all` | parallel jobs | `work/powercut/job-*` |
 | `powercut-ab.sh stress BASE CYCLES MIN MAX [CHECK_EVERY]` | base disk, counts, seconds | offline fs checks on copies |
 | `test-ota-lowres-amd64.sh IMAGE.img.xz` | amd64 image | `work/lowres/` |
-| `test-frame.sh` | none | `scratch-frame/*.png` |
 
 Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_write`, `fetch_after_relabel`, `fetch_before_valid`, `fetch_after_valid`, `apply_start`, `apply_after_pending`, `apply_after_arm`, `boot_1`, `boot_3`, `boot_6`, `boot_10`, `boot_20`, `boot_40`, `bootok_health_wait`, `confirm_start`, `confirm_after_default`, `rollback_start`, `rollback_after_default`, `torn_grubenv`.
 
@@ -93,7 +91,6 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 - Legacy BIOS test VM: `qemu-system-x86_64 -machine q35 -enable-kvm -cpu host -smp 4 -m 4096` with no `-bios` (SeaBIOS), a 24 GiB sparse raw disk on virtio, user networking with `hostfwd` to guest ports 2222, 22, 443. A QEMU started with `-kernel/-initrd` boots that kernel again after every guest reboot: start the recovery VM with `-no-reboot` and boot the disk once the process exits. A power cut is `kill -9` of the QEMU process. Write the ESP of a stopped VM with `mcopy -i DISK@@1048576 ...` (mtools, first partition at sector 2048). First access state: `POST /setup` creates the administrator for `ssh` as that account. A newer release for the update tests is a copy of the image with `usr/share/unitotem/release-version` rewritten by `debugfs -w`, signed with the development key by `unitotem-release build-ab` and served by `tools/release/fake-github.py`; `UPDATE_BASE_URL` of the VM goes in `/etc/unitotem/update.conf`.
 - Fallback authentication on hardware only: the initramfs libraries and the NSS and libcrypt lookups in the real initrd are confirmed on the first device test. Containers do not exercise them.
 - Remote check of a device: `work/slot-tests/lib.sh` `VF` logs in as root with `~/.ssh/id_ed25519` (or `OTA_FALLBACK_KEY`, when that key is in DATA's root `authorized_keys`), or as `OTA_FALLBACK_USER` with `OTA_FALLBACK_PASSWORD` from the environment.
-- `test-frame.sh` writes fixed paths under `scratch-frame/` and deletes nothing. `whiptail-geometry.py` reports, never asserts.
 
 ## Prerequisites
 

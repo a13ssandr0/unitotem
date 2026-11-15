@@ -3,7 +3,7 @@
 # ssh in open mode, and the console screen: address for remote install and the menu. Never returns.
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export TERMINFO=/usr/share/terminfo
-. /usr/lib/unitotem/ota-engine.sh      # configure_networking_ota, ota_logo, ota_frame (the OTA recovery screen)
+. /usr/lib/unitotem/ota-engine.sh      # configure_networking_ota, ota_logo (the OTA recovery screen)
 set +eEu +o pipefail; trap - ERR
 STATE=/run/unitotem-installer.state
 mkdir -p /run/systemd /run/dropbear /root /etc
@@ -47,8 +47,8 @@ fi
 ip_list() { ip -4 -o addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }'; }
 snapshot() { echo "$(ip_list | tr '\n' ' ')|$(cat "$STATE" 2>/dev/null)"; }
 
-# the screen: the OTA recovery look (logo, rounded frame), 72x14 dialog
-draw_frame() { [ "$tty" = tty1 ] && ( sleep 1; ota_logo; ota_frame ) < /dev/null > /dev/null 2>&1 & }
+# the screen: the OTA recovery look (logo above a 72x14 dialog)
+draw_frame() { [ "$tty" = tty1 ] && ( sleep 1; ota_logo ) < /dev/null > /dev/null 2>&1 & }
 
 screen() {
     local snap text ip n=0 choice wpid watcher

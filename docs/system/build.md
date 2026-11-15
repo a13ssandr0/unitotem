@@ -22,8 +22,8 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | `unitotem/check-engine-copy.sh` | The `ota-engine.sh` inside an initramfs is the repository's (verify-image: recovery initrd and slot initramfs) |
 | `unitotem/slim-initramfs.py` | arm64 initramfs reduction: no `hwdb.bin`, Raspberry Pi Wi-Fi firmware only |
 | `unitotem/locks/<arch>.lock` | Pinned package set (see `package-lock.md`) |
-| `unitotem/files/` | Payload copied into the image: units, scripts, configs, hooks, pre-rendered OTA frame and logo blobs |
-| `tools/gen-frame.py`, `tools/gen-logo.py` | Generate the OTA frame and logo blobs in `unitotem/files/` |
+| `unitotem/files/` | Payload copied into the image: units, scripts, configs, hooks, pre-rendered OTA logo blobs |
+| `tools/gen-logo.py` | Generates the OTA logo blobs in `unitotem/files/` |
 
 ## How it works
 

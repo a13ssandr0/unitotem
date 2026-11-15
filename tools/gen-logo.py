@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pre-render the UniTotem wordmark (the same artwork as the manager's Plymouth theme) into raw 32-bit BGRX blobs that the
-OTA fallback can write straight to /dev/fb0 with dd - the initramfs has no image decoder. Composited on black (the theme's
-background). Two sizes, picked by framebuffer width at runtime.   python3 tools/gen-logo.py"""
+OTA fallback can write straight to /dev/fb0 with dd - the initramfs has no image decoder. Composited on the blue of the fallback screen (whiptail's root
+window on the Linux console palette, 0,0,170), so only the lettering shows. Two sizes, picked by framebuffer width at runtime.   python3 tools/gen-logo.py"""
 from PIL import Image
 import os
 here = os.path.dirname(os.path.abspath(__file__))
@@ -24,7 +24,7 @@ src.alpha_composite(ring, (cx - ring.width // 2, cy - ring.height // 2))
 for width in (256, 640, 1280):
     h = round(src.height * width / src.width)
     im = src.resize((width, h), Image.LANCZOS)
-    bg = Image.new("RGBA", im.size, (0, 0, 0, 255)); bg.alpha_composite(im)
+    bg = Image.new("RGBA", im.size, (0, 0, 170, 255)); bg.alpha_composite(im)
     r, g, b, _ = bg.split()
     raw = Image.merge("RGBA", (b, g, r, Image.new("L", im.size, 0))).tobytes()   # B,G,R,X per pixel (XRGB8888, little endian)
     # guard: no orange (spinner) pixel may reach a still logo
