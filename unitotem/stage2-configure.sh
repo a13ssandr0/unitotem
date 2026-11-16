@@ -300,6 +300,14 @@ install -m 644 /unitotem/files/unitotem-net-watchdog.service \
     "${ROOTFS}/etc/systemd/system/unitotem-net-watchdog.service"
 install -m 644 /unitotem/files/unitotem-net-watchdog.timer \
     "${ROOTFS}/etc/systemd/system/unitotem-net-watchdog.timer"
+# serial-getty on a port with no UART behind it (type 0) is skipped instead of restarting forever
+install -d -m 755 "${ROOTFS}/etc/systemd/system/serial-getty@.service.d"
+install -m 644 /unitotem/files/serial-getty-real-uart.conf \
+    "${ROOTFS}/etc/systemd/system/serial-getty@.service.d/10-unitotem-real-uart.conf"
+# an ACPI event that fires in a storm is masked (see the script header)
+install -m 755 /unitotem/files/unitotem-acpi-storm-guard "${ROOTFS}/usr/sbin/unitotem-acpi-storm-guard"
+install -m 644 /unitotem/files/unitotem-acpi-storm-guard.service "${ROOTFS}/etc/systemd/system/unitotem-acpi-storm-guard.service"
+install -m 644 /unitotem/files/unitotem-acpi-storm-guard.timer "${ROOTFS}/etc/systemd/system/unitotem-acpi-storm-guard.timer"
 
 # Last-resort NetworkManager profile: a wired link always has an active connection and so an
 # IPv6 link-local address to be rescued over. Must be 600 and root-owned (NetworkManager refuses
@@ -380,6 +388,7 @@ rootfs_systemctl enable \
     unitotem-first-boot-cert \
     unitotem-hostname \
     unitotem-net-watchdog.timer \
+    unitotem-acpi-storm-guard.timer \
     unitotem-wifi-roam.timer \
     unitotem-cpu-performance \
     unitotem-update-auto.timer

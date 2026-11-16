@@ -29,7 +29,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         initramfs-tools-core \
         cpio \
         python3 \
-        python3-pil \
     && rm -rf /var/lib/apt/lists/*
 
 COPY unitotem/ /unitotem/

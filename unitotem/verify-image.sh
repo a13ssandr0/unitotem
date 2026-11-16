@@ -13,6 +13,9 @@ installed() { awk -v p="$1" 'BEGIN{RS="";FS="\n"} $1=="Package: " p {for(i=1;i<=
 file_has() { grep -qE -- "$2" "$1" 2>/dev/null; }
 chk "Wi-Fi profiles are retried without limit (NetworkManager autoconnect-retries=0)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^connection\.autoconnect-retries=0$'
 chk "Wi-Fi radio power save is off (NetworkManager wifi.powersave=2)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^wifi\.powersave=2$'
+chk "the ACPI storm guard and its timer are installed and enabled (an HP laptop raised one ACPI event 10000 times a second)" bash -c "test -x $R/usr/sbin/unitotem-acpi-storm-guard && test -L $R/etc/systemd/system/timers.target.wants/unitotem-acpi-storm-guard.timer"
+chk "serial-getty is skipped on a port without a UART (type 0): ExecCondition drop-in installed (a laptop with console=ttyS0 restarted agetty 199 times in 34 minutes)" grep -qF -- '!= 0 ]' "$R/etc/systemd/system/serial-getty@.service.d/10-unitotem-real-uart.conf"
+chk "the serial-getty drop-in carries the ExecCondition on /sys/class/tty/%I/type" grep -qF -- 'ExecCondition=/bin/sh -c '"'"'[ "$(cat /sys/class/tty/%I/type 2>/dev/null)" != 0 ]'"'" "$R/etc/systemd/system/serial-getty@.service.d/10-unitotem-real-uart.conf"
 chk "unitotem-wifi-roam and its timer are installed and enabled" bash -c "test -x $R/usr/sbin/unitotem-wifi-roam && test -L $R/etc/systemd/system/timers.target.wants/unitotem-wifi-roam.timer"
 chk "the CPU governor service is enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-cpu-performance.service"
 FAT=$R/boot/efi; [ "$ARCH" = arm64 ] && FAT=$R/boot/firmware
@@ -120,15 +123,12 @@ chk "i2c-dev loaded at boot" file_has "$R/etc/modules-load.d/unitotem-i2c.conf" 
 chk "cron present (manager timers)" installed cron
 for p in libxcb-icccm4 libxcb-shape0; do chk "package $p installed (the Qt viewer aborts without it)" installed "$p"; done
 
-echo "== Logo and manager"
-for f in unitotem-logo-{256x73,640x182,1280x365}.{bgrx,rgb565,spans}; do
-    chk "framebuffer logo $f in the image" test -s "$R/usr/lib/unitotem/$f"
-done
-chk "OTA hook list carries the logo into the initramfs" file_has "$R/usr/share/unitotem-ota/ota-initrd.list" '^logo[[:space:]].*unitotem-logo-'
+echo "== OTA screen and manager"
+chk "OTA engine carries the ASCII art function (ota_art)" file_has "$R/usr/lib/unitotem/ota-engine.sh" '^ota_art\(\)'
 HOOK_BOTTOM=$R/etc/initramfs-tools/scripts/init-bottom/setup-overlays
 line_of() { grep -n -- "$2" "$1" 2>/dev/null | head -n 1 | cut -d: -f1; }
 before() { local a b; a=$(line_of "$1" "$2"); b=$(line_of "$1" "$3"); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; }
-chk "init-bottom hook defines layout_complete (ROOT_B and DATA are created on a flash image)" file_has "$HOOK_BOTTOM" '^layout_complete\(\)'
+chk "init-bottom hook defines layout_complete (ROOT_B and DATA are created on a minimal image)" file_has "$HOOK_BOTTOM" '^layout_complete\(\)'
 chk "layout_complete creates ROOT_B blank: GPT ROOT_B without the pending flag, MBR type 83" bash -c "! grep -q -- '-A 3:set:48' '$HOOK_BOTTOM' && grep -q 'type=83' '$HOOK_BOTTOM'"
 chk "layout_complete formats DATA only (ROOT_B is never formatted at first boot)" bash -c "grep -q 'for lc_name in DATA ROOT_B' '$HOOK_BOTTOM' && grep -q 'for lc_t in db da' '$HOOK_BOTTOM'"
 chk "layout_complete runs before DATA is looked up by label" before "$HOOK_BOTTOM" '^layout_complete || true' 'blkid -L DATA'
@@ -233,7 +233,7 @@ chk "recovery initrd carries the current ota-engine.sh (a stale copy had no stat
 
 echo "== Ports and logs of the 3.0.0~dev5 manager"
 chk "firewall opens 4443/tcp (paired nodes' mutual-TLS link) on IPv4 and IPv6" bash -c "grep -q 'iptables -A INPUT -p tcp --dport 4443 -j ACCEPT' '$R/sbin/iptables-firewall.sh' && grep -q 'ip6tables -A INPUT -p tcp --dport 4443 -j ACCEPT' '$R/sbin/iptables-firewall.sh'"
-chk "journald stores INFO (the manager's stderr is INFO: at 'warning' its logs never reached the journal)" file_has "$R/etc/systemd/journald.conf.d/unitotem.conf" '^MaxLevelStore=info'
+chk "journald stores warnings and above only (write budget; the manager marks its lines with sd-daemon priorities)" file_has "$R/etc/systemd/journald.conf.d/unitotem.conf" '^MaxLevelStore=warning'
 echo "== Device identity: nothing a node generates for itself may be baked into the image"
 for f in etc/unitotem/users.json etc/unitotem/remote.json var/lib/unitotem/claim-code etc/ssl/unitotem.pem; do
     chk "no $f in the image (users, the node's private key, the claim code, the TLS key are created on the device)" bash -c "[ ! -e '$R/$f' ]"

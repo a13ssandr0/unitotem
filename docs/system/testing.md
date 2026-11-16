@@ -13,29 +13,33 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_boot_recovery.py` | Boot recovery set sync (`sync_boot_recovery`, `unitotem-update`): [Recovery set refresh](ab-updates.md#recovery-set-refresh) |
 | `tools/release/test_boot_guard.py` | `unitotem-update` boot health gate, boot counter, status fields, `slot_dev`: 42 checks |
 | `tools/release/test_bootcount.sh` | Initramfs boot counter gate and fallback credentials without DATA (`ota-engine.sh`): 55 checks |
-| `tools/release/test_first_boot_layout_dos.sh` | First-boot layout on DOS (MBR) disks (`layout_mbr`, power cuts, GPT unchanged, minimal image with `grow_root`), Docker `--privileged`: 56 checks |
-| `tools/release/test_make_flash_image.sh` (+ `test_make_flash_image_inside.sh`) | Flash image: arm64 DOS table (type, label-id, start, size, bootable, bytes), `layout_mbr` and `layout_complete` completion on 14G disks (ROOT_A grown to the slot, ROOT_B, DATA, tree digest), flash images of minimal full images (arm64 DOS, amd64 GPT); Docker `--privileged`: 77 checks |
+| `tools/release/test_first_boot_layout_dos.sh` | First-boot layout on DOS (MBR) disks (`layout_mbr`, power cuts, GPT unchanged, image without ROOT_B and DATA with `grow_root`), Docker `--privileged`: 56 checks |
+| `tools/release/test_make_flash_image.sh` (+ `test_make_flash_image_inside.sh`) | Image: arm64 DOS table (type, label-id, start, size, bootable, bytes), `layout_mbr` and `layout_complete` completion on 14G disks (ROOT_A grown to the slot, ROOT_B, DATA, tree digest), images (arm64 DOS, amd64 GPT); Docker `--privileged`: 77 checks |
 | `tools/release/test_deploy_table_mbr.py` | Deploy MBR conversion (`load_image`, `image_table_dos`) and `restore-table` tail on MBR and GPT: 16 checks |
-| `tools/release/test_grow_data.sh` (+ `test_grow_data_inside.sh`) | `grow_root`, `layout_complete` and `grow_data` on GPT and DOS, flash and minimal images, interruptions (`resize2fs` kill, `e2fsck -fy`, cut after the table write), premount dispatch; Docker `--privileged`: 279 checks |
+| `tools/release/test_grow_data.sh` (+ `test_grow_data_inside.sh`) | `grow_root`, `layout_complete` and `grow_data` on GPT and DOS, images without ROOT_B and DATA, interruptions (`resize2fs` kill, `e2fsck -fy`, cut after the table write), premount dispatch; Docker `--privileged`: 279 checks |
 | `tools/release/test_overlay_status.sh` | Overlay hook under dash, mocked tools: 38 checks |
 | `tools/release/test_overlay_volatile.sh` | Volatile overlays without DATA (`volatile_overlays`), Docker `--privileged`: 47 checks |
 | `tools/release/test_deploy_blank_part.py` | `cmd_blank_part` (`ota-engine.sh`): ROOT_B first MiB zeroed and nothing else, refusals, no `format-part`: 11 checks |
 | `tools/release/test_win_install_server.py` | `tools/win-install-server.py` (Windows installer host server): 96 tests (bootstrap, payload ranges, inventory validation, one y/n question with yes/no in any case, `-y`, approval binding, per-PC and `--authorized-key` keys, state restart, pseudo-terminal prompt): [windows-installer.md](windows-installer.md#tests) |
 | `tools/windows-installer/Install-UniTotem.Tests.ps1` | Pester, 88 tests of `Install-UniTotem.ps1`: pure functions, size math, plan, token and grub rendering, Windows on ARM refusal, mocked dry run; no Windows cmdlet runs (Docker, see [windows-installer.md](windows-installer.md#tests)) |
-| `tools/release/test_installer_iso.py` | Installer ISO in user-mode QEMU, no root, no real disk: `bios`, `uefi`, `multi` (three disks, one too small), `sb`, `screen`, `small` (one too-small disk). One `(y/n)` confirmation, bytes written equal the image, the disk boots alone: [installer-iso.md](installer-iso.md#tests) |
+| `tools/release/test_installer_iso.py` | Installer ISO in user-mode QEMU, no root, no real disk: `bios`, `uefi`, `multi` (three disks, one too small), `sb`, `screen`, `small` (one too-small disk). One confirmation (whiptail Yes/No on the console, `(y/n)` over ssh), bytes written equal the image, the disk boots alone: [installer-iso.md](installer-iso.md#tests) |
 | `tools/release/test_deploy_backup.py` | `backup_stream` (`deploy/script/lib.sh`), `backup_running_system` (`deploy/script/remote-deploy.sh`) |
 | `tools/release/test_deploy_recovery_source.py` | `recovery_from_parts` (`deploy/script/remote-deploy.sh`): resident fallback source of a deploy, 29 checks |
 | `tools/release/test_identity_merge.py` | `unitotem_identity.py` account merge |
+| `tools/release/test_deploy_identity.py` | `deploy/script/deploy-identity.py` (host-side merge of a deploy that keeps DATA): exit 0 merged, 1 refused, 2 usage: 26 checks |
+| `tools/release/test_ota_engine_identity.sh` | `ota-engine.sh` `migrate-etc-overlay` (archives, `UNITOTEM_ETC_HISTORY`) and `install-identity` (modes, owners, `*.pre-update`), tmp fixtures, Docker: 132 checks |
+| `tools/release/test_identity_carry.sh` | `deploy_carry_identity` (`deploy/script/identity-carry.sh`) against a local stand-in target: carry, nothing to carry, refused merge, failed install, rerun, temporary directory removed; Docker: 26 checks |
 | `tools/release/test_pkglock.py` | `tools/pkglock.py` freeze/verify/prefs/snapshot/classification, offline |
 | `tools/release/test_repair.py` | Self-repair without block devices: boot-file clone, failover guard, repair decision, `patch_label`, `clone_into_slot` on a file, `slot_dev` with fake sysfs: 60 checks |
 | `tools/release/test_slot_pick.sh` | Engine `slot_pick`, `heal_dup_label`, `pin_root_dev` and boot stubs (`ota-engine.sh`): 44 checks |
+| `tools/release/test_ota_art.sh` | `ota_art` (OTA name art) through a terminal model: 8x16 and 16x32 consoles from 640x480 to 3840x2160, fit boundaries, too-small consoles draw nothing, centring, blank row above the dialog, bold white on blue, cursor saved and restored, ASCII only: 133 checks |
 | `tools/release/test_slot_dup.sh` (+ `test_slot_dup_inside.sh`) | Duplicate labels and interrupted repair writes (`clone_into_slot`, `slot_dev`, `cmd_init_premount`), Docker `--privileged`, GPT and DOS, `metadata_csum` on and off: 548 checks; reproduces the old write order and interrupts after invalidate, mid-write (SIGKILL at 30 %), before and after the superblock |
 | `tools/release/test_rpi_backend.py` | Raspberry backend end to end on a synthetic GPT image |
 | `tools/release/test_secure_boot_gate.py` | `secure_boot_note`, the SecureBoot probe and the absence of the old option, cut from `deploy/script/remote-deploy.sh` |
 | `tools/release/test_wifi_roam.py` | `unitotem-wifi-roam` scan parsing and candidate choice |
 | `tools/release/fake-github.py` | GitHub Releases stub over HTTP |
 | `unitotem/verify-image.sh` | Rule checks on a mounted image; run by stage 3 |
-| `tools/release/test_write_sd.sh` | `deploy/script/write-sd.sh` on loop disks: table, filesystems, files, only used blocks written; minimal images with a stale ROOT_B: ROOT_B blanked (no signature, first MiB zero), DATA empty ext4: 54 checks |
+| `tools/release/test_write_sd.sh` | `deploy/script/write-sd.sh` on loop disks: table, filesystems, files, only used blocks written; images without ROOT_B and DATA with a stale ROOT_B: ROOT_B blanked (no signature, first MiB zero), DATA empty ext4: 54 checks |
 | `tools/release/test_image_lib.sh` | `deploy/script/image-lib.sh` on loop images: descriptor actions (ROOT_B `blank`), synthesized layout, MBR conversion, streams: 56 checks |
 | `work/loopback-test/run.sh`, `inside.sh` | Loopback deploy (fresh target, table recreate, DATA mkfs), amd64 |
 | `work/loopback-test/run-ab.sh`, `inside-ab.sh` | Loopback A/B first deploy (layout 2, UEFI); leaves `scratch-ab/target.img` |
@@ -55,7 +59,7 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 - `inside*.sh`: root in a `--privileged` `debian:bookworm` container; a loop device (or real device) stands in for the disk. The `ota-engine.sh` subcommand order mirrors `run_ota_sequence`. Each step is a `check`; the run ends `ALL CHECKS PASSED` or `SOME CHECKS FAILED`.
 - Fallback authentication (`fallback_auth_setup`, dropbear options): a scratch harness in a container, not in the repository. Covers the credential sources, key-line and name validation, and the `-F -E -p 2222 -r <host key> -T 3 -j -k` option set (`-B` in open mode). See [deploy-and-recovery](deploy-and-recovery.md#fallback-authentication).
 - `powercut-ab.sh`: each scenario starts from a qcow2 overlay, sets `UPDATE_CRASHPOINT`, kills QEMU with SIGKILL on a marker, reboots the disk, checks that the system comes up and the update completes. Results in `work/powercut/`.
-- `verify-image.sh`: runs every check, prints `PASS:`/`FAIL:`, exits 1 on any failure. Groups: English screen strings, packages removed/required, logo blobs, Wayland session, Plymouth theme, Pi initramfs size and Wi-Fi module, device identity (no keys or passwords baked in), mount robustness, update machinery, A/B layout, Pi boot properties, amd64 GRUB entries.
+- `verify-image.sh`: runs every check, prints `PASS:`/`FAIL:`, exits 1 on any failure. Groups: English screen strings, packages removed/required, OTA name art in the engine, Wayland session, Plymouth theme, Pi initramfs size and Wi-Fi module, device identity (no keys or passwords baked in), mount robustness, update machinery, A/B layout, Pi boot properties, amd64 GRUB entries.
 - `pi-sd-guard.sh`: every 30 s reads `/sys/block/mmcblk0/stat` field 7 (x512 bytes) over SSH; a rate above the limit stops `pwr-writer` and every `*-testload.service`.
 
 ## Interfaces
@@ -107,14 +111,14 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 | Python tests | python3 stdlib; `test_rpi_backend.py`: mtools, `mkfs.fat`, `mke2fs`, `sgdisk`, `dd`, `truncate`; deploy/secure-boot tests: bash, awk |
 | Loopback, A/B, arm64, bootcount | docker, root-capable host, `debian:bookworm` |
 | Volatile overlays, DOS layout | docker, `--privileged`, local `debian:trixie` image (`--pull never`) |
-| Flash image, `grow_data` | docker, `--privileged` (loop devices inside the container only) |
+| Image, `grow_data` | docker, `--privileged` (loop devices inside the container only) |
 | Real SD card | docker, the card attached to the host |
 | Power cut | qemu-system-x86_64 with KVM, qemu-img, OVMF, sgdisk, sshpass, `deploy/script/lib.sh` |
 | Low-resolution OTA | qemu-system-x86_64, OVMF, mtools, sfdisk, xz |
 | Frame layout | python3, PIL optional |
 | Windows installer server | python3 (stdlib), ssh-keygen; run with `python3 -I` |
 | Windows installer Pester | docker (`mcr.microsoft.com/powershell:lts-ubuntu-22.04`, Pester installed inside) |
-| Installer ISO | qemu-system-x86_64 with KVM (user-mode networking, no root), OVMF (`/usr/share/OVMF`), sgdisk, mke2fs, ssh, socat, python3-pexpect, python3-pil, the ISO and its flash image |
+| Installer ISO | qemu-system-x86_64 with KVM (user-mode networking, no root), OVMF (`/usr/share/OVMF`), sgdisk, mke2fs, ssh, socat, python3-pexpect, python3-pil, the ISO and its image |
 
 ## Recovery set sync on the test Pi
 `work/agents/agent-M/pi-recovery-sync-test.sh before|after|recovery-entry` (host side, `deploy/script/lib.sh` helpers only).
@@ -124,5 +128,5 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 - The SD counter includes the whole update; the sync's own writes are a few MB.
 
 ## Recovery set sync in a VM (UEFI and SeaBIOS)
-Installed full image whose ESP holds an older recovery set (level 0), ROOT_A without `/usr/share/unitotem/recovery` (debugfs); a signed test release (`unitotem-release build-ab`) whose root carries the new updater and a newer set (level `20261108000000`, initrd with a marker file), served by `tools/release/fake-github.py` (`UPDATE_BASE_URL=http://10.0.2.2:PORT/<owner>/<repo>`). `fetch`, `apply --reboot`, confirmed boot: `boot_recovery` is `ok 0 -> level`, ESP `recovery-initrd.img` equals the new file, `sha256sum -c recovery.sha256` passes, no `*.new`, `grub.cfg` unchanged, a further boot is `noop` and writes nothing; `next_entry=ota-recovery` boots the new initrd (marker present, dropbear 2222). Measured: passes on both firmwares.
+Installed image whose ESP holds an older recovery set (level 0), ROOT_A without `/usr/share/unitotem/recovery` (debugfs); a signed test release (`unitotem-release build-ab`) whose root carries the new updater and a newer set (level `20261108000000`, initrd with a marker file), served by `tools/release/fake-github.py` (`UPDATE_BASE_URL=http://10.0.2.2:PORT/<owner>/<repo>`). `fetch`, `apply --reboot`, confirmed boot: `boot_recovery` is `ok 0 -> level`, ESP `recovery-initrd.img` equals the new file, `sha256sum -c recovery.sha256` passes, no `*.new`, `grub.cfg` unchanged, a further boot is `noop` and writes nothing; `next_entry=ota-recovery` boots the new initrd (marker present, dropbear 2222). Measured: passes on both firmwares.
 

@@ -21,6 +21,11 @@
 - [system] Firmware download (decision): the signed Raspberry Pi InRelease is verified, but it carries no `Valid-Until` or downgrade check, so a validly signed old index could be replayed and an older firmware offered. Keep as is, or refuse an index older than the installed version / than the last one seen?
 
 ## To build
+- [system] Mask `rpi-eeprom-update.service` in the Pi image (field node .5 failed it at boot, EEPROM updates are done by hand): decide.
+- [system] Ship the 2026.11.67 update to Pi A, .8, .2 and .4 (not reachable or not allowed on 2026-11-16).
+- [system] Browser cache effect on DATA writes not shown on venus (NVMe noise): re-measure on a quiet disk.
+- [system] Build the ISO from the single image (`tools/build-installer-iso.sh` still takes `--flash` and `-amd64-flash.img.xz`); rename `--flash` to `--image` there and in `test_installer_iso.py`, `installer-iso.md`, `windows-installer.md`, `testing.md`.
+- [system] `docs/system/boot.md` lines 53 and 148 name `\EFI\debian\shimx64.efi`, which neither image nor ISO ships; `deploy-and-recovery.md:140` names the deleted `recover-driver.sh`.
 - [system] Raspberry Pi 3 deploy (user, 2026-11-15: its trial boot is implemented, "as if tryboot existed"): `remote-deploy.sh` now writes the image as MBR and runs the tryboot sequence; checked in QEMU `raspi3b` up to `UNITOTEM_TRIAL_ARMED=1` (table, fallback files, ROOT_A). Not checked: the first boot of slot A on a real Pi 3. In this repository `config.txt` still points at the fallback until the confirm, so a firmware that ignores `reboot '0 tryboot'` returns to the fallback (open or keyed login, `docs/system/states-and-access.md`).
 - [system] The preboot card was regenerated (`deploy/arm64/unitotem-preboot-arm64.img.xz`, 38 MiB) but not written: no card was detected in the reader. `sudo deploy/script/write-preboot.sh` writes it.
 - [system] The loopback harness of the OTA engine (`work/loopback-test/run*.sh`) reads a directory of streams: make it call `tools/release/image-streams.sh IMAGE DIR` itself and re-run it; the first deploy of a real target with the new image reader (`remote-deploy.sh --image`) is not verified on hardware (only the pieces in `test_image_lib.sh`).

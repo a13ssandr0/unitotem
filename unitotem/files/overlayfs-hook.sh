@@ -437,7 +437,7 @@ case "$1" in prereqs) prereqs; exit 0 ;; esac
 # DATA) and as init-bottom/setup-overlays (the rest of the boot).
 case "${0##*/}" in unitotem-layout) layout_complete || true; exit 0 ;; esac
 
-# A minimal (flash) image has only the boot partition and ROOT_A: create ROOT_B and DATA first. Best-effort.
+# A minimal image has only the boot partition and ROOT_A: create ROOT_B and DATA first. Best-effort.
 # Retries what local-premount left flagged; grow_root returns at once (ROOT_A is mounted).
 layout_complete || true
 

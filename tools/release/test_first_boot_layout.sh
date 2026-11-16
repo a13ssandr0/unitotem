@@ -1,24 +1,24 @@
 #!/bin/bash
-# First-boot layout test in QEMU: boots a FLASH image (unitotem-<date>-amd64-flash.img[.xz], from unitotem/make-flash-image.sh)
-# written raw to a 20 GiB virtual disk, once with UEFI (OVMF) and once with legacy BIOS (SeaBIOS), and checks over ssh that
+# First-boot layout test in QEMU: boots the amd64 image (unitotem-<date>-amd64.img[.xz], deploy/amd64/: minimal, so ROOT_B and DATA are
+# absent) written raw to a 20 GiB virtual disk, once with UEFI (OVMF) and once with legacy BIOS (SeaBIOS), and checks over ssh that
 # the first boot created ROOT_B (blank) and DATA, mounted DATA, and that the first confirmed boot clones ROOT_A into ROOT_B
 # (repair, cause first-boot) so that ROOT_B passes slot_sound. A fresh image is in the
 # first-access state (root has no password): the test creates the administrator through /setup (forwarded HTTPS port) and then
 # works as that account with sudo.
-# Needs a BUILT flash image (path as the argument), qemu-system-x86_64 (KVM optional), OVMF, sshpass. It does not run in CI.
-#   tools/release/test_first_boot_layout.sh FLASH_IMG[.xz] [uefi|bios|both]
+# Needs a BUILT image (path as the argument), qemu-system-x86_64 (KVM optional), OVMF, sshpass. It does not run in CI.
+#   tools/release/test_first_boot_layout.sh IMAGE[.xz] [uefi|bios|both]
 # Environment: ADMIN_PW (password of the administrator the test creates), DISK_GIB (default 20), PORT (default 2290),
 #   WORK (scratch folder, default work/grow-test/qemu-layout), BOOT_TIMEOUT (seconds, default 300), FILL_TIMEOUT (default 900).
 # Only a qemu process of this script and files under WORK are touched; no real disk or device.
 set -Eeuo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-IMG="${1:?usage: test_first_boot_layout.sh FLASH_IMG[.xz] [uefi|bios|both]}"; MODES="${2:-both}"
+IMG="${1:?usage: test_first_boot_layout.sh IMAGE[.xz] [uefi|bios|both]}"; MODES="${2:-both}"
 DISK_GIB="${DISK_GIB:-20}"; PORT="${PORT:-2290}"; ADMIN_PW="${ADMIN_PW:-Qw3rty-Test-2026}"; WORK="${WORK:-$DIR/work/grow-test/qemu-layout}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"; FILL_TIMEOUT="${FILL_TIMEOUT:-900}"
 source "$DIR/deploy/script/lib.sh"
 for c in qemu-system-x86_64 sshpass sgdisk curl; do require_cmd "$c"; done
 OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd; OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
-[ -f "$IMG" ] || die "flash image not found: $IMG"
+[ -f "$IMG" ] || die "image not found: $IMG"
 mkdir -p "$WORK"
 pass=0; failn=0
 ok()  { pass=$((pass+1)); echo "PASS: $1"; }
@@ -36,9 +36,9 @@ PIDF="$WORK/qemu.pid"
 stop_vm() { if [ -f "$PIDF" ]; then kill "$(cat "$PIDF")" 2>/dev/null || true; rm -f "$PIDF"; fi; }
 trap stop_vm EXIT
 
-RAW="$WORK/flash.img"
+RAW="$WORK/image.img"
 case "$IMG" in *.xz) xz -dc "$IMG" > "$RAW" ;; *) cp --sparse=always "$IMG" "$RAW" ;; esac
-FLASH_GIB=$(( ($(stat -c %s "$RAW") + 1073741823) / 1073741824 ))
+IMAGE_GIB=$(( ($(stat -c %s "$RAW") + 1073741823) / 1073741824 ))
 
 run_mode() {
     local mode=$1 disk="$WORK/disk-$1.img" fw=() kvm=() t=0 lay dump dsz
@@ -73,7 +73,7 @@ run_mode() {
     chk "$mode: PARTLABEL DATA present" grep -q ' DATA ' <<<"$lay"
     chk "$mode: DATA mounted on /mnt/data" grep -q '/mnt/data' <<<"$lay"
     dsz=$(qssh 'blockdev --getsize64 /dev/disk/by-partlabel/DATA' || echo 0)
-    chk "$mode: DATA spans the rest of the disk ($((dsz>>30)) GiB of ${DISK_GIB})" [ "$dsz" -gt $(( (DISK_GIB - FLASH_GIB - 6) * 1073741824 )) ]
+    chk "$mode: DATA spans the rest of the disk ($((dsz>>30)) GiB of ${DISK_GIB})" [ "$dsz" -gt $(( (DISK_GIB - IMAGE_GIB - 6) * 1073741824 )) ]
     rchk "$mode: sgdisk -v clean" 'sgdisk -v /dev/vda | grep -q "No problems found"'
     dump=$(qssh 'sfdisk -d /dev/vda' || true)
     chk "$mode: no pending-format flag (GPT attribute bit 48) left" bash -c '! grep -q "GUID:48" <<<"$1"' _ "$dump"

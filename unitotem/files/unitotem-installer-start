@@ -3,7 +3,7 @@
 # ssh in open mode, and the console screen: address for remote install and the menu. Never returns.
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export TERMINFO=/usr/share/terminfo
-. /usr/lib/unitotem/ota-engine.sh      # configure_networking_ota, ota_logo (the OTA recovery screen)
+. /usr/lib/unitotem/ota-engine.sh      # configure_networking_ota, ota_art (the OTA recovery art behind the dialogs)
 set +eEu +o pipefail; trap - ERR
 STATE=/run/unitotem-installer.state
 mkdir -p /run/systemd /run/dropbear /root /etc
@@ -47,8 +47,20 @@ fi
 ip_list() { ip -4 -o addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }'; }
 snapshot() { echo "$(ip_list | tr '\n' ' ')|$(cat "$STATE" 2>/dev/null)"; }
 
-# the screen: the OTA recovery look (logo above a 72x14 dialog)
-draw_frame() { [ "$tty" = tty1 ] && ( sleep 1; ota_logo ) < /dev/null > /dev/null 2>&1 & }
+# the screen: the OTA recovery art on the console behind a 14x72 dialog
+DLG_H=14 DLG_W=72
+
+# paint_art DIALOG_ROWS DIALOG_COLS: ota_art on tty1 (VGA console only) 0.3 s after the call, so whiptail is painted first.
+# Called once before each whiptail start: newt repaints the whole screen on every new dialog.
+paint_art() {
+    [ "$tty" = tty1 ] || return 0
+    command -v ota_art > /dev/null 2>&1 || return 0
+    local size rows cols
+    size=$(stty size < /dev/tty 2>/dev/null) || return 0
+    rows=${size% *}; cols=${size#* }
+    [[ $rows =~ ^[0-9]+$ && $cols =~ ^[0-9]+$ ]] || return 0
+    ( sleep 0.3; ota_art "$rows" "$cols" "$1" "$2" ) < /dev/null > /dev/null 2>&1 &
+}
 
 screen() {
     local snap text ip n=0 choice wpid watcher
@@ -60,14 +72,15 @@ screen() {
     [ "$n" = 0 ] && text="Remote install: waiting for network\n"
     printf '\033[2J\033[H'
     if [ "$(cat "$STATE" 2>/dev/null)" = remote ]; then
-        whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' --infobox "$text\nInstallation in progress (remote)" 14 72 < /dev/tty
-        draw_frame
+        paint_art "$DLG_H" "$DLG_W"
+        whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' --infobox "$text\nInstallation in progress (remote)" "$DLG_H" "$DLG_W" < /dev/tty
         while [ "$(snapshot)" = "$snap" ]; do sleep 1; done
         return
     fi
     : > /run/unitotem-installer.choice
+    paint_art "$DLG_H" "$DLG_W"
     whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' --nocancel --notags \
-        --menu "$(printf "$text")" 14 72 3 install "Install UniTotem" restart "Restart" off "Power off" \
+        --menu "$(printf "$text")" "$DLG_H" "$DLG_W" 3 install "Install UniTotem" restart "Restart" off "Power off" \
         2> /run/unitotem-installer.choice < /dev/tty &
     wpid=$!
     ( while kill -0 "$wpid" 2>/dev/null; do
@@ -75,7 +88,6 @@ screen() {
           [ "$(snapshot)" = "$snap" ] || { kill "$wpid" 2>/dev/null; break; }
       done ) < /dev/null > /dev/null 2>&1 &
     watcher=$!
-    draw_frame
     wait "$wpid"
     kill "$watcher" 2>/dev/null
     choice=$(cat /run/unitotem-installer.choice)

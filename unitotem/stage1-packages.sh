@@ -244,10 +244,6 @@ nb_kernel_post
 mkdir -p "${ROOTFS}/usr/lib/unitotem"
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 ln -sf /usr/lib/unitotem/ota-engine.sh "${ROOTFS}/usr/sbin/unitotem-ota-engine"
-# framebuffer logo of the deploy/recovery screen, rendered from the transparent wordmark (unitotem/logo/gen-logo.py); 32 bpp and 16 bpp
-# (the real system's KMS framebuffer can be either; 16 on a Raspberry Pi 4); the largest size is for the placeholder on 4K
-python3 /unitotem/logo/gen-logo.py "${ROOTFS}/usr/lib/unitotem" >/dev/null || { echo "ERROR: logo rendering failed" >&2; exit 1; }
-
 install -m 755 /unitotem/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
 # the names the hook copies (read by the hook and by unitotem/ninitrd/lists.py); image-owned, so under /usr/share
 mkdir -p "${ROOTFS}/usr/share/unitotem-ota"

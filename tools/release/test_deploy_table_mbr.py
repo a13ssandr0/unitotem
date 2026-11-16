@@ -32,7 +32,8 @@ def cut(text, name):
 LOAD_IMAGE = cut(DEPLOY, "load_image")
 ENGINE_FUNCS = "\n".join(cut(ENGINE, n) for n in ("parse_args", "need", "cmd_restore_table"))
 
-# Fixture: a descriptor of the four-partition arm64 A/B layout (FIRMWARE, ROOT_A, ROOT_B, DATA); the conversion fake keeps a marker.
+# Fixture: a descriptor of the four-partition arm64 A/B layout (FIRMWARE, ROOT_A, ROOT_B, DATA), GPT unless SRC_TABLE says dos (the arm64
+# image itself). The conversion fake logs CONVERTED only for a GPT descriptor, as the real image_table_dos returns 0 for a DOS one.
 LOAD_HARNESS = r"""
 set -u
 declare -A P
@@ -45,17 +46,21 @@ echo "CALL ok" > /dev/null
 image_open() { echo "CALL image_open" >> "$WORK/calls"; return 0; }
 image_describe() {
     echo "CALL image_describe $2" >> "$WORK/calls"
-    printf 'UNITOTEM_LAYOUT=2\nUNITOTEM_TABLE=gpt\nUNITOTEM_DATA_PART=4\nUNITOTEM_BOOTFS_PART=1\n%s\nUNITOTEM_PART=1\nUNITOTEM_PART_LABEL=FIRMWARE\n\nUNITOTEM_PART=2\nUNITOTEM_PART_LABEL=ROOT_A\n\nUNITOTEM_PART=4\nUNITOTEM_PART_LABEL=DATA\n' "${SYNTH_LINE:-}" > "$1/parts.manifest"
-    echo gpt > "$1/layout.sfdisk"
+    printf 'UNITOTEM_LAYOUT=2\nUNITOTEM_TABLE=%s\nUNITOTEM_DATA_PART=4\nUNITOTEM_BOOTFS_PART=1\n%s\nUNITOTEM_PART=1\nUNITOTEM_PART_LABEL=FIRMWARE\n\nUNITOTEM_PART=2\nUNITOTEM_PART_LABEL=ROOT_A\n\nUNITOTEM_PART=4\nUNITOTEM_PART_LABEL=DATA\n' "${SRC_TABLE:-gpt}" "${SYNTH_LINE:-}" > "$1/parts.manifest"
+    printf 'label: %s\n' "${SRC_TABLE:-gpt}" > "$1/layout.sfdisk"
 }
-image_table_dos() { echo "CALL image_table_dos" >> "$WORK/calls"; echo dos > "$1/converted"; }
+image_table_dos() {
+    echo "CALL image_table_dos" >> "$WORK/calls"
+    [ "$(awk -F': *' '/^label:/{print $2}' "$1/layout.sfdisk")" = gpt ] && echo "CONVERTED" >> "$WORK/calls"
+    return 0
+}
 """
 
 
-def run_load(arch="arm64", fw="rpi", pi3=0, model="Raspberry Pi 4 Model B Rev 1.5", synth=False):
+def run_load(arch="arm64", fw="rpi", pi3=0, model="Raspberry Pi 4 Model B Rev 1.5", synth=False, src_table="gpt"):
     with tempfile.TemporaryDirectory() as td:
         open(os.path.join(td, "image.img"), "w").close()
-        env = dict(os.environ, WORK=td, ARCH_IN=arch, FW_IN=fw, PI3_IN=str(pi3), MODEL=model, SYNTH_LINE="UNITOTEM_SYNTH=1\n" if synth else "")
+        env = dict(os.environ, WORK=td, ARCH_IN=arch, FW_IN=fw, PI3_IN=str(pi3), MODEL=model, SRC_TABLE=src_table, SYNTH_LINE="UNITOTEM_SYNTH=1\n" if synth else "")
         # IMG_DESC comes from mktemp under IMG_TMPFS: the harness points it at the test directory
         script = LOAD_HARNESS + LOAD_IMAGE + "\nload_image\necho \"END rc=$? DATA=${P_DATA_PART:-} BOOTFS=${P_BOOTFS_PART:-} SYNTH=${P_SYNTH:-}\"\n"
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
@@ -63,7 +68,8 @@ def run_load(arch="arm64", fw="rpi", pi3=0, model="Raspberry Pi 4 Model B Rev 1.
         return r.stdout + r.stderr, calls, r.returncode
 
 
-MSG = "LOG: Target is a %s: the partition table is written as MBR."
+MSG = "LOG: Target is a %s: the partition table is written as MBR, converted from GPT."
+MSG_DOS = "LOG: Target is a %s: the partition table is written as MBR, the image's own table."
 
 out, calls, rc = run_load(model="Raspberry Pi 4 Model B Rev 1.5")
 check("Pi 4 (arm64, rpi, not Pi 3): the table is converted", "CALL image_table_dos" in calls and rc == 0, out + calls)
@@ -78,6 +84,13 @@ check("Pi 3: the table is converted, with the exact model", "CALL image_table_do
 
 out, calls, rc = run_load(pi3=1, model="Raspberry Pi Zero 2 W Rev 1.0")
 check("Pi Zero 2 W: the table is converted", "CALL image_table_dos" in calls and MSG % "Raspberry Pi Zero 2 W Rev 1.0" in out, out + calls)
+
+out, calls, rc = run_load(model="Raspberry Pi 4 Model B Rev 1.5", src_table="dos")
+check("Pi 4, DOS image: the table is not converted (already MBR), the log says so", "CALL image_table_dos" in calls and "CONVERTED" not in calls and MSG_DOS % "Raspberry Pi 4 Model B Rev 1.5" in out and rc == 0, out + calls)
+check("Pi 4, DOS image: the partition numbers are read from the MBR image", "END rc=0 DATA=4 BOOTFS=1" in out, out)
+
+out, calls, rc = run_load(pi3=1, model="Raspberry Pi 3 Model B Rev 1.2", src_table="dos")
+check("Pi 3, DOS image: written as the image's own MBR", "CONVERTED" not in calls and MSG_DOS % "Raspberry Pi 3 Model B Rev 1.2" in out, out + calls)
 
 out, calls, rc = run_load(arch="amd64", fw="uefi", model="")
 check("amd64 UEFI: the table is not converted (GPT)", "CALL image_table_dos" not in calls and "MBR" not in out and rc == 0, out + calls)

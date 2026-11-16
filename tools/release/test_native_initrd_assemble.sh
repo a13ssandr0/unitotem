@@ -138,19 +138,15 @@ try:
     root = make_root(os.path.join(base, "in"))
     engine = os.path.join(base, "ota-engine.sh")
     write(engine, "#!/bin/bash\necho engine\n", 0o600)
-    logo = os.path.join(base, "logo")
-    os.makedirs(logo)
-    write(os.path.join(logo, "unitotem-logo-test.bgrx"), "PIX")
-    write(os.path.join(logo, "unitotem-logo-unlisted.bgrx"), "PIX")
     listing = os.path.join(base, "ota-initrd.list")
-    write(listing, "# fixture\nlogo unitotem-logo-test\n")
+    write(listing, "# fixture\nbin bash\n")
     hook_path, _ = stub_modules(base)
     out = os.path.join(base, "out")
     work = os.path.join(base, "work")
     os.makedirs(work)
 
     run_cli(["--arch", "arm64", "--rootfs", root, "--out", out, "--work", work, "--engine", engine,
-             "--logo-dir", logo, "--list", listing, "--hook-script", hook_path])
+             "--list", listing, "--hook-script", hook_path])
     initrd = os.path.join(out, "recovery-initrd-arm64.img")
     check(os.path.isfile(initrd), "initrd written")
     check(os.path.isfile(os.path.join(out, "recovery-vmlinuz-arm64")), "vmlinuz copied")
@@ -207,9 +203,8 @@ try:
     check(open(os.path.join(ex, "usr/lib/unitotem/ota-engine.sh"), encoding="utf-8").read() == "#!/bin/bash\necho engine\n",
           "engine copied from --engine")
     check(os.stat(os.path.join(ex, "usr/lib/unitotem/ota-engine.sh")).st_mode & 0o777 == 0o755, "engine mode 755")
-    check(os.path.isfile(os.path.join(ex, "usr/lib/unitotem/unitotem-logo-test.bgrx")), "listed logo copied")
-    check(not os.path.exists(os.path.join(ex, "usr/lib/unitotem/unitotem-logo-unlisted.bgrx")),
-          "unlisted logo not shipped")
+    check(os.listdir(os.path.join(ex, "usr/lib/unitotem")) == ["ota-engine.sh"],
+          "no logo blob shipped: the engine is the only file of usr/lib/unitotem")
     check(os.path.isfile(os.path.join(ex, "etc/hook-ran")), "project hook called")
     check(os.path.isfile(os.path.join(ex, "scripts/init-premount/zz-unitotem-ota")), "premount script installed")
     check(os.path.isfile(os.path.join(ex, "lib/modules", KVER, "modules.builtin")), "builtin module files copied")
@@ -220,7 +215,7 @@ try:
         tf.add(root, arcname=".")
     out2 = os.path.join(base, "out2")
     run_cli(["--arch", "arm64", "--stage1", tarball, "--out", out2, "--work", os.path.join(base, "work2"),
-             "--engine", engine, "--logo-dir", logo, "--list", listing, "--hook-script", hook_path])
+             "--engine", engine, "--list", listing, "--hook-script", hook_path])
     check(os.path.isfile(os.path.join(out2, "recovery-initrd-arm64.img")), "--stage1 tarball builds")
 
     # two kernels: fails with a message
@@ -231,7 +226,7 @@ try:
     with contextlib.redirect_stderr(err):
         try:
             run_cli(["--arch", "arm64", "--rootfs", root3, "--out", os.path.join(base3, "o"), "--work",
-                     os.path.join(base3, "w"), "--engine", engine, "--logo-dir", logo, "--list", listing,
+                     os.path.join(base3, "w"), "--engine", engine, "--list", listing,
                      "--hook-script", hook_path])
         except SystemExit as exc:
             code = exc.code

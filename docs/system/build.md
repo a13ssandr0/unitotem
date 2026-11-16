@@ -2,7 +2,7 @@
 
 Paths: relative to the repository root.
 
-Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-MM-DD>-<arch>.img.xz` (full) and, for A/B, `unitotem-<YYYY-MM-DD>-<arch>-flash.img.xz` (boot partition(s) + ROOT_A, for Imager or `dd`). Stages 0-3 run in the `unitotem-builder` Docker image, or natively on an arm64 device when one is reachable.
+Builds one UniTotem disk image per architecture: `deploy/<arch>/unitotem-<YYYY-MM-DD>-<arch>.img.xz` (GPT on amd64, DOS on arm64; [storage](storage-and-persistence.md#layout)). Stages 0-3 run in the `unitotem-builder` Docker image, or natively on an arm64 device when one is reachable.
 
 ## Files
 
@@ -19,9 +19,8 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | `unitotem/files/ota-initrd.list` | Names the fallback initrd carries (directive table in [Native recovery initrd](#native-recovery-initrd)); read by `ota-hook` and by the native builder |
 | `unitotem/stage2-configure.sh` | Hostname, locale, timezone, root first-access state, boot config, fstab, NetworkManager, services, initramfs, arm64 FIRMWARE files -> `stage2.tar.gz` |
 | `unitotem/make-boot-tree.sh` | arm64: the boot tree (`build/arm64/boot-tree/`): Pi firmware, recovery kernel and initrd, recovery `config.txt`/`cmdline.txt`, `boot-tree.sha256`. Stage 3 and the preboot card read it |
-| `unitotem/stage3-image.sh` | Partition, format, populate, bootloader, boot assertions, baseline, verify, fsck, shrink, flash image, xz |
-| `unitotem/shrink-root-image.sh` | A/B: ROOT_A shrunk to its minimum, partition and file cut to fit (stage 3) |
-| `unitotem/make-flash-image.sh` | Flash image from the full image: DOS table on arm64, GPT on amd64 |
+| `unitotem/stage3-image.sh` | Partition table, format, populate, bootloader, boot assertions, baseline, verify, fsck, shrink, xz |
+| `unitotem/shrink-root-image.sh` | A/B: ROOT_A shrunk to its minimum, partition and file cut to fit, on GPT and DOS (stage 3) |
 | `unitotem/verify-image.sh` | Static rule checks on the mounted image (PASS/FAIL) |
 | `unitotem/check-recovery-commands.sh` | Every external command of `ota-engine.sh` exists in the recovery initrd |
 | `unitotem/check-engine-copy.sh` | The `ota-engine.sh` inside an initramfs is the repository's (verify-image: recovery initrd and slot initramfs) |
@@ -29,7 +28,6 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
 | `unitotem/slim-initramfs.py` | arm64 initramfs reduction: no `hwdb.bin`, Raspberry Pi Wi-Fi firmware only |
 | `unitotem/locks/<arch>.lock` | Pinned package set (see `package-lock.md`) |
 | `unitotem/files/` | Payload copied into the image: units, scripts, configs, hooks,  |
-| `unitotem/logo/` | Transparent wordmark and ring PNGs, `gen-logo.py` (run by stage 1: OTA logo blobs, not committed) |
 
 ## How it works
 
@@ -104,7 +102,7 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - Removes the build-time TLS certificate (each device generates its own).
 - Boot tree (arm64, `unitotem/make-boot-tree.sh`, between stage 2 and stage 3, always rebuilt): input `stage2.tar.gz` (`boot/firmware`, overlays left out) and the recovery set of stage 1b. Output `build/arm64/boot-tree/`: `bootcode.bin`, `start*.elf`, `fixup*.dat`, top-level `*.dtb`, `LICENCE.broadcom` (the `_x` and `_db` variants left out), `recovery8.img`, `recovery-initrd.img` (the repository's `ota-engine.sh` appended as a second cpio entry only when the stage 1b initrd does not already hold an identical copy; otherwise the file is copied byte for byte), `config.txt` and `cmdline.txt` of the recovery boot (`kernel=recovery8.img`, `unitotem.ota=recover`), and `boot-tree.sha256` (level line, then sha256 per file). The tree is the FIRMWARE content shared by the full image and the preboot card, built once.
 - Stage 3:
-  - Legacy: `truncate` to `IMAGE_SIZE`. A/B: `truncate` to the layout, 1 MiB + boot partition + `ROOT_SLOT_SIZE` + 1 MiB (the backup GPT). Partition (sgdisk amd64, parted arm64; GPT on both); A/B creates only the boot partition, ROOT_A (and the amd64 BIOS p5); ROOT_B and DATA are not created. `losetup --partscan`; `mkfs`; rsync rootfs into ROOT_A. A/B mounts no DATA: `/mnt/data` is an empty directory of ROOT_A.
+  - Legacy: `truncate` to `IMAGE_SIZE`. A/B: `truncate` to the layout, 1 MiB + boot partition + `ROOT_SLOT_SIZE` + 1 MiB (the backup GPT on amd64). Partition: GPT on amd64 (sgdisk), DOS primaries on arm64; A/B creates only the boot partition, ROOT_A (and the amd64 BIOS p5); ROOT_B and DATA are not created. `losetup --partscan`; `mkfs`; rsync rootfs into ROOT_A. A/B mounts no DATA: `/mnt/data` is an empty directory of ROOT_A.
   - arm64: the boot tree is checked against `boot-tree.sha256` and its files are copied onto FIRMWARE over the stage-2 copies (`config.txt` and `cmdline.txt` stay the full system's); each copy is compared byte for byte. The recovery kernel and initrd come from the tree.
   - Recovery kernel and initrd copied to the boot FAT under the names of `boot.md#recovery-set`, with `recovery.sha256` (level line, then sha256 per file). The level must be 14 digits or the build stops. arm64: the level must equal the tree's.
   - The same set goes to `usr/share/unitotem/recovery/` in the root (`vmlinuz`, `initrd.img`, `manifest`; arm64 also `dtb/*.dtb` copied from the top-level FIRMWARE dtbs). Written into the mounted root after the rootfs rsync and before the partitions are cut, so ROOT_A carries it.
@@ -112,9 +110,9 @@ Builds UniTotem disk images for amd64 and arm64: `deploy/<arch>/unitotem-<YYYY-M
   - amd64: `grub-install` for EFI and BIOS (`--removable --no-uefi-secure-boot`), the signed Secure Boot chain installed in `EFI/BOOT` (shim as `BOOTX64.EFI`), `grub-mkconfig` (A/B: `grub.cfg` and `grubenv` in `unitotem-grub/` on the ESP).
   - A/B: `unitotem-layout` in the root of the boot FAT (`UNITOTEM_SLOT_SECTORS=<ROOT_SLOT_SIZE in sectors>`, 10485760 for 5G), written before the unmount.
   - Boot assertions (kernel magic, dtb parse, initramfs `/init`, `config.txt` references), release-version, change baseline, `verify-image.sh`, fsck of all partitions.
-  - A/B: `unitotem/shrink-root-image.sh IMG` after `losetup -d`: `e2fsck -fy`, `resize2fs -M` repeated until the block count is stable, partition rewritten to filesystem size + 16 MiB (rounded up to 1 MiB) with the same start, type, unique GUID, name and attributes; file truncated 1 MiB after the partition; backup GPT moved to the end (`sgdisk -v` must be clean). Idempotent. Refuses unless partition 2 is ROOT_A and the last data partition. Prints `ROOT_A fs <N> MiB, partition <M> MiB, image <K> MiB`. Measured on a 301 MB test tree in a 5 GiB ROOT_A: 4 resize passes, about 3 s, fs 647 MiB, partition 664 MiB; an empty ROOT_A shrinks to 86 MiB (the 64 MiB journal included). Checked with both layouts (arm64 and amd64): tree checksums, GUIDs and fsck unchanged; second run leaves the table and size unchanged.
-  - Preboot card (arm64, after stage 3, `deploy/script/make-preboot-image.sh --tree build/arm64/boot-tree`, run in the builder container with `deploy/script` mounted read-only at `/deploy-script`; native: on the Pi): `deploy/arm64/unitotem-preboot-arm64.img` and `.img.xz`. The tree is checked against its manifest and copied to a FAT32 partition from 1 MiB (MBR type 0c). The same files as the full image's FIRMWARE, so the card and the image cannot disagree.
-  - A/B: `unitotem/make-flash-image.sh` writes the flash image from the shrunk image (partitions except ROOT_B and DATA copied unchanged; arm64 DOS table, amd64 GPT; sfdisk (package `fdisk` in `Dockerfile.unitotem`)/sgdisk, sha256 and fsck verification), `xz -T0`; then `xz -T0` of the full image. The raw `.img` files are removed.
+  - A/B: `unitotem/shrink-root-image.sh IMG` after `losetup -d`: `e2fsck -fy`, `resize2fs -M` repeated until the block count is stable, partition rewritten to filesystem size + 16 MiB (rounded up to 1 MiB) with the same start and type; file truncated 1 MiB after the partition. GPT: unique GUID, name and attributes kept, backup GPT moved to the end (`sgdisk -v` must be clean). DOS: no backup table. Idempotent. Refuses unless partition 2 is ROOT_A and the last data partition. Prints `ROOT_A fs <N> MiB, partition <M> MiB, image <K> MiB`. Measured on a 301 MB test tree in a 5 GiB ROOT_A: 4 resize passes, about 3 s, fs 647 MiB, partition 664 MiB; an empty ROOT_A shrinks to 86 MiB (the 64 MiB journal included). Checked with both layouts (arm64 and amd64): tree checksums, GUIDs and fsck unchanged; second run leaves the table and size unchanged.
+  - Preboot card (arm64, after stage 3, `deploy/script/make-preboot-image.sh --tree build/arm64/boot-tree`, run in the builder container with `deploy/script` mounted read-only at `/deploy-script`; native: on the Pi): `deploy/arm64/unitotem-preboot-arm64.img` and `.img.xz`. The tree is checked against its manifest and copied to a FAT32 partition from 1 MiB (MBR type 0c). The same files as the image's FIRMWARE, so the card and the image cannot disagree.
+  - `xz -T0` of the image; the raw `.img` file is removed.
 
 ### Native arm64 build
 
@@ -156,7 +154,7 @@ Lab tools: `tools/nb-compare-rootfs.py REF.tar.gz NEW.tar.gz --out DIR` compares
 
 `unitotem/build-recovery-initrd.sh` (wrapper: `python3 -I`) runs `unitotem/build-recovery-initrd.py`, which builds the resident fallback kernel and initrd from a stage 1 rootfs on any host with Python 3.11+. No chroot, Docker, binfmt or emulation. Logic is ported from Debian initramfs-tools 0.151 (mkinitramfs, hook-functions, stock hooks). Inspired by initramfs-tools (GPL-2+).
 
-Input (`--arch arm64|amd64`, one of `--stage1 TARBALL` or `--rootfs DIR`): the rootfs is read only; a tarball is extracted under `--work`. Also `--engine` (`ota-engine.sh`, placed at `/usr/lib/unitotem/ota-engine.sh` of the initrd), `--list` (default `unitotem/files/ota-initrd.list`), `--logo-dir` (default: rendered by `unitotem/logo/gen-logo.py` into the work folder), `--out`, `--work`. A given `--work` is kept; otherwise a temporary folder in `--out` is removed.
+Input (`--arch arm64|amd64`, one of `--stage1 TARBALL` or `--rootfs DIR`): the rootfs is read only; a tarball is extracted under `--work`. Also `--engine` (`ota-engine.sh`, placed at `/usr/lib/unitotem/ota-engine.sh` of the initrd), `--list` (default `unitotem/files/ota-initrd.list`), `--out`, `--work`. A given `--work` is kept; otherwise a temporary folder in `--out` is removed.
 
 Output in `--out`: `recovery-initrd-<arch>.img`, `recovery-vmlinuz-<arch>` (copy of `boot/vmlinuz-<kver>`), `recovery.manifest` (the keys of the Docker path). `UNITOTEM_RECOVERY_PARTCLONE_VERSION` comes from the rootfs dpkg database; `UNITOTEM_RECOVERY_BUILD_DATE` is the build time (UTC).
 
@@ -166,7 +164,7 @@ Host tools, all reading or writing foreign-arch files:
 - `depmod -a -b DEST` (kmod): module index of the staging tree.
 - `cpio` (newc, owner 0:0), `zstd` (level from the rootfs `conf.d/unitotem-compress`: 19).
 - `fc-cache -s -y DEST` (fontconfig): caches of the plymouth fonts.
-- `sh -n` (syntax check of initramfs scripts: parses only), `tar` (`--stage1`), `logo/gen-logo.py` (Pillow).
+- `sh -n` (syntax check of initramfs scripts: parses only), `tar` (`--stage1`).
 - Python: standard library. `.zst` modules need `compression.zstd` (Python 3.14); `.xz` and `.gz` use lzma and gzip.
 
 No target binary and no target-derived shell text is executed. Initramfs scripts are checked with `sh -n` (parse only). The PREREQ order of each script is read statically from its `prereqs()` function (`_prereqs` in `assemble.py`): the variable echoed there, assigned as a literal.
@@ -184,7 +182,6 @@ Name list `unitotem/files/ota-initrd.list`: single source of truth for the names
 | `bin NAME...` | Command found with `command -v`, copied with its libraries; missing: warning |
 | `real NAME...` | Real binary written over the BusyBox applet of that name (`mke2fs dd mount umount losetup mkfifo`) |
 | `file SRC [DST]` | Plain file, absolute paths, `DST` defaults to `SRC` |
-| `logo BASENAME...` | `/usr/lib/unitotem/BASENAME.{bgrx,rgb565,spans}` |
 | `terminfo L/NAME...` | Entry copied to `/usr/share/terminfo/L/NAME` (source: `/usr/share/terminfo`, `/lib/terminfo`, `/usr/lib/terminfo`) |
 | `module NAME...` | Kernel module forced into the initrd |
 | `module-opt NAME...` | As `module`, only for names the kernel has |
@@ -196,8 +193,7 @@ Known differences from the mkinitramfs output (Docker path):
 
 - No `etc/ld.so.cache`: deliberate. `ldconfig -r` is not ported; every library is in `/lib/<triplet>` or `/lib`, which glibc searches by default.
 - Fontconfig caches (4 files under `var/cache/fontconfig`): same names, written by the host `fc-cache`. Contents differ only in the directory mtimes, 6 bytes per cache at header offsets 48-63.
-- Two extra logo files, `unitotem-logo-256x73.spans` and `unitotem-logo-640x182.spans`: the Docker reference predates them.
-- `ota-engine.sh` and the logo `bgrx`/`rgb565` files differ in content: the native output carries the newer sources.
+- `ota-engine.sh` differs in content: the native output carries the newer sources.
 - Equal to the Docker output: file list (apart from the points above), symlinks, modes (setuid `mount` and `umount`), the five `scripts/*/ORDER` files, the module set (322) and the firmware set (164).
 - Not run: `/etc/initramfs-tools/hooks/*` (the native `otahook.py` replaces `unitotem-ota`), `ldconfig`, `DSDT.aml` override (refused), `COMPRESS` other than zstd (refused).
 
@@ -239,11 +235,10 @@ Container mounts: `/dev`, `build` -> `/work`, `deploy` -> `/deploy`, `build/apt-
 
 Outputs:
 
-- `deploy/<arch>/unitotem-<date>-<arch>.img.xz` (build date, not `RELEASE_VERSION`): full image.
-- `deploy/<arch>/unitotem-<date>-<arch>-flash.img.xz` (A/B): flash image, `storage-and-persistence.md#layout`.
+- `deploy/<arch>/unitotem-<date>-<arch>.img.xz` (build date, not `RELEASE_VERSION`): the image ([storage](storage-and-persistence.md#layout)).
 - `build/<arch>/recovery/recovery-vmlinuz-<arch>`, `recovery-initrd-<arch>.img`, `recovery.manifest` (keys `UNITOTEM_RECOVERY_{ARCH,KERNEL_VERSION,VMLINUZ_SHA256,INITRD_SHA256,PARTCLONE_VERSION,BUILD_DATE}`). Deploys read the set from the parts set; these host files are the fallback only (`deploy-and-recovery.md`).
 - `build/<arch>/`: `stage{0,1,2}.tar.gz`, `stage2.layout`, `<arch>.lock.new`, `recovery/` (the stage 1b kernel and initrd).
-- `deploy/<arch>/`: what is ready to use, nothing intermediate: `unitotem-<date>-<arch>.img.xz`, `...-flash.img.xz`, preboot image, installer ISO and Windows installer; `deploy/script/`: the deploy tooling (`remote-deploy.sh`, `write-sd.sh`, `make-parts.sh`, ...).
+- `deploy/<arch>/`: what is ready to use, nothing intermediate: `unitotem-<date>-<arch>.img.xz`, preboot image, installer ISO and Windows installer; `deploy/script/`: the deploy tooling (`remote-deploy.sh`, `write-sd.sh`, `make-parts.sh`, ...).
 
 Partition layouts:
 
@@ -254,7 +249,7 @@ Partition layouts:
 | amd64 single | EFI | BOOT | ROOT | DATA | BIOS |
 | arm64 single | FIRMWARE | ROOT | DATA | - | - |
 
-The A/B table is the target layout. The image itself holds only p1, p2 and (amd64) p5: ROOT_B and DATA are created at deploy or first boot, and ROOT_A grows to the slot size there. The full image is GPT on both architectures. The arm64 flash image and every Raspberry Pi table that the deploy writes are MBR, primaries only; the partition numbers are the same ([storage](storage-and-persistence.md#layout)).
+The A/B table is the target layout. The image itself holds only p1, p2 and (amd64) p5: ROOT_B and DATA are created at deploy or first boot, and ROOT_A grows to the slot size there. The image is GPT on amd64 and DOS on arm64. Every Raspberry Pi table that the deploy writes is MBR, primaries only; the partition numbers are the same ([storage](storage-and-persistence.md#layout)).
 
 Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. Stage scripts `set -e`. `verify-image.sh` 1 on any FAIL. `pkglock.py check` (lock gate): 0 nothing newer and 10 updates without security fixes continue with the lock; 20 renews the lock; 2 warns and continues; any other code (crash, missing python3) stops that arch with exit 1.
 

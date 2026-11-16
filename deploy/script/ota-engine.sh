@@ -938,35 +938,64 @@ cmd_migrate_etc_overlay() {
     need root-mnt; need data-mnt
     local root="${ARG[root-mnt]}" data="${ARG[data-mnt]}"
     # A/B: the new system is slot A and keeps its overlay state in upper/<d>.a (see unitotem/files/overlayfs-hook.sh).
-    # Slot B is about to be left blank, so what a previous install left for it and the update bookkeeping
-    # describing it are stale and removed.
-    local sfx=""
-    if [ -n "${ARG[slot]:-}" ]; then
-        sfx=".${ARG[slot]}"
-        local other; other=b; [ "${ARG[slot]}" = b ] && other=a
-        local dd
-        for dd in etc root var; do
-            rm -rf "$data/upper/$dd.$other" "$data/work/$dd.$other"
-        done
+    # The update bookkeeping (pending, slots, last result) is stale after a deploy and is removed. Leftovers of the
+    # non-live slots are archived under history/ (only the newest HISTORY_KEEP entries are kept, see prune_history).
+    # The live system may be the other slot (it took an A/B update): its DATA state is in upper/<d>.<live>, the slot
+    # the fallback reads DATA from (auth_live_slot, the same rule as auth_data_scan). That state is what migrates.
+    local tgt="${ARG[slot]:-}" live="" sfx="" lsfx=""
+    if [ -n "$tgt" ]; then
+        [[ "$tgt" =~ ^[ab]$ ]] || fail "--slot must be a or b"
+        auth_boot_run auth_read_saved_slot || true
+        live=$(auth_live_slot "$data" guess) || live=""
+        [ -n "$live" ] || live="$tgt"
+        sfx=".$tgt"; lsfx=".$live"
         rm -f "$data/unitotem/update/pending.json" "$data/unitotem/update/slots.json" "$data/unitotem/update/last-result.json"
     fi
     # bash's printf %()T builtin instead of `date`, which is missing from the fallback (this is only a
     # history-directory name).
     local ts; TZ=UTC0 printf -v ts '%(%Y%m%dT%H%M%SZ)T' -1
+    # When the live slot is the target, the other slot's leftovers are archived under their slot name: nothing on
+    # DATA is dropped. The other slot is left blank for the next update, as its upper is not the live state.
+    local d etc_history="" other dd
+    if [ -n "$tgt" ] && [ "$live" = "$tgt" ]; then
+        other=b; [ "$tgt" = b ] && other=a
+        for dd in etc root var; do
+            if [ -e "$data/upper/$dd.$other" ] || [ -e "$data/work/$dd.$other" ]; then mkdir -p "$data/history/$ts"; fi
+            [ -e "$data/upper/$dd.$other" ] && mv "$data/upper/$dd.$other" "$data/history/$ts/$dd.$other" 2>/dev/null || true
+            [ -e "$data/work/$dd.$other" ] && mv "$data/work/$dd.$other" "$data/history/$ts/$dd.$other.work" 2>/dev/null || true
+        done
+    fi
+    # When the live slot is the other one, the target's own leftovers are archived under their slot name first:
+    # nothing on DATA is dropped.
+    if [ -n "$tgt" ] && [ "$live" != "$tgt" ]; then
+        for d in etc var root; do
+            if [ -e "$data/upper/$d$sfx" ] || [ -e "$data/work/$d$sfx" ]; then mkdir -p "$data/history/$ts"; fi
+            [ -e "$data/upper/$d$sfx" ] && mv "$data/upper/$d$sfx" "$data/history/$ts/$d$sfx" 2>/dev/null || true
+            [ -e "$data/work/$d$sfx" ] && mv "$data/work/$d$sfx" "$data/history/$ts/$d$sfx.work" 2>/dev/null || true
+        done
+    fi
     # /var is archived and reset alongside /etc: it is overlaid too (see unitotem/files/overlayfs-hook.sh) and an OTA
     # replaces the whole ROOT partition, so the previous image's upper would shadow the new image's /var (its dpkg
     # database and /var/unitotem-venv, the manager's Python environment).
     # No whitelist for /var: everything under it is image-derived state or logs, and the whole upper is moved into
     # history/, where the logs can still be read.
-    local d
     for d in etc var; do
-        if [ -d "$data/upper/$d$sfx" ]; then
+        if [ -d "$data/upper/$d$lsfx" ]; then
             mkdir -p "$data/history/$ts"
-            mv "$data/upper/$d$sfx" "$data/history/$ts/$d" 2>/dev/null || true
-            mv "$data/work/$d$sfx"  "$data/history/$ts/$d.work" 2>/dev/null || true
+            mv "$data/upper/$d$lsfx" "$data/history/$ts/$d" 2>/dev/null || true
+            mv "$data/work/$d$lsfx"  "$data/history/$ts/$d.work" 2>/dev/null || true
             mkdir -p "$data/upper/$d$sfx" "$data/work/$d$sfx"
+            if [ "$d" = etc ] && [ -d "$data/history/$ts/etc" ]; then etc_history="$ts"; fi
         fi
     done
+    # /root keys follow the live system onto the target, as on an update: the target's root upper is archived and
+    # replaced by the live one.
+    if [ -n "$tgt" ] && [ "$live" != "$tgt" ] && [ -d "$data/upper/root$lsfx" ]; then
+        mkdir -p "$data/history/$ts"
+        mv "$data/upper/root$lsfx" "$data/upper/root$sfx" 2>/dev/null || true
+        mv "$data/work/root$lsfx" "$data/history/$ts/root$lsfx.work" 2>/dev/null || true
+        mkdir -p "$data/upper/root$sfx" "$data/work/root$sfx"
+    fi
     local list="$root/etc/unitotem/ota-preserve.list"
     if [ -f "$list" ] && [ -d "$data/history/$ts/etc" ]; then
         while IFS= read -r pattern; do
@@ -982,6 +1011,61 @@ cmd_migrate_etc_overlay() {
     fi
     prune_history "$data" "$ts"
     echo "UNITOTEM_ETC_MIGRATED=1"
+    # The archived /etc upper: its passwd, shadow, group and gshadow feed install-identity.
+    if [ -n "$etc_history" ]; then
+        echo "UNITOTEM_ETC_HISTORY=$etc_history"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# install-identity: install the merged local accounts (passwd, group, shadow, gshadow) into the new slot's /etc
+# upper. The merge is computed on the deploy host (unitotem_identity.py); this only validates and installs.
+# --src holds the four files. Nothing is written when validation fails. Each file is installed by rename, the
+# previous upper file is kept as *.pre-update, and a rerun after an interruption completes the set.
+# ---------------------------------------------------------------------------
+cmd_install_identity() {
+    ota_status_set "Restoring local accounts"
+    parse_args "$@"
+    need data-mnt; need slot; need src
+    local data="${ARG[data-mnt]}" slot="${ARG[slot]}" src="${ARG[src]}" gid="${ARG[shadow-gid]:-}"
+    [[ "$slot" =~ ^[ab]$ ]] || fail "--slot must be a or b"
+    [ -d "$data" ] || fail "no DATA mount at $data"
+    [ -z "$gid" ] || [[ "$gid" =~ ^[0-9]{1,6}$ ]] || fail "--shadow-gid must be numeric"
+    local f
+    for f in passwd group shadow gshadow; do
+        [ -f "$src/$f" ] && [ ! -L "$src/$f" ] && [ -s "$src/$f" ] || fail "identity file missing or empty: $src/$f"
+    done
+    grep -q '^root:' "$src/passwd" || fail "identity passwd has no root entry"
+    grep -q '^root:' "$src/shadow" || fail "identity shadow has no root entry"
+
+    # The shadow group needs chown: the fallback initrd must carry it (ota-initrd.list, bin chown).
+    command -v chown >/dev/null 2>&1 || fail "chown missing from the fallback initrd (ota-initrd.list: bin chown)"
+
+    local dest="$data/upper/etc.$slot"
+    mkdir -p "$dest"
+    local mode owner
+    # All four temporary copies first, then the renames: an interruption leaves at most a short mixed window, and a rerun fixes it.
+    for f in passwd group shadow gshadow; do
+        mode=644; owner=0
+        case "$f" in
+            shadow|gshadow) mode=640; [ -n "$gid" ] && owner="0:$gid" ;;
+        esac
+        # Keep the previous upper file, unless this file already holds the new content (a rerun).
+        if [ -f "$dest/$f" ] && ! cmp -s "$dest/$f" "$src/$f"; then
+            cp "$dest/$f" "$dest/$f.pre-update"
+            chmod "$mode" "$dest/$f.pre-update"
+            chown "$owner" "$dest/$f.pre-update"
+        fi
+        cp "$src/$f" "$dest/.$f.identity-new"
+        chmod "$mode" "$dest/.$f.identity-new"
+        chown "$owner" "$dest/.$f.identity-new"
+    done
+    sync
+    for f in passwd group shadow gshadow; do
+        mv -f "$dest/.$f.identity-new" "$dest/$f"
+    done
+    sync
+    echo "UNITOTEM_IDENTITY_INSTALLED=1"
 }
 
 # ---------------------------------------------------------------------------
@@ -1159,18 +1243,16 @@ auth_read_saved_slot() {
     return 0
 }
 
-# auth_boot_keys: unitotem-ota.authorized_keys on the boot FAT. Uses /boot-ota when mounted, else FIRMWARE or EFI
-# mounted read-only on a private directory and unmounted again.
-auth_boot_keys() {
-    local dir="${OTA_AUTH_BOOTDIR:-}" mnt=/run/ota-auth-boot dev=""
+# auth_boot_run FN: calls FN DIR with the boot FAT directory. Uses OTA_AUTH_BOOTDIR (test), else /boot-ota when
+# mounted, else FIRMWARE or EFI mounted read-only on a private directory and unmounted again.
+auth_boot_run() {
+    local fn="$1" dir="${OTA_AUTH_BOOTDIR:-}" mnt=/run/ota-auth-boot dev=""
     if [ -n "$dir" ]; then
-        auth_read_keys_file "$dir/unitotem-ota.authorized_keys" "" "boot partition"
-        auth_read_saved_slot "$dir"
+        "$fn" "$dir"
         return 0
     fi
     if mountpoint -q /boot-ota 2>/dev/null; then
-        auth_read_keys_file /boot-ota/unitotem-ota.authorized_keys "" "boot partition"
-        auth_read_saved_slot /boot-ota
+        "$fn" /boot-ota
         return 0
     fi
     dev=$(blkid -L FIRMWARE 2>/dev/null) || dev=""
@@ -1178,18 +1260,28 @@ auth_boot_keys() {
         dev=$(blkid -L EFI 2>/dev/null) || dev=""
     fi
     if [ -z "$dev" ]; then
-        log "fallback auth: no FIRMWARE or EFI partition, boot keys skipped"
+        log "fallback auth: no FIRMWARE or EFI partition, boot partition skipped"
         return 0
     fi
     mkdir -p "$mnt" 2>/dev/null || return 0
     if mount -t vfat -o ro "$dev" "$mnt" 2>/dev/null; then
-        auth_read_keys_file "$mnt/unitotem-ota.authorized_keys" "" "boot partition"
-        auth_read_saved_slot "$mnt"
+        "$fn" "$mnt"
         umount "$mnt" 2>/dev/null || log "fallback auth: cannot unmount $mnt"
     else
-        log "fallback auth: cannot mount the boot partition read-only, boot keys skipped"
+        log "fallback auth: cannot mount the boot partition read-only, boot partition skipped"
     fi
     return 0
+}
+
+# auth_boot_keys_in DIR: the boot FAT's keys and the saved slot.
+auth_boot_keys_in() {
+    auth_read_keys_file "$1/unitotem-ota.authorized_keys" "" "boot partition"
+    auth_read_saved_slot "$1"
+}
+
+# auth_boot_keys: unitotem-ota.authorized_keys on the boot FAT, and AUTH_SAVED_SLOT.
+auth_boot_keys() {
+    auth_boot_run auth_boot_keys_in
 }
 
 # auth_sudo_members GROUP_FILE: prints the members of group sudo, one per line (nothing when there are none).
@@ -1217,16 +1309,53 @@ auth_shadow_hash() {
     return 0
 }
 
-# auth_data_scan DIR: keys and admins from a DATA tree. The system slot is the one whose /etc is present, the
-# current slot (unitotem.slot=) first; without one, the first slot that has a root key file.
-auth_data_scan() {
-    local d="$1" cur s slot="" u h dup x group_members
-    local -a order=(a b)
+# auth_slot_order: "a b" or "b a", the current slot first: unitotem.slot= on the command line, else AUTH_SAVED_SLOT.
+auth_slot_order() {
+    local cur
     cur=$(auth_cmdline_get unitotem.slot) || cur="$AUTH_SAVED_SLOT"
-    if [ "$cur" = b ]; then order=(b a); fi
-    for s in "${order[@]}"; do
-        if [ -f "$d/upper/etc.$s/group" ]; then slot=$s; break; fi
+    if [ "$cur" = b ]; then echo "b a"; else echo "a b"; fi
+}
+
+# auth_newest_account_file DIR: the newest of passwd, shadow, group, gshadow in DIR (nothing when none exists).
+# Compares mtimes with bash's -nt, which needs no external stat (not in the fallback initrd).
+auth_newest_account_file() {
+    local f best=""
+    for f in passwd shadow group gshadow; do
+        [ -f "$1/$f" ] || continue
+        if [ -z "$best" ] || [ "$1/$f" -nt "$best" ]; then best="$1/$f"; fi
     done
+    printf '%s\n' "$best"
+}
+
+# auth_live_slot DATA_DIR [guess]: the slot whose DATA /etc is the live system's: the first slot in auth_slot_order that has
+# upper/etc.<s>/group. Prints nothing when neither slot has one.
+# With "guess" (migrate only; the fallback login never guesses), no hint (no unitotem.slot, no saved slot) and both slots
+# having a group file: the slot whose newest account file is newer is the live one (the live system writes its accounts;
+# the stale slot does not). A tie keeps a.
+auth_live_slot() {
+    local d="$1" s na nb hint
+    local -a order=()
+    hint=$(auth_cmdline_get unitotem.slot) || hint="$AUTH_SAVED_SLOT"
+    if [ "${2:-}" = guess ] && [ -z "$hint" ] && [ -f "$d/upper/etc.a/group" ] && [ -f "$d/upper/etc.b/group" ]; then
+        na=$(auth_newest_account_file "$d/upper/etc.a")
+        nb=$(auth_newest_account_file "$d/upper/etc.b")
+        if [ "$nb" -nt "$na" ]; then printf 'b\n'; else printf 'a\n'; fi
+        return 0
+    fi
+    read -ra order <<< "$(auth_slot_order)" || true
+    for s in "${order[@]}"; do
+        if [ -f "$d/upper/etc.$s/group" ]; then printf '%s\n' "$s"; return 0; fi
+    done
+    return 0
+}
+
+# auth_data_scan DIR: keys and admins from a DATA tree. The system slot is the one whose /etc is present (auth_live_slot);
+# without one, the first slot in auth_slot_order that has a root key file.
+auth_data_scan() {
+    local d="$1" s slot="" u h dup x group_members
+    local -a order=()
+    read -ra order <<< "$(auth_slot_order)" || true
+    slot=$(auth_live_slot "$d")
     if [ -z "$slot" ]; then
         for s in "${order[@]}"; do
             if [ -f "$d/upper/root.$s/.ssh/authorized_keys" ]; then slot=$s; break; fi
@@ -1386,6 +1515,9 @@ ota_ui_feed() {
 # setsid + opening /dev/tty1 as fd 0 gives whiptail a controlling terminal (newt opens /dev/tty and fails
 # without one). The gauge is fed through a FIFO because fd 0 is the tty.
 OTA_UI_FIFO=/run/unitotem-ota.gauge
+# Size of the whiptail dialog in console cells (ota_ui_start passes them; ota_art places the art above it).
+OTA_DIALOG_ROWS=14
+OTA_DIALOG_COLS=72
 
 ota_ui_start() {
     printf '%s\n' "$1" > "$OTA_HDR_FILE" 2>/dev/null || true
@@ -1401,7 +1533,7 @@ ota_ui_start() {
     # area once and clips updates to it; five is what ota_ui_feed sends (3 header + blank + phase), change both together.
     local placeholder=$' \n \n \n \n '
     setsid -c sh -c "TERM=linux TERMINFO=/usr/share/terminfo exec whiptail \
-            --backtitle 'UniTotem OTA' --gauge '$placeholder' 14 72 0 < '$OTA_UI_FIFO'" \
+            --backtitle 'UniTotem OTA' --gauge '$placeholder' $OTA_DIALOG_ROWS $OTA_DIALOG_COLS 0 < '$OTA_UI_FIFO'" \
         < /dev/tty1 > /dev/tty1 2>/dev/null &
     ( ota_ui_feed > "$OTA_UI_FIFO" ) &
     OTA_UI_PID=$!
@@ -1636,30 +1768,57 @@ ota_final_status() {
     echo 100 > "$OTA_PCT_FILE" 2>/dev/null || true
 }
 
-# ota_logo writes the UniTotem wordmark of the manager's Plymouth theme, rendered at build time (unitotem/logo/gen-logo.py) to raw pixels and runs,
-# straight to the framebuffer (this initramfs has no image decoder). Returns 1 if there is no usable framebuffer or logo,
-# so the caller falls back to text.
-OTA_LOGO_DIR=${OTA_LOGO_DIR:-/usr/lib/unitotem}
-ota_logo() {
-    local fb=/sys/class/graphics/fb0 W H bpp stride logo lw lh y0 x0 spans
-    [ -w /dev/fb0 ] && [ -r "$fb/virtual_size" ] && [ -r "$fb/bits_per_pixel" ] && [ -r "$fb/stride" ] || return 1
-    IFS=, read -r W H < "$fb/virtual_size"; read -r bpp < "$fb/bits_per_pixel"; read -r stride < "$fb/stride"
-    # 32 bpp: the KMS framebuffer (real system); 16 bpp: the firmware framebuffer of the resident Pi fallback (RGB565)
-    local ext bytes
-    case "$bpp" in 32) ext=bgrx; bytes=4 ;; 16) ext=rgb565; bytes=2 ;; *) return 1 ;; esac
-    # two sizes: a small one for the 640x480 update screen, a large one for native-resolution screens
-    if [ "$W" -le 800 ]; then logo=$OTA_LOGO_DIR/unitotem-logo-256x73.$ext; lw=256; lh=73
-    else logo=$OTA_LOGO_DIR/unitotem-logo-640x182.$ext; lw=640; lh=182; fi
-    [ -r "$logo" ] && [ "$W" -ge "$lw" ] && [ "$H" -ge $((lh + 40)) ] || return 1
-    spans=${logo%.*}.spans
-    [ -r "$spans" ] || return 1
-    x0=$(( (W - lw) / 2 )); y0=32
-    # only the runs of lettering are written (transparent logo): one dd per run, the screen around it is left as it is
-    local row rx rl
-    while read -r row rx rl; do
-        dd if="$logo" iflag=skip_bytes skip=$(( (row * lw + rx) * bytes )) of=/dev/fb0 bs=$((rl * bytes)) count=1 \
-           seek=$(( (y0 + row) * stride + (x0 + rx) * bytes )) oflag=seek_bytes conv=notrunc status=none 2>/dev/null || return 1
-    done < "$spans"
+# ota_art draws the UniTotem name as plain-ASCII art on the console text layer, above the whiptail dialog. It runs after the
+# dialog is painted: newt repaints the whole screen only when whiptail starts, and the gauge redraws only cells inside the dialog.
+# Newt centres the dialog: its top row (0-based) is (ROWS - OTA_DIALOG_ROWS) / 2, so the rows above it are 1..TOP (1-based).
+# The art is drawn only if its height plus one blank row fits there and its width fits the columns; otherwise nothing is drawn.
+# Position: centred in the free rows above the dialog, keeping one blank row above the dialog.
+# Usage: ota_art [ROWS COLS [DIALOG_ROWS DIALOG_COLS]]. Without ROWS COLS: OTA_CONSOLE_SIZE ("rows cols") or stty size of tty1.
+# Output: ANSI sequences to OTA_ART_OUT (default /dev/tty1): cursor saved, one absolute placement per row, cursor restored.
+ota_art_text() {
+    cat <<'EOF'
+ _   _         _  _____         _
+| | | | _ __  (_)|_   _|  ___  | |_   ___   _ __ ___
+| | | || '_ \ | |  | |   / _ \ | __| / _ \ | '_ ` _ \
+| |_| || | | || |  | |  | (_) || |_ |  __/ | | | | | |
+ \___/ |_| |_||_|  |_|   \___/  \__| \___| |_| |_| |_|
+EOF
+}
+
+ota_art() {
+    local rows="" cols="" dh=$OTA_DIALOG_ROWS dw=$OTA_DIALOG_COLS toprow h=0 w=0 freerows m left r v line out=${OTA_ART_OUT:-/dev/tty1}
+    local -a art=()
+    if [ $# -ge 2 ]; then
+        rows=$1; cols=$2; dh=${3:-$dh}; dw=${4:-$dw}
+    elif [ -n "${OTA_CONSOLE_SIZE:-}" ]; then
+        read -r rows cols _ <<< "$OTA_CONSOLE_SIZE"
+    else
+        read -r rows cols _ < <(stty size < /dev/tty1 2>/dev/null) || true
+    fi
+    for v in "$rows" "$cols" "$dh" "$dw"; do
+        case "$v" in ''|*[!0-9]*) return 1 ;; esac
+    done
+    [ "$rows" -gt 0 ] && [ "$cols" -gt 0 ] || return 1
+    # a console no taller than the dialog has no rows above it
+    [ "$rows" -gt "$dh" ] || return 0
+    toprow=$(( (rows - dh) / 2 ))
+    while IFS= read -r line; do
+        art+=("$line")
+        if [ "${#line}" -gt "$w" ]; then w=${#line}; fi
+    done < <(ota_art_text)
+    h=${#art[@]}
+    [ $(( h + 1 )) -le "$toprow" ] || return 0
+    [ "$w" -le "$cols" ] || return 0
+    freerows=$(( toprow - h - 1 )); m=$(( freerows / 2 )); left=$(( (cols - w) / 2 + 1 ))
+    {
+        printf '\033%s' 7
+        r=0
+        for line in "${art[@]}"; do
+            printf '\033[%d;%dH\033[1;37;44m%-*s\033[0m' $(( m + 1 + r )) "$left" "$w" "$line"
+            r=$(( r + 1 ))
+        done
+        printf '\033%s' 8
+    } > "$out" 2>/dev/null || return 1
     return 0
 }
 
@@ -1679,7 +1838,7 @@ cmd_serve_fallback() {
 Reason: ${reason//$'\n'/ }
 Address: waiting for the network   Port: 2222" || true
     ota_phase "Starting the network" 5
-    ( sleep 2; ota_logo ) </dev/null >/dev/null 2>&1 &
+    ( sleep 2; ota_art ) </dev/null >/dev/null 2>&1 &
     # Default wait for a host is 10 minutes; callers override it with idle-timeout (`recover` waits forever).
     ( ota_idle_watchdog "${ARG[idle-timeout]:-600}" ) </dev/null >/dev/null 2>&1 &
 
@@ -1984,6 +2143,7 @@ main() {
         serve-fallback)         cmd_serve_fallback "$@" ;;
         init-premount)          cmd_init_premount "$@" ;;
         local-bottom-verify)    cmd_local_bottom_verify "$@" ;;
+        install-identity)       cmd_install_identity "$@" ;;
         *) echo "Unknown subcommand: $sub" >&2; exit 1 ;;
     esac
 }

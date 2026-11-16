@@ -260,7 +260,7 @@ umount /mnt/r; losetup -d "$LOOP"; LOOP=
 rm -f -- $W/gpt.img
 
 # ---------------------------------------------------------------- (h) minimal image: ROOT_A shrunk and cut, grown offline
-# A flash image as make-flash-image writes it: ROOT_A's filesystem shrunk (resize2fs -M), the partition cut to fs + 16 MiB,
+# A minimal image as stage3 writes it: ROOT_A's filesystem shrunk (resize2fs -M), the partition cut to fs + 16 MiB,
 # the file ends 1 MiB after ROOT_A. The first boot grows ROOT_A to 5 GiB before the table is laid out (grow_root).
 echo "=== (h) minimal DOS image on a 16 GB disk: ROOT_A grown to 5 GiB offline, ROOT_B and DATA created"
 mkdisk $W/dos-min.img 16G 'start=2048, size=1048576, type=c\nstart=1050624, size=10485760, type=83' '2:ROOT_A'

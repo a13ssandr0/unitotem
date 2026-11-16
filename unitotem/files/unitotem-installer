@@ -5,6 +5,8 @@
 #   install --disk DEV           skip the picker, keep the confirmation (needs a terminal)
 #   install --disk DEV -y        no confirmation, for unattended use over ssh
 #   install --console            started by the console menu: closes ssh first, reopens it unless the disk is written
+#   install --plain              text screens even where the whiptail screens would run
+# UI mode (whiptail screens): stdin and stdout are terminals, TERM is linux, vt100 or vt220, not -y, not --plain.
 # Exit codes: 0 done, 1 failed, 2 usage, 3 no terminal, 4 refused disk, 5 cancelled (changes=none), 6 media not found,
 # 7 already running. Nothing is written before the confirmation is answered y (or -y with a validated --disk).
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -14,27 +16,43 @@ MEDIA=/run/installer-media
 MEDIA_LABEL=UNITOTEM_ISO
 T=/run/unitotem-installer
 XZ_FILE='' XZ_SHA='' XZ_BYTES='' RAW_BYTES='' RAW_SHA='' MIN_BYTES='' MEDIA_DISK=''
-DISK='' DISK_BYTES=0 DISK_MODEL='' OPT_DISK='' OPT_YES=0 OPT_CONSOLE=0 STATE=/run/unitotem-installer.state
+DISK='' DISK_BYTES=0 DISK_MODEL='' OPT_DISK='' OPT_YES=0 OPT_CONSOLE=0 OPT_PLAIN=0 STATE=/run/unitotem-installer.state
+UI=0 FAIL='' UI_GAUGE_PID='' UI_W='' PV=()
 
 # log LEVEL TEXT: INFO|WARNING|ERROR line to the log file and the kernel log (debug level)
 log() { echo "$1 $2" >> "$LOG"; echo "<7>unitotem-installer: $1 $2" > /dev/kmsg 2>/dev/null || true; }
-# say LEVEL TEXT: the same line on the console
-say() { log "$1" "$2"; printf '%s %s\n' "$1" "$2"; }
+# say LEVEL TEXT: the same line on the console (not in UI mode: the dialogs own the screen)
+say() { log "$1" "$2"; [ "$UI" = 1 ] || printf '%s %s\n' "$1" "$2"; }
+# console_line TEXT: a progress line on stdout, plain mode only
+console_line() { [ "$UI" = 1 ] || printf '%s\n' "$1"; }
 
-usage() { echo "usage: install [--disk DEVICE [-y]]" >&2; exit 2; }
+# ui_mode: the whiptail screens run when both stdin and stdout are terminals, TERM is a console type (the terminfo
+# entries the initramfs carries) and whiptail exists. -y and --plain always use the text path.
+ui_mode() {
+    case ${TERM:-} in linux|vt100|vt220) ;; *) return 1 ;; esac
+    [ "$OPT_YES" = 0 ] && [ "$OPT_PLAIN" = 0 ] && [ -t 0 ] && [ -t 1 ] && command -v whiptail >/dev/null 2>&1
+}
+
+usage() { echo "usage: install [--plain] [--disk DEVICE [-y]]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
     case $1 in
         --disk) [ $# -ge 2 ] || usage; OPT_DISK=$2; shift 2 ;;
         -y) OPT_YES=1; shift ;;
         --console) OPT_CONSOLE=1; shift ;;
+        --plain) OPT_PLAIN=1; shift ;;
         *) usage ;;
     esac
 done
 [ "$OPT_YES" = 1 ] && [ -z "$OPT_DISK" ] && usage
 if [ -n "$OPT_DISK" ] && ! [[ $OPT_DISK =~ ^/dev/[A-Za-z0-9]+$ ]]; then usage; fi
+if ui_mode; then UI=1; fi
 if [ "$OPT_YES" = 0 ] && { [ ! -t 0 ] || [ ! -t 1 ]; }; then
     say ERROR "a terminal is required, use ssh -t changes=none"
     exit 3
+fi
+if [ "$UI" = 1 ]; then
+    exec 3>&1                                  # the console, for the gauge's output
+    trap 'exit 130' INT TERM HUP
 fi
 
 mkdir -p "$MEDIA" "$T"
@@ -42,8 +60,9 @@ mkdir -p "$MEDIA" "$T"
 exec 9> /run/unitotem-installer.lock
 if ! flock -n 9; then say ERROR "installation in progress changes=none"; exit 7; fi
 if [ "$OPT_CONSOLE" = 1 ]; then echo console > "$STATE"; else echo remote > "$STATE"; fi
-# end_run: clears the state; a console run that wrote nothing gives ssh back
+# end_run: stops the gauge, clears the state; a console run that wrote nothing gives ssh back
 end_run() {
+    ui_gauge_stop
     rm -f "$STATE"
     if [ "$OPT_CONSOLE" = 1 ] && [ "${WRITTEN:-0}" != 1 ]; then
         unitotem-ssh start 9>&- && log INFO "ssh reopened reason=install ended"
@@ -90,6 +109,9 @@ read_info() {
 # find_media: mounts the device labelled UNITOTEM_ISO that carries the payload (up to 90 s for slow USB)
 find_media() {
     local i d
+    paint_art 8 "$DLG_W"
+    [ "$UI" = 1 ] && whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' \
+        --infobox "Searching the installation media" 8 "$DLG_W" < /dev/tty 2>/dev/null
     for ((i = 0; i < 45; i++)); do
         udevadm settle --timeout=2 2>/dev/null
         for d in $(blkid -t "LABEL=$MEDIA_LABEL" -o device 2>/dev/null); do
@@ -103,7 +125,7 @@ find_media() {
             fi
             umount "$MEDIA" 2>/dev/null
         done
-        [ "$i" = 0 ] && echo "INFO searching the installation media"
+        [ "$i" = 0 ] && console_line "INFO searching the installation media"
         sleep 2
     done
     return 1
@@ -149,6 +171,58 @@ ask_yn() {
     done
 }
 
+# ui_lines TEXT: number of lines of TEXT
+ui_lines() { local s=${1//[!$'\n']/}; echo $(( ${#s} + 1 )); }
+
+# dialog width for every screen (paint_art gets the same numbers)
+DLG_W=72
+
+# paint_art ROWS COLS: the OTA art on the console behind the dialog of the given height and width, 0.3 s after the call
+# so whiptail is painted first. Called once before each whiptail start (newt repaints the whole screen per dialog).
+# UI mode on tty1 only (VGA console). ota_art comes from the engine, sourced in its own bash: the installer keeps its
+# own options and traps. The detached job does not inherit the gauge pipe (fd 8).
+paint_art() {
+    [ "$UI" = 1 ] || return 0
+    [ "$(readlink -f /proc/self/fd/0 2>/dev/null)" = /dev/tty1 ] || return 0
+    [ -f /usr/lib/unitotem/ota-engine.sh ] || return 0
+    local size rows cols
+    size=$(stty size < /dev/tty 2>/dev/null) || return 0
+    rows=${size% *}; cols=${size#* }
+    [[ $rows =~ ^[0-9]+$ && $cols =~ ^[0-9]+$ ]] || return 0
+    ( sleep 0.3; bash -c '. /usr/lib/unitotem/ota-engine.sh; command -v ota_art > /dev/null && ota_art "$@"' _ \
+        "$rows" "$cols" "$1" "$2" ) 8>&- < /dev/null > /dev/null 2>&1 &
+}
+
+# ui_msgbox TEXT: one OK box sized to the text; Enter or Esc closes it
+ui_msgbox() {
+    local n h; n=$(ui_lines "$1"); h=$((n + 6))
+    paint_art "$h" "$DLG_W"
+    whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' --msgbox "$1" "$h" "$DLG_W" \
+        < /dev/tty 2>/dev/null
+}
+
+# ui_notice TEXT: ui_msgbox in UI mode, nothing in plain mode
+ui_notice() { [ "$UI" = 1 ] || return 0; ui_msgbox "$1"; }
+
+# ui_yesno TEXT: default No; returns 0 only for Yes
+ui_yesno() {
+    local n h; n=$(ui_lines "$1"); h=$((n + 6))
+    paint_art "$h" "$DLG_W"
+    whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' --defaultno --yesno "$1" "$h" "$DLG_W" \
+        < /dev/tty 2>/dev/null
+}
+
+# ui_menu TEXT LISTHEIGHT TAG ITEM...: the chosen tag in $T/choice; 1 on Cancel or Esc
+ui_menu() {
+    local text=$1 listh=$2 n h
+    shift 2
+    n=$(ui_lines "$text"); h=$((n + listh + 7))
+    : > "$T/choice"
+    paint_art "$h" "$DLG_W"
+    whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' \
+        --menu "$text" "$h" "$DLG_W" "$listh" "$@" 2> "$T/choice" < /dev/tty
+}
+
 # set_disk NAME: DISK, DISK_BYTES, DISK_MODEL from sysfs
 set_disk() {
     DISK=/dev/$1
@@ -160,11 +234,32 @@ set_disk() {
 # pick_disk: sets the disk; returns 1 on cancel or when there is none
 pick_disk() {
     local -a names=() sizes=() models=()
-    local n b m i ans
+    local n b m i ans choice k
     while IFS=$'\t' read -r n b m; do names+=("$n"); sizes+=("$b"); models+=("$m"); done < <(list_disks)
-    if [ "${#names[@]}" = 0 ]; then say ERROR "no disk found changes=none"; return 1; fi
+    if [ "${#names[@]}" = 0 ]; then say ERROR "no disk found changes=none"; ui_notice "No disk found."; return 1; fi
     if [ "${#names[@]}" = 1 ]; then
         set_disk "${names[0]}"
+    elif [ "$UI" = 1 ]; then
+        local -a items=()
+        local listh
+        for i in "${!names[@]}"; do
+            items+=("/dev/${names[$i]}" "$(size_gib "${sizes[$i]}")  ${models[$i]}$([ "${sizes[$i]}" -lt "$MIN_BYTES" ] && echo ' (too small)')")
+        done
+        listh=${#names[@]}; [ "$listh" -gt 8 ] && listh=8
+        while :; do
+            ui_menu "Select the disk" "$listh" "${items[@]}" || return 1
+            choice=$(cat "$T/choice")
+            for k in "${!names[@]}"; do [ "/dev/${names[$k]}" = "$choice" ] && break; done
+            [ "/dev/${names[$k]}" = "$choice" ] || continue
+            if [ "${sizes[$k]}" -lt "$MIN_BYTES" ]; then
+                ui_msgbox "Disk $choice is too small.
+
+Minimum: $(size_gib "$MIN_BYTES")"
+                continue
+            fi
+            set_disk "${names[$k]}"
+            break
+        done
     else
         for i in "${!names[@]}"; do
             printf '%d) /dev/%s  %s  %s%s\n' $((i + 1)) "${names[$i]}" "$(size_gib "${sizes[$i]}")" "${models[$i]}" \
@@ -186,26 +281,102 @@ pick_disk() {
             echo "Invalid answer, type a number from 1 to ${#names[@]} or q"
         done
     fi
-    [ "$DISK_BYTES" -ge "$MIN_BYTES" ] || { say WARNING "disk=$DISK too small min=$MIN_BYTES changes=none"; return 1; }
+    [ "$DISK_BYTES" -ge "$MIN_BYTES" ] || {
+        say WARNING "disk=$DISK too small min=$MIN_BYTES changes=none"
+        ui_notice "Disk $DISK is too small.
+
+Minimum: $(size_gib "$MIN_BYTES")"
+        return 1
+    }
 }
 
-# confirm_disk: shows the target and its partitions, one y/n confirmation; writing needs y
+# confirm_disk: shows the target and its partitions, one confirmation; writing needs yes
 confirm_disk() {
-    local parts
-    parts=$(lsblk -nl -o NAME,SIZE,FSTYPE,LABEL "$DISK" 2>/dev/null | tail -n +2 | head -n 8)
-    [ -n "$parts" ] || parts="no partitions"
+    local limit=8 line
+    local -a parts=()
+    [ "$UI" = 1 ] && limit=4
+    mapfile -t parts < <(lsblk -nl -o NAME,SIZE,FSTYPE,LABEL "$DISK" 2>/dev/null | tail -n +2 | head -n "$limit")
+    [ "${#parts[@]}" -gt 0 ] || parts=("no partitions")
     say INFO "target=$DISK model=$DISK_MODEL size=$(size_gib "$DISK_BYTES")"
-    printf '%s\n\n' "$parts"
+    if [ "$UI" = 1 ]; then
+        local -a lines=("Erase $DISK and install UniTotem?" "" "Disk: $DISK  $(size_gib "$DISK_BYTES")  $DISK_MODEL")
+        for line in "${parts[@]}"; do lines+=("  $line"); done
+        ui_yesno "$(printf '%s\n' "${lines[@]}")" || return 1
+        return 0
+    fi
+    printf '%s\n' "${parts[@]}"
+    echo
     ask_yn "Erase $DISK and install UniTotem?" yellow || return 1
 }
 
-# progress bars only when stderr is a terminal
-if [ -t 2 ]; then PV=(pv -pterb); else PV=(pv -q); fi
+# Gauge (UI mode): whiptail reads XXX blocks from a bash coproc pipe (no FIFO, so no mkfifo in the initramfs).
+# The gauge draws on the console (fd 3); UI_W is the write end of its input.
+# ui_gauge_start: the gauge in the background, shown at 0 with the disk on the second line
+ui_gauge_start() {
+    [ "$UI" = 1 ] || return 0
+    coproc UI_GAUGE { whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' \
+        --gauge "Checking the media
+$DISK" 8 "$DLG_W" 0 2>/dev/null 1>&3; }
+    exec 8>&"${UI_GAUGE[1]}"                  # plain fd: bash closes coproc fds in subshells
+    UI_W=8
+    paint_art 8 "$DLG_W"                      # after the gauge's whiptail has started
+}
+
+# ui_gauge_show PCT LINE1: one block; the second line is the target disk
+ui_gauge_show() {
+    [ "$UI" = 1 ] || return 0
+    ( trap '' PIPE; printf 'XXX\n%s\n%s\n%s\nXXX\n' "$1" "$2" "$DISK" >&"$UI_W" ) 2>/dev/null || true
+}
+
+# ui_gauge_feed LO HI LINE1: runs as the pv coproc. Reads `pv -n` percentages (0-100) and maps them into LO..HI.
+ui_gauge_feed() {
+    local lo=$1 hi=$2 text=$3 p pct
+    trap '' PIPE                  # a gone gauge must not stop pv (the write), only lose the display
+    while IFS= read -r p; do
+        [[ $p =~ ^[0-9]{1,3}$ ]] || continue
+        [ "$p" -le 100 ] || continue
+        pct=$(( lo + (hi - lo) * p / 100 ))
+        printf 'XXX\n%s\n%s\n%s\nXXX\n' "$pct" "$text" "$DISK" 2>/dev/null >&"$UI_W" || true
+    done
+}
+
+# pv_stage LO HI LINE1 PV-ARGS...: pv between stdin and stdout; in UI mode its percentages drive the gauge over LO..HI.
+# Returns the status of pv. The feeder is a coproc, so it is waited for before the stage returns.
+pv_stage() {
+    local lo=$1 hi=$2 text=$3 rc
+    shift 3
+    if [ "$UI" != 1 ]; then "${PV[@]}" "$@"; return; fi
+    ui_gauge_show "$lo" "$text"
+    coproc PVFEED { ui_gauge_feed "$lo" "$hi" "$text"; }
+    exec 6>&"${PVFEED[1]}"               # plain fd for pv's stderr; the feeder never inherits it (forked before)
+    "${PV[@]}" "$@" 2>&6
+    rc=$?
+    exec 6>&-
+    eval "exec ${PVFEED[1]}>&-" 2>/dev/null
+    wait "$PVFEED_PID" 2>/dev/null
+    return "$rc"
+}
+
+# ui_gauge_stop: ends the gauge, closes its pipe, clears the console; safe to call when nothing runs
+ui_gauge_stop() {
+    local i
+    [ -n "${UI_GAUGE_PID:-}" ] || return 0
+    [ -n "$UI_W" ] && eval "exec $UI_W>&-" 2>/dev/null
+    for i in 1 2 3; do kill -0 "$UI_GAUGE_PID" 2>/dev/null || break; sleep 1; done
+    kill "$UI_GAUGE_PID" 2>/dev/null
+    wait "$UI_GAUGE_PID" 2>/dev/null
+    UI_GAUGE_PID='' UI_W=''
+    stty sane 2>/dev/null
+    printf '\033[2J\033[H'
+}
+
+# progress bars only when stderr is a terminal; UI mode reads the percentages of pv -n instead
+if [ "$UI" = 1 ]; then PV=(pv -n); elif [ -t 2 ]; then PV=(pv -pterb); else PV=(pv -q); fi
 
 stage_check() {
     local f=$MEDIA/unitotem/$XZ_FILE sum rc
-    echo "INFO checking the media"
-    sum=$("${PV[@]}" -N Checking -s "$XZ_BYTES" -- "$f" | sha256sum | cut -d' ' -f1; echo "${PIPESTATUS[*]}")
+    console_line "INFO checking the media"
+    sum=$(pv_stage 0 10 "Checking the media" -N Checking -s "$XZ_BYTES" -- "$f" | sha256sum | cut -d' ' -f1; echo "${PIPESTATUS[*]}")
     rc=${sum#*$'\n'}; sum=${sum%%$'\n'*}
     [ "$rc" = "0 0 0" ] || [ "$rc" = "0 0 0 0" ] || return 1
     [ "$sum" = "$XZ_SHA" ]
@@ -213,36 +384,94 @@ stage_check() {
 
 stage_write() {
     local f=$MEDIA/unitotem/$XZ_FILE sectors mib
-    echo "INFO writing disk=$DISK"
+    console_line "INFO writing disk=$DISK"
+    ui_gauge_show 10 "Writing"
     sectors=$(blockdev --getsz "$DISK") || return 1
     # old backup GPT at the disk end and old signatures right after the image must not survive
     dd if=/dev/zero of="$DISK" bs=512 seek=$((sectors - 2048)) count=2048 conv=fsync 2>>"$LOG" || return 1
     mib=$(( (RAW_BYTES + 1048575) / 1048576 ))
     dd if=/dev/zero of="$DISK" bs=1M seek="$mib" count=16 conv=fsync 2>>"$LOG" || true
-    xz -dc -- "$f" 2>>"$LOG" | "${PV[@]}" -N Writing -s "$RAW_BYTES" | dd of="$DISK" bs=4M iflag=fullblock conv=fsync 2>>"$LOG"
+    xz -dc -- "$f" 2>>"$LOG" | pv_stage 10 55 "Writing" -N Writing -s "$RAW_BYTES" \
+        | dd of="$DISK" bs=4M iflag=fullblock conv=fsync 2>>"$LOG"
     [ "${PIPESTATUS[*]}" = "0 0 0" ]
 }
 
 stage_verify() {
     local sum rc
-    echo "INFO verifying disk=$DISK"
+    console_line "INFO verifying disk=$DISK"
+    ui_gauge_show 55 "Verifying"
     blockdev --flushbufs "$DISK" 2>/dev/null
     echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-    sum=$(dd if="$DISK" bs=4M iflag=count_bytes,fullblock count="$RAW_BYTES" 2>>"$LOG" | "${PV[@]}" -N Verifying -s "$RAW_BYTES" \
+    sum=$(dd if="$DISK" bs=4M iflag=count_bytes,fullblock count="$RAW_BYTES" 2>>"$LOG" \
+          | pv_stage 55 100 "Verifying" -N Verifying -s "$RAW_BYTES" \
           | sha256sum | cut -d' ' -f1; echo "${PIPESTATUS[*]}")
     rc=${sum#*$'\n'}; sum=${sum%%$'\n'*}
     [ "$rc" = "0 0 0 0" ] && [ "$sum" = "$RAW_SHA" ]
 }
 
+# unitotem_entries: hex numbers of the firmware entries labelled exactly UniTotem, read from efibootmgr output on stdin.
+# "BootXXXX*" (active) and "BootXXXX " (inactive) are both matched. efibootmgr ends the label with a TAB before the
+# device path, so UniTotem2 and "UniTotem Backup" are not matched.
+unitotem_entries() {
+    local re=$'^Boot([0-9A-Fa-f]{4})[* ] UniTotem(\t|$)' line
+    while IFS= read -r line; do
+        if [[ $line =~ $re ]]; then echo "${BASH_REMATCH[1]}"; fi
+    done
+}
+
+# register_boot_entry: UEFI only, after the write is verified. Deletes the firmware entries labelled UniTotem and creates
+# one for \EFI\BOOT\BOOTX64.EFI on partition 1 of DISK, first in BootOrder. Other entries are never touched. Any failure is
+# a warning: the removable path EFI/BOOT/BOOTX64.EFI still boots the installed system.
+register_boot_entry() {
+    local out hex new
+    local -a stale=()
+    if [ ! -d /sys/firmware/efi ]; then say INFO "boot entry skipped reason=bios"; return 0; fi
+    modprobe efivarfs 2>/dev/null || true
+    if ! mountpoint -q /sys/firmware/efi/efivars; then
+        mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>>"$LOG" \
+            || { say WARNING "boot entry not created reason=efivarfs"; return 0; }
+    fi
+    # the kernel must see the partition table just written before efibootmgr names partition 1
+    blockdev --rereadpt "$DISK" 2>>"$LOG" || true
+    udevadm settle --timeout=10 2>/dev/null || true
+    out=$(efibootmgr 2>>"$LOG") || { say WARNING "boot entry not created reason=efibootmgr"; return 0; }
+    mapfile -t stale < <(printf '%s\n' "$out" | unitotem_entries)
+    for hex in "${stale[@]}"; do
+        efibootmgr -B -b "$hex" >>"$LOG" 2>&1 \
+            || { say WARNING "boot entry not created reason=delete"; return 0; }
+    done
+    efibootmgr -c -d "$DISK" -p 1 -L UniTotem -l '\EFI\BOOT\BOOTX64.EFI' >>"$LOG" 2>&1 \
+        || { say WARNING "boot entry not created reason=create"; return 0; }
+    new=$(efibootmgr 2>>"$LOG" | unitotem_entries)
+    [ -n "$new" ] || { say WARNING "boot entry not created reason=verify"; return 0; }
+    say INFO "boot entry created label=UniTotem disk=$DISK"
+}
+
 install_disk() {
     log INFO "writing disk=$DISK bytes=$DISK_BYTES"
-    stage_check  || { say ERROR "media check failed"; return 1; }
-    stage_write  || { say ERROR "write failed disk=$DISK"; return 1; }
-    stage_verify || { say ERROR "verify failed disk=$DISK"; return 1; }
+    stage_check || { FAIL="media check failed"; say ERROR "$FAIL"; return 1; }
+    stage_write || { FAIL="write failed disk=$DISK"; say ERROR "$FAIL"; return 1; }
+    stage_verify || { FAIL="verify failed disk=$DISK"; say ERROR "$FAIL"; return 1; }
+    register_boot_entry
     say INFO "install ok disk=$DISK"
 }
 
-if ! find_media; then say ERROR "media not found changes=none"; exit 6; fi
+# ui_finish: the restart / power-off menu after a successful install; it does not return
+ui_finish() {
+    local h=12
+    while :; do
+        paint_art "$h" "$DLG_W"
+        whiptail --backtitle 'UniTotem installer' --title 'UniTotem installer' --nocancel --notags \
+            --default-item restart --menu "Installation finished" "$h" "$DLG_W" 2 restart "Restart" off "Power off" \
+            2> "$T/choice" < /dev/tty
+        case $(cat "$T/choice" 2>/dev/null) in
+            restart) sync; umount "$MEDIA" 2>/dev/null; reboot -f ;;
+            off)     sync; poweroff -f ;;
+        esac
+    done
+}
+
+if ! find_media; then say ERROR "media not found changes=none"; ui_notice "Installation media not found."; exit 6; fi
 
 if [ -n "$OPT_DISK" ]; then
     n=${OPT_DISK#/dev/}
@@ -262,10 +491,23 @@ else
 fi
 
 WRITTEN=1
-if ! install_disk; then WRITTEN=0; exit 1; fi
+ui_gauge_start
+if ! install_disk; then
+    ui_gauge_stop
+    WRITTEN=0
+    ui_notice "Installation failed: $FAIL"
+    exit 1
+fi
+ui_gauge_stop
 if [ "$OPT_YES" = 1 ]; then
     say INFO "remove the installation media, then run: reboot"
     exit 0
+fi
+if [ "$UI" = 1 ]; then
+    ui_msgbox "UniTotem is installed on $DISK.
+
+Remove the installation media."
+    ui_finish
 fi
 echo "Remove the installation media, then press Enter to restart"
 read -r _

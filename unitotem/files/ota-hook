@@ -54,12 +54,6 @@ while read -r directive rest <&3; do
             done ;;
         file)
             copy_file file "$1" "${2:-$1}" ;;
-        logo)
-            for _b in "$@"; do
-                for _ext in bgrx rgb565 spans; do
-                    copy_file file "/usr/lib/unitotem/${_b}.${_ext}" "/usr/lib/unitotem/${_b}.${_ext}"
-                done
-            done ;;
         terminfo)
             # whiptail (via slang) draws in mono with ASCII borders without the entry. Debian 13 keeps the
             # database in /usr/share/terminfo (older releases in /lib/terminfo).

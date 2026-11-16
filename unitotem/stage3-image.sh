@@ -25,9 +25,24 @@ size_to_mib() {
     esac
 }
 
-# A/B image: 1 MiB before the boot partition (amd64: the BIOS boot partition; arm64: the GPT header), the boot
-# partition, ROOT_A at the slot size, 1 MiB after it (backup GPT). shrink-root-image.sh cuts ROOT_A to its
-# filesystem later, so the file is the layout only. Legacy: IMAGE_SIZE.
+# dos_table IMG FIRMWARE_MIB ROOT_MIB [data]: arm64 DOS (MBR) table, written by sfdisk. p1 FIRMWARE at 1 MiB
+# (type c, bootable), p2 ROOT_A (type 83); with "data", p3 DATA (type 83) to the end of the file. A DOS table has
+# no partition names: the filesystem labels identify the partitions. sfdisk picks the label-id.
+dos_table() {
+    local img="$1" fw_mib="$2" root_mib="$3" data="${4:-}"
+    {
+        echo "label: dos"
+        echo "unit: sectors"
+        echo
+        echo "start=2048, size=$((fw_mib * 2048)), type=c, bootable"
+        echo "start=$(( (1 + fw_mib) * 2048 )), size=$((root_mib * 2048)), type=83"
+        [ -z "$data" ] || echo "type=83"
+    } | sfdisk -q "$img" >/dev/null || { echo "dos_table: sfdisk cannot write the table of $img" >&2; exit 1; }
+}
+
+# A/B image: 1 MiB before the boot partition (amd64: the BIOS boot partition; arm64: the gap after the MBR), the boot
+# partition, ROOT_A at the slot size, 1 MiB after it (amd64: backup GPT; arm64: spare). shrink-root-image.sh cuts
+# ROOT_A to its filesystem later, so the file is the layout only. Legacy: IMAGE_SIZE.
 if [ "$AB_LAYOUT" = 1 ]; then
     if [ "$ARCH" = "amd64" ]; then BOOTFS_MIB=$(size_to_mib "$EFI_SIZE"); else BOOTFS_MIB=$(size_to_mib "$FIRMWARE_SIZE"); fi
     SLOT_MIB=$(size_to_mib "$ROOT_SLOT_SIZE")
@@ -74,19 +89,11 @@ if [ "$ARCH" = "amd64" ]; then
 
 elif [ "$ARCH" = "arm64" ]; then
     # FIRMWARE must hold both the resident fallback's kernel+initrd and the real system's,
-    # without either overwriting the other. Sizes come from unitotem/common.sh.
-    FW_START_MIB=1
-    FW_END_MIB=$((FW_START_MIB + $(size_to_mib "$FIRMWARE_SIZE")))
-    parted -s "${IMG_FILE}" mklabel gpt
-    parted -s "${IMG_FILE}" mkpart FIRMWARE fat32  "${FW_START_MIB}M"  "${FW_END_MIB}M"
+    # without either overwriting the other. Sizes come from unitotem/common.sh. The Pi ROM reads the MBR only.
     if [ "$AB_LAYOUT" = 1 ]; then
-        A_END_MIB=$((FW_END_MIB + SLOT_MIB))
-        # MiB, not M: parted's bare "M" is 10^6 bytes, which misaligns every boundary.
-        parted -s "${IMG_FILE}" mkpart ROOT_A ext4 "${FW_END_MIB}MiB" "${A_END_MIB}MiB"
+        dos_table "${IMG_FILE}" "$(size_to_mib "$FIRMWARE_SIZE")" "$SLOT_MIB"
     else
-        ROOT_END_MIB=$((FW_END_MIB + $(size_to_mib "$ROOT_SIZE")))
-        parted -s "${IMG_FILE}" mkpart ROOT ext4 "${FW_END_MIB}M"   "${ROOT_END_MIB}M"
-        parted -s "${IMG_FILE}" mkpart DATA ext4 "${ROOT_END_MIB}M" 100%
+        dos_table "${IMG_FILE}" "$(size_to_mib "$FIRMWARE_SIZE")" "$(size_to_mib "$ROOT_SIZE")" data
     fi
 fi
 
@@ -478,21 +485,11 @@ losetup -d "${LOOP}"
 trap - EXIT
 
 # ---------- Shrink ROOT_A (A/B) ----------
-# e2fsck, resize2fs -M, partition cut to the filesystem + 16 MiB, file cut 1 MiB after it. The image is now minimal;
-# the flash image and the xz archive are made from it.
+# e2fsck, resize2fs -M, partition cut to the filesystem + 16 MiB, file cut 1 MiB after it. The image is now minimal.
+# The first boot creates ROOT_B and DATA (layout_complete in unitotem/files/overlayfs-hook.sh) and grows ROOT_A to the
+# slot size; this file is the product for every install path.
 if [ "$AB_LAYOUT" = 1 ]; then
     bash /unitotem/shrink-root-image.sh "${IMG_FILE}"
-fi
-
-# ---------- Flash image (A/B): boot partition(s) + ROOT_A only ----------
-# Built from the minimal image above, so the flash image is minimal too. The first boot creates ROOT_B and DATA
-# (layout_complete in unitotem/files/overlayfs-hook.sh) and grows ROOT_A to the slot size. The full image stays
-# the source of the release assets and the network deploy.
-if [ "$AB_LAYOUT" = 1 ]; then
-    FLASH_IMG="/deploy/${ARCH}/unitotem-${IMG_DATE}-${ARCH}-flash.img"
-    bash /unitotem/make-flash-image.sh "${IMG_FILE}" "${FLASH_IMG}"
-    rm -f "${FLASH_IMG}.xz"
-    xz -v -T0 "${FLASH_IMG}"
 fi
 
 # ---------- Compress ----------

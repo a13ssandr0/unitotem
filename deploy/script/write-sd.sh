@@ -1,5 +1,5 @@
 #!/bin/bash
-# Writes a UniTotem disk image (full, flash or Raspberry Pi) to an SD card or disk: creates the partition table, creates the
+# Writes a UniTotem disk image (amd64: GPT, arm64: MBR) to an SD card or disk: creates the partition table, creates the
 # partitions, then clones every partition with partclone, so only the blocks in use are copied (an image of 14 GiB with a few
 # GiB of data takes the time of those few GiB, not of the whole file).
 #

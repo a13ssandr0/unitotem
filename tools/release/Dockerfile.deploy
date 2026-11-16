@@ -1,4 +1,4 @@
 # Host side of the deploy rehearsal (test_deploy_e2e.sh): remote-deploy.sh with its tools, run as root in a container.
 FROM debian:trixie
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client sshpass socat iproute2 curl partclone xz-utils util-linux fdisk gdisk parted e2fsprogs dosfstools pv coreutils procps netcat-openbsd ca-certificates zstd dropbear-bin \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client sshpass socat iproute2 curl partclone xz-utils util-linux fdisk gdisk parted e2fsprogs dosfstools pv coreutils procps netcat-openbsd ca-certificates zstd dropbear-bin python3 \
     && rm -rf /var/lib/apt/lists/*

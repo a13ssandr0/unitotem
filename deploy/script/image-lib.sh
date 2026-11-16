@@ -249,6 +249,7 @@ image_describe() {   # $1 directory, $2 arch
         total_used=$((total_used + used))
         { echo "UNITOTEM_PART_USED_BYTES=$used"; echo "UNITOTEM_PART_COMP=xz"; echo ""; } >> "$out/parts.manifest.partial"
     done
+    # the image's own table: gpt (amd64) or dos (arm64); a Raspberry Pi deploy converts gpt later (image_table_dos)
     table_type=$(awk -F': *' '/^label:/{print $2; exit}' "$out/layout.sfdisk")
     min_disk=$raw_size
     if [ "$synth" = 1 ]; then
@@ -268,10 +269,10 @@ image_describe() {   # $1 directory, $2 arch
     rm -f -- "$out/parts.manifest.partial"
 }
 
-# The table of the descriptor as an MBR (a GPT image): same start and size of every partition, type c for the FAT firmware partition,
+# Converts the table of a GPT descriptor to MBR: same start and size of every partition, type c for the FAT firmware partition,
 # 83 for the others, disk id taken from the GPT disk GUID; the MBR boot code of a GPT disk is empty, so bootcode.bin is dropped.
-# Four primaries at most. Called by load_image for every Raspberry Pi (arm64, FIRMWARE=rpi); the Pi 3 / Zero 2 ROM reads MBR only.
-# parts.manifest (UNITOTEM_TABLE) follows the table.
+# A DOS descriptor (arm64 image) is left as it is: returns 0 without a change. Four primaries at most. Called by load_image for every
+# Raspberry Pi (arm64, FIRMWARE=rpi); the Pi 3 / Zero 2 ROM reads MBR only. parts.manifest (UNITOTEM_TABLE) follows the table.
 image_table_dos() {   # $1 descriptor directory
     local d="$1" f="$1/layout.sfdisk" id n=0 line st sz name t out
     [ "$(awk -F': *' '/^label:/{print $2}' "$f")" = gpt ] || return 0

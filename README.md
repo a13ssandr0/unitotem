@@ -39,7 +39,7 @@ The image written to the card is about 5.6 GiB (boot partition 512 MiB and root 
 
 ## Install
 
-Disk images are built from this repository (see Build from source): `unitotem-<date>-arm64-flash.img.xz` and `unitotem-<date>-amd64-flash.img.xz` are the images to write to a card or disk. GitHub Releases carry the signed update streams that installed nodes fetch, not disk images.
+Disk images are built from this repository (see Build from source): `unitotem-<date>-arm64.img.xz` and `unitotem-<date>-amd64.img.xz` are the images to write to a card or disk (one file per architecture, the same file for every writer). GitHub Releases carry the signed update streams that installed nodes fetch, not disk images.
 
 **Raspberry Pi**
 
@@ -49,7 +49,7 @@ Disk images are built from this repository (see Build from source): `unitotem-<d
 **PC**
 
 1. Write `unitotem-installer-<date>-amd64.iso` to a USB stick (`dd` or Rufus in DD mode), boot the PC from it and follow the screen. It asks which disk and one y/n confirmation before it writes, works offline and with Secure Boot on. See [docs/system/installer-iso.md](docs/system/installer-iso.md).
-   Alternative: write the amd64 flash image to the target disk with any image writer and boot from that disk.
+   Alternative: write the amd64 image to the target disk with any image writer and boot from that disk.
 
 **Network deploy**
 
