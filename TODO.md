@@ -21,6 +21,8 @@
 - [system] Firmware download (decision): the signed Raspberry Pi InRelease is verified, but it carries no `Valid-Until` or downgrade check, so a validly signed old index could be replayed and an older firmware offered. Keep as is, or refuse an index older than the installed version / than the last one seen?
 
 ## To build
+- [system] `rpi-eeprom-update.service` fails at boot on the Pi 4 nodes (clock unset at that point) and leaves the system `degraded`: mask it in the image or fix its ordering (EEPROM updates are done by hand).
+- [system] Field nodes .7 (84%) and .8 (81%) have little root space left.
 - [system] `.8` deploy with the 83 MB fallback initrd (old GRUB 2.06 boot not verified); `remote-deploy.sh` should warn when the amd64 recovery initrd exceeds 100 MiB before writing it; the slot initramfs is still about 225 MB (plymouth DRM firmware): decide whether to trim it.
 - [system] Mask `rpi-eeprom-update.service` in the Pi image (field node .5 failed it at boot, EEPROM updates are done by hand): decide.
 - [system] Ship the 2026.11.67 update to Pi A, .8, .2 and .4 (not reachable or not allowed on 2026-11-16).
