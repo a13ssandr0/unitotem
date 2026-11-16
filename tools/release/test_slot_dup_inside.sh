@@ -6,14 +6,14 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends gdisk fdisk parted e2fsprogs dosfstools util-linux \
     coreutils dash bash python3 partclone pv procps >/dev/null 2>&1 || { echo "apt failed"; exit 1; }
 W=/work; SCR=/tmp/agent-S-w3; SCN=/work/scn.img
-mkdir -p "$SCR/shim" /mnt/b2 /mnt/s2 /mnt/s3 || exit 1
+mkdir -p "$SCR/shim" /mnt/b2 /mnt/s2 /mnt/s3 /mnt/rp || exit 1
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || { echo "cannot mount devtmpfs"; exit 1; }
 export LOOP= SHIM_DEVS= ROOT_SRC=
 declare -A SP=() SF=()
 SEC=setup; pass=0; failn=0; RC=0; OUT=""
 
 cleanup() {
-    for m in /mnt/b2 /mnt/s2 /mnt/s3; do umount "$m" 2>/dev/null; done
+    for m in /mnt/b2 /mnt/s2 /mnt/s3 /mnt/rp; do umount "$m" 2>/dev/null; done
     for f in "$W"/*.img; do for l in $(losetup -j "$f" -O NAME -n 2>/dev/null); do losetup -d "$l" 2>/dev/null; done; done
 }
 trap cleanup EXIT; trap 'exit 1' TERM INT
@@ -207,7 +207,7 @@ attach() {                                         # attach FILE: LOOP, the shim
     export LOOP SHIM_DEVS ROOT_SRC
 }
 detach() {
-    local m; for m in /mnt/b2 /mnt/s2 /mnt/s3; do mountpoint -q "$m" && umount "$m"; done
+    local m; for m in /mnt/b2 /mnt/s2 /mnt/s3 /mnt/rp; do mountpoint -q "$m" && umount "$m"; done
     losetup -d "$LOOP"; LOOP=""
 }
 fresh() { cp --sparse=always "$1" "$SCN" && attach "$SCN"; }      # a copy of a base image, attached
@@ -267,8 +267,8 @@ mkdir -p /tmp/agent-S-w3/content/data /tmp/agent-S-w3/content/usr/share/unitotem
 for i in 1 2 3 4 5; do head -c $((5 * 1024 * 1024)) /dev/urandom > /tmp/agent-S-w3/content/data/r$i.bin; done
 echo 2026.11.99-slotdup > /tmp/agent-S-w3/content/usr/share/unitotem/release-version
 
-mkbase() {                                         # mkbase LAYOUT FEAT P3_MIB FILE: partitions p1 EFI, p2 ROOT_A, p3 ROOT_B, p4 DATA
-    local layout=$1 feat=$2 p3=$3 file=$4 L f=()
+mkbase() {                                         # mkbase LAYOUT FEAT P3_MIB FILE [CONTENT]: partitions p1 EFI, p2 ROOT_A, p3 ROOT_B, p4 DATA
+    local layout=$1 feat=$2 p3=$3 file=$4 content=${5:-/tmp/agent-S-w3/content} L f=()
     truncate -s 0 "$file"; truncate -s 256M "$file"
     if [ "$layout" = gpt ]; then
         sgdisk -Z "$file" >/dev/null
@@ -287,7 +287,7 @@ mkbase() {                                         # mkbase LAYOUT FEAT P3_MIB F
     mkfs.ext4 -q -F "${f[@]}" -L ROOT_A "${L}p2" || { losetup -d "$L"; return 1; }
     mkfs.ext4 -q -F "${f[@]}" -L ROOT_B "${L}p3" || { losetup -d "$L"; return 1; }
     mkfs.ext4 -q -F -L DATA "${L}p4" || { losetup -d "$L"; return 1; }
-    mount "${L}p2" /mnt/b2 && cp -a /tmp/agent-S-w3/content/. /mnt/b2/ \
+    mount "${L}p2" /mnt/b2 && cp -a "$content/." /mnt/b2/ \
         && dd if=/dev/zero of=/mnt/b2/zeros.bin bs=1M count=4 2>/dev/null
     sync; umount /mnt/b2
     e2fsck -fn "${L}p2" >/dev/null 2>&1; local rc=$?
@@ -433,11 +433,149 @@ run_cfg() {                                        # run_cfg LAYOUT FEAT
     detach
 }
 
+# ---- section F: do_repair itself, end to end, on a used source (last mount after last check, root mounted read-only) ----
+# Fixture content of a used system, its own tree so that the other sections keep their images. The container is fresh per run.
+mkdir -p /tmp/agent-S-w5/content/data /tmp/agent-S-w5/content/usr/share/unitotem /tmp/agent-S-w5/content/usr/lib/systemd \
+    /tmp/agent-S-w5/content/etc/unitotem || exit 1
+for i in 1 2 3; do head -c $((4 * 1024 * 1024)) /dev/urandom > /tmp/agent-S-w5/content/data/r$i.bin; done
+echo 2026.11.99 > /tmp/agent-S-w5/content/usr/share/unitotem/release-version
+head -c 262144 /dev/urandom > /tmp/agent-S-w5/content/usr/lib/systemd/systemd
+head -c 262144 /dev/urandom > /tmp/agent-S-w5/content/vmlinuz
+head -c 262144 /dev/urandom > /tmp/agent-S-w5/content/initrd.img
+printf '# ota-preserve test list\nhostname\n' > /tmp/agent-S-w5/content/etc/unitotem/ota-preserve.list
+# The real unitotem-update do_repair runs in a python3 -I process; RB is the state, run and data tree of one run.
+cat > /tmp/agent-S-w5/repair-drv.py <<'PY'
+#!/usr/bin/env python3
+# Section F driver (test container only). UU_SRC = the unitotem-update to load, RB = the test's directory tree.
+#   repair-drv.py repair : do_repair(auto, not forced) -> "RESULT {json}" | "RESULT fail CODE: msg" (rc 3) | "RESULT error ..." (rc 4)
+#   repair-drv.py sound  : slot_sound(conf, "b")       -> "RESULT [ok, why]"
+import argparse, importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("uu", os.environ["UU_SRC"])
+spec = importlib.util.spec_from_loader("uu", loader)
+uu = importlib.util.module_from_spec(spec)
+loader.exec_module(uu)
+rb = os.environ["RB"]
+conf = dict(uu.CONF_DEFAULTS,
+            UPDATE_BACKEND="grub",
+            UPDATE_CMDLINE=f"{rb}/cmdline",
+            UPDATE_VERSION_FILE=f"{rb}/release-version",
+            UPDATE_STATE_DIR=f"{rb}/state",
+            UPDATE_RUN_DIR=f"{rb}/run",
+            UPDATE_DATA=f"{rb}/data",
+            UPDATE_ETC_CURRENT=f"{rb}/etc",
+            UPDATE_GRUBENV=f"{rb}/esp/grub/grubenv",
+            UPDATE_ESP_MOUNT=f"{rb}/esp",
+            UPDATE_SYS_DIR=f"{rb}/sys",          # absent: the I/O tuning finds no disk and does nothing (loop devices)
+            UPDATE_VM_DIR=f"{rb}/vm",
+            UPDATE_OVERLAY_STATUS=f"{rb}/run/overlay.status",
+            UPDATE_BOOTFS=f"{rb}/bootfs",
+            UPDATE_HEALTH_URL="",
+            UPDATE_CRASHPOINT="",
+            UPDATE_REBOOT_CMD="")
+if sys.argv[1] == "sound":
+    print("RESULT " + json.dumps(list(uu.slot_sound(conf, "b"))))
+    raise SystemExit(0)
+try:
+    rc, out = uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf)
+except uu.Fail as e:
+    print(f"RESULT fail {e.code}: {e}")
+    raise SystemExit(3)
+except Exception as e:
+    print(f"RESULT error {e!r}")
+    raise SystemExit(4)
+print("RESULT " + json.dumps(dict(rc=rc, **out), sort_keys=True))
+PY
+RDRV=/tmp/agent-S-w5/repair-drv.py
+
+mounted_after_check() {                            # mounted_after_check DEV: last mount time later than last check (dumpe2fs)
+    local lc mt
+    lc=$(dumpe2fs -h "$1" 2>/dev/null | sed -n 's/^Last checked: *//p')
+    mt=$(dumpe2fs -h "$1" 2>/dev/null | sed -n 's/^Last mount time: *//p')
+    echo "  dumpe2fs $1: Last checked: $lc | Last mount time: $mt"
+    [ -n "$lc" ] && [ -n "$mt" ] && [ "$(date -d "$mt" +%s 2>/dev/null || echo 0)" -gt "$(date -d "$lc" +%s 2>/dev/null || echo 0)" ]
+}
+used_source() {                                    # used_source FILE: a copy of FILE attached, last mount after last check, root mounted ro at /mnt/rp
+    fresh "$1" || return 1
+    tune2fs -T 20200101 "${LOOP}p2" >/dev/null 2>&1 || return 1
+    mount -o rw "${LOOP}p2" /mnt/s2 && umount /mnt/s2 || return 1
+    mounted_after_check "${LOOP}p2" || return 1
+    mount -o ro "${LOOP}p2" /mnt/rp || return 1
+    sync
+}
+setup_rb() {                                       # setup_rb: a fresh state tree for one do_repair run (RB), fixture version and cmdline
+    RB=$(mktemp -d /tmp/agent-S-w5-rb.XXXXXX) || return 1
+    mkdir -p "$RB/state" "$RB/run" "$RB/data" "$RB/etc" "$RB/esp/grub" "$RB/bootfs" "$RB/vm" || return 1
+    printf 'root=LABEL=ROOT_A unitotem.slot=a\n' > "$RB/cmdline"
+    printf '2026.11.99\n' > "$RB/release-version"
+    export RB
+}
+repair_run() {                                     # repair_run SRC: do_repair of unitotem-update SRC on RB; RC status, RO its RESULT line
+    RO=$(UU_SRC="$1" RB="$RB" timeout 300 python3 -I "$RDRV" repair 2> "$SCR/rep-err.txt"); RC=$?
+}
+rhas() { [[ "$RO" == *"$1"* ]]; }
+FSRC=${UU_SRC:-/repo/unitotem/files/unitotem-update}   # the file under test (UU_SRC overrides it for a run)
+
+run_repair_cfg() {                                 # run_repair_cfg LAYOUT FEAT: section F
+    local layout=$1 feat=$2 cfg="$1-$2" fbase case_ H0 want OLDSRC=/work/agent-S-w5-old-update
+    fbase=/work/used-$cfg.img; SEC=F
+    if mkbase "$layout" "$feat" 48 "$fbase" /tmp/agent-S-w5/content; then ok "$cfg F: used base image (p2 a system, p3 empty ROOT_B) built"
+    else bad "$cfg F: used base image built"; return; fi
+    for case_ in empty garbage; do
+        SEC=F
+        # the file under test: the real do_repair on a used source, with its root mounted ro
+        if used_source "$fbase"; then ok "$cfg F $case_: source last mount later than last check, root mounted ro (test not void)"
+        else bad "$cfg F $case_: source set up as used (void test)"; detach; continue; fi
+        H0=$(hashp "${LOOP}p2")
+        want=ROOT_B; [ "$case_" = garbage ] && want=""
+        [ "$case_" = garbage ] && dd if=/dev/urandom of="${LOOP}p3" bs=1M count=48 2>/dev/null
+        eqv "$cfg F $case_: target p3 label before the repair" "$(lbl "${LOOP}p3")" "$want"
+        setup_rb || { bad "$cfg F $case_: state tree"; detach; continue; }
+        repair_run "$FSRC"
+        chk "$cfg F $case_: do_repair rc 0 (rc $RC: $RO)" [ "$RC" = 0 ]
+        chk "$cfg F $case_: returns {repaired: true}" rhas '"repaired": true'
+        chk "$cfg F $case_: slots.json b == {version 2026.11.99, valid, prepared, confirmed}" python3 -I -c \
+            'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if s.get("b")=={"version":sys.argv[2],"valid":True,"prepared":True,"confirmed":True} else 1)' \
+            "$RB/state/slots.json" 2026.11.99
+        chk "$cfg F $case_: last-result.json op=repair result=ok" python3 -I -c \
+            'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("op")=="repair" and d.get("result")=="ok" else 1)' \
+            "$RB/state/last-result.json"
+        umount /mnt/rp
+        eqv "$cfg F $case_: source label ROOT_A" "$(lbl "${LOOP}p2")" ROOT_A
+        eqv "$cfg F $case_: copy label ROOT_B" "$(lbl "${LOOP}p3")" ROOT_B
+        chk "$cfg F $case_: copy UUID differs from the source" bash -c "[ -n '$(uuid "${LOOP}p3")' ] && [ '$(uuid "${LOOP}p3")' != '$(uuid "${LOOP}p2")' ]"
+        e2fsck -fn "${LOOP}p2" >/dev/null 2>&1; rc=$?; chk "$cfg F $case_: e2fsck -fn on the source clean (rc $rc)" [ "$rc" = 0 ]
+        e2fsck -fn "${LOOP}p3" >/dev/null 2>&1; rc=$?; chk "$cfg F $case_: e2fsck -fn on the copy clean (rc $rc)" [ "$rc" = 0 ]
+        RO=$(UU_SRC="$FSRC" RB="$RB" timeout 120 python3 -I "$RDRV" sound 2>/dev/null)
+        eqv "$cfg F $case_: slot_sound(conf, b) == (True, ok)" "$RO" 'RESULT [true, "ok"]'
+        mount -o ro "${LOOP}p2" /mnt/s2 && mount -o ro "${LOOP}p3" /mnt/s3
+        chk "$cfg F $case_: diff -r of the mounted copy and source" diff -r /mnt/s2 /mnt/s3
+        umount /mnt/s2 /mnt/s3
+        eqv "$cfg F $case_: source untouched (hash before/after)" "$(hashp "${LOOP}p2")" "$H0"
+        detach
+
+        # expected failure, labelled: the previous sequence (tune2fs -f before any check, from HEAD), on a fresh copy
+        SEC=F
+        if used_source "$fbase"; then
+            H0=$(hashp "${LOOP}p2")
+            [ "$case_" = garbage ] && dd if=/dev/urandom of="${LOOP}p3" bs=1M count=48 2>/dev/null
+            setup_rb && repair_run "$OLDSRC"
+            if [ "$RC" != 0 ] && rhas "tune2fs"; then ok "$cfg F $case_: EXPECTED-FAIL old sequence (rc $RC): do_repair fails in tune2fs"
+            else bad "$cfg F $case_: EXPECTED-FAIL old sequence: do_repair fails in tune2fs (NOT REPRODUCED, rc $RC: $RO)"; fi
+            if rhas "requires a freshly checked filesystem"; then ok "$cfg F $case_: EXPECTED-FAIL old sequence: message 'requires a freshly checked filesystem'"
+            else bad "$cfg F $case_: EXPECTED-FAIL old sequence: message 'requires a freshly checked filesystem' (NOT REPRODUCED, rc $RC: $RO)"; fi
+            umount /mnt/rp 2>/dev/null
+            eqv "$cfg F $case_: old sequence leaves the source untouched (hash)" "$(hashp "${LOOP}p2")" "$H0"
+        else bad "$cfg F $case_: old-sequence source set up as used (void test)"; fi
+        detach
+    done
+}
+
 for cfg in gpt-csum gpt-nocsum dos-csum dos-nocsum; do
     run_cfg "${cfg%-*}" "${cfg#*-}"
+    run_repair_cfg "${cfg%-*}" "${cfg#*-}"
 done
 
 echo
-for s in setup R N U D E; do echo "section $s: ${SP[$s]:-0} passed, ${SF[$s]:-0} failed"; done
+for s in setup R N U D E F; do echo "section $s: ${SP[$s]:-0} passed, ${SF[$s]:-0} failed"; done
 echo "TOTAL: $pass passed, $failn failed; end $(date -u +%H:%M:%S)"
 [ "$failn" = 0 ]

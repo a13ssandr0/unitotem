@@ -5,12 +5,11 @@ import sys
 from pathlib import Path
 
 DIRECTIVES = frozenset({
-    "bin", "real", "file", "logo", "terminfo", "module", "module-opt",
+    "bin", "real", "file", "terminfo", "module", "module-opt",
     "x86-bin", "x86-module", "x86-dir",
 })
 NAME_RE = re.compile(r"[A-Za-z0-9._+/-]+")
 TERMINFO_RE = re.compile(r"[a-z0-9]/[A-Za-z0-9._+-]+")
-LOGO_RE = re.compile(r"[A-Za-z0-9._+-]+")
 PATH_DIRECTIVES = frozenset({"file", "x86-dir"})
 
 
@@ -30,8 +29,6 @@ def _check_args(where, directive, args):
             raise ListError(f"{where}: '{directive}' needs absolute paths, got {arg!r}")
         elif directive == "terminfo" and not TERMINFO_RE.fullmatch(arg):
             raise ListError(f"{where}: terminfo entry must be L/NAME, got {arg!r}")
-        elif directive == "logo" and not LOGO_RE.fullmatch(arg):
-            raise ListError(f"{where}: logo name must not contain '/', got {arg!r}")
 
 
 def read_list(path):

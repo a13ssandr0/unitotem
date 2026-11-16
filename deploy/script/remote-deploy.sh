@@ -2,7 +2,8 @@
 # Two-stage OTA deploy orchestrator (host side). Drives deploy/script/ota-engine.sh on the target over SSH (the system's
 # sshd, then dropbear on port 2222 in the fallback initramfs, see ota_ssh() in lib.sh); bulk partition data goes
 # over a separate netcat connection (serve_file_once/wait_port_bound in lib.sh), never through SSH. The partitions are read
-# straight from the disk image (deploy/<arch>/unitotem-<date>-<arch>.img.xz, a full A/B image): see image-lib.sh. The script
+# straight from the disk image (deploy/<arch>/unitotem-<date>-<arch>.img.xz, the A/B image of the architecture): see image-lib.sh.
+# The script
 # runs as root for deploy (loop device, mount): started as a user it asks sudo and runs again with the same environment and directory;
 # probe, changes, disarm and --help need no root.
 #
@@ -22,7 +23,7 @@ Usage: remote-deploy.sh COMMAND [USER@]HOST[:PORT] [options]
   disarm    undo the arming
 
 deploy options:
-  --image FILE          full image (required)
+  --image FILE          image of the target's architecture (required)
   --disk BYID           target disk
   --yes                 do not ask
   --wipe-data           do not keep DATA
@@ -63,9 +64,10 @@ case "${1:-}" in
 esac
 source "${HERE}/lib.sh"
 source "${HERE}/image-lib.sh"
+source "${HERE}/identity-carry.sh"
 
 require_cmd ssh scp sshpass sha256sum xz stat awk sed grep socat ss timeout ip base64 curl
-case "${1:-}" in deploy) require_cmd losetup partclone.extfs partclone.fat dumpe2fs blkid sfdisk pv findmnt ;; esac
+case "${1:-}" in deploy) require_cmd python3 losetup partclone.extfs partclone.fat dumpe2fs blkid sfdisk pv findmnt ;; esac
 
 # The sudo askpass helper holds the target password, so it must not outlive the run (including failure or
 # Ctrl-C). No-op when logged in as root or when sudo is passwordless.
@@ -318,7 +320,7 @@ REMOTE_EOF
         # use rpi-legacy: a direct config.txt swap protected by the initramfs checks and the boot counter.
         TRYBOOT_CAPABLE="${P[TRYBOOT]:-0}"
         # Pi 3 and Zero 2 have no EEPROM bootloader and no firmware tryboot: their one-shot trial is implemented in the system, so the deploy treats
-        # them as capable. Every Raspberry Pi gets the MBR table of the image (image_table_dos in load_image); Pi 3 / Zero 2 need it (ROM).
+        # them as capable. A Raspberry Pi gets the MBR table (image_table_dos in load_image); Pi 3 / Zero 2 need it (ROM).
         PI3=0
         if echo "${P[MODEL]}" | grep -qiE "raspberry pi (3|.*zero 2)"; then PI3=1; TRYBOOT_CAPABLE=1; fi
     elif [ "${P[EFI]}" = 1 ]; then
@@ -494,9 +496,9 @@ build_legacy_cmdline() {
     fi
     [ -n "${1:-}" ] || die "build_legacy_cmdline: no fallback public key given"
     authkey=$(printf '%s' "$1" | base64 -w0)
-    # fbcon=font:TER16x32: the firmware framebuffer is often the monitor's native size, where the default 8x16 font is
-    # tiny; the 16x32 font doubles every glyph (ignored by a kernel that lacks it).
-    cmdline="unitotem.ota=1 quiet loglevel=3 fbcon=font:TER16x32 console=${console} unitotem.ota.authkey=${authkey}"
+    # No font option: the 640x480 framebuffer (GRUB gfxmode on x86, config.txt on the Pi) keeps the kernel's
+    # default 8x16 font, an 80x30 console. No fbcon= option.
+    cmdline="unitotem.ota=1 quiet loglevel=3 console=${console} unitotem.ota.authkey=${authkey}"
     # A fixed address of the earlier system: the fallback has no DHCP server to ask (a node on a routed VPN) and no boot FAT to read it from.
     if [ "${P[NETMODE]:-}" = static ] && [ "${P[NETLINK]:-wired}" = wired ] && [ -n "${P[NETADDR]:-}" ]; then
         cmdline="${cmdline} unitotem.ota.addr=${P[NETADDR]}"
@@ -861,7 +863,16 @@ run_ota_sequence() {
     ota_ssh "$host" "unitotem-ota-engine mount-target ${mount_args}"
 
     local slot_arg="--slot a"
-    ota_ssh "$host" "unitotem-ota-engine migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data ${slot_arg}" || warn "/etc migration failed (non-fatal: the new system uses its own /etc)"
+    local migrate_out etc_history
+    migrate_out=$(ota_ssh "$host" "unitotem-ota-engine migrate-etc-overlay --root-mnt /mnt/newroot --data-mnt /mnt/newroot/mnt/data ${slot_arg}") \
+        || warn "/etc migration failed (non-fatal: the new system uses its own /etc)"
+    [ -z "$migrate_out" ] || printf '%s\n' "$migrate_out"
+    # DATA kept: the local accounts follow like on an update (identity merge on this host; the fallback has no python).
+    etc_history=$(sed -n 's/^UNITOTEM_ETC_HISTORY=\([0-9]\{8\}T[0-9]\{6\}Z\)$/\1/p' <<<"${migrate_out//$'\r'/}" | tail -n 1)
+    if [ -n "$etc_history" ]; then
+        log "Carrying the local accounts onto the new system..."
+        deploy_carry_identity "$host" "$etc_history" || warn "the accounts were not carried (the new system starts with the image's own accounts)"
+    fi
 
     # Carry the probed network settings onto the installed system. A non-UniTotem device's configuration lives
     # in the root filesystem being overwritten, so migrate-etc-overlay (which only rescues what DATA held) has
@@ -899,16 +910,23 @@ run_ota_sequence() {
 }
 
 # ---------------------------------------------------------------------------
+# Reads the image (image_open, image_describe), writes the descriptor's table as MBR for a Raspberry Pi and sets the partition numbers.
 load_image() {
     [ -f "$OPT_IMAGE" ] || die "image not found: ${OPT_IMAGE}"
     image_open "$OPT_IMAGE" || die "cannot open the image ${OPT_IMAGE}"
     IMG_DESC=$(mktemp -d "${IMG_TMPFS}/unitotem-desc.XXXXXX")
     log "Reading the partitions of $(basename "$OPT_IMAGE")..."
     image_describe "$IMG_DESC" "$ARCH" || die "cannot read the partitions of ${OPT_IMAGE}"
-    # Every Raspberry Pi gets an MBR: the same partitions (primaries; FAT type c for the firmware, 83 for the rest). The Pi 3 ROM needs it.
+    # A Raspberry Pi gets an MBR (the Pi 3 ROM reads MBR only). A GPT image is converted to the same partitions as primaries (FAT type c
+    # for the firmware, 83 for the rest); a DOS image is already MBR and is written as it is.
     if [ "$ARCH" = arm64 ] && [ "$FIRMWARE" = rpi ]; then
+        local src_table; src_table=$(awk -F': *' '/^label:/{print $2; exit}' "${IMG_DESC}/layout.sfdisk")
         image_table_dos "$IMG_DESC" || die "cannot convert the partition table of ${OPT_IMAGE} to MBR"
-        log "Target is a ${P[MODEL]:-unknown Raspberry Pi}: the partition table is written as MBR."
+        if [ "$src_table" = gpt ]; then
+            log "Target is a ${P[MODEL]:-unknown Raspberry Pi}: the partition table is written as MBR, converted from GPT."
+        else
+            log "Target is a ${P[MODEL]:-unknown Raspberry Pi}: the partition table is written as MBR, the image's own table."
+        fi
     fi
 
     P_DATA_PART=$(awk -F= '/^UNITOTEM_DATA_PART=/{print $2}' "${IMG_DESC}/parts.manifest")
@@ -924,7 +942,7 @@ load_image() {
     }
     P_LAYOUT=$(awk -F= '/^UNITOTEM_LAYOUT=/{print $2; exit}' "${IMG_DESC}/parts.manifest")
     [ "$P_LAYOUT" = 2 ] || die "the image is not A/B (no ROOT_A): only A/B images are supported"
-    [ "${P_DATA_PART:-0}" != 0 ] || die "the image has no DATA partition and no ROOT_B to lay it out from: use the full image (unitotem-<date>-${ARCH}.img.xz)"
+    [ "${P_DATA_PART:-0}" != 0 ] || die "the image has no DATA partition and no ROOT_B to lay it out from: use the image unitotem-<date>-${ARCH}.img.xz"
     [ "$ARCH" = amd64 ] || { [ "$ARCH" = arm64 ] && [ "$FIRMWARE" = rpi ] && [ "$TRYBOOT_CAPABLE" = 1 ]; } \
         || die "the A/B layout is supported on amd64 (UEFI and legacy BIOS) and on Raspberry with tryboot (target: ${ARCH}/${FIRMWARE}, tryboot=${TRYBOOT_CAPABLE:-0}); Raspberry without tryboot is not supported"
     P_ROOT_PART=$(part_num_for_label ROOT_A)
@@ -1318,7 +1336,7 @@ ota_fallback_present() {
 }
 
 cmd_deploy() {
-    [ -n "$OPT_IMAGE" ] || die "--image FILE is required (the full A/B image of the target's architecture)"
+    [ -n "$OPT_IMAGE" ] || die "--image FILE is required (the A/B image of the target's architecture)"
     [ -f "$OPT_IMAGE" ] || die "image not found: ${OPT_IMAGE}"
     ask_admin
     if ota_fallback_present "$TARGET_HOST" "$OTA_PORT"; then

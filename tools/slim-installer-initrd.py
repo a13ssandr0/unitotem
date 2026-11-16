@@ -111,7 +111,7 @@ cur = step('modules reduced', cur)
 REMOVE_BIN = ['partclone.dd', 'partclone.extfs', 'partclone.fat', 'partclone.info', 'partclone.restore', 'parted',
               'wpa_supplicant', 'wpa_passphrase', 'plymouth', 'plymouthd', 'grub-install', 'mke2fs', 'mkfs.ext4',
               'mkfs.fat', 'fsck.fat', 'fatlabel', 'e2fsck', 'e2label', 'tune2fs', 'dumpe2fs', 'resize2fs', 'dmsetup',
-              'efibootmgr', 'nc', 'nc.traditional', 'nfsmount', 'mkfifo', 'chroot', 'cpio', 'base64']
+              'nc', 'nc.traditional', 'nfsmount', 'mkfifo', 'chroot', 'cpio', 'base64']
 for d in ('usr/bin', 'usr/sbin'):
     for n in REMOVE_BIN:
         rm(os.path.join(tree, d, n))

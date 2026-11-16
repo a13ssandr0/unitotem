@@ -4,7 +4,6 @@
 #   bin NAME...          command found with command -v, copied with its libraries (missing: warning)
 #   real NAME...         real binary copied over any BusyBox applet of the same name
 #   file SRC [DST]       plain file, DST defaults to SRC
-#   logo BASENAME...     /usr/lib/unitotem/BASENAME.{bgrx,rgb565,spans}
 #   terminfo L/NAME...   terminfo entries, installed under /usr/share/terminfo
 #   module NAME...       kernel module forced into the initrd
 #   module-opt NAME...   as module, only when the running kernel has it
@@ -16,9 +15,6 @@ bin bash
 # /etc/group (getgrgid(0) during login) and ota-engine.sh.
 file /etc/group
 file /usr/lib/unitotem/ota-engine.sh
-
-# Framebuffer logo of the deploy and recovery screen (ota_logo in ota-engine.sh).
-logo unitotem-logo-256x73 unitotem-logo-640x182
 
 # Partitioning, filesystems and the partclone images.
 bin partclone.extfs partclone.fat partclone.dd partclone.restore partclone.info
@@ -33,7 +29,7 @@ bin dropbear dropbearkey scp wpa_supplicant wpa_passphrase
 
 # Text tools and shell helpers used by ota-engine.sh.
 bin sha256sum base64 awk cut paste readlink mkfifo cp grep head tail stty
-bin tr cmp od sed lsblk partprobe basename dirname sort rm chmod tar
+bin tr cmp od sed lsblk partprobe basename dirname sort rm chmod chown tar
 
 # Network and udev tools.
 bin ip udevadm setsid

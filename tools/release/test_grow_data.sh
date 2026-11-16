@@ -12,5 +12,6 @@ docker run --name grow-test --privileged -e PHASE2_ONLY="${PHASE2_ONLY:-0}" \
     -v "${DIR}:/repo:ro" -v "${DIR}/work/grow-test:/work" --workdir /work \
     debian:trixie bash /repo/tools/release/test_grow_data_inside.sh "$@" || rc=$?
 docker rm -f grow-test >/dev/null 2>&1 || true
-docker run --rm -v "${DIR}/work:/w" debian:trixie rm -rf -- /w/grow-test/base-amd64.img /w/grow-test/base-arm64.img /w/grow-test/base-dos.img /w/grow-test/t.img /w/grow-test/big.img /w/grow-test/pr.img /w/grow-test/flash-amd64.img /w/grow-test/flash-arm64.img /w/grow-test/min-amd64.img /w/grow-test/min-arm64.img /w/grow-test/min-2g-amd64.img /w/grow-test/min-pr.img /w/grow-test/min-amd64.sums /w/grow-test/min-arm64.sums /w/grow-test/min-2g-amd64.sums || true
+docker run --rm -v "${DIR}/work:/w" debian:trixie rm -rf -- /w/grow-test/base-amd64.img /w/grow-test/base-arm64.img /w/grow-test/base-dos.img /w/grow-test/t.img /w/grow-test/big.img /w/grow-test/pr.img /w/grow-test/min2-amd64.img /w/grow-test/min2-arm64.img /w/grow-test/min2-amd64.sums /w/grow-test/min2-arm64.sums /w/grow-test/min.t0 /w/grow-test/min.t1 /w/grow-test/min-amd64.img /w/grow-test/min-arm64.img /w/grow-test/min-2g-amd64.img /w/grow-test/min-pr.img /w/grow-test/min-amd64.sums /w/grow-test/min-arm64.sums /w/grow-test/min-2g-amd64.sums || true
+docker run --rm -v "${DIR}/work:/w" debian:trixie rm -rf -- /w/grow-test/premount || true
 exit "$rc"

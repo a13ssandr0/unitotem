@@ -64,6 +64,7 @@ FW="$WORK/fw"; mkdir -p "$FW"
 if [ -n "$IMAGE" ]; then
     # the FIRMWARE partition of the image: its top-level files are the input of the boot tree
     image_open "$IMAGE" || die "cannot open $IMAGE"
+    # FIRMWARE found by its filesystem label (p1 of the arm64 image, MBR; the table kind does not matter)
     FWNODE=""; for n in 1 2; do d=$(image_node "$n") && [ "$(blkid -s LABEL -o value "$d")" = FIRMWARE ] && FWNODE=$d && break; done
     [ -n "$FWNODE" ] || die "the image has no FIRMWARE partition"
     SRC="$WORK/src"; mkdir -p "$SRC" "$WORK/fwsrc"; mount -t vfat -o ro "$FWNODE" "$SRC"

@@ -23,7 +23,7 @@ Paths: relative to the repository root. Sources: [boot](boot.md), [deploy-and-re
 | Rolled back / failover | `unitotem-ota.failover` guard on the boot FAT; the other slot runs | same as Running (other slot); `other_version` shows what failed | confirm a new update; the guard refuses a second failover until then |
 | Maintenance | `unitotem.maintenance=1` on the command line, or `unitotem-maintenance enter` | ssh only: manager and compositor stopped, `/` read-write, apt available; the compositor is `Restart=always` (stop it with systemctl) | `unitotem-maintenance exit [--initramfs]` (reboots) |
 | Network watchdog reboot | cabled link without a usable address for `THRESHOLD_MIN` (15 min) | the machine reboots into the OTA fallback | an address (see fallback) |
-| Flash image, first boot | ROOT_B and DATA do not exist yet: `layout_complete` creates them, `grow_data` grows DATA to the disk end (GPT or DOS) | as Running afterwards; the first boot is longer | automatic |
+| Image, first boot | ROOT_B and DATA do not exist yet: `layout_complete` creates them, `grow_data` grows DATA to the disk end (GPT or DOS) | as Running afterwards; the first boot is longer | automatic |
 | Duplicate slot label (`ROOT_A` twice) | `slot_pick` relabels the other copy `ROOT_STALE` in the initramfs | as Running | repair writes in `unitotem-update` |
 | Secure Boot enforcing | `SecureBoot` 1, kernel lockdown | as Running; the NVIDIA module is not loaded until its key is enrolled in the MOK (needs the console); nouveau takes the GPU (`unitotem-nouveau-fallback`) | MOK enrolment (physical) |
 | Raspberry Pi, MBR table (every model) | Primaries only: FIRMWARE (type c) p1, ROOT_A p2, ROOT_B p3, DATA p4; a device whose DATA is kept keeps its table | as Running. Pi 3 / Zero 2 (no EEPROM bootloader): no A/B update, slot-switch commands exit `backend-unsupported` | n/a |
@@ -63,7 +63,7 @@ Host side: `deploy [USER@]HOST[:PORT]` finds a fallback by its dropbear banner a
 
 `deploy/script/write-preboot.sh`: one FAT partition with the Pi firmware, `recovery8.img`, `recovery-initrd.img` and `config.txt`/`cmdline.txt` (`unitotem.ota=recover`). No password, key or DATA exists on it: the fallback is open. The screen shows the DHCP address; then
 
-`deploy/script/remote-deploy.sh deploy <address> --image <full image> --yes`
+`deploy/script/remote-deploy.sh deploy <address> --image <image> --yes`
 
 The initrd of the card carries the engine of the repository (appended cpio archive).
 

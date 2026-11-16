@@ -20,7 +20,6 @@ sys.path.insert(0, os.path.join(HERE, "ninitrd"))
 
 DEFAULT_LIST = os.path.join(HERE, "files", "ota-initrd.list")
 DEFAULT_HOOK = os.path.join(HERE, "ninitrd", "otahook.py")
-LOGO_SCRIPT = os.path.join(HERE, "logo", "gen-logo.py")
 
 
 def die(msg):
@@ -37,7 +36,6 @@ def parse_args(argv):
     p.add_argument("--out", required=True, metavar="DIR", help="output directory (scratch with --slot-out)")
     p.add_argument("--work", metavar="DIR", help="scratch directory (default: a temporary folder in --out)")
     p.add_argument("--engine", required=True, metavar="PATH", help="ota-engine.sh to ship as /usr/lib/unitotem")
-    p.add_argument("--logo-dir", metavar="DIR", help="output of unitotem/logo/gen-logo.py (default: rendered now)")
     p.add_argument("--list", "--hook-list", dest="list_path", default=DEFAULT_LIST, metavar="PATH",
                    help="ota-initrd.list (default: unitotem/files/ota-initrd.list)")
     p.add_argument("--slot-out", metavar="FILE",
@@ -87,24 +85,11 @@ def sha256(path):
     return h.hexdigest()
 
 
-def render_logo(work):
-    logo_dir = os.path.join(work, "logo")
-    if os.path.exists(logo_dir):
-        shutil.rmtree(logo_dir)
-    os.makedirs(logo_dir)
-    res = subprocess.run([sys.executable, LOGO_SCRIPT, logo_dir], capture_output=True, text=True)
-    if res.returncode != 0:
-        die(f"logo rendering failed: {res.stderr.strip()}")
-    return logo_dir
-
-
 def main(argv=None):
     args = parse_args(argv)
     for path in (args.engine, args.list_path, args.hook_script):
         if not os.path.isfile(path):
             die(f"missing file: {path}")
-    if args.logo_dir and not os.path.isdir(args.logo_dir):
-        die(f"missing logo directory: {args.logo_dir}")
     os.makedirs(args.out, exist_ok=True)
     work = args.work or tempfile.mkdtemp(prefix="ninitrd-work-", dir=args.out)
     os.makedirs(work, exist_ok=True)
@@ -120,14 +105,12 @@ def main(argv=None):
             subprocess.run(["tar", "-p", "--exclude=./dev/*", "-xf", os.path.abspath(args.stage1), "-C", root], check=True)
         kver = kernel_version(root)
         print(f"Kernel version: {kver}")
-        logo_dir = args.logo_dir or render_logo(work)
-
         import assemble
         dest = os.path.join(work, "dest")
         if os.path.exists(dest):
             shutil.rmtree(dest)
         level = assemble.build(root, dest, args.arch, kver, os.path.abspath(args.engine),
-                               logo_dir, args.list_path, load_hook(args.hook_script), slot=bool(args.slot_out))
+                               args.list_path, load_hook(args.hook_script), slot=bool(args.slot_out))
         if args.slot_out:
             assemble.pack(dest, os.path.abspath(args.slot_out), work, level)
             print(f"Wrote {args.slot_out} ({os.path.getsize(args.slot_out)} bytes)")

@@ -134,7 +134,7 @@ check "minimal: ext4 of ROOT_A and DATA clean and FAT of EFI clean" bash -c "e2f
 mount -o ro ${D3}p2 /d2; check "minimal: ROOT_A files identical to the image (md5) and the marker" bash -c "[ \"\$(md5sum /d2/system.bin | cut -d' ' -f1)\" = '$MIN_MD5' ] && [ \"\$(cat /d2/marker)\" = marker ]"; umount /d2
 mount -o ro ${D3}p1 /d1; check "minimal: EFI keeps the image's files and unitotem-layout" bash -c "[ -f /d1/unitotem-layout ] && grep -qx 'UNITOTEM_SLOT_SECTORS=1048576' /d1/unitotem-layout && [ -f /d1/EFI/BOOT/BOOTX64.EFI ]"; umount /d1
 losetup -d "$D3"
-# --- minimal image with an MBR table (the arm64 flash image is MBR): written to a disk, the target layout results (MBR, four primaries)
+# --- minimal image with an MBR table (the arm64 image is MBR): written to a disk, the target layout results (MBR, four primaries)
 make_dos_min() {   # $1 image
     local img=$1 L fsbytes tsec
     rm -f -- "$img"; truncate -s 600M "$img"

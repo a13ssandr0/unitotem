@@ -25,7 +25,6 @@ CONFDIR = "etc/initramfs-tools"
 NAME_RE = re.compile(r"[A-Za-z0-9\\._-]+")
 CONF_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\\._-]*")
 COMPRESSED_SUFFIXES = (".zst", ".xz")
-LOGO_EXTS = ("bgrx", "rgb565", "spans")
 
 
 def _warn(msg):
@@ -252,7 +251,7 @@ def _ld_so_conf(root, dest):
             shutil.copy2(src, dst)
 
 
-def build(root, dest, arch, kver, engine, logo_dir, list_path, hook, warn=_warn, slot=False):
+def build(root, dest, arch, kver, engine, list_path, hook, warn=_warn, slot=False):
     """Fills dest (empty, created here if missing) from the target tree root. Returns the zstd level.
 
     slot=True builds the initramfs of the installed system (what update-initramfs makes): the rootfs's own init-premount
@@ -274,16 +273,9 @@ def build(root, dest, arch, kver, engine, logo_dir, list_path, hook, warn=_warn,
         raise RuntimeError(f"{moddir}/modules.dep missing: the rootfs needs depmod run on it first")
 
     _skeleton(root, dest, kver)
-    # engine and logo are placed before the hooks so the project hook's copy_file keeps them
+    # the engine is placed before the hooks so the project hook's copy_file keeps it
     # (copy_file returns "already present"); this is the staging-area form of the stage-1 refresh
     _copy_p_mode(engine, os.path.join(dest, "usr/lib/unitotem/ota-engine.sh"), 0o755)
-    for base in _logo_names(list_path):
-        for ext in LOGO_EXTS:
-            src = os.path.join(logo_dir, f"{base}.{ext}")
-            if os.path.isfile(src):
-                _copy_p_mode(src, os.path.join(dest, "usr/lib/unitotem", f"{base}.{ext}"), 0o644)
-            else:
-                warn(f"W: logo {base}.{ext} not rendered, not shipped")
 
     _builtin_module_files(root, dest, kver)
     st = stage_mod.Stage(root, dest, arch, kver, warn=warn)
@@ -368,12 +360,6 @@ def build(root, dest, arch, kver, engine, logo_dir, list_path, hook, warn=_warn,
             os.remove(os.path.join(modsdir, name))
     _ld_so_conf(root, dest)
     return level
-
-
-def _logo_names(list_path):
-    # the `logo` directives of the data file, as the project hook reads them
-    from lists import read_list
-    return [name for directive, args in read_list(list_path) if directive == "logo" for name in args]
 
 
 def _copy_p_mode(src, dst, mode):

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the Windows installer folder and zip from an amd64 flash image.
+# Builds the Windows installer folder and zip from an amd64 image.
 #   tools/build-windows-installer.sh [--image FILE.img.xz] [--initrd FILE] [--out DIR]
 # Output: DIR/unitotem-windows-installer.zip and DIR/SHA256SUMS (default DIR: deploy/amd64).
 set -euo pipefail
@@ -14,7 +14,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 if [ -z "$IMAGE" ]; then
-    IMAGE=$(ls -1 "$DIR"/deploy/amd64/unitotem-*-amd64-flash.img.xz | sort | tail -n 1)
+    IMAGE=$(ls -1 "$DIR"/deploy/amd64/unitotem-2*-amd64.img.xz | sort | tail -n 1)
 fi
 [ -f "$IMAGE" ] || { echo "image not found: $IMAGE" >&2; exit 1; }
 for t in xz sfdisk mcopy zip sha256sum curl; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }; done
@@ -26,7 +26,7 @@ trap 'rm -rf -- "$WORK"' EXIT
 STAGE="$WORK/unitotem-windows-installer"
 mkdir -p "$STAGE/payload" "$OUT"; OUT=$(cd "$OUT" && pwd)
 
-# EFI System partition of the flash image: start and size from the GPT in the first MiB.
+# EFI System partition of the image: start and size from the GPT in the first MiB.
 xz -dc -- "$IMAGE" | head -c 1048576 > "$WORK/head.img" || true   # SIGPIPE from head is expected
 [ "$(stat -c %s "$WORK/head.img")" -eq 1048576 ] || { echo "cannot read the image" >&2; exit 1; }
 read -r START SIZE < <(python3 -I - "$WORK/head.img" <<'PY'

@@ -2,12 +2,12 @@
 # Rehearsal of a network deploy, no hardware: an amd64 PC (QEMU/KVM) boots the recovery kernel and initrd of build/amd64/recovery into the OTA
 # fallback (open access), remote-deploy.sh deploy writes the image from a privileged container, then the disk boots (UEFI through OVMF, or
 # legacy BIOS) and the web UI must answer with the first-access page. Scratch: work/deploy-e2e/. Needs docker, /dev/kvm, qemu, OVMF.
-#   tools/release/test_deploy_e2e.sh [uefi|bios] [FULL_IMAGE.img.xz]     (default: uefi, the newest deploy/amd64/unitotem-2*-amd64.img.xz)
+#   tools/release/test_deploy_e2e.sh [uefi|bios] [IMAGE.img.xz]     (default: uefi, the newest deploy/amd64/unitotem-2*-amd64.img.xz)
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FW=${1:-uefi}; IMG=${2:-$(ls -t "$DIR"/deploy/amd64/unitotem-2*-amd64.img.xz 2>/dev/null | head -1)}
 W="$DIR/work/deploy-e2e"; mkdir -p "$W/out"
-[ -f "$IMG" ] || { echo "no full amd64 image (deploy/amd64/unitotem-<date>-amd64.img.xz)"; exit 1; }
+[ -f "$IMG" ] || { echo "no amd64 image (deploy/amd64/unitotem-<date>-amd64.img.xz)"; exit 1; }
 [ -e /dev/kvm ] || { echo "no /dev/kvm"; exit 1; }
 FB=2372; WEB=8473; DISK="$W/e2e-$FW.img"; ok=0; fail=0
 check() { local n=$1; shift; if "$@" >/dev/null 2>&1; then ok=$((ok + 1)); echo "PASS: $n"; else fail=$((fail + 1)); echo "FAIL: $n"; fi; }

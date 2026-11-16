@@ -34,7 +34,6 @@ bin bash mountpoint nosuchtool
 real realtool
 file /etc/group
 file /usr/lib/unitotem/ota-engine.sh
-logo unitotem-logo-256x73
 terminfo l/linux
 module mod_forced
 module-opt present-mod absent_mod builtin-mod
@@ -82,8 +81,6 @@ def build_root(base, efi):
     write(os.path.join(root, "usr/bin/x86tool"), "x86tool fixture\n", 0o755)
     write(os.path.join(root, "etc/group"), "root:x:0:\n")
     write(os.path.join(root, "usr/lib/unitotem/ota-engine.sh"), "#!/bin/bash\n", 0o755)
-    for ext in ("bgrx", "rgb565", "spans"):
-        write(os.path.join(root, "usr/lib/unitotem/unitotem-logo-256x73." + ext), "logo " + ext)
     write(os.path.join(root, "usr/share/terminfo/l/linux"), "linux terminfo fixture\n")
     write(os.path.join(root, "usr/lib/x86dir/marker"), "x\n")
     kdir = os.path.join(root, "usr/lib/modules", KVER)
@@ -177,9 +174,6 @@ for tag, arch, efi, x86_on in CASES:
     check(t + "real directive overwrites the BusyBox placeholder",
           is_file_with(p(dest, "usr/bin/realtool"), "realtool fixture\n"))
     check(t + "bin directive copies found commands", os.path.isfile(p(dest, "usr/bin/mountpoint")))
-    check(t + "logo directive copies the three logo files",
-          all(os.path.isfile(p(dest, "usr/lib/unitotem/unitotem-logo-256x73." + e))
-              for e in ("bgrx", "rgb565", "spans")))
     check(t + "terminfo directive copies the entry",
           os.path.isfile(p(dest, "usr/share/terminfo/l/linux")))
     check(t + "missing bin is reported and skipped",

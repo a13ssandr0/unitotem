@@ -109,6 +109,9 @@ python3 -I "$HERE/tools/slim-installer-initrd.py" "$RT"
 install -m 755 -- "$HERE/unitotem/files/unitotem-installer" "$RT/usr/bin/install"
 install -m 755 -- "$HERE/unitotem/files/unitotem-ssh" "$RT/usr/bin/unitotem-ssh"
 install -m 755 -- "$HERE/unitotem/files/unitotem-installer-start" "$RT/usr/lib/unitotem/unitotem-installer-start"
+# the console art (ota_art) comes from the repository engine: the image'"'"'s recovery initramfs may predate it
+grep -q '^ota_art()' "$HERE/deploy/script/ota-engine.sh" || { echo "deploy/script/ota-engine.sh has no ota_art" >&2; exit 1; }
+install -m 755 -- "$HERE/deploy/script/ota-engine.sh" "$RT/usr/lib/unitotem/ota-engine.sh"
 install -m 755 -- "$(command -v flock)" "$RT/usr/bin/flock"
 # replaces the recovery initramfs' init-premount entry (always the OTA fallback)
 cat > "$RT/scripts/init-premount/zz-unitotem-ota" <<'EOF2'
@@ -122,8 +125,12 @@ chmod 755 "$RT/scripts/init-premount/zz-unitotem-ota"
 # the programs the installer and the console screen run must exist; the ones it never runs must not
 for c in bash whiptail pv xz dd sha256sum sgdisk blockdev blkid lsblk mount umount mountpoint udevadm dropbear dropbearkey \
          ip ipconfig awk sed tr cut od cmp cp mv head tail grep readlink stty setsid kill sleep sync reboot poweroff flock \
-         modprobe; do
+         modprobe efibootmgr; do
     [ -e "$RT/usr/bin/$c" ] || [ -e "$RT/usr/sbin/$c" ] || { echo "installer initramfs lacks $c" >&2; exit 1; }
+done
+# libraries of efibootmgr (the boot entry of a UEFI install)
+for l in libefivar.so.1 libefiboot.so.1; do
+    [ -e "$RT/usr/lib/x86_64-linux-gnu/$l" ] || { echo "installer initramfs lacks $l" >&2; exit 1; }
 done
 for c in partclone.restore wpa_supplicant plymouth grub-install parted; do
     [ ! -e "$RT/usr/bin/$c" ] && [ ! -e "$RT/usr/sbin/$c" ] || { echo "installer initramfs still has $c" >&2; exit 1; }
@@ -133,6 +140,13 @@ INITRD_BYTES=$(stat -c %s -- "$TREE/boot/unitotem/initrd.img")
 echo "initramfs: recovery $RECOVERY_BYTES bytes, installer $INITRD_BYTES bytes"
 
 echo "== GRUB"
+# gfxterm needs a font: unicode.pf2 (grub-common) is copied into the ISO tree and loaded by grub.cfg
+for m in all_video font gfxterm video_bochs video_cirrus vbe; do
+    [ -f "/usr/lib/grub/i386-pc/$m.mod" ] || { echo "grub-pc-bin lacks $m.mod" >&2; exit 1; }
+done
+[ -f /usr/share/grub/unicode.pf2 ] || { echo "grub-common lacks /usr/share/grub/unicode.pf2" >&2; exit 1; }
+mkdir -p "$TREE/boot/grub/fonts"
+cp -- /usr/share/grub/unicode.pf2 "$TREE/boot/grub/fonts/unicode.pf2"
 cat > "$TREE/boot/grub/grub.cfg" <<'EOF'
 set timeout=5
 set default=0
@@ -142,12 +156,28 @@ if serial --unit=0 --speed=115200; then
     terminal_input --append serial
     terminal_output --append serial
 fi
+# Low resolution for the installer screens, same recipe as the OTA entries (unitotem/files/grub-ab-entries):
+# 640x480 framebuffer, default 8x16 console font; nomodeset keeps DRM from switching to native size.
+function unitotem_lowres {
+    insmod all_video
+    insmod font
+    loadfont /boot/grub/fonts/unicode.pf2
+    insmod gfxterm
+    set gfxmode=640x480x32,640x480,800x600x32,800x600,1024x768x32,1024x768,auto
+    terminal_output gfxterm
+    set gfxpayload=keep
+}
 menuentry "Install UniTotem" {
-    linux /boot/unitotem/vmlinuz quiet loglevel=3 consoleblank=0 plymouth.enable=0 console=tty0
+    unitotem_lowres
+    linux /boot/unitotem/vmlinuz quiet loglevel=3 consoleblank=0 plymouth.enable=0 nomodeset console=tty0
     initrd /boot/unitotem/initrd.img
 }
 menuentry "Install UniTotem (serial console)" {
-    linux /boot/unitotem/vmlinuz quiet loglevel=3 consoleblank=0 plymouth.enable=0 console=tty0 console=ttyS0,115200 unitotem.installer.tty=ttyS0
+    unitotem_lowres
+    if serial --unit=0 --speed=115200; then
+        terminal_output --append serial
+    fi
+    linux /boot/unitotem/vmlinuz quiet loglevel=3 consoleblank=0 plymouth.enable=0 nomodeset console=tty0 console=ttyS0,115200 unitotem.installer.tty=ttyS0
     initrd /boot/unitotem/initrd.img
 }
 menuentry "Install UniTotem (safe graphics)" {
@@ -161,7 +191,7 @@ mkdir -p "$TREE/boot/grub/i386-pc"
 cp -- /usr/lib/grub/i386-pc/*.mod /usr/lib/grub/i386-pc/*.lst "$TREE/boot/grub/i386-pc/"
 grub-mkimage -O i386-pc -o "$W/core.img" -p /boot/grub biosdisk iso9660 part_msdos part_gpt normal linux configfile search search_fs_file echo test
 cat /usr/lib/grub/i386-pc/cdboot.img "$W/core.img" > "$TREE/boot/grub/eltorito.img"
-# UEFI: Debian-signed shim -> signed GRUB (monolithic), configuration stub next to them
+# UEFI: Microsoft-signed shim -> Debian-signed GRUB (monolithic), configuration stub next to them
 mkdir -p "$ESPDIR/EFI/BOOT" "$ESPDIR/EFI/debian"
 mv -- "$ESPDIR/shimx64.efi" "$ESPDIR/EFI/BOOT/BOOTX64.EFI"
 mv -- "$ESPDIR/mmx64.efi" "$ESPDIR/EFI/BOOT/mmx64.efi"

@@ -26,10 +26,10 @@ Keys:
 
 `build-ab` (A/B image):
 
-1. `sgdisk` reads partition 2; it must be `ROOT_A`.
+1. `sfdisk -d` reads the partition table (GPT or DOS); ROOT_A is the partition whose filesystem label is `ROOT_A`.
 2. `dd` extracts ROOT_A to a raw file in a temp dir inside `--out`.
 3. `debugfs` reads `/usr/share/unitotem/release-version`; must equal `--version`.
-4. `e2fsck -fp` (exit > 1 aborts). A filesystem smaller than the slot (the minimal build image's shrunk ROOT_A) is grown in the temp copy to `--slot-bytes` (default 5 GiB, a multiple of 1 MiB): `truncate`, `resize2fs`, clean `e2fsck -fn`. A filesystem larger than the slot is refused.
+4. `e2fsck -fp` (exit > 1 aborts). A filesystem smaller than the slot (the image's shrunk ROOT_A) is grown in the temp copy to `--slot-bytes` (default 5 GiB, a multiple of 1 MiB): `truncate`, `resize2fs`, clean `e2fsck -fn`. A filesystem larger than the slot is refused.
 5. `tune2fs -L ROOT_NEW -U <new uuid>`.
 6. `partclone.extfs -c | xz -T0 -6` -> `root.ext4.pc.xz` (role `root`): a full-size slot filesystem, so `unitotem-update` needs no grow step.
 7. `--arch arm64`: FAT partition 1 `::slota` copied with `mcopy`, tarred (owner 0) and xz'd to `bootfiles.tar.xz` (role `bootfiles`).
@@ -63,7 +63,7 @@ Device side (`fetch_trusted`):
 | `build-ab` | `--image IMG --version V --release-key K --keys-json F --out DIR [--channel stable\|beta] [--arch amd64\|arm64] [--slot-bytes N]` | `DIR/vV/` |
 | `build` | `--parts DIR --version V --release-key K --keys-json F --out DIR [--channel] [--layout 1]` | `DIR/vV/` (layout 1, from a parts set) |
 
-Exit 0 success; 1 on error or failed subprocess. Host tools: `openssl`, `sgdisk`, `dd`, `debugfs`, `e2fsck`, `resize2fs`, `tune2fs`, `partclone.extfs`, `xz`, `tar`, `mcopy` (arm64).
+Exit 0 success; 1 on error or failed subprocess. Host tools: `openssl`, `sfdisk`, `dd`, `debugfs`, `e2fsck`, `resize2fs`, `tune2fs`, `partclone.extfs`, `xz`, `tar`, `mcopy` (arm64).
 
 Release directory `vX.Y.Z/`: `manifest.json`, `manifest.json.sig` (detached Ed25519 over raw bytes), `root.ext4.pc.xz`, `bootfiles.tar.xz` (arm64), `keys.json`, `keys.json.sig`, `PRERELEASE` (beta).
 

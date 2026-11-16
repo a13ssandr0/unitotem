@@ -10,9 +10,8 @@ import os
 # Target paths of the usr-merged top-level directories (hook-functions canonicalisation).
 _USR_MERGED = ("/bin", "/sbin")
 _TERMINFO_DIRS = ("/usr/share/terminfo", "/lib/terminfo", "/usr/lib/terminfo")
-_LOGO_EXTS = ("bgrx", "rgb565", "spans")
 _ENGINE = "/usr/lib/unitotem/ota-engine.sh"
-_KNOWN = {"bin", "real", "file", "logo", "terminfo", "module", "module-opt",
+_KNOWN = {"bin", "real", "file", "terminfo", "module", "module-opt",
           "x86-bin", "x86-module", "x86-dir"}
 
 
@@ -102,12 +101,6 @@ def run(stage, modules, list_path):
     for args in groups.get("file", []):
         src = args[0]
         stage.copy_file("file", src, args[1] if len(args) > 1 else src)
-
-    for args in groups.get("logo", []):
-        for base in args:
-            for ext in _LOGO_EXTS:
-                p = "/usr/lib/unitotem/%s.%s" % (base, ext)
-                stage.copy_file("file", p, p)
 
     _link(stage, _ENGINE, "/usr/sbin/unitotem-ota-engine")
 

@@ -56,7 +56,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 - TLS: `/etc/ssl/unitotem.pem` generated once (RSA 2048, self-signed, 365000 days); absent from the image; listed in `ota-preserve.list`.
 - Sysctl (appended to `/etc/sysctl.conf`): `vm.dirty_writeback_centisecs=3000`, `vm.dirty_expire_centisecs=3000`, `vm.dirty_ratio=5`, `vm.dirty_background_ratio=2`.
 - Boot-time fsck repairs without asking (`FSCKFIX=yes` in `/etc/default/rcS`).
-- Journal (`/etc/systemd/journald.conf.d/unitotem.conf`): `Storage=persistent`, `Compress=yes`, `SystemMaxUse=512M`, `RuntimeMaxUse=64M`, `SyncIntervalSec=5min`, `MaxLevelStore=info` (the manager logs at INFO).
+- Journal (`/etc/systemd/journald.conf.d/unitotem.conf`): `Storage=persistent`, `Compress=yes`, `SystemMaxUse=512M`, `RuntimeMaxUse=64M`, `SyncIntervalSec=5min`, `MaxLevelStore=warning` (write budget: [storage-and-persistence.md](storage-and-persistence.md)). The manager marks every stderr line with its sd-daemon priority (`<N>` prefix, `utils/_logging.py`, only under `JOURNAL_STREAM`), so its warnings and errors are stored and its INFO lines are not.
 - Block scheduler: `mq-deadline` on whole non-rotational disks matching `sd[a-z]`, `nvme[0-9]n[0-9]`, `mmcblk[0-9]`.
 - Pi: `vc4` and `v3d` are both listed in `modules-load.d/rpi-gpu.conf` and the initramfs modules; the device tree selects the one it needs.
 - Pi hardware decode is V4L2 mem2mem, not VAAPI: `/dev/video10` H.264 (all models), `/dev/video19` HEVC (Pi 4 and later). arm64 has no VAAPI driver.
@@ -129,7 +129,7 @@ Kernel command line: `unitotem.maintenance=1` (SSH-only maintenance boot), `unit
 
 Firewall (IPv4 and IPv6): accepts tcp 22, 80, 443, 4443 (paired-node mutual TLS), udp 5353, ICMP/ICMPv6, loopback, ESTABLISHED/RELATED.
 
-Logs: syslog tags `unitotem-net-watchdog`, `unitotem-wifi-roam`; journald keeps level info (`MaxLevelStore=info`), 512M persistent.
+Logs: syslog tags `unitotem-net-watchdog`, `unitotem-wifi-roam`; journald keeps warnings and above (`MaxLevelStore=warning`), 512M persistent.
 
 ## Rules and gotchas
 

@@ -3,7 +3,7 @@ exec tail -n +3 "$0"
 # UniTotem A/B: two static entries, one per ROOT slot, found by filesystem label (set per slot by unitotem-update).
 # Installed at /etc/grub.d/10_unitotem_ab. 'saved_entry' in grubenv picks the default; grub-reboot sets a one-shot
 # trial entry that GRUB clears before booting, so a crash during a trial returns to the default slot.
-# unitotem-grub-level: 4   (raise when devices must pick up a change: unitotem-update copies the image's grub.cfg over
+# unitotem-grub-level: 5   (raise when devices must pick up a change: unitotem-update copies the image's grub.cfg over
 # the ESP's only when the shipped level is HIGHER, so a rollback never downgrades the bootloader config)
 # Low resolution for every OTA entry (readable from afar): GRUB sets the firmware framebuffer to the first existing
 # mode of gfxmode, gfxpayload=keep hands it to the kernel, nomodeset keeps DRM drivers from switching to native size.
@@ -51,14 +51,14 @@ menuentry "$unitotem_title_a" --id slot-a {
     insmod part_gpt
     insmod ext2
     search --no-floppy --set=root --label ROOT_A
-    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=a ${unitotem_video}
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=a ${unitotem_video}
     initrd /initrd.img
 }
 menuentry "$unitotem_title_b" --id slot-b {
     insmod part_gpt
     insmod ext2
     search --no-floppy --set=root --label ROOT_B
-    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=b ${unitotem_video}
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=b ${unitotem_video}
     initrd /initrd.img
 }
 menuentry 'UniTotem (Slot A, OTA recovery)' --id slot-a-recover {
@@ -66,7 +66,7 @@ menuentry 'UniTotem (Slot A, OTA recovery)' --id slot-a-recover {
     insmod ext2
     unitotem_lowres
     search --no-floppy --set=root --label ROOT_A
-    linux /vmlinuz root=LABEL=ROOT_A ro quiet nomodeset fbcon=font:TER16x32 unitotem.ota=recover unitotem.slot=a
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet nomodeset unitotem.ota=recover unitotem.slot=a
     initrd /initrd.img
 }
 menuentry 'UniTotem (Slot B, OTA recovery)' --id slot-b-recover {
@@ -74,7 +74,7 @@ menuentry 'UniTotem (Slot B, OTA recovery)' --id slot-b-recover {
     insmod ext2
     unitotem_lowres
     search --no-floppy --set=root --label ROOT_B
-    linux /vmlinuz root=LABEL=ROOT_B ro quiet nomodeset fbcon=font:TER16x32 unitotem.ota=recover unitotem.slot=b
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet nomodeset unitotem.ota=recover unitotem.slot=b
     initrd /initrd.img
 }
 # The resident fallback on the ESP. Deliberately LAST: when grubenv is unreadable (a torn write) GRUB
@@ -86,6 +86,6 @@ menuentry 'UniTotem OTA fallback' --id ota-recovery {
     insmod fat
     unitotem_lowres
     search --no-floppy --set=root --label EFI
-    linux /unitotem/recovery-vmlinuz nomodeset quiet loglevel=3 fbcon=font:TER16x32 unitotem.ota=1 console=tty0 console=ttyS0,115200
+    linux /unitotem/recovery-vmlinuz nomodeset quiet loglevel=3 unitotem.ota=1 console=tty0 console=ttyS0,115200
     initrd /unitotem/recovery-initrd.img
 }

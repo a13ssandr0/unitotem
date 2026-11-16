@@ -32,7 +32,6 @@ cat > "$t/ota-initrd.list" << LIST
 bin fxbash
 file /usr/lib/unitotem/ota-engine.sh
 file /etc/group
-logo fxlogo
 bin fxone fxmissing fxtwo
 real fxdd fxnotthere
 terminfo l/linux v/vt220 v/vt100
@@ -70,9 +69,6 @@ cat > "$t/expected.log" << EXP
 copy_exec $t/bin/fxbash
 copy_file file /usr/lib/unitotem/ota-engine.sh /usr/lib/unitotem/ota-engine.sh
 copy_file file /etc/group /etc/group
-copy_file file /usr/lib/unitotem/fxlogo.bgrx /usr/lib/unitotem/fxlogo.bgrx
-copy_file file /usr/lib/unitotem/fxlogo.rgb565 /usr/lib/unitotem/fxlogo.rgb565
-copy_file file /usr/lib/unitotem/fxlogo.spans /usr/lib/unitotem/fxlogo.spans
 copy_exec $t/bin/fxone
 copy_exec $t/bin/fxtwo
 copy_file file $t/lib/libfx.so.1 $t/lib/libfx.so.1
@@ -136,6 +132,8 @@ dash -n "$REPO/unitotem/files/ota-hook" && sh -n "$REPO/unitotem/files/ota-hook"
 python3 -I "$REPO/unitotem/ninitrd/lists.py" "$REPO/unitotem/files/ota-initrd.list" > /dev/null && ok "lists.py parses the real list" || bad "lists.py real list"
 printf 'bin a/../b\n' > "$t/bad.list"
 python3 -I "$REPO/unitotem/ninitrd/lists.py" "$t/bad.list" > /dev/null 2>&1; [ $? = 1 ] && ok "lists.py rejects '..'" || bad "lists.py accepted '..'"
+printf 'logo unitotem-logo-256x73\n' > "$t/bad.list"
+python3 -I "$REPO/unitotem/ninitrd/lists.py" "$t/bad.list" > /dev/null 2>&1; [ $? = 1 ] && ok "lists.py rejects the retired logo directive" || bad "lists.py accepted logo"
 
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILED"
 exit $fail

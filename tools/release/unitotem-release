@@ -13,11 +13,25 @@ device needs nothing beyond the openssl it already ships. See docs/system/ab-upd
               is grown to the slot size first, so the payload is always a full-size slot filesystem)
   build       --parts DIR --version V --release-key K --keys-json F --out DIR [--channel stable|beta]
 """
-import argparse, hashlib, json, os, shutil, subprocess, sys, time
+import argparse, hashlib, json, os, re, shutil, subprocess, sys, time
 
 
 def run(*cmd):
     subprocess.run(cmd, check=True)
+
+
+def part_bounds(image, number):
+    """First and last sector of partition `number` of a GPT or DOS image (sfdisk JSON)."""
+    r = subprocess.run(["sfdisk", "--json", image], capture_output=True, text=True)
+    if r.returncode:
+        sys.exit(f"{image}: no partition table: not an A/B image")
+    table = json.loads(r.stdout)["partitiontable"]
+    if table.get("sectorsize") != 512:
+        sys.exit(f"{image}: sector size {table.get('sectorsize')}, expected 512")
+    for p in table["partitions"]:
+        if int(re.search(r"(\d+)$", p["node"]).group(1)) == number:
+            return p["start"], p["start"] + p["size"] - 1
+    sys.exit(f"{image}: no partition {number}: not an A/B image")
 
 
 def sign(key, path):
@@ -127,18 +141,20 @@ def cmd_build_ab(a):
     tag = "v" + a.version
     out = os.path.join(a.out, tag)
     os.makedirs(out, exist_ok=True)
-    info = subprocess.run(["sgdisk", "-i", "2", a.image], check=True, capture_output=True, text=True).stdout
-    first = int(next(l for l in info.splitlines() if l.startswith("First sector")).split(":")[1].split()[0])
-    last = int(next(l for l in info.splitlines() if l.startswith("Last sector")).split(":")[1].split()[0])
-    name = next(l for l in info.splitlines() if l.startswith("Partition name")).split("'")[1]
-    if name != "ROOT_A":
-        sys.exit(f"partition 2 is '{name}', expected ROOT_A: not an A/B image")
+    first, last = part_bounds(a.image, 2)
     with tempfile.TemporaryDirectory(dir=a.out) as td:
         raw = os.path.join(td, "rootA.img")
         # conv=sparse keeps the unused part of a shrunk ROOT_A out of the temp file; truncate restores the exact
         # length (dd conv=sparse leaves a short file when the partition ends in zeros).
         run("dd", f"if={a.image}", f"of={raw}", "bs=512", f"skip={first}", f"count={last - first + 1}", "conv=sparse", "status=none")
         run("truncate", "-s", str((last - first + 1) * 512), raw)
+        # Identity: the ext4 label of partition 2 (GPT and DOS tables carry no common partition name).
+        # Checked before anything changes the copy.
+        lab = subprocess.run(["e2label", raw], capture_output=True, text=True)
+        if lab.returncode:
+            sys.exit("partition 2 has no ext4 filesystem: not an A/B image")
+        if lab.stdout.strip() != "ROOT_A":
+            sys.exit(f"partition 2 is '{lab.stdout.strip()}', expected ROOT_A: not an A/B image")
         ver = subprocess.run(["debugfs", "-R", "cat /usr/share/unitotem/release-version", raw],
                              capture_output=True, text=True).stdout.strip()
         if ver != a.version:
@@ -175,9 +191,7 @@ def cmd_build_ab(a):
     if a.arch == "arm64":
         # Raspberry: the slot's kernel/initramfs/dtbs/overlays live on the FAT partition (p1), in slota/.
         # Ship them as their own asset; the device re-targets cmdline.txt for the slot it installs them in.
-        info1 = subprocess.run(["sgdisk", "-i", "1", a.image], check=True, capture_output=True, text=True).stdout
-        f1 = int(next(l for l in info1.splitlines() if l.startswith("First sector")).split(":")[1].split()[0])
-        l1 = int(next(l for l in info1.splitlines() if l.startswith("Last sector")).split(":")[1].split()[0])
+        f1, l1 = part_bounds(a.image, 1)
         with tempfile.TemporaryDirectory(dir=a.out) as td:
             fat = os.path.join(td, "fw.img")
             run("dd", f"if={a.image}", f"of={fat}", "bs=512", f"skip={f1}", f"count={l1 - f1 + 1}", "status=none")
