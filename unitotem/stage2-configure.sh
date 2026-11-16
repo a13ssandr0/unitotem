@@ -277,6 +277,12 @@ install -m 644 /unitotem/files/unitotem-update-auto.service "${ROOTFS}/etc/syste
 install -m 644 /unitotem/files/unitotem-update-auto.timer "${ROOTFS}/etc/systemd/system/unitotem-update-auto.timer"
 install -d "${ROOTFS}/usr/lib/unitotem"
 install -m 644 /unitotem/files/unitotem_identity.py "${ROOTFS}/usr/lib/unitotem/unitotem_identity.py"
+# Bootloader EEPROM staging (Raspberry Pi OS rpi-eeprom unit, arm64 only): ordering, writable FAT for the run, exit mapping
+if [ "$ARCH" = "arm64" ]; then
+    install -m 755 /unitotem/files/unitotem-eeprom-update "${ROOTFS}/usr/lib/unitotem/eeprom-update"
+    install -d "${ROOTFS}/usr/lib/systemd/system/rpi-eeprom-update.service.d"
+    install -m 644 /unitotem/files/rpi-eeprom-update.service.d-unitotem.conf "${ROOTFS}/usr/lib/systemd/system/rpi-eeprom-update.service.d/10-unitotem.conf"
+fi
 # the web UI logs in through PAM with system accounts of this group (the manager postinst creates it too)
 if [ "$NATIVE_BUILD" = 1 ]; then
     grep -q '^unitotem:' "${ROOTFS}/etc/group" || groupadd -P "${ROOTFS}" --system unitotem

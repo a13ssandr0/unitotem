@@ -134,3 +134,17 @@ Environment variables (defaults in brackets): `UNITOTEM_FW_BOOT` [/boot/firmware
 - Power cut between the two files of a pair, on hardware.
 - The bootloader's flash on a real Pi 4 and Pi 5, and the removal of `pieeprom.upd` after it.
 - Real archive access: tests use the fake archive only.
+
+## Automatic EEPROM staging (arm64 image)
+
+Raspberry Pi OS's package `rpi-eeprom` ships `rpi-eeprom-update.service` (oneshot, `rpi-eeprom-update -s -a`, enabled by the package preset). The image adds the drop-in `/usr/lib/systemd/system/rpi-eeprom-update.service.d/10-unitotem.conf` and the helper `/usr/lib/unitotem/eeprom-update` (`unitotem/files/`, installed by stage 2 on arm64 only; amd64 has no `rpi-eeprom`).
+
+- Order: `After=multi-user.target network-online.target time-sync.target` (after the target, so the unit never delays `unitotem-boot-ok`, which follows `multi-user.target`), `Wants=network-online.target`, no `Requires=`. Nothing pulls `time-sync.target` in (`systemd-time-wait-sync` is disabled and waits forever), so `check` itself waits at most 60 s for `timedatectl` `NTPSynchronized=yes` (poll every 2 s). `TimeoutStartSec=150`, `Nice=19`, idle IO.
+- `ConditionPathExists=/proc/device-tree/chosen/bootloader/build-timestamp`: boards without an EEPROM bootloader (Pi 3) skip the unit.
+- `ExecCondition=... check` (exit 1 = skip, not a failure, logged at notice): clock not synchronized, `get_throttled` bits 0-3 set now (under-voltage, frequency cap, throttled, soft temperature limit) or unreadable, `mount -o remount,rw /boot/firmware` failed, or the FAT not writable. A successful check leaves the FAT read-write.
+- `ExecStart=... run` calls `rpi-eeprom-update -s -a`, `sync`, maps exit 0 and 3 (version frozen) to success, and logs any other status at warning (the journal keeps warnings and above only; the tool's own stderr is info and would be lost). A staged `pieeprom.upd` or `recovery.bin` is logged at warning: `EEPROM update staged, applied at the next restart`.
+- `ExecStopPost=... ro` remounts the FAT read-only after a run, a skip or a failure.
+- Why the stock unit failed (exit 2 = `EXIT_FAILED`, any `die`): the FAT is mounted read-only, and with a bootloader older than `BOOTLOADER_AUTO_UPDATE_MIN_VERSION` (May 2025 build) `-s` does not skip; `removePreviousUpdates` (`rm -f` of a staged `pieeprom.upd`/`recovery.bin`) or the `cp` to `${BOOTFS}` then fails. A bootloader at or above the minimum exits 0 after "Skipping automatic bootloader upgrade". Measured on a Pi 4 with the May 2026 bootloader: the unit ends `active (exited)`, status 0, package image Oct 30 2026 not staged.
+- Visibility: the staged `pieeprom.upd` is `eeprom.pending` and `reboot_required` in `unitotem-firmware status`, so the Updates page card shows the restart need ([node-system](../manager/node-system.md)).
+- The bootloader applies the image at the next restart. Risk: a power cut during that flash (SPI) can leave the board unbootable; the under-voltage guard reduces, not removes, this.
+- Test: `tools/release/test_eeprom_unit.sh`.

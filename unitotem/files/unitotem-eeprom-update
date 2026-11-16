@@ -1,0 +1,56 @@
+#!/bin/bash
+# Support for rpi-eeprom-update.service (drop-in 10-unitotem.conf): conditions, writable boot FAT for the run, exit mapping.
+#   check  ExecCondition: exit 0 = run, 1 = skip (not a failure). Clock, power and FAT writability are checked; the FAT is left read-write.
+#   run    ExecStart: stages the bundled EEPROM image (rpi-eeprom-update -s -a); 0 and 3 (frozen) are success, anything else is logged and returned.
+#   ro     ExecStopPost: boot FAT read-only again (idempotent, also after a skip or a failure).
+# Inspired by rpi-eeprom (rpi-eeprom-update); the remount follows unitotem-firmware.
+set -u
+BOOT="${UNITOTEM_EEPROM_BOOT:-/boot/firmware}"
+TOOL="${UNITOTEM_EEPROM_TOOL:-/usr/bin/rpi-eeprom-update}"
+WAIT="${UNITOTEM_EEPROM_CLOCK_WAIT:-60}"
+log() { logger -t unitotem-eeprom -p "daemon.$1" -- "$2"; }
+skip() { log notice "skipped: $1"; exit 1; }
+
+case "${1:-}" in
+check)
+    # the staged image carries the clock as its timestamp: wait (bounded) for NTP
+    t=0
+    while [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" != yes ]; do
+        [ "$t" -ge "$WAIT" ] && skip "clock not synchronized"
+        sleep 2; t=$((t + 2))
+    done
+    # under-voltage, frequency cap, throttling or soft temperature limit now (bits 0-3); unreadable is a skip
+    v=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/^throttled=\(0x[0-9a-fA-F]\{1,8\}\)$/\1/p')
+    [ -n "$v" ] || skip "power state unreadable"
+    [ $((v & 0xF)) -eq 0 ] || skip "power or temperature problem now (get_throttled=$v)"
+    if mountpoint -q -- "$BOOT"; then
+        mount -o remount,rw -- "$BOOT" || skip "boot FAT cannot be made writable"
+    fi
+    [ -w "$BOOT" ] || skip "boot FAT not writable"
+    exit 0
+    ;;
+run)
+    out=$("$TOOL" -s -a 2>&1); rc=$?
+    sync
+    [ -z "$out" ] || printf '%s\n' "$out"
+    case "$rc" in
+    0)
+        if [ -e "$BOOT/pieeprom.upd" ] || [ -e "$BOOT/recovery.bin" ]; then
+            log warning "EEPROM update staged, applied at the next restart"
+        fi
+        exit 0 ;;
+    3) exit 0 ;;
+    *)
+        log warning "rpi-eeprom-update failed (exit $rc): $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"
+        exit "$rc" ;;
+    esac
+    ;;
+ro)
+    if mountpoint -q -- "$BOOT"; then
+        sync
+        mount -o remount,ro -- "$BOOT" || log warning "boot FAT could not be remounted read-only"
+    fi
+    exit 0
+    ;;
+*) echo "usage: unitotem-eeprom-update check|run|ro" >&2; exit 64 ;;
+esac

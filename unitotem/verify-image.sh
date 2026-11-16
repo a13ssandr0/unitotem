@@ -22,6 +22,18 @@ FAT=$R/boot/efi; [ "$ARCH" = arm64 ] && FAT=$R/boot/firmware
 FAT="${FAT_DIR:-$FAT}"   # by hand on a mounted image the FAT is a separate mount: FAT_DIR=/path
 ENG=$R/usr/lib/unitotem/ota-engine.sh
 
+if [ "$ARCH" = arm64 ]; then
+    echo "== EEPROM staging (rpi-eeprom-update.service drop-in)"
+    DI="$R/usr/lib/systemd/system/rpi-eeprom-update.service.d/10-unitotem.conf"
+    chk "helper /usr/lib/unitotem/eeprom-update is executable" test -x "$R/usr/lib/unitotem/eeprom-update"
+    chk "drop-in orders the unit after multi-user.target (it never gates boot confirmation), network-online.target and time-sync.target" file_has "$DI" '^After=multi-user\.target network-online\.target time-sync\.target$'
+    chk "drop-in wants network-online.target and has no hard Requires=" bash -c "grep -qE '^Wants=network-online\.target\$' '$DI' && ! grep -q '^Requires=' '$DI'"
+    chk "drop-in bounds the start (TimeoutStartSec)" file_has "$DI" '^TimeoutStartSec=[0-9]+$'
+    chk "drop-in skips without an EEPROM bootloader (ConditionPathExists)" file_has "$DI" '^ConditionPathExists=/proc/device-tree/chosen/bootloader/build-timestamp$'
+    chk "drop-in has ExecCondition check, ExecStart run and ExecStopPost ro" bash -c "grep -q '^ExecCondition=/usr/lib/unitotem/eeprom-update check\$' '$DI' && grep -q '^ExecStart=/usr/lib/unitotem/eeprom-update run\$' '$DI' && grep -q '^ExecStopPost=/usr/lib/unitotem/eeprom-update ro\$' '$DI'"
+    chk "the rpi-eeprom unit is shipped by the package" test -f "$R/usr/lib/systemd/system/rpi-eeprom-update.service"
+fi
+
 echo "== Language and wording of the on-screen OTA text (English; 'update' by default, 'recovery' only for self-detected faults)"
 chk "engine present in the image" test -s "$ENG"
 # strings that can reach a display: status lines, the header, the idle text
