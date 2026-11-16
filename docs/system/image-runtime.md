@@ -30,6 +30,7 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 | `unitotem/files/plymouthd.conf` | `Theme=unitotem`, `ShowDelay=0`, `DeviceTimeout=8` |
 | `unitotem/files/unitotem-nouveau-fallback.sh` | `/usr/lib/unitotem/nouveau-fallback` (amd64): loads nouveau for an NVIDIA display device with no driver ([NVIDIA](#nvidia-amd64)) |
 | `unitotem/files/unitotem-nouveau-fallback.service` | `/usr/lib/systemd/system/unitotem-nouveau-fallback.service`, enabled by a `multi-user.target.wants` symlink |
+| `unitotem/files/unitotem-eeprom-update`, `rpi-eeprom-update.service.d-unitotem.conf` | arm64: `/usr/lib/unitotem/eeprom-update` and drop-in `10-unitotem.conf` of the package unit `rpi-eeprom-update.service` ([firmware](firmware.md#automatic-eeprom-staging)) |
 | `unitotem/files/ota-preserve.list` | `/etc` paths kept across OTA |
 | `unitotem/files/unitotem-pwquality` | PAM profile for the password policy (see [Password policy](#password-policy)) |
 | `tools/release/test_wifi_roam.py` | Roam logic test |
@@ -235,6 +236,7 @@ On an A/B update the new image's PAM files replace the old ones; no `ota-preserv
 
 - `unitotem/verify-image.sh ROOT_MOUNT ARCH [AB_LAYOUT]`: Wi-Fi NM conf, roam, CPU governor, labwc, PipeWire root units, manager drop-in, firewall 4443, no certificate, no blanking in labwc config, root first-access state (empty shadow field, login shell, marker group), sshd root policy and `Match` block, persist `home` entry, password policy (see [Password policy](#password-policy)).
 - `python3 tools/release/test_wifi_roam.py`.
+- `tools/release/test_eeprom_unit.sh`: EEPROM staging helper and drop-in directives with fake tools (no device).
 - Verified on a GTX 1060 (Pascal) passed through to a VM, image 2026.11.53: nvidia.ko fails at GSP init, the fallback loads nouveau, KMS works, and the kiosk runs only with `firmware-nvidia-graphics` installed (1080p60: canvas 60 fps, WebGL2 59.9 fps, H.264/VP9 1080p30 in software, 30 min soak without drops or restarts; 4K60: canvas 42 fps, heavy WebGL2 15.8 fps, no reclocking). Not verified: Secure Boot with the DKMS module, GPU clocks on nouveau, other NVIDIA generations, real hardware outside passthrough.
 
 ### Locale and tools
