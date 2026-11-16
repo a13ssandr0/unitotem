@@ -221,6 +221,9 @@ echo "== The recovery environment carries every command the OTA engine runs"
 RINIT="$FAT/unitotem/recovery-initrd.img"; [ "$ARCH" = arm64 ] && RINIT="$FAT/recovery-initrd.img"
 chk "recovery initrd has every external command ota-engine.sh runs (tr and cmp were missing: amd64 set-default-recovery and --secure-boot shim died mid-deploy)" \
     bash "$(dirname "${BASH_SOURCE[0]}")/check-recovery-commands.sh" "$R" "$RINIT" "$ENG"
+# 100 MiB: GRUB 2.06 answers "error: out of memory" on the 225 MB initrd that carried every GPU firmware (field node, 3.5 GB RAM)
+[ "$ARCH" = amd64 ] && chk "the amd64 recovery initrd is at most 100 MiB (old GRUB cannot load a larger one)" \
+    bash -c "[ \$(stat -c %s '$RINIT') -le 104857600 ]"
 chk "recovery initrd carries the linux terminfo entry (without it whiptail draws in mono with ASCII borders)" \
     bash -c "python3 -I '$(dirname "${BASH_SOURCE[0]}")/initrd-scan.py' list '$RINIT' 2>/dev/null | grep -q 'usr/share/terminfo/l/linux'"
 chk "recovery initrd carries the current ota-engine.sh (a stale copy had no static address for the fallback)" \

@@ -22,6 +22,20 @@ DEFAULT_LIST = os.path.join(HERE, "files", "ota-initrd.list")
 DEFAULT_HOOK = os.path.join(HERE, "ninitrd", "otahook.py")
 
 
+# GRUB 2.06 (legacy and Secure Boot PCs) loads the initrd into a bounded memory area and fails with
+# "error: out of memory" on a large one; the same limit is in stage1-recovery-initrd.sh and verify-image.sh.
+INITRD_MAX = {"amd64": 100 * 1024 * 1024}
+
+
+def check_size(path, arch):
+    """Fails when the initrd is larger than the limit of its architecture."""
+    limit = INITRD_MAX.get(arch)
+    size = os.path.getsize(path)
+    if limit is not None and size > limit:
+        die(f"{path} is {size} bytes, over the {limit} byte limit of the {arch} recovery initrd "
+            f"(GRUB 2.06 answers 'error: out of memory'); see docs/system/boot.md")
+
+
 def die(msg):
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -120,6 +134,7 @@ def main(argv=None):
         initrd = os.path.join(out, f"recovery-initrd-{args.arch}.img")
         vmlinuz = os.path.join(out, f"recovery-vmlinuz-{args.arch}")
         assemble.pack(dest, initrd, work, level)
+        check_size(initrd, args.arch)
         shutil.copyfile(os.path.join(root, "boot", f"vmlinuz-{kver}"), vmlinuz)
         manifest = os.path.join(out, "recovery.manifest")
         with open(manifest, "w", encoding="utf-8") as fh:

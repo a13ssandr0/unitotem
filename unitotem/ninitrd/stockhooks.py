@@ -606,8 +606,9 @@ HOOKS = {
 }
 
 
-def run_stock_hooks(stage, modules):
-    """Run the stock hooks in mkinitramfs order. The CONFDIR hooks are not part of this port."""
+def run_stock_hooks(stage, modules, skip=()):
+    """Run the stock hooks in mkinitramfs order, except those named in skip. The CONFDIR hooks are not part of this port."""
     conf = read_conf(stage)
     for name in hook_order():
-        HOOKS[name](stage, modules, conf)
+        if name not in skip:
+            HOOKS[name](stage, modules, conf)

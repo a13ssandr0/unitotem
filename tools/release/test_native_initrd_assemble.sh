@@ -108,7 +108,7 @@ def stub_modules(base):
 
     modules.Modules = Modules
     stockhooks = types.ModuleType("stockhooks")
-    stockhooks.run_stock_hooks = lambda st, mods: None
+    stockhooks.run_stock_hooks = lambda st, mods, skip=(): None
     stockhooks.hook_kmod = lambda st, mods, conf=None: None
     sys.modules.update(stage=stage, modules=modules, stockhooks=stockhooks)
     hook_path = os.path.join(base, "hook_stub.py")
@@ -231,6 +231,27 @@ try:
         except SystemExit as exc:
             code = exc.code
     check(code == 1 and "expected exactly one kernel" in err.getvalue(), "two kernels fail with a clear message")
+    # size guard: amd64 over the limit fails, arm64 and a small file pass
+    sys.path.insert(0, os.path.join(REPO, "unitotem"))
+    spec = importlib.util.spec_from_file_location("brid", os.path.join(REPO, "unitotem", "build-recovery-initrd.py"))
+    brid = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(brid)
+    big = os.path.join(base, "big.img")
+    with open(big, "wb") as fh:
+        fh.truncate(brid.INITRD_MAX["amd64"] + 1)
+    err = io.StringIO()
+    code = None
+    with contextlib.redirect_stderr(err):
+        try:
+            brid.check_size(big, "amd64")
+        except SystemExit as exc:
+            code = exc.code
+    check(code == 1 and "out of memory" in err.getvalue(), "an amd64 recovery initrd over the limit fails the build")
+    brid.check_size(big, "arm64")
+    with open(big, "r+b") as fh:
+        fh.truncate(brid.INITRD_MAX["amd64"])
+    brid.check_size(big, "amd64")
+    check(True, "an amd64 initrd at the limit and an arm64 one pass")
 finally:
     if failures:
         print(f"fixture kept for inspection: {base}")

@@ -48,6 +48,12 @@ install -m 755 /unitotem/files/ota-recovery-init-premount \
 grep -q '^MODULES=most' "${ROOTFS}/etc/initramfs-tools/initramfs.conf" \
     || sed -i 's/^MODULES=.*/MODULES=most/' "${ROOTFS}/etc/initramfs-tools/initramfs.conf"
 
+# The amd64 fallback shows no splash (console: efifb/VGA): the stock plymouth hook would add every DRM module and its
+# firmware (about 250 MB), which GRUB 2.06 cannot load ("error: out of memory"). The chroot is thrown away, the hook goes with it.
+if [ "${ARCH}" = amd64 ]; then
+    rm -f "${ROOTFS}/usr/share/initramfs-tools/hooks/plymouth" "${ROOTFS}/etc/initramfs-tools/hooks/plymouth"
+fi
+
 KDIRS=$(find "${ROOTFS}/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
 KCOUNT=$(printf '%s' "${KDIRS}" | grep -c . || true)
 [ "${KCOUNT}" = 1 ] || { echo "ERROR: expected exactly one kernel under ${ROOTFS}/lib/modules, found ${KCOUNT}" >&2; exit 1; }
@@ -57,6 +63,11 @@ echo "Kernel version: ${KVER}"
 chroot "${ROOTFS}" mkinitramfs -o "/tmp/recovery-initrd.img" "${KVER}"
 
 cp "${ROOTFS}/tmp/recovery-initrd.img" "${WORK_DIR}/recovery/recovery-initrd-${ARCH}.img"
+# Same limit as build-recovery-initrd.py and verify-image.sh (amd64 only).
+if [ "${ARCH}" = amd64 ] && [ "$(stat -c %s "${WORK_DIR}/recovery/recovery-initrd-${ARCH}.img")" -gt 104857600 ]; then
+    echo "ERROR: the amd64 recovery initrd is over 104857600 bytes (GRUB 2.06 answers 'error: out of memory'); see docs/system/boot.md" >&2
+    exit 1
+fi
 cp "${ROOTFS}/boot/vmlinuz-${KVER}"    "${WORK_DIR}/recovery/recovery-vmlinuz-${ARCH}"
 
 VMLINUZ_SHA=$(sha256sum "${WORK_DIR}/recovery/recovery-vmlinuz-${ARCH}"    | cut -d' ' -f1)
