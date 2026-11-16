@@ -84,6 +84,17 @@ class MigrateTest(unittest.TestCase):
         self.assertEqual(self.run_main(archive=bad), 1)
         self.assertEqual(self.fake.state.setup_calls, [])
 
+    def test_password_is_asked_on_the_terminal_when_no_file_is_given(self):
+        from unittest import mock
+        with mock.patch.object(mig.getpass, 'getpass', side_effect=['s3cret-Pw', 's3cret-Pw']):
+            self.assertEqual(mig.ask_password('admin'), 's3cret-Pw')
+        with mock.patch.object(mig.getpass, 'getpass', side_effect=['one', 'two']):
+            with self.assertRaises(mig.Failure):
+                mig.ask_password('admin')
+        with mock.patch.object(mig.getpass, 'getpass', side_effect=EOFError):
+            with self.assertRaises(mig.Failure):
+                mig.ask_password('admin')
+
 
 if __name__ == '__main__':
     unittest.main()

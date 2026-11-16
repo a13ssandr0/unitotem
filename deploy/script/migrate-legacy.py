@@ -5,9 +5,9 @@ The input is the archive that `deploy/script/remote-deploy.sh` wrote before it r
 file, the uploaded media, the hostname, the time zone and the marked lines of root's crontab are put in the layout of `import-unitotem2.py`,
 which does the import. When the new system has no administrator yet, the one named here is created through the setup page first.
 
-    migrate-legacy.py --archive FILE --host IP [--port N] --admin-user NAME --admin-password-file FILE [--timezone ZONE] [--playlist NAME]
+    migrate-legacy.py --archive FILE --host IP [--port N] --admin-user NAME [--admin-password-file FILE] [--timezone ZONE] [--playlist NAME]
 
-The password is read from the file, never from the command line. The configuration is migrated as it was: nothing is added to it.
+The password is read from the file, or typed twice on the terminal when no file is given; never from the command line. The configuration is migrated as it was: nothing is added to it.
 """
 import argparse
 import hashlib
@@ -16,6 +16,7 @@ import importlib.util
 import json
 import logging
 import os
+import getpass
 import re
 import ssl
 import subprocess
@@ -117,32 +118,54 @@ def ensure_admin(host, port, user, password, fp):
     log.info('administrator %s created on %s', user, host)
 
 
+def ask_password(user):
+    """The password of the administrator, typed twice on the terminal (getpass reads /dev/tty, so it works behind sudo)."""
+    try:
+        first = getpass.getpass('Password of %s: ' % user)
+        if first != getpass.getpass('Repeat the password: '):
+            raise Failure('the passwords differ')
+    except (EOFError, OSError):
+        raise Failure('no terminal to ask the password: use --admin-password-file')
+    return first
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('--archive', help='without it only the administrator is created')
     p.add_argument('--host', required=True)
     p.add_argument('--port', type=int, default=443)
     p.add_argument('--admin-user', required=True)
-    p.add_argument('--admin-password-file', required=True)
+    p.add_argument('--admin-password-file', help='default: asked on the terminal')
     p.add_argument('--timezone', help='replaces the time zone of the archive')
     p.add_argument('--playlist', help='name of the playlist (default: the hostname of the archive)')
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', stream=sys.stderr)
     try:
-        password = Path(args.admin_password_file).read_text(encoding='utf-8').splitlines()[0]
+        if args.admin_password_file:
+            password = Path(args.admin_password_file).read_text(encoding='utf-8').splitlines()[0]
+        else:
+            password = ask_password(args.admin_user)
         if not password:
             raise Failure('empty password')
         with tempfile.TemporaryDirectory(prefix='unitotem-migrate-') as tmp:
+            password_file = args.admin_password_file
+            if not password_file:   # the importer reads a file; 0600 inside the private temporary directory
+                password_file = str(Path(tmp, 'password'))
+                fd = os.open(password_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    f.write(password + '\n')
+            root, source = Path(tmp, 'root'), Path(tmp, 'source')
+            name = None
+            if args.archive:   # a refused archive is found before anything is created on the device
+                root.mkdir()
+                extract(args.archive, root)
+                name = build_source(root, source, args.timezone)
             fp = fingerprint(args.host, args.port)
             ensure_admin(args.host, args.port, args.admin_user, password, fp)
             if not args.archive:
                 return 0
-            root, source = Path(tmp, 'root'), Path(tmp, 'source')
-            root.mkdir()
-            extract(args.archive, root)
-            name = build_source(root, source, args.timezone)
             os.environ.update(UNITOTEM_URL='https://%s:%d' % (args.host, args.port), UNITOTEM_USER=args.admin_user,
-                              UNITOTEM_PASSWORD_FILE=args.admin_password_file)
+                              UNITOTEM_PASSWORD_FILE=password_file)
             cmd = ['--source', str(source), '--fingerprint', fp, '--playlist', args.playlist or name]
             if (source / 'crontab').is_file():
                 cmd += ['--crontab', str(source / 'crontab')]
