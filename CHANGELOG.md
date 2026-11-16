@@ -5,6 +5,7 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Image and build
+- amd64 fallback initrd without the GPU modules and their firmware (225 -> 83 MB on disk, limit 100 MiB checked by the build and `verify-image`): an old GRUB 2.06 failed with "out of memory" loading it on a deploy from an earlier UniTotem.
 - One image file per architecture (`unitotem-<date>-<arch>.img.xz`; arm64 written as MBR at build time, amd64 GPT); the `-flash` variant and `make-flash-image.sh` are gone.
 - A deploy that keeps DATA carries the local accounts into the new system (`deploy-identity.py`, `ota-engine.sh install-identity`); `migrate-etc-overlay` archives the other slot's overlays instead of deleting them.
 - Serial getty skipped on a port the kernel reports without a UART (`serial-getty-real-uart.conf`): stops the restart loop and its `wtmp` writes.

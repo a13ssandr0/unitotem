@@ -339,7 +339,9 @@ def build(root, dest, arch, kver, engine, list_path, hook, warn=_warn, slot=Fals
                 st.copy_file("config", f"/{sub}/modprobe.d/{name}")
 
     mods.apply()
-    stockhooks.run_stock_hooks(st, mods)
+    # The amd64 fallback has no splash and its console is efifb/VGA: plymouth would add every DRM module and its
+    # GPU firmware (about 250 MB), which GRUB 2.06 cannot load. The Pi fallback keeps it (its console is vc4 DRM).
+    stockhooks.run_stock_hooks(st, mods, skip=("plymouth",) if arch == "amd64" and not slot else ())
     hook.run(st, mods, list_path)
 
     scripts = os.path.join(dest, "scripts")
