@@ -104,13 +104,13 @@ _sshpass() {
 }
 
 if [ "$OTA_AUTH" = key ]; then
-    SSH_OPTS=(-o BatchMode=yes -o PreferredAuthentications=publickey \
+    SSH_OPTS=(-o BatchMode=yes -o PreferredAuthentications=publickey -o StrictHostKeyChecking=accept-new \
               -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-    SCP_OPTS=(-o BatchMode=yes -o PreferredAuthentications=publickey -o ConnectTimeout=10)
+    SCP_OPTS=(-o BatchMode=yes -o PreferredAuthentications=publickey -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 else
-    SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no \
+    SSH_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new \
               -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-    SCP_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=10)
+    SCP_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 fi
 
 # Privilege on the REAL system's channel: a device being adopted usually has root SSH disabled, yet nearly
