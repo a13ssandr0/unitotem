@@ -380,7 +380,7 @@ select_disk() {
         [ -n "$chosen" ] || die "--disk $OPT_DISK not found among the detected disks (use 'probe' to list them)"
     fi
 
-    if [ -z "$chosen" ] && [ ${#DISKS[@]} -eq 1 ] && [ "$OPT_YES" = 1 ]; then
+    if [ -z "$chosen" ] && [ ${#DISKS[@]} -eq 1 ]; then   # a single disk is the target; the confirmation below names it
         chosen="${DISKS[0]}"
     fi
 
