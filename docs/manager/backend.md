@@ -137,6 +137,7 @@ Password rules: see [security.md](security.md).
 
 ## Rules and gotchas
 
+- A playlist pushes its `Scheduler/assets` and `Scheduler/current` changes through the binder of `PlaylistsManager.set_binder` (set by the Scheduler API object): it runs for every playlist at `get`/`default`, so playlists loaded after the API object exists (start, restore, remote bundle) are bound before anything changes them. Measured on a real node before the fix: an edit changed the playlist but no client was told.
 - Core runs on a plain Debian server: no subprocess, DBus, sysfs writes or systemctl in core. Machine control belongs to the node plugin. `utils/system/` only reads.
 - Core never imports plugins; plugins may import core.
 - Notification producers import `utils.notifications` only. Text is plain (never markup). Sender text is truncated.
