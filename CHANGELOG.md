@@ -8,6 +8,7 @@
 - A playlist loaded at start was never bound to the clients' push: an edit (duration, name, enable) changed the playlist but the page kept the old value until a reload. `PlaylistsManager.set_binder` binds every playlist, loaded, created or restored.
 
 #### Image and build
+- NetworkManager Wi-Fi retry limit: `connection.autoconnect-retries=0` was rejected as an unknown key in `conf.d` (limit stayed 4); now `[main] autoconnect-retries-default=0`, checked by `verify-image`.
 - Raspberry Pi EEPROM staging (`rpi-eeprom-update.service` drop-in, arm64): runs after the network and the clock are up and after `multi-user.target`, with the boot FAT writable only for the run, skipped on under-voltage or throttling, never leaves the system `degraded`; `tools/release/test_eeprom_unit.sh`.
 - amd64 fallback initrd without the GPU modules and their firmware (225 -> 83 MB on disk, limit 100 MiB checked by the build and `verify-image`): an old GRUB 2.06 failed with "out of memory" loading it on a deploy from an earlier UniTotem.
 - One image file per architecture (`unitotem-<date>-<arch>.img.xz`; arm64 written as MBR at build time, amd64 GPT); the `-flash` variant and `make-flash-image.sh` are gone.

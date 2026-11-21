@@ -99,7 +99,8 @@
 - [manager/webui] Settings -> Updates with the previous version in the other slot: checked only through `unitotem-update --json status` (UI needs a login); error reply shape of `Settings/Update/*` (updates.vue:324-330) assumed.
 - [system] Auto-update policy modes (download/stage/reboot/scheduled) never exercised live on devices.
 - [system] Deploy backup of an earlier single-root UniTotem (1.x/2.x) tested on a fake root only; a full deploy with backup on a real disk never run.
-- [system] Wi-Fi: `unitotem-wifi-roam` never seen completing a roam on a real two-AP site; AP off/on test of autoconnect-retries=0 not run.
+- [system] Wi-Fi: `unitotem-wifi-roam` never seen completing a roam on a real two-AP site; AP off/on test of `autoconnect-retries-default=0` not run.
+- [system] Production nodes .2/.4/.6 (Pi 4/3, trixie, NM 1.52.1, cabled, no Wi-Fi profile) log `brcmfmac: power save enabled` every ~413 s (~600 dmesg lines per boot); not reproduced on an idle test Pi 4 (none up to 470 s): cause open, needs an NM TRACE window on a node (consent needed).
 - [system] Identity merge at OTA (`migrate-etc-overlay`): accounts, root password and browser profile across a real A/B cycle.
 - [system] Mixed versions (old viewer + new manager and reverse) and rollback with a turned screen: reasoned, never run; GRUB fallback/recover on real amd64 end to end.
 - [system] Session bus for root, `unitotem-boot-orientation` on boards, new `rc.xml` (Alt+F4) on boards.

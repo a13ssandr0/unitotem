@@ -121,7 +121,7 @@ Config:
 - `/etc/unitotem/net-watchdog.conf`: `ENABLED` (0 disables), `THRESHOLD_MIN` (15).
 - `/etc/unitotem/wifi-roam.conf` (optional, `KEY=VALUE` integers): `ENABLED=1`, `GOOD_DBM=-55`, `MARGIN_DB=10`, `MIN_INTERVAL_S=300`, `IGNORE_S=900`. Env: `UNITOTEM_WIFI_ROAM_CONF`, `UNITOTEM_WIFI_ROAM_STATE`. Not shipped; defaults apply.
 - `/etc/unitotem/update.conf`: `UPDATE_HEALTH_URL=` (empty) when the image has no manager with `/health`.
-- `/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf`: `connection.autoconnect-retries=0`, `wifi.powersave=2`.
+- `/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf`: `[main] autoconnect-retries-default=0` (0 = forever; the default is 4 failed activations, blocked for 300 s), `[connection] wifi.powersave=2`. `connection.autoconnect-retries` is a per-profile property: in `conf.d` NetworkManager 1.52 rejects it ("unknown key") and the limit stayed 4. Verified on a Pi 4: the new key loads without a warning; "forever" read from the 1.52.1 source, not exercised against an access point.
 - `/etc/ssh/sshd_config`: `Port 22`, `PermitRootLogin prohibit-password`, `PermitEmptyPasswords no`, `PasswordAuthentication yes`, `PubkeyAuthentication yes`, `MaxAuthTries 5`, `LoginGraceTime 30`, `ClientAliveInterval 300`, `ClientAliveCountMax 2`, `X11Forwarding no`, `AllowTcpForwarding no`, `SetEnv LANG=<default locale>`, and the final block `Match User root Group unitotem-first-admin` (see [Root and first access](#root-and-first-access)).
 
 Runtime state: `/run/unitotem-net-watchdog.count`, `/run/unitotem-wifi-roam.json`, `/run/unitotem/xdg/wayland-0`, `/run/user/0`.

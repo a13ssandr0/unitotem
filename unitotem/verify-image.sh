@@ -11,7 +11,8 @@ bad() { n=$((n+1)); fail=$((fail+1)); echo "  FAIL: $1" >&2; }
 chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 installed() { awk -v p="$1" 'BEGIN{RS="";FS="\n"} $1=="Package: " p {for(i=1;i<=NF;i++) if($i=="Status: install ok installed") f=1} END{exit !f}' "$R/var/lib/dpkg/status"; }
 file_has() { grep -qE -- "$2" "$1" 2>/dev/null; }
-chk "Wi-Fi profiles are retried without limit (NetworkManager autoconnect-retries=0)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^connection\.autoconnect-retries=0$'
+chk "Wi-Fi profiles are retried without limit (NetworkManager [main] autoconnect-retries-default=0)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^autoconnect-retries-default=0$'
+chk "the NetworkManager Wi-Fi config has no key NetworkManager rejects as unknown (connection.autoconnect-retries)" bash -c "! grep -q '^connection\.autoconnect-retries' $R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf"
 chk "Wi-Fi radio power save is off (NetworkManager wifi.powersave=2)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^wifi\.powersave=2$'
 chk "the ACPI storm guard and its timer are installed and enabled (an HP laptop raised one ACPI event 10000 times a second)" bash -c "test -x $R/usr/sbin/unitotem-acpi-storm-guard && test -L $R/etc/systemd/system/timers.target.wants/unitotem-acpi-storm-guard.timer"
 chk "serial-getty is skipped on a port without a UART (type 0): ExecCondition drop-in installed (a laptop with console=ttyS0 restarted agetty 199 times in 34 minutes)" grep -qF -- '!= 0 ]' "$R/etc/systemd/system/serial-getty@.service.d/10-unitotem-real-uart.conf"
