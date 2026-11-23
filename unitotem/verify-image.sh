@@ -163,7 +163,7 @@ for _t in sgdisk sfdisk partx resize2fs e2fsck dumpe2fs mke2fs blkid readlink dd
     chk "$_t is in the initramfs hook list (layout and growth of DATA)" file_has "$R/usr/share/unitotem-ota/ota-initrd.list" "(^|[[:space:]])${_t}([[:space:]]|\$)"
 done
 for pkg in unitotem unitotem-manager unitotem-node unitotem-viewer python3-cefpython3 plymouth-theme-unitotem; do
-    chk "package $pkg is installed at 3.x" bash -c "awk -v p='$pkg' 'BEGIN{RS=\"\";FS=\"\\n\"} \$1==\"Package: \"p{for(i=1;i<=NF;i++) if(\$i ~ /^Version: 3\\./) f=1} END{exit !f}' $R/var/lib/dpkg/status"
+    chk "package $pkg is installed" bash -c "grep -qx 'Package: $pkg' $R/var/lib/dpkg/status"
 done
 want=3e; [ "$ARCH" = arm64 ] && want=b7   # ELF e_machine: 0x3e x86-64, 0xb7 aarch64 (no `file` needed: it is not on every build host)
 CEFD="$R/usr/lib/python3/dist-packages/cefpython3"
@@ -342,6 +342,23 @@ chk "the initramfs engine picks the slot by partition position among duplicate l
 chk "partclone.extfs (source of the slot copy) is installed" bash -c "test -x '$R/usr/sbin/partclone.extfs' || test -x '$R/usr/bin/partclone.extfs'"
 chk "update root key installed" test -s "$R/usr/share/unitotem/update-keys/root.pub"
 chk "release-version present" test -s "$R/usr/share/unitotem/release-version"
+# Release identity: the version is one line of the grammar YYYY.MM[.N][~rcN] (mirrors unitotem_version_valid in common.sh).
+version_ok() { [[ "$1" =~ ^[0-9]{4}\.[0-9]{2}(\.[0-9]+)?(~[a-z]+[0-9]+)?$ ]]; }
+file_is_version() { [ "$(wc -l < "$1")" = 1 ] && version_ok "$(cat "$1")"; }
+same() { [ -n "$1" ] && [ "$1" = "$2" ]; }
+UTR="$R/usr/share/unitotem/unitotem-release"
+ur() { (. "$UTR" 2>/dev/null && printf '%s' "${!1:-}"); }   # one value of unitotem-release, read as os-release
+RV=$(cat "$R/usr/share/unitotem/release-version" 2>/dev/null || true)
+PKGV=$(dpkg-query --admindir="$R/var/lib/dpkg" -W -f='${Version}' unitotem 2>/dev/null || true)
+chk "unitotem-release present" test -s "$UTR"
+chk "unitotem-release parses as os-release (shell-quoted)" bash -c ". '$UTR'"
+chk "unitotem package installed in the image" test -n "$PKGV"
+chk "unitotem package version is the version grammar" version_ok "$PKGV"
+chk "VERSION_ID equals release-version" same "$(ur VERSION_ID)" "$RV"
+chk "VERSION_ID equals the unitotem package version" same "$(ur VERSION_ID)" "$PKGV"
+chk "PRETTY_NAME is \"UniTotem <version>\"" same "$(ur PRETTY_NAME)" "UniTotem $RV"
+chk "UNITOTEM_BASE is set (the Debian PRETTY_NAME)" test -n "$(ur UNITOTEM_BASE)"
+chk "UNITOTEM_ARCH equals the image arch" same "$(ur UNITOTEM_ARCH)" "$ARCH"
 RSET="$R/usr/share/unitotem/recovery"
 RFAT="$FAT/unitotem"; [ "$ARCH" = arm64 ] && RFAT="$FAT"
 chk "image recovery set: manifest level line" bash -c "head -1 '$RSET/manifest' | grep -qE '^# unitotem-recovery-level: [0-9]{14}\$'"
@@ -356,7 +373,7 @@ chk "the health gate is on (the 3.x manager provides /health; update.conf does n
 
 if [ "$AB" = 1 ]; then
 echo "== A/B layout"
-    chk "release version is a plain version string" bash -c "grep -qE '^[0-9]+(\\.[0-9]+)+$' $R/usr/share/unitotem/release-version"
+    chk "release version is one line of the version grammar YYYY.MM[.N][~rcN]" file_is_version "$R/usr/share/unitotem/release-version"
     chk "root= uses the slot label, fstab has no / line" bash -c "! grep -qE '^LABEL=ROOT[[:space:]]+/[[:space:]]' $R/etc/fstab"
     chk "boot-ok runs the health gate on every boot (clears the FAT boot counter)" file_has "$R/usr/sbin/unitotem-boot-ok" 'boot-ok'
     chk "the initramfs engine carries the boot counter gate" bash -c "grep -rqs bootcount_gate '$R/usr/lib/unitotem/ota-engine.sh' '$R/etc/initramfs-tools/hooks/' '$R/usr/share/initramfs-tools/'"

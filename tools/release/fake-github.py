@@ -2,7 +2,7 @@
 """Minimal stand-in for GitHub Releases, for testing the update client offline.
 
 Serves the layout `unitotem-release build` produces (ROOT/vX.Y.Z/<assets>) under the same URLs GitHub uses:
-  /<owner>/<repo>/releases/latest/download/<asset>   -> 302 to the newest non-PRERELEASE tag
+  /<owner>/<repo>/releases/latest/download/<asset>   -> 302 to the newest non-PRERELEASE tag (version.py order)
   /<owner>/<repo>/releases/download/<tag>/<asset>    -> 302 to /objects/<tag>/<asset>  (GitHub redirects
                                                          to a different host here; same shape, same host)
   /objects/<tag>/<asset>                             -> the bytes, with Range support
@@ -12,10 +12,13 @@ signature, not TLS, is what the client must rely on.
 import argparse, os, re, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import version as versions  # the one version scheme (version.py)
+
 
 def tags(root):
-    def key(t): return [int(x) if x.isdigit() else x for x in re.split(r"[.\-]", t[1:])]
-    return sorted((t for t in os.listdir(root) if t.startswith("v") and os.path.isdir(os.path.join(root, t))), key=key)
+    """Release directories (vYYYY.MM[.N][-tagN]) in version order; other names are not releases."""
+    names = [t for t in os.listdir(root) if versions.TAG_RE.fullmatch(t) and os.path.isdir(os.path.join(root, t))]
+    return sorted(names, key=lambda t: versions.key(versions.version_from_tag(t)))
 
 
 class H(BaseHTTPRequestHandler):
@@ -36,11 +39,11 @@ class H(BaseHTTPRequestHandler):
             stable = [t for t in tags(self.root) if not os.path.exists(os.path.join(self.root, t, "PRERELEASE"))]
             if not stable: return self.send_error(404)
             return self.redirect(f"/{m[1]}/{m[2]}/releases/download/{stable[-1]}/{m[3]}")
-        m = re.fullmatch(r"/([^/]+)/([^/]+)/releases/download/(v[^/]+)/([^/]+)", p)
-        if m:
+        m = re.fullmatch(r"/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)", p)
+        if m and versions.TAG_RE.fullmatch(m[3]):
             return self.redirect(f"/objects/{m[3]}/{m[4]}")
-        m = re.fullmatch(r"/objects/(v[^/]+)/([^/]+)", p)
-        if not m: return self.send_error(404)
+        m = re.fullmatch(r"/objects/([^/]+)/([^/]+)", p)
+        if not m or not versions.TAG_RE.fullmatch(m[1]): return self.send_error(404)
         path = os.path.join(self.root, m[1], m[2])
         if not os.path.isfile(path): return self.send_error(404)
         size = os.path.getsize(path); start, end, code = 0, size - 1, 200

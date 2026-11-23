@@ -107,7 +107,7 @@ with tempfile.TemporaryDirectory() as td:
     sh("mmd", "-i", fat, "::slota"); sh("mcopy", "-s", "-i", fat, src + "/.", "::slota/") if False else None
     for f in ("kernel8.img", "initramfs8", "bcm2711-rpi-4-b.dtb", "cmdline.txt"): sh("mcopy", "-i", fat, os.path.join(src, f), "::slota/")
     sh("mmd", "-i", fat, "::slota/overlays"); sh("mcopy", "-i", fat, src + "/overlays/vc4.dtbo", "::slota/overlays/")
-    rootdir = os.path.join(td, "rootdir"); os.makedirs(rootdir + "/usr/share/unitotem"); open(rootdir + "/usr/share/unitotem/release-version", "w").write("9.9.9\n")
+    rootdir = os.path.join(td, "rootdir"); os.makedirs(rootdir + "/usr/share/unitotem"); open(rootdir + "/usr/share/unitotem/release-version", "w").write("2026.12\n")
     # Build image layout: ROOT_A shrunk to its minimum, partition = filesystem + 16 MiB (as the build leaves it).
     def arm_image(name, shrink):
         ext = os.path.join(td, name + "-ext.img"); sh("truncate", "-s", "64M", ext)
@@ -133,23 +133,23 @@ with tempfile.TemporaryDirectory() as td:
     R_ = os.path.join(HERE, "unitotem-release")
     sh(R_, "keygen", "--dir", keys, "--name", "root"); sh(R_, "keygen", "--dir", keys, "--name", "release")
     sh(R_, "sign-keys", "--root-key", keys + "/root.key", "--pub", keys + "/release.pub", "--seq", "1", "--out", td + "/keys.json")
-    sh(R_, "build-ab", "--image", img, "--version", "9.9.9", "--arch", "arm64", "--release-key", keys + "/release.key",
+    sh(R_, "build-ab", "--image", img, "--version", "2026.12", "--arch", "arm64", "--release-key", keys + "/release.key",
        "--keys-json", td + "/keys.json", "--out", rel)
-    man = json.load(open(rel + "/v9.9.9/manifest.json"))
+    man = json.load(open(rel + "/v2026.12/manifest.json"))
     check("arm64 release has root and bootfiles", sorted(p["role"] for p in man["parts"]) == ["bootfiles", "root"])
     # The shrunk ROOT_A is grown to the 5 GiB slot: the root payload restores to a full-size filesystem.
     pc_raw = os.path.join(td, "root-restore.img"); pc = os.path.join(td, "root-restore.pc")
-    with open(pc, "wb") as f: subprocess.run(["xz", "-dc", rel + "/v9.9.9/root.ext4.pc.xz"], stdout=f, check=True)
+    with open(pc, "wb") as f: subprocess.run(["xz", "-dc", rel + "/v2026.12/root.ext4.pc.xz"], stdout=f, check=True)
     sh("truncate", "-s", str(5 * 1024 ** 3), pc_raw)
     sh("partclone.restore", "-C", "-q", "-L", "/dev/null", "-s", pc, "-O", pc_raw)
     blocks = int(next(l for l in sh("tune2fs", "-l", pc_raw).stdout.splitlines() if l.startswith("Block count")).split(":")[1])
     check("arm64 root payload restores to a 5 GiB filesystem", blocks * 4096 == 5 * 1024 ** 3, str(blocks))
-    check("arm64 root payload: release-version intact", sh("debugfs", "-R", "cat /usr/share/unitotem/release-version", pc_raw).stdout.strip() == "9.9.9")
+    check("arm64 root payload: release-version intact", sh("debugfs", "-R", "cat /usr/share/unitotem/release-version", pc_raw).stdout.strip() == "2026.12")
     # Full-size ROOT_A (no shrink, no grow): the same release path with --slot-bytes equal to the partition.
     relf = os.path.join(td, "rel-full")
-    sh(R_, "build-ab", "--image", full_img, "--version", "9.9.9", "--arch", "arm64", "--slot-bytes", str(full_bytes),
+    sh(R_, "build-ab", "--image", full_img, "--version", "2026.12", "--arch", "arm64", "--slot-bytes", str(full_bytes),
        "--release-key", keys + "/release.key", "--keys-json", td + "/keys.json", "--out", relf)
-    check("arm64 full-size ROOT_A: release built without grow", sorted(os.listdir(relf + "/v9.9.9")) == sorted(os.listdir(rel + "/v9.9.9")))
+    check("arm64 full-size ROOT_A: release built without grow", sorted(os.listdir(relf + "/v2026.12")) == sorted(os.listdir(rel + "/v2026.12")))
 
     port = 18099
     srv = subprocess.Popen([sys.executable, os.path.join(HERE, "fake-github.py"), "--root", rel, "--bind", "127.0.0.1", "--port", str(port)],

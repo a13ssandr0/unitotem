@@ -84,7 +84,7 @@ Builds one UniTotem disk image per architecture: `deploy/<arch>/unitotem-<YYYY-M
   - Both: base set (`unitotem/stage1-packages.sh`, installed with Recommends): `locales`, `sudo`, `openssh-server`, `htop`, `btop`, `nano`, `less`, network and Python packages. `htop` is in the base set; `btop` adds `btop` and `libncursesw6`, and `libgpm2` through its Recommends.
   - Both: plymouth (no text plugin), `labwc wlr-randr wlopm wayvnc xwayland qt6-wayland kbd`, pipewire, ddcutil. `xwayland` is present only because labwc starts it lazily and logs an error without it; no X client runs.
   - Both: `libpam-pwquality` with `--no-install-recommends` (Recommends would add `cracklib-runtime`, `wamerican`, `file`). Pulls `libpam-pwquality`, `libpwquality1`, `libpwquality-common`, `libcrack2`. See [image-runtime](image-runtime.md#password-policy).
-  - Manager .debs from `build/extra-debs/<arch>/` installed over the apt set; every unitotem package must be 3.x.
+  - Manager .debs from `build/extra-debs/<arch>/` installed over the apt set; every `unitotem` package must carry the image's version (`python3-cefpython3` excluded), [Versioning](release.md#versioning).
   - Purge: arm64 Chromium (apt); compilers (`dpkg --force-depends`, keeps DKMS modules: `build-essential gcc g++ cpp gcc-14 g++-14 cpp-14 gcc-14-for-host cpp-14-for-host` and the `x86-64-linux-gnu` cross variants; the 7.2 headers depend on `gcc-14-for-host`/`cpp-14-for-host`); `mesa-vulkan-drivers` (apt; the viewer renders through ANGLE-GL, llvmpipe/radeonsi stay in `mesa-libgallium` + `libllvm19`); `libclang1-19` (`dpkg --force-depends`: `libshiboken6` declares it, no shared object loads it); amd64 X server packages. No NVIDIA library is purged: the NVIDIA set is installed with `--no-install-recommends` and pulls no CUDA, NVDEC or Vulkan library.
   - Asserts labwc, wlr-randr, wlopm, wayvnc, mesa-libgallium, libllvm19, libneatvnc and libavcodec61 survive and the NVIDIA module `nvidia.ko*` exists in the single kernel directory (amd64, after each purge). Removes `/var/lib/dkms/mok.key`.
   - Lock: verify (exact match) or freeze to `build/<arch>/<arch>.lock.new`.
@@ -230,14 +230,14 @@ Defaults (`unitotem/common.sh`, env-overridable):
 - Root first-access state (stage 2, no variable): empty password field, login shell `/usr/sbin/unitotem-first-admin`, member of group `unitotem-first-admin`. See [image-runtime](image-runtime.md#root-and-first-access).
 - `UNITOTEM_HOSTNAME` unitotem; `UNITOTEM_LOCALE` en_US.UTF-8; `UNITOTEM_TIMEZONE` UTC.
 - `AB_LAYOUT` 1 (0 = single ROOT). `IMAGE_SIZE` 11G (legacy only; A/B takes the file size from the layout, and the ROOT_A shrink sets the final size). `ROOT_SLOT_SIZE` 5G; `ROOT_SIZE` 8G; `EFI_SIZE`, `FIRMWARE_SIZE` 512M; `BOOT_SIZE` 1G.
-- `RELEASE_VERSION` default `date +%Y.%m.%d`; written to `/usr/share/unitotem/release-version`; must match `^[0-9]+(\.[0-9]+)+$`.
+- `RELEASE_VERSION` unset: taken from the `unitotem` package version (`unitotem-manager/debian/changelog`). Set: must equal that version, else the build fails. Grammar and meaning: [Versioning](release.md#versioning). Written to `/usr/share/unitotem/release-version` and `unitotem-release`.
 - `ROOTFS` /tmp/rootfs, `IMG_MNT` /mnt (both overridden on the native path).
 
 Container mounts: `/dev`, `build` -> `/work`, `deploy` -> `/deploy`, `build/apt-cache` -> `/aptcache`, `unitotem/locks` -> `/unitotem/locks` (ro).
 
 Outputs:
 
-- `deploy/<arch>/unitotem-<date>-<arch>.img.xz` (build date, not `RELEASE_VERSION`): the image ([storage](storage-and-persistence.md#layout)).
+- `deploy/<arch>/unitotem-<date>-<arch>.img.xz` (`IMG_DATE`, the build date; the version is not in the name): the image ([storage](storage-and-persistence.md#layout)).
 - `build/<arch>/recovery/recovery-vmlinuz-<arch>`, `recovery-initrd-<arch>.img`, `recovery.manifest` (keys `UNITOTEM_RECOVERY_{ARCH,KERNEL_VERSION,VMLINUZ_SHA256,INITRD_SHA256,PARTCLONE_VERSION,BUILD_DATE}`). Deploys read the set from the parts set; these host files are the fallback only (`deploy-and-recovery.md`).
 - `build/<arch>/`: `stage{0,1,2}.tar.gz`, `stage2.layout`, `<arch>.lock.new`, `recovery/` (the stage 1b kernel and initrd).
 - `deploy/<arch>/`: what is ready to use, nothing intermediate: `unitotem-<date>-<arch>.img.xz`, preboot image, installer ISO and Windows installer; `deploy/script/`: the deploy tooling (`remote-deploy.sh`, `write-sd.sh`, `make-parts.sh`, ...).
@@ -268,7 +268,7 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 - Console: arm64 `console=ttyS0,115200` needs `enable_uart=1`. ttyS0 follows the Raspberry Pi DTB alias `serial0=&uart1`.
 - Stage 2 re-installs `ota-engine.sh` before `update-initramfs`.
 - Change baseline (`/usr/lib/unitotem/baseline/`, written by stage 3): `packages`, `unowned.sha256`, `verify-expected` (`dpkg -V` deviations of a pristine image, scoped), `meta` (`format=1`, counts, `scan_dirs`). `verify-expected` is best effort: when the chroot cannot run (cross-arch) it is empty and nothing is subtracted. The baseline directory is excluded from the unowned scan on both sides, otherwise it would hash its own files.
-- `release-version` is written before the baseline so the version is part of the pristine image; the baseline runs last, before `verify-image.sh` and the fsck pass.
+- `release-version` and `unitotem-release` are written before the baseline so the version is part of the pristine image; the baseline runs last, before `verify-image.sh` and the fsck pass.
 - Stage 3 removes any same-day image before `truncate`.
 - `AB_LAYOUT` changes invalidate stage 2 through `stage2.layout`, not timestamps.
 - Container output is root-owned: remove it with `docker run --rm -v <parent>:/w <present image> rm -rf -- /w/<name>`, not sudo; creating it with `--user $(id -u):$(id -g)` avoids the problem.

@@ -151,7 +151,7 @@ with tempfile.TemporaryDirectory() as td:
     check("keys.json signed by the root key", verify(root_pub, keys_json, keys_json + ".sig"))
 
     # ---- build-ab, amd64, stable ----
-    VER = "9.9.9"
+    VER = "2026.12"
     img, src_uuid, tree = make_image(td, "amd", VER)
     p2_first, p2_last, _ = part_bounds(img, 2)
     check("build image: ROOT_A shrunk (partition below 5 GiB)", (p2_last - p2_first + 1) * 512 < SLOT,
@@ -183,7 +183,7 @@ with tempfile.TemporaryDirectory() as td:
     check("keys.json copied and signed by the root key", verify(root_pub, vdir + "/keys.json", vdir + "/keys.json.sig") and sha256(vdir + "/keys.json") == sha256(keys_json))
     tampered = os.path.join(td, "tampered.json")
     with open(vdir + "/manifest.json") as f: txt = f.read()
-    with open(tampered, "w") as f: f.write(txt.replace('"version": "9.9.9"', '"version": "9.9.8"'))
+    with open(tampered, "w") as f: f.write(txt.replace('"version": "2026.12"', '"version": "2026.11"'))
     check("tampered manifest fails the signature", not verify(rel_pub, tampered, vdir + "/manifest.json.sig"))
     raw = restore_root(td, vdir + "/root.ext4.pc.xz")
     check("payload restores to a full-size 5 GiB filesystem", fs_size(raw) == SLOT, str(fs_size(raw)))
@@ -197,10 +197,10 @@ with tempfile.TemporaryDirectory() as td:
     sh("e2fsck", "-fn", raw)
 
     # ---- refusals ----
-    bad_ver, _, _ = make_image(td, "badver", "1.0.0")
+    bad_ver, _, _ = make_image(td, "badver", "2026.11")
     o2 = os.path.join(td, "rel-bad")
     r = rel("build-ab", "--image", bad_ver, "--version", VER, "--release-key", rel_key, "--keys-json", keys_json, "--out", o2)
-    check("build-ab: version mismatch refused", r.returncode != 0 and "reports version '1.0.0'" in r.stderr, r.stderr)
+    check("build-ab: version mismatch refused", r.returncode != 0 and "reports version '2026.11'" in r.stderr, r.stderr)
     check("build-ab: no release left after a refusal", not os.path.exists(os.path.join(o2, "v" + VER, "manifest.json")))
     check("build-ab: temp raw copy removed after a refusal", sorted(os.listdir(o2)) == ["v" + VER] and os.listdir(os.path.join(o2, "v" + VER)) == [], str(os.listdir(o2)))
     not_a, _, _ = make_image(td, "notA", VER, root_label="ROOT_B")
@@ -253,6 +253,21 @@ with tempfile.TemporaryDirectory() as td:
     check("build-ab beta: exit 0 and PRERELEASE marker written", r.returncode == 0 and os.path.exists(out_b + "/v" + VER + "/PRERELEASE"), r.stderr)
     check("build-ab beta: manifest channel is beta", json.load(open(out_b + "/v" + VER + "/manifest.json"))["channel"] == "beta")
 
+    # ---- pre-release version: the directory and the git tag use '-' for '~' ----
+    rc, _, _ = make_image(td, "rc", "2026.12~rc1")
+    out_rc = os.path.join(td, "rel-rc")
+    r = rel("build-ab", "--image", rc, "--version", "2026.12~rc1", "--channel", "beta", "--release-key", rel_key, "--keys-json", keys_json, "--out", out_rc)
+    check("build-ab 2026.12~rc1: exit 0, directory is the tag v2026.12-rc1", r.returncode == 0 and os.listdir(out_rc) == ["v2026.12-rc1"], r.stderr + str(os.listdir(out_rc)))
+    check("build-ab 2026.12~rc1: manifest keeps the dpkg form", json.load(open(out_rc + "/v2026.12-rc1/manifest.json"))["version"] == "2026.12~rc1")
+    check("build-ab 2026.12~rc1: PRERELEASE marker written", os.path.exists(out_rc + "/v2026.12-rc1/PRERELEASE"))
+
+    # ---- --version outside the scheme refused before anything is written ----
+    for bad in ("2.3.0", "2026.12-rc1", "v2026.12", "2026.1", "2026.12~RC1"):
+        out_bv = os.path.join(td, "rel-badv")
+        r = rel("build-ab", "--image", img, "--version", bad, "--release-key", rel_key, "--keys-json", keys_json, "--out", out_bv)
+        check(f"build-ab --version {bad!r}: refused with a clear error",
+              r.returncode != 0 and "invalid version" in r.stderr and not os.path.exists(out_bv), r.stderr)
+
     # ---- build-ab, arm64: root + bootfiles ----
     arm, _, _ = make_image(td, "arm", VER, arm=True)
     out_a = os.path.join(td, "rel-arm")
@@ -286,9 +301,9 @@ with tempfile.TemporaryDirectory() as td:
     with open(parts + "/extra.bin", "wb") as f: f.write(b"E" * 128)
     with open(parts + "/SHA256SUMS", "w") as f: f.write("ignored\n")
     out1 = os.path.join(td, "rel-l1")
-    r = rel("build", "--parts", parts, "--version", "2.0.0", "--release-key", rel_key, "--keys-json", keys_json, "--out", out1)
+    r = rel("build", "--parts", parts, "--version", "2026.12", "--release-key", rel_key, "--keys-json", keys_json, "--out", out1)
     check("build: exit 0", r.returncode == 0, r.stderr)
-    d1 = out1 + "/v2.0.0"
+    d1 = out1 + "/v2026.12"
     m1 = json.load(open(d1 + "/manifest.json"))
     check("build: layout defaults to 1, arch from parts.manifest", (m1["layout"], m1["arch"], m1["channel"]) == (1, "amd64", "stable"), str(m1))
     names1 = [p["file"] for p in m1["parts"]]
@@ -299,14 +314,14 @@ with tempfile.TemporaryDirectory() as td:
     check("build: manifest signed by the release key", verify(rel_pub, d1 + "/manifest.json", d1 + "/manifest.json.sig"))
     check("build: keys.json copied", sha256(d1 + "/keys.json") == sha256(keys_json))
     out1b = os.path.join(td, "rel-l1b")
-    r = rel("build", "--parts", parts, "--version", "2.0.1", "--channel", "beta", "--layout", "2", "--release-key", rel_key,
+    r = rel("build", "--parts", parts, "--version", "2026.12~rc1", "--channel", "beta", "--layout", "2", "--release-key", rel_key,
             "--keys-json", keys_json, "--out", out1b)
-    m1b = json.load(open(out1b + "/v2.0.1/manifest.json"))
+    m1b = json.load(open(out1b + "/v2026.12-rc1/manifest.json"))
     check("build: --channel beta writes PRERELEASE and --layout is honoured",
-          r.returncode == 0 and os.path.exists(out1b + "/v2.0.1/PRERELEASE") and m1b["layout"] == 2)
+          r.returncode == 0 and os.path.exists(out1b + "/v2026.12-rc1/PRERELEASE") and m1b["layout"] == 2)
     nometa = os.path.join(td, "nometa"); os.makedirs(nometa)
     with open(nometa + "/a.bin", "wb") as f: f.write(b"A")
-    r = rel("build", "--parts", nometa, "--version", "2.0.2", "--release-key", rel_key, "--keys-json", keys_json, "--out", os.path.join(td, "rel-nometa"))
+    r = rel("build", "--parts", nometa, "--version", "2026.12.1", "--release-key", rel_key, "--keys-json", keys_json, "--out", os.path.join(td, "rel-nometa"))
     check("build: missing parts.manifest refused", r.returncode != 0)
 
 print(f"\n{ok} passed, {fail} failed")

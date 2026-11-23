@@ -100,6 +100,10 @@
 - [system] Auto-update policy modes (download/stage/reboot/scheduled) never exercised live on devices.
 - [system] Deploy backup of an earlier single-root UniTotem (1.x/2.x) tested on a fake root only; a full deploy with backup on a real disk never run.
 - [system] Wi-Fi: `unitotem-wifi-roam` never seen completing a roam on a real two-AP site; AP off/on test of `autoconnect-retries-default=0` not run.
+- [system] Version scheme never exercised on a real image: stage 1 package check, stage 3 `unitotem-release`, `verify-image` checks and the version shown by the viewer/web UI are tested on fake rootfs and unit tests only (no build until the user lifts the ban).
+- [system] `build-ab` does not require `--channel beta` for a `~` version: a `~rc` build on the stable channel can become "latest".
+- [system/manager] The old apt repository (GitHub Pages) is retired in the decision of 2026-11-23, but `unitotem/stage1-packages.sh` still fetches its `KEY.gpg` and installs `unitotem-manager.list` in every image, `docs/system/build.md` and the manager README still describe it, `unitotem-manager/docs/` is the public site: removal needs the user.
+- [system] Manual update path for devices: a secure, simple way for the operator and the end user (replaces the apt line); design open.
 - [system] Identity merge at OTA (`migrate-etc-overlay`): accounts, root password and browser profile across a real A/B cycle.
 - [system] Mixed versions (old viewer + new manager and reverse) and rollback with a turned screen: reasoned, never run; GRUB fallback/recover on real amd64 end to end.
 - [system] Session bus for root, `unitotem-boot-orientation` on boards, new `rc.xml` (Alt+F4) on boards.

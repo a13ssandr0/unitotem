@@ -33,7 +33,8 @@ Templates and resources
 
 Utilities (`manager/utils/`)
 - `plugins.py`: `Plugin` and `BackupPart` contracts, loader (`load`, `each`, `provides`).
-- `constants.py`: version, `BOOT_ID`, default ports, paths.
+- `constants.py`: `BOOT_ID`, default ports, paths.
+- `release.py`: product version and release info (`version()`, `pretty_name()`, `info()`) from `/usr/share/unitotem/unitotem-release`, see [packaging.md](packaging.md#how-it-works).
 - `models/command_line.py`: `cmdargs`. `environment.py`: `environ` (secrets). `migration/`: `advance()` steps run at every start (`v_3_0_0.py`).
 - `models/user.py`: `UserPerms`, `UserData`, `User`, `user_manager`. `osusers.py`: system accounts, PAM. `passwords.py`: username rule and password policy (shared spec `tests/password_vectors.json`). `sessions.py`: logged-in websockets. See [security.md](security.md).
 - `storage/uploadmanager.py`: uploads folder, watcher, `save`, `remove`. `storage/file_info.py`: duration, mime, pages, colour probe.
@@ -59,7 +60,7 @@ Utilities (`manager/utils/`)
 
 ## Interfaces
 
-`--version` is answered first thing in `main.py` (prints `unitotem-manager <version>`, exit 0), before any module reads argv. The other options are parsed by `utils/models/command_line.py` (pydantic-settings, at import; names use underscores):
+`--version` is answered first thing in `main.py` (prints `unitotem-manager <version>` with `release.version()`, exit 0), before any module reads argv. The other options are parsed by `utils/models/command_line.py` (pydantic-settings, at import; names use underscores):
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -91,7 +92,7 @@ HTTP:
 
 | Method and path | Access | Purpose |
 |---|---|---|
-| GET `/health` | loopback | `{status, version}` |
+| GET `/health` | loopback | `{status, version}`; `version` is `release.version()` |
 | GET `/unitotem-first-boot`, `/unitotem-no-assets` | loopback, else 404 | viewer pages |
 | GET `/unitotem-first-boot/address` | loopback | SSE: the address now and at every network change; both idle pages (welcome and no assets) listen to it and rewrite `#ip` |
 | GET `/pdf-view`, POST `/pdf-view/failed` | loopback | PDF page; failure raises `pdf.render.<file>` |

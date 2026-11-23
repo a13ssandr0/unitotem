@@ -5,9 +5,11 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Manager
+- One date-based version for the image and the manager packages (`YYYY.MM`, `YYYY.MM.N`, `YYYY.MM~devN`); the manager reads `/usr/share/unitotem/unitotem-release` at runtime (`manager/utils/release.py`) instead of a hard-coded `3.0.0`, so the login, setup, scheduler, viewer idle pages, web UI, `--version` and `/health` show the full version. `tools/set-release-version.sh` bumps `debian/changelog`.
 - A playlist loaded at start was never bound to the clients' push: an edit (duration, name, enable) changed the playlist but the page kept the old value until a reload. `PlaylistsManager.set_binder` binds every playlist, loaded, created or restored.
 
 #### Image and build
+- Version scheme: `RELEASE_VERSION` is taken from (and must equal) the installed `unitotem` package; the image carries `/usr/share/unitotem/unitotem-release` (os-release format); stage 1 checks that all unitotem packages share one version; `verify-image` checks both files against the package. `unitotem-update` compares versions in dpkg order (`~` pre-releases); release tool, `fake-github` and tags use one module (`tools/release/version.py`, tag `v2026.12-rc1` for `2026.12~rc1`).
 - NetworkManager Wi-Fi retry limit: `connection.autoconnect-retries=0` was rejected as an unknown key in `conf.d` (limit stayed 4); now `[main] autoconnect-retries-default=0`, checked by `verify-image`.
 - Raspberry Pi EEPROM staging (`rpi-eeprom-update.service` drop-in, arm64): runs after the network and the clock are up and after `multi-user.target`, with the boot FAT writable only for the run, skipped on under-voltage or throttling, never leaves the system `degraded`; `tools/release/test_eeprom_unit.sh`.
 - amd64 fallback initrd without the GPU modules and their firmware (225 -> 83 MB on disk, limit 100 MiB checked by the build and `verify-image`): an old GRUB 2.06 failed with "out of memory" loading it on a deploy from an earlier UniTotem.

@@ -5,7 +5,9 @@ Debian packages of `unitotem-manager` (native source package, format `3.0 (nativ
 Paths: relative to `unitotem-manager/`
 
 ## Packages
-Built from `debian/control`. Version scheme `3.0.0~devNN` for pre-releases (all packages share the source version).
+Built from `debian/control`. One product version for the image and all manager packages, date based: `[0-9]{4}\.[0-9]{2}(\.[0-9]+)?(~[a-z]+[0-9]+)?` (fullmatch). `2026.12` monthly release, `2026.12.1` same-month fix, `2026.12~dev1` and `2026.12~rc1` pre-releases. Order: `2026.12~dev1 < 2026.12~rc1 < 2026.12 < 2026.12.1 < 2027.01`. Valid Debian native version (no revision).
+
+Source of the version: the top entry of `debian/changelog`. All binary packages of the source (`unitotem`, `unitotem-manager`, `unitotem-node`, `unitotem-viewer`, `plymouth-theme-unitotem`) share `${source:Version}`; `python3-cefpython3` keeps its own third-party version.
 
 | Package | Arch | Content | Depends on |
 |---|---|---|---|
@@ -20,6 +22,7 @@ Third-party packages built in `packaging/` (not in Debian): `python3-fastapi-log
 
 ## Files
 - `debian/control`, `debian/rules`, `debian/changelog`, `debian/copyright`, `debian/source/format`.
+- `tools/set-release-version.sh VERSION [MESSAGE]`: validates VERSION with the grammar above, prepends a `debian/changelog` entry (default message `Release VERSION`). Refuses when VERSION equals the top entry or is not greater (`dpkg --compare-versions`). No network. Env `CHANGELOG` overrides the path.
 - `debian/unitotem-manager.{install,dirs,postinst,postrm,service,sh,pam,8}`: `.install` installs the man page; `debian/rules` installs `debian/unitotem-first-admin` to `usr/sbin` (mode 0755); `.dirs` creates `/etc/unitotem` and `/usr/share/unitotem-manager/plugins`.
 - `debian/unitotem-first-admin`: first-access script, see [security.md](security.md#root-and-first-access).
 - `debian/unitotem-node.install`: `01-unitotem-nm.yaml` to `/etc/netplan`, `10-wayland.conf` to the manager unit's drop-in directory, `org.unitotem.Notifications.conf` to `/usr/share/dbus-1/system.d`, `90-unitotem-arp.conf` to `/usr/lib/sysctl.d`.
@@ -47,6 +50,8 @@ Maintainer scripts:
 - `plymouth-theme-unitotem.postinst` (configure): `update-alternatives` for `default.plymouth`, `plymouth-set-default-theme unitotem`, `update-initramfs -u` (failures ignored).
 
 Runtime units and config:
+- `/usr/share/unitotem/unitotem-release`: os-release format, written by the image build, image-owned (not in any package). Keys: `NAME`, `ID`, `ID_LIKE`, `VERSION_ID`, `VERSION`, `PRETTY_NAME`, `BUILD_ID`, `UNITOTEM_BASE`, `UNITOTEM_ARCH`. Read by `manager/utils/release.py` (`version()`, `pretty_name()`, `info()`; cached). Env `UNITOTEM_RELEASE_FILE` overrides the path. Without the file (run from git, no image) the version is the installed `unitotem-manager` package version (importlib.metadata), else `development`. No version constant exists in the code.
+- Version shown in full (`2026.12`) on the login, setup, first-boot and no-assets pages, the scheduler page and the web UI footer; `--version`, `/health` and the backup `config.json` `version` use the same value.
 - `unitotem-manager.service`: `Type=notify`, `NotifyAccess=main`, `TimeoutStartSec=300`, `StateDirectory=unitotem`, `Restart=on-failure`, `RestartSec=10`, `KillMode=process`, default `SIGTERM` (CEF disables the `SIGINT` handler; never set `KillSignal=SIGINT`).
 - `10-wayland.conf` (node): `Wants=`/`After=user@0.service`; `XDG_RUNTIME_DIR=/run/user/0`; `WAYLAND_DISPLAY=/run/unitotem/xdg/wayland-0`.
 - PAM service `/etc/pam.d/unitotem-manager`: `common-auth`, `common-account`; the group check is in `manager/utils/osusers.py`.
@@ -79,7 +84,7 @@ Runtime units and config:
 - `ddcutil` is a Recommends of `unitotem-node`, never a Depends and never versioned: a versioned dependency would make the package uninstallable on a distribution with an older ddcutil. The runtime gate (`supports_ddc`, ddcutil 2.0 or newer) reports DDC unavailable with the reason instead. `i2c-tools` is not in the Recommends (image package set only).
 - DDC/CI and CEC need `/dev/i2c-*`: the image's stage 2 writes `/etc/modules-load.d/unitotem-i2c.conf` (`i2c-dev`); without it the manager reports both unavailable. Stage 1 installs `ddcutil`, `v4l-utils` (`cec-ctl`) and `i2c-tools` from the distribution archive.
 - Do not run `dh_python3` on `python3-cefpython3` (ABI tag renames break CEF's own library loading).
-- The apt repository in `docs/` holds `unitotem-manager` 2.1.0 to 2.3.0 only (older single-package line): the 3.0 packages are not in it until `docs/update-pkgs.sh` runs and the maintainer signs.
+- The apt repository in `docs/` holds `unitotem-manager` 2.1.0 to 2.3.0 only (older single-package line): the packages of the current version are not in it until `docs/update-pkgs.sh` runs and the maintainer signs.
 - A development venv uses `manager/requirements.txt` plus the plugin files; `cefpython3` has no PyPI release and comes from `vendor/cefpython-wheels/`.
 
 ## Tests

@@ -4,11 +4,58 @@ Paths: relative to the repository root.
 
 Host-side tooling that creates and signs releases (A/B slot streams, manifest, key list) and backs up the signing keys. The device consumer is `unitotem/files/unitotem-update` (`ab-updates.md`).
 
+## Versioning
+
+One product version for the image and every `unitotem` package. The image is monthly; the version is date based.
+
+Grammar (`fullmatch`): `[0-9]{4}\.[0-9]{2}(\.[0-9]+)?(~[a-z]+[0-9]+)?`
+
+| Version | Meaning |
+|---|---|
+| `2026.12` | Monthly release |
+| `2026.12.1` | Same-month fix |
+| `2026.12~dev1`, `2026.12~rc1` | Pre-release of `2026.12`; sorts before it |
+
+Ordering (dpkg `verrevcmp`; `~` sorts before everything, including the end of the string):
+
+`2026.12~dev1` < `2026.12~rc1` < `2026.12` < `2026.12.1` < `2026.12.2` < `2026.12.10` < `2027.01`
+
+`2026.11.66` < `2026.12`
+
+Source of truth: the top entry of `unitotem-manager/debian/changelog` (source version of all `unitotem` packages; the metapackage `unitotem` carries it). `tools/set-release-version.sh` in the manager repository sets it.
+
+Image build:
+
+- `RELEASE_VERSION` unset: taken from the installed `unitotem` package.
+- `RELEASE_VERSION` set and different from that package version: the build fails.
+- Stage 1 requires every `unitotem` package to share that version. `python3-cefpython3` is excluded: it has its own third-party version.
+
+Image files under `/usr/share/unitotem/`:
+
+- `release-version`: the plain version, one line.
+- `unitotem-release` (os-release format): `NAME="UniTotem"`, `ID=unitotem`, `ID_LIKE=debian`, `VERSION_ID`, `VERSION`, `PRETTY_NAME="UniTotem <version>"`, `BUILD_ID` (UTC build time, ISO 8601), `UNITOTEM_BASE` (`PRETTY_NAME` of the Debian `/etc/os-release`), `UNITOTEM_ARCH` (`amd64` or `arm64`).
+- Debian's `/etc/os-release` is unchanged.
+- `verify-image.sh` checks the grammar, that `unitotem-release` parses, that `VERSION_ID` = `release-version` = the `unitotem` package version, `PRETTY_NAME` and `UNITOTEM_ARCH`.
+- Image file names use the build date (`IMG_DATE`), not the version.
+
+Git tag: `v` + version, with `~` replaced by `-` (`v2026.12-rc1`), because `~` is not valid in a git ref name. The manifest and the image files keep the dpkg form. The conversion in both directions lives in `tools/release/version.py`.
+
+Who reads the version:
+
+- `unitotem-update`: `release-version` (installed version); manifest `version` compared in dpkg order; a version not newer is refused (`not-newer`).
+- GRUB menu title: `grub-version`, written by stage 3.
+- Deploy scripts: `release-version`.
+- Manager (runtime): `unitotem-release` for the UI footer, kiosk viewer, web UI, `--version` and `/health`.
+- GitHub `releases/latest` resolves to the newest non-prerelease release; the device uses it.
+
+Retired: the `3.0.0~devNN` numbering, the `2.x` numbering, the `YYYY.MM.DD` default of `RELEASE_VERSION`, and the old apt repository line (`unitotem-manager.list`). Builds named `2026.11.NN` use the pre-contract daily numbering; they sort below `2026.12`.
+
 ## Files
 
 | Path | Role |
 |---|---|
 | `tools/release/unitotem-release` | CLI: `keygen`, `sign-keys`, `build-ab` (layout 2), `build` (layout 1) |
+| `tools/release/version.py` | Version grammar, dpkg ordering, version to git tag and back ([Versioning](#versioning)) |
 | `tools/release/backup-keys.sh` | Encrypted backup, verify, restore of the signing keys |
 | `tools/release/fake-github.py` | Offline stand-in for GitHub Releases URLs (tests) |
 | `tools/release/test_rpi_backend.py` | End-to-end: `build-ab` on a synthetic arm64 image served by fake-github |
@@ -28,7 +75,7 @@ Keys:
 
 1. `sfdisk -d` reads the partition table (GPT or DOS); ROOT_A is the partition whose filesystem label is `ROOT_A`.
 2. `dd` extracts ROOT_A to a raw file in a temp dir inside `--out`.
-3. `debugfs` reads `/usr/share/unitotem/release-version`; must equal `--version`.
+3. `debugfs` reads `/usr/share/unitotem/release-version`; must equal `--version` ([Versioning](#versioning)).
 4. `e2fsck -fp` (exit > 1 aborts). A filesystem smaller than the slot (the image's shrunk ROOT_A) is grown in the temp copy to `--slot-bytes` (default 5 GiB, a multiple of 1 MiB): `truncate`, `resize2fs`, clean `e2fsck -fn`. A filesystem larger than the slot is refused.
 5. `tune2fs -L ROOT_NEW -U <new uuid>`.
 6. `partclone.extfs -c | xz -T0 -6` -> `root.ext4.pc.xz` (role `root`): a full-size slot filesystem, so `unitotem-update` needs no grow step.
@@ -36,7 +83,7 @@ Keys:
 7. `manifest.json` written, signed with the release key to `manifest.json.sig`.
 8. `keys.json`, `keys.json.sig` copied in. Non-stable channel: empty `PRERELEASE` file.
 
-Output `<out>/v<version>/`; it is published as GitHub release tag `v<version>`.
+Output `<out>/<tag>/`; it is published as GitHub release tag `<tag>` (`v` + version, `~` as `-`: [Versioning](#versioning)).
 
 `build` (layout 1, from a directory of parts files):
 
@@ -60,14 +107,16 @@ Device side (`fetch_trusted`):
 |---|---|---|
 | `keygen` | `--dir D --name N` | `D/N.key` (0600), `D/N.pub`; prints id |
 | `sign-keys` | `--root-key K --pub P` (repeatable) `--seq N --out F` | `F`, `F.sig` |
-| `build-ab` | `--image IMG --version V --release-key K --keys-json F --out DIR [--channel stable\|beta] [--arch amd64\|arm64] [--slot-bytes N]` | `DIR/vV/` |
-| `build` | `--parts DIR --version V --release-key K --keys-json F --out DIR [--channel] [--layout 1]` | `DIR/vV/` (layout 1, from a parts set) |
+| `build-ab` | `--image IMG --version V --release-key K --keys-json F --out DIR [--channel stable\|beta] [--arch amd64\|arm64] [--slot-bytes N]` | `DIR/<tag>/` |
+| `build` | `--parts DIR --version V --release-key K --keys-json F --out DIR [--channel] [--layout 1]` | `DIR/<tag>/` (layout 1, from a parts set) |
+
+`--version` must fullmatch the grammar in [Versioning](#versioning); any other value is refused.
 
 Exit 0 success; 1 on error or failed subprocess. Host tools: `openssl`, `sfdisk`, `dd`, `debugfs`, `e2fsck`, `resize2fs`, `tune2fs`, `partclone.extfs`, `xz`, `tar`, `mcopy` (arm64).
 
-Release directory `vX.Y.Z/`: `manifest.json`, `manifest.json.sig` (detached Ed25519 over raw bytes), `root.ext4.pc.xz`, `bootfiles.tar.xz` (arm64), `keys.json`, `keys.json.sig`, `PRERELEASE` (beta).
+Release directory `<tag>/`: `manifest.json`, `manifest.json.sig` (detached Ed25519 over raw bytes), `root.ext4.pc.xz`, `bootfiles.tar.xz` (arm64), `keys.json`, `keys.json.sig`, `PRERELEASE` (beta).
 
-`manifest.json`: `schema` (1), `version`, `channel`, `arch`, `layout` (2 for `build-ab`, 1 for `build`), `min_updater` (1), `built` (UTC ISO 8601), `parts[]` of `{file, role: root|bootfiles, size, sha256}` (`build` omits `role`).
+`manifest.json`: `schema` (1), `version` (dpkg form, [Versioning](#versioning)), `channel`, `arch`, `layout` (2 for `build-ab`, 1 for `build`), `min_updater` (1), `built` (UTC ISO 8601), `parts[]` of `{file, role: root|bootfiles, size, sha256}` (`build` omits `role`).
 
 `keys.json`: `schema` (1), `seq`, `keys[]` of `{id, pub}` (`pub` = PEM text; only `pub` is read by the device).
 
@@ -85,7 +134,7 @@ Release directory `vX.Y.Z/`: `manifest.json`, `manifest.json.sig` (detached Ed25
 - `seq` must increase on every key list; devices refuse a lower value even if the keys are unchanged.
 - Key rotation takes effect only through a non-prerelease release: devices read `keys.json` from "latest".
 - Only `stable` is installable; `beta` has no device consumer.
-- `build-ab` needs an A/B image (partition 2 = `ROOT_A`) whose `release-version` equals `--version`: build the image with `RELEASE_VERSION=<version>`.
+- `build-ab` needs an A/B image (partition 2 = `ROOT_A`) whose `release-version` equals `--version`. Build the image from the same `unitotem` package version.
 - The raw ROOT_A copy (full partition size) is written inside `--out`: ensure free space.
 - `ROOT_NEW` is deliberate: a half-written copy must never match `root=LABEL=ROOT_A` or GRUB `search --label`. The device renames it after a verified write.
 - Sign on the operator workstation; the root key stays offline. The release key never lives on a build host.

@@ -13,7 +13,7 @@ Component documentation of the UniTotem repository. System docs describe the ima
 - [image-runtime.md](system/image-runtime.md): services, timers, network, Wayland session, maintenance mode on a deployed image.
 - [states-and-access.md](system/states-and-access.md): every state a node can be in (running, first access, volatile, trial, rolled back, maintenance, fallback kinds) and how to reach each.
 - [ab-updates.md](system/ab-updates.md): whole-image A/B updates, health-gated confirm, rollback, automatic policy.
-- [release.md](system/release.md): release tooling and signing keys.
+- [release.md](system/release.md): release tooling, signing keys and the version scheme.
 - [deploy-and-recovery.md](system/deploy-and-recovery.md): network install, OTA fallback and recovery of a target.
 - [windows-install-research.md](system/windows-install-research.md): research on installing from Windows.
 - [ubuntu-gpu-evaluation.md](system/ubuntu-gpu-evaluation.md): Ubuntu base and NVIDIA driver extensions, measurements.

@@ -370,11 +370,11 @@ apt_install \
 #   identical on both architectures), python3-cefpython3 (the only binary one: amd64 or arm64), and the two libraries Debian does not ship
 #   (python3-fastapi-login, python3-sdbus-networkmanager). apt resolves everything else from Debian trixie (and the Raspberry Pi repository).
 LOCAL_DEB_DIR=/work/extra-debs/${ARCH}
-# There is no image without the 3.x manager: the repository's 2.x package is not a
+# There is no image without the UniTotem manager: the repository's 2.x package is not a
 # substitute. Fail here, early, instead of finding out on the device.
 if ! ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
-    echo "ERROR: no unitotem 3.x package supplied (build/extra-debs/${ARCH}/)." >&2
-    echo "       An image without the 3.x manager must not be built." >&2
+    echo "ERROR: no unitotem package supplied (build/extra-debs/${ARCH}/)." >&2
+    echo "       An image without the UniTotem manager must not be built." >&2
     exit 1
 fi
 # ...and the SET must be complete: a missing binary package would otherwise surface as an apt dependency error far from the cause.
@@ -384,6 +384,21 @@ for pkg in unitotem_ unitotem-manager_ unitotem-node_ unitotem-viewer_ plymouth-
 done
 ls "$LOCAL_DEB_DIR"/python3-cefpython3_*_${ARCH}.deb >/dev/null 2>&1 \
     || { echo "ERROR: python3-cefpython3 for ${ARCH} is not in build/extra-debs/${ARCH}/ (a .deb of another architecture cannot be installed)" >&2; exit 1; }
+# One product version for every UniTotem package (the image version is read from the installed unitotem package, stage3).
+# python3-cefpython3 and the two third-party libraries carry their own versions and are not checked.
+UT_VER=""
+for deb in "$LOCAL_DEB_DIR"/*.deb; do
+    p=$(dpkg-deb -f "$deb" Package)
+    case "$p" in unitotem|unitotem-manager|unitotem-node|unitotem-viewer|plymouth-theme-unitotem) ;; *) continue ;; esac
+    v=$(dpkg-deb -f "$deb" Version)
+    [ -n "$UT_VER" ] || UT_VER="$v"
+    [ "$v" = "$UT_VER" ] || { echo "ERROR: $p is $v, the other UniTotem packages are $UT_VER (build/extra-debs/${ARCH}/)" >&2; exit 1; }
+done
+unitotem_version_valid "$UT_VER" \
+    || { echo "ERROR: UniTotem package version '${UT_VER}' does not match YYYY.MM[.N][~rcN]" >&2; exit 1; }
+if [ -n "${RELEASE_VERSION:-}" ] && [ "$RELEASE_VERSION" != "$UT_VER" ]; then
+    echo "ERROR: RELEASE_VERSION=${RELEASE_VERSION} but the UniTotem packages are ${UT_VER}" >&2; exit 1
+fi
 
 # Every .deb in build/extra-debs/<arch>/ is installed over what the apt repository provided,
 # so an image can carry a manager build that is not published.
@@ -411,10 +426,6 @@ if ls "$LOCAL_DEB_DIR"/*.deb >/dev/null 2>&1; then
         rootfs_dpkg_statoverride --update --add root root 0755 "${CEFSUB}"
     fi
     [ -x "${ROOTFS}${CEFSUB}" ] || { echo "ERROR: ${CEFSUB} is not executable" >&2; exit 1; }
-    for pkg in unitotem unitotem-manager unitotem-node unitotem-viewer python3-cefpython3 plymouth-theme-unitotem; do
-        v=$(rootfs_dpkg_query -W -f='${Version}' "$pkg" 2>/dev/null || true)
-        case "$v" in 3.*) ;; *) echo "ERROR: $pkg is not installed at version 3.x (found: '${v}')" >&2; exit 1 ;; esac
-    done
 fi
 
 # ---------- Clean up ----------

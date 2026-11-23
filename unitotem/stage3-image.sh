@@ -440,9 +440,35 @@ fi
 # What unitotem-update compares against the manifest, and what `fetch` re-reads from a freshly written
 # slot to make sure it contains the release it was asked for. Written before the baseline below so it
 # is part of the pristine image rather than reported as a modification.
+# The version is the one of the installed `unitotem` package (stage1 checked that every UniTotem package carries it).
+# RELEASE_VERSION, when set, must equal it. os-release names: /usr/share/unitotem/unitotem-release (Debian's /etc/os-release stays).
+REL_VER=$(dpkg-query --admindir="${IMG_MNT}/var/lib/dpkg" -W -f='${Version}' unitotem 2>/dev/null || true)
+[ -n "$REL_VER" ] || { echo "ERROR: the unitotem package is not installed in the image (${IMG_MNT}/var/lib/dpkg)" >&2; exit 1; }
+unitotem_version_valid "$REL_VER" \
+    || { echo "ERROR: unitotem package version '${REL_VER}' does not match YYYY.MM[.N][~rcN]" >&2; exit 1; }
+if [ -n "${RELEASE_VERSION:-}" ] && [ "$RELEASE_VERSION" != "$REL_VER" ]; then
+    echo "ERROR: RELEASE_VERSION=${RELEASE_VERSION} but the unitotem package is ${REL_VER}" >&2; exit 1
+fi
+DEB_PRETTY=$(. "${IMG_MNT}/etc/os-release" && printf '%s' "${PRETTY_NAME:-}") \
+    || { echo "ERROR: ${IMG_MNT}/etc/os-release cannot be read" >&2; exit 1; }
+[ -n "$DEB_PRETTY" ] || { echo "ERROR: ${IMG_MNT}/etc/os-release has no PRETTY_NAME" >&2; exit 1; }
+# os-release value in double quotes: \ " $ ` escaped, as /etc/os-release does.
+os_quote() { printf '%s' "$1" | sed -e 's/[\\"$`]/\\&/g'; }
+BUILD_ID=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)
 mkdir -p ${IMG_MNT}/usr/share/unitotem
-echo "${RELEASE_VERSION:-$(date +%Y.%m.%d)}" > ${IMG_MNT}/usr/share/unitotem/release-version
-echo "set unitotem_ver=\"$(cat ${IMG_MNT}/usr/share/unitotem/release-version)\"" > ${IMG_MNT}/usr/share/unitotem/grub-version
+printf '%s\n' "$REL_VER" > ${IMG_MNT}/usr/share/unitotem/release-version
+echo "set unitotem_ver=\"${REL_VER}\"" > ${IMG_MNT}/usr/share/unitotem/grub-version
+{
+    echo 'NAME="UniTotem"'
+    echo 'ID=unitotem'
+    echo 'ID_LIKE=debian'
+    echo "VERSION_ID=\"${REL_VER}\""
+    echo "VERSION=\"${REL_VER}\""
+    echo "PRETTY_NAME=\"UniTotem ${REL_VER}\""
+    echo "BUILD_ID=\"${BUILD_ID}\""
+    echo "UNITOTEM_BASE=\"$(os_quote "$DEB_PRETTY")\""
+    echo "UNITOTEM_ARCH=\"${ARCH}\""
+} > ${IMG_MNT}/usr/share/unitotem/unitotem-release
 
 # ---------- Change-detection baseline ----------
 # The last thing done to the image: it records what a pristine install looks like, so anything

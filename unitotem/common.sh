@@ -43,6 +43,13 @@ NATIVE_BUILD="${NATIVE_BUILD:-0}"
 NB_DIR="${NB_DIR:-/tmp/nb}"
 [ "$ARCH" = arm64 ] || NATIVE_BUILD=0
 
+# unitotem_version_valid VERSION: the product version, date based: YYYY.MM, YYYY.MM.N or YYYY.MM~rcN (2026.12, 2026.12.1, 2026.12~rc1).
+# Sorts before the release it precedes. Used by stage1 (package set), stage3 (image) and mirrored in verify-image.sh.
+unitotem_version_valid() {
+    local re='^[0-9]{4}\.[0-9]{2}(\.[0-9]+)?(~[a-z]+[0-9]+)?$'
+    [[ "$1" =~ $re ]]
+}
+
 # nb_setup: shim directory first in PATH, apt configuration of the target, qemu binary in the tree (removed by nb_teardown).
 nb_setup() {
     [ "$NATIVE_BUILD" = 1 ] || return 0

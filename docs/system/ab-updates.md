@@ -28,10 +28,10 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
 
 - **check**: fetch `keys.json`(+`.sig`), verify with `root.pub`; reject `seq` below stored `keys-seq.json`. Fetch `manifest.json`(+`.sig`), verify against any key in `keys.json`; reject `min_updater` > 1. Store the new seq last.
 - **fetch** (detached unit `unitotem-update-fetch`; `--foreground` inline):
-  1. Checks: layout 2, version newer (or `--force`), `root` part exists, slot found by `slot_dev` ([order](#slot-devices-and-repair-writes)), not mounted.
+  1. Checks: layout 2, version newer in dpkg order (or `--force`; `~` sorts before the release, [Versioning](release.md#versioning)), `root` part exists, slot found by `slot_dev` ([order](#slot-devices-and-repair-writes)), not mounted.
   2. `cur` := valid+confirmed; `other` := invalid.
   3. Stream HTTPS -> `xz -dc` -> `partclone.restore -C -s - -o <dev>`; sha256 of the compressed stream must match.
-  4. `e2fsck -fy`; `tune2fs -U random -L ROOT_<X>`; `e2fsck -fn`; mount ro; `release-version` must equal the manifest version; `usr/lib/systemd/systemd` must exist.
+  4. `e2fsck -fy`; `tune2fs -U random -L ROOT_<X>`; `e2fsck -fn`; mount ro; `release-version` must equal the manifest `version` (same dpkg-form string, [Versioning](release.md#versioning)); `usr/lib/systemd/systemd` must exist.
   5. Raspberry: extract `bootfiles` into `<bootfs>/slot<other>/`; rewrite `cmdline.txt` (`root=LABEL=ROOT_<X>`, `unitotem.slot=<x>`).
   6. `prepare_overlays`: new uppers `etc/root/var.<other>`; whitelist import; copy `root.<cur>`; identity merge.
   7. `os.sync()`, then `other` := valid+prepared.

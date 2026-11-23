@@ -9,15 +9,26 @@ device needs nothing beyond the openssl it already ships. See docs/system/ab-upd
   sign-keys   --root-key K --pub P [--pub P ...] --seq N --out keys.json
   build-ab    --image IMG --version V --release-key K --keys-json F --out DIR [--channel ...]
               [--slot-bytes N]
+              V: YYYY.MM, YYYY.MM.N or YYYY.MM~tagN (version.py); the directory is the git tag
+              (~ becomes -: 2026.12~rc1 -> v2026.12-rc1)
               (A/B layout: ROOT_A of a raw image -> root.ext4.pc.xz, role=root; a shrunk ROOT_A
               is grown to the slot size first, so the payload is always a full-size slot filesystem)
   build       --parts DIR --version V --release-key K --keys-json F --out DIR [--channel stable|beta]
 """
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, time
 
+import version as versions  # the one version scheme (version.py)
+
 
 def run(*cmd):
     subprocess.run(cmd, check=True)
+
+
+def version_arg(text):
+    try:
+        return versions.validate(text)
+    except versions.VersionError as e:
+        raise argparse.ArgumentTypeError(str(e))
 
 
 def part_bounds(image, number):
@@ -102,7 +113,7 @@ def cmd_sign_keys(a):
 
 
 def cmd_build(a):
-    tag = "v" + a.version
+    tag = versions.tag_from_version(a.version)
     out = os.path.join(a.out, tag)
     os.makedirs(out, exist_ok=True)
     parts = []
@@ -138,7 +149,7 @@ def cmd_build(a):
 
 def cmd_build_ab(a):
     import tempfile
-    tag = "v" + a.version
+    tag = versions.tag_from_version(a.version)
     out = os.path.join(a.out, tag)
     os.makedirs(out, exist_ok=True)
     first, last = part_bounds(a.image, 2)
@@ -223,11 +234,11 @@ def main():
     p = sp.add_parser("keygen"); p.add_argument("--dir", required=True); p.add_argument("--name", required=True); p.set_defaults(f=cmd_keygen)
     p = sp.add_parser("sign-keys"); p.add_argument("--root-key", required=True); p.add_argument("--pub", action="append", required=True)
     p.add_argument("--seq", type=int, required=True); p.add_argument("--out", required=True); p.set_defaults(f=cmd_sign_keys)
-    p = sp.add_parser("build"); p.add_argument("--parts", required=True); p.add_argument("--version", required=True)
+    p = sp.add_parser("build"); p.add_argument("--parts", required=True); p.add_argument("--version", required=True, type=version_arg)
     p.add_argument("--release-key", required=True); p.add_argument("--keys-json", required=True); p.add_argument("--out", required=True)
     p.add_argument("--channel", default="stable", choices=["stable", "beta"]); p.add_argument("--layout", type=int, default=1)
     p.set_defaults(f=cmd_build)
-    p = sp.add_parser("build-ab"); p.add_argument("--image", required=True); p.add_argument("--version", required=True)
+    p = sp.add_parser("build-ab"); p.add_argument("--image", required=True); p.add_argument("--version", required=True, type=version_arg)
     p.add_argument("--release-key", required=True); p.add_argument("--keys-json", required=True); p.add_argument("--out", required=True)
     p.add_argument("--channel", default="stable", choices=["stable", "beta"]); p.add_argument("--arch", default="amd64")
     p.add_argument("--slot-bytes", type=slot_bytes_arg, default=SLOT_BYTES, help="payload filesystem size (default 5 GiB)")
