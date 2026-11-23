@@ -63,6 +63,10 @@ Runtime behaviour:
 - On-screen keyboard: page reports text focus per frame; text sent with `Input.insertText`/`dispatchKeyEvent`; field rectangle places the keyboard.
 - The keyboard opens by itself when a text field gets focus in any frame and closes when focus leaves, unless the visitor opened it with the button; a `number` or `tel` field switches it to the numeric layout (`utKeyboard.focusChanged`).
 - Screensaver layering (interactive windows): the home page is the base layer and `#stage` (playlist) an overlay hidden until idle, covering the whole window including the margin colour. A shield above everything swallows the first touch (it ends the screensaver) and stays a moment so the compatibility mouse events that follow do not reach the page. The keyboard layer is hidden under the screensaver.
+- Asset swap (`Stage.show` in `boot-screen.html`): a web asset loads into the single web iframe out of sight (`display: block`, `visibility: hidden`, `position: absolute` at 0,0, so it is laid out at full size; never `display: none`, which lays it out at 0x0). The previous asset (image, video, boot) stays on screen until the iframe `load` event, at most `WEB_LOAD_MS` (10 s); then it is revealed anyway. A newer `show()` (`seq`) during the wait abandons the swap. `hideAll()` resets visibility and position. The pane backdrop changes at the swap, not before.
+- Web to web: the same iframe stays visible and navigates at once (Chromium keeps painting the old document until the new one commits).
+- `Stage.current` is set at the start of `show()` and describes the requested asset, the one about to be on screen. `refreshPage` re-navigates it, `inert` and `touch-action` follow it, and `syncMedia` pauses a video still on screen during the load wait (at most 10 s).
+- The playlist sends `Show` when an asset starts and counts its duration from there: the load time of a web asset is part of that duration.
 
 Window and page:
 - Window commands wait for the page LOAD (`_page_loaded`, set on `OnLoadEnd` of the main frame). `OnBrowserCreated` comes before the page exists: a `Show` sent there hit the blank document and was lost.
@@ -159,12 +163,15 @@ Commands from the manager (`target`, `window_id`):
 - The page is `file://`; `disable-web-security` is deliberate (scheduled images are drawn into canvases for the average colour).
 - Pages cannot open popups or print; `window.print` is a no-op; drops are cancelled unless the page handles them.
 - Mouse pointer (`CURSOR_SCRIPT`, every frame): hidden from the start of each document, shown on the first `pointermove` of type mouse, hidden `CURSOR_HIDE_MS` (10 s) after the last one; a touch never shows it. The script runs before the document has a root element (`document.head` and `documentElement` are `null`), so the style is mounted by a `MutationObserver` as soon as one exists; mounting it at once threw `Cannot read properties of null (reading 'append')` and left the pointer visible from boot (found with DevTools on a Pi 3: the exception in the page). Test: `manager/tests/test_viewer_cursor.py` (Node, fake document).
+- Web asset swap: the iframe is reused, so before the fix it still held the previous web document, and `show()` displayed it at once: old page, then black, then the new page. Web assets now load out of sight first (see Runtime behaviour); measurements in [Asset swap measurements](#asset-swap-measurements-pi-3-before-the-fix).
 - A page in a frame is cross-site to the window document, so the browser rejects a cookie it writes without `SameSite` (default Lax). The `document.cookie` setter of https frames adds `SameSite=None; Secure` to a cookie with no SameSite of its own (`FRAME_COOKIE_SCRIPT`). Measured on a Pi 3 with a university timetable monitor page (the page keeps its language in such a cookie and reloads itself when the cookie is missing): 11 reloads in 40 s (a reload every 3.5 s, the renderer at 100% of a core) before, none in 50 s after. Cause found with DevTools: `Network.requestWillBeSent` initiator stack (script and column) of the Document request, and `Network.getCookies`.
 
 ## Tests
 - `python -m pytest manager/tests/test_viewer_profile.py manager/tests/test_viewer_lockdown.py manager/tests/test_viewer_turn.py manager/tests/test_output_transform.py manager/tests/test_identify_pages.py` (repository root).
 - `manager/tests/test_touch_panel.py` also imports viewer code. `debian/tests/unit` runs the whole suite.
 - Not unit tested: `app.py`, `window.py`, `cdp.py`, `bootsplash.py`, `splash.py`. These need a board with a compositor (`tools/cef-wayland-tests/`, `tools/ui-panes.py` for the page).
+- Asset swap, headless: `cd unitotem-manager && .venv/bin/python tools/viewer-swap-test.py [PAGE] [--slow] [--tmp-root DIR] [--chrome PATH]`. Headless Chrome over CDP and a local HTTP server. Asserts: image to web never shows the iframe before its load event; a pending swap is abandoned by a newer asset; with `--slow`, a page held for 15 s is revealed after about 10 s and the image stays visible. Not in pytest (needs Chrome). Exit 0 pass, 1 assertion failed, 2 could not run.
+- Asset swap, on a node: `tools/viewer-swap-trace.py --direct --out-dir DIR [--prefix P] [--window N] [--seconds 70] [--offsets 0.3,1,2,4] [--no-screenshots]`, run on the node against DevTools at `127.0.0.1:9223`. It records every `show()` call, the container visibility, the web frame and screenshots after each image to web transition; it only observes. The node's sshd forbids tunnels, so the tunnel mode (`--host`, `--password-file`) is not usable there.
 
 ## Welcome page graphics profile (measured 2026-11-14)
 
@@ -181,3 +188,18 @@ Image 2026.11.53, NVIDIA 620 open on an RTX 2060 SUPER passed to a VM (4 vCPU), 
 - The compositor-only variant removes the raster but not the per-frame draw of a layer of 15360x8640 px; it saves about a fifth of the cost.
 - `ease` applies to each of the two keyframe segments, so the gradient slows to a stop at 0, 50 and 100 % (inference from the CSS, not measured on screen).
 - The wordmark ring of `boot-screen.html` rotates `steps(60)` over 3 s for 1080 degrees: 20 steps per second of 18 degrees each (stepped on purpose, see the comment in the page); on a GPU-composited output this is visibly coarse (inference from the CSS, not measured on screen).
+
+## Asset swap measurements (Pi 3, before the fix)
+
+Image to a web page (a university timetable monitor) on a Pi 3, before the asset swap of `Stage.show`: the iframe was shown at once.
+
+- DOM: the old page was still shown 493 to 1591 ms after the image to web `show()`.
+- Screenshots: the old page for about 0.15 s, then black for 0.5 to 2 s, then the new page.
+- One run: the timetable page was not painted 2 s after its own `load` event.
+- Sampling: rAF median 16.6 ms; a full-screen screenshot took about 0.5 s. The screenshot time bounds the precision of the screenshot timings (inference).
+
+### After the fix (Pi 3, three 70 s runs of `viewer-swap-trace.py --direct`)
+
+- Image -> web: the web frame became visible at its load event (+10 ms) in 9 of 9 transitions; the old page was visible 0 ms and no frame had nothing visible. Screenshots at +0.1 to +1.5 s after `show()` show the image, never the old page.
+- Load time after `show()`: a small static page 283-456 ms, a university timetable monitor page 1184-1308 ms. The previous asset stays that long; the web asset is on screen for its duration minus the load time (13.8 s of 15 s for the timetable page).
+- The timetable page paints after its load event: black 0.3-0.8 s, blank to about 1.4-1.9 s, header, full table about 2.7 s after load. The swap waits for `load`, not for the first paint.

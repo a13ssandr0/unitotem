@@ -5,6 +5,7 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Manager
+- Viewer: switching from an image to a web asset showed the previous web page, then black, then the new page; the new page now loads out of sight (10 s limit) and replaces the previous asset when loaded (`boot-screen.html`, `tools/viewer-swap-test.py`).
 - One date-based version for the image and the manager packages (`YYYY.MM`, `YYYY.MM.N`, `YYYY.MM~devN`); the manager reads `/usr/share/unitotem/unitotem-release` at runtime (`manager/utils/release.py`) instead of a hard-coded `3.0.0`, so the login, setup, scheduler, viewer idle pages, web UI, `--version` and `/health` show the full version. `tools/set-release-version.sh` bumps `debian/changelog`.
 - A playlist loaded at start was never bound to the clients' push: an edit (duration, name, enable) changed the playlist but the page kept the old value until a reload. `PlaylistsManager.set_binder` binds every playlist, loaded, created or restored.
 
