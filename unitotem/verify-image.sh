@@ -18,6 +18,12 @@ chk "the ACPI storm guard and its timer are installed and enabled (an HP laptop 
 chk "serial-getty is skipped on a port without a UART (type 0): ExecCondition drop-in installed (a laptop with console=ttyS0 restarted agetty 199 times in 34 minutes)" grep -qF -- '!= 0 ]' "$R/etc/systemd/system/serial-getty@.service.d/10-unitotem-real-uart.conf"
 chk "the serial-getty drop-in carries the ExecCondition on /sys/class/tty/%I/type" grep -qF -- 'ExecCondition=/bin/sh -c '"'"'[ "$(cat /sys/class/tty/%I/type 2>/dev/null)" != 0 ]'"'" "$R/etc/systemd/system/serial-getty@.service.d/10-unitotem-real-uart.conf"
 chk "unitotem-wifi-roam and its timer are installed and enabled" bash -c "test -x $R/usr/sbin/unitotem-wifi-roam && test -L $R/etc/systemd/system/timers.target.wants/unitotem-wifi-roam.timer"
+chk "login summary script is installed and executable (/usr/share/unitotem/unitotem-motd)" test -x "$R/usr/share/unitotem/unitotem-motd"
+chk "MOTD stub /etc/update-motd.d/20-unitotem runs the script" file_has "$R/etc/update-motd.d/20-unitotem" 'unitotem-motd'
+chk "MOTD stub /etc/update-motd.d/20-unitotem is executable" test -x "$R/etc/update-motd.d/20-unitotem"
+chk "Debian uname MOTD line is not executable (10-uname absent or mode 644)" bash -c "! test -x '$R/etc/update-motd.d/10-uname'"
+chk "/etc/motd is empty (Debian licence text removed)" test ! -s "$R/etc/motd"
+chk "login summary script compiles (ast parse, no .pyc written)" python3 -I -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$R/usr/share/unitotem/unitotem-motd"
 chk "the CPU governor service is enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-cpu-performance.service"
 FAT=$R/boot/efi; [ "$ARCH" = arm64 ] && FAT=$R/boot/firmware
 FAT="${FAT_DIR:-$FAT}"   # by hand on a mounted image the FAT is a separate mount: FAT_DIR=/path
@@ -310,6 +316,7 @@ chk "group users exists (web UI users)" grep -q '^users:' "$R/etc/group"
 chk "sshd_config: PermitRootLogin prohibit-password" grep -qxF 'PermitRootLogin prohibit-password' "$SSHD"
 chk "sshd_config: PermitEmptyPasswords no" grep -qxF 'PermitEmptyPasswords no' "$SSHD"
 chk "sshd_config: PasswordAuthentication yes" grep -qxF 'PasswordAuthentication yes' "$SSHD"
+chk "sshd_config: UsePAM yes (PAM session: pam_motd; before the first-access Match block)" bash -c "a=\$(grep -nxF 'UsePAM yes' '$SSHD' | head -1 | cut -d: -f1); m=\$(grep -n '^Match ' '$SSHD' | head -1 | cut -d: -f1); [ -n \"\$a\" ] && [ \"\$a\" -lt \"\$m\" ]"
 chk "sshd_config ends with the first-access Match block (root + group unitotem-first-admin, 7 lines, exact)" sshd_match_at_end
 chk "sudo is installed (usr/bin/sudo)" test -x "$R/usr/bin/sudo"
 chk "adduser is installed (usr/sbin/adduser)" test -x "$R/usr/sbin/adduser"

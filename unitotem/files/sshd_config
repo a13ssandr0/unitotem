@@ -16,6 +16,8 @@ ClientAliveCountMax 2
 X11Forwarding no
 AllowTcpForwarding no
 PrintMotd no
+# PAM session for every login: pam_motd (login summary) and the limits; the auth stack accepts the empty password of the first-access window (nullok).
+UsePAM yes
 
 # Locale of every session: the image's UTF-8 locale, whatever the client sends (stage 2 sets it from UNITOTEM_LOCALE).
 SetEnv LANG=en_US.UTF-8

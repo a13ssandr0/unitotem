@@ -33,7 +33,10 @@ What runs on a deployed UniTotem image (Debian trixie, arm64 Raspberry Pi and am
 | `unitotem/files/unitotem-eeprom-update`, `rpi-eeprom-update.service.d-unitotem.conf` | arm64: `/usr/lib/unitotem/eeprom-update` and drop-in `10-unitotem.conf` of the package unit `rpi-eeprom-update.service` ([firmware](firmware.md#automatic-eeprom-staging)) |
 | `unitotem/files/ota-preserve.list` | `/etc` paths kept across OTA |
 | `unitotem/files/unitotem-pwquality` | PAM profile for the password policy (see [Password policy](#password-policy)) |
+| `unitotem/files/unitotem-motd` | `/usr/share/unitotem/unitotem-motd`, login summary ([Login summary](#login-summary-motd)) |
+| `unitotem/files/motd-20-unitotem` | `/etc/update-motd.d/20-unitotem`, stub that runs the summary |
 | `tools/release/test_wifi_roam.py` | Roam logic test |
+| `tools/release/test_motd.py` | MOTD test |
 
 ## How it works
 
@@ -166,7 +169,7 @@ Stage 2 ships root in the first-access state:
 - Root's shadow field is empty (`passwd -d`); root's login shell is `/usr/sbin/unitotem-first-admin` (manager deb); root is a member of the marker group.
 - `unitotem-first-admin` reads the overlay status (`/run/unitotem-overlay.status`, see [Volatile overlays](storage-and-persistence.md#how-it-works)). A volatile boot prints `No data partition: settings are lost on reboot.` and continues. When `/etc` is read-only it prints `Storage is read-only. Account creation is not possible.` and exits 1 before any prompt.
 - Every login path runs that shell: sshd (interactive, command, sftp subsystem), console getty and `su` (PAM `pam_unix nullok`, from Debian trixie's `unix` profile in `common-auth`). The script ignores argv and environment and never runs a shell, pager or editor.
-- sshd runs with `UsePAM` unset, so sshd checks the empty password and the `*` field itself. The `Match User root Group unitotem-first-admin` block sets `PermitRootLogin yes`, `PermitEmptyPasswords yes`, `ForceCommand /usr/sbin/unitotem-first-admin`, `DisableForwarding yes`, `PermitTunnel no`, `PermitUserRC no`.
+- sshd runs with `UsePAM yes` (login summary via `pam_motd`): the empty password goes through the PAM auth stack (`pam_unix nullok`). The `Match User root Group unitotem-first-admin` block sets `PermitRootLogin yes`, `PermitEmptyPasswords yes`, `ForceCommand /usr/sbin/unitotem-first-admin`, `DisableForwarding yes`, `PermitTunnel no`, `PermitUserRC no`.
 - While the window is open, root's `none` authentication is accepted and the forced command is the only protection: no key or password is evaluated, and no shell, sftp, forwarding, tunnel or user rc file is reachable (container test with OpenSSH 10.0 of trixie: command, `/bin/sh`, `-tt bash`, sftp, scp, `-L`, `-D` all end in the script or a refusal). With an administrator present and root still open, a login only prints "Root accepts SSH keys only" until the start-up reconcile closes root. OpenSSH's penalty for repeated failed logins drops key logins too for about 3 minutes.
 - sshd matches user or group only, so the marker group is needed: without it a later `passwd root` or `passwd -d root` would reopen root over SSH.
 - Membership is read at each connection: no sshd reload.
@@ -174,7 +177,7 @@ Stage 2 ships root in the first-access state:
 Closing: after the first administrator exists, the manager runs `close_first_access()`:
 
 1. `gpasswd -d root unitotem-first-admin` (marker removed first).
-2. `usermod -p '*' root`: `*`, not `!`. OpenSSH treats `!` as locked and would refuse keys too with `UsePAM` unset.
+2. `usermod -p '*' root`: `*`, not `!` (`!` is a locked password).
 3. `usermod -s /bin/bash root`.
 
 Root then accepts SSH keys only, from `/root/.ssh/authorized_keys`. The function is idempotent; the manager runs it again at start when an administrator exists and root is still open.
@@ -232,6 +235,26 @@ Rules observed (pam_pwquality 1.4.5, trixie; `work/pam-matrix/RESULTS.md`):
 Bypasses (PAM not consulted, root only): `usermod -p`, `chpasswd --encrypted` (backup restore), `passwd -d`, direct `/etc/shadow` edits.
 
 On an A/B update the new image's PAM files replace the old ones; no `ota-preserve.list` entry is needed.
+
+## Login summary (MOTD)
+
+- `pam_motd` runs `/etc/update-motd.d/*` as root at every login (sshd `PrintMotd no`; PAM prints it).
+- Only interactive sessions show it: sshd displays the PAM messages of a login with a tty only. `ssh host cmd`, scp, rsync and sftp show nothing.
+- sshd runs the PAM session (and so `pam_motd`) only with `UsePAM yes`; the compiled default is `no` and `sshd_config` sets `yes`. Measured on the Pi 4 (second sshd, port 2223): with `UsePAM yes` the interactive login shows the summary, `ssh host cmd`, `-T`, scp show nothing (bytes identical); the stub also runs for exec sessions (output discarded; no `PAM_*` variables and no tty in `run-parts`, so it cannot be skipped there); cost about 0.13 s per login, plus about 0.14 s for PAM itself.
+- Stage 2 disables Debian's `10-uname` (base-files owns it, so it is kept, mode 644) and empties `/etc/motd` (licence text).
+- Speed: read local files only; no network, no manager API. Target < 0.4 s on a Pi 3. One subprocess only: `vcgencmd get_throttled`, 1 s timeout, Raspberry Pi only.
+- Header: PRETTY_NAME of `unitotem-release`, board model (device-tree model or DMI), UNITOTEM_BASE.
+- Rows and sources:
+  - Slot: cmdline `unitotem.slot=`, `slots.json`.
+  - Updates: `pending.json`; other slot valid, prepared and newer = downloaded; `auto-state.json` `available`. Row skipped when unknown.
+  - Uptime: `/proc/uptime`.
+  - Load and CPU temperature: `/proc/loadavg`, `thermal_zone*`.
+  - Memory: MemTotal - MemAvailable.
+  - Data disk: statvfs `/mnt/data`.
+  - Network: `/sys/class/net` `en*`, `eth*`, `wl*`; IPv4 by SIOCGIFADDR.
+  - Screen: drm connector status, enabled, dpms; `/var/lib/unitotem/screen_state.json` `commanded_off`; `/etc/unitotem/viewer_assignments.json`, `playlists.json`, `playlist_<id>.json` (enabled assets, sizes of files under `/var/lib/unitotem/uploaded`). The manager does not persist the asset on screen, so it is not shown.
+  - Warnings: `vcgencmd get_throttled` bits 0x1 under-voltage now, 0x10000 since boot, 0x4 throttled now, 0x40000 since boot; data disk above 85%.
+- Test root: `UNITOTEM_MOTD_ROOT` prefixes every path.
 
 ## Tests
 

@@ -84,6 +84,15 @@ sed -i "s/^SetEnv LANG=.*/SetEnv LANG=${UNITOTEM_LOCALE}/" "${ROOTFS}/etc/ssh/ss
 mkdir -p "${ROOTFS}/root/.ssh"
 chmod 700 "${ROOTFS}/root/.ssh"
 
+# ---------- Login summary (MOTD) ----------
+# pam_motd runs /etc/update-motd.d/* at login; the Debian uname line is disabled, the licence text emptied.
+install -d -m 755 "${ROOTFS}/usr/share/unitotem"
+install -m 755 /unitotem/files/unitotem-motd "${ROOTFS}/usr/share/unitotem/unitotem-motd"
+install -d -m 755 "${ROOTFS}/etc/update-motd.d"
+install -m 755 /unitotem/files/motd-20-unitotem "${ROOTFS}/etc/update-motd.d/20-unitotem"
+[ -e "${ROOTFS}/etc/update-motd.d/10-uname" ] && chmod 644 "${ROOTFS}/etc/update-motd.d/10-uname"
+: > "${ROOTFS}/etc/motd"
+
 # ---------- Password policy ----------
 # PAM profile (libpam-pwquality, stage1): pam-auth-update rebuilds common-password from the enabled profiles.
 install -m 644 /unitotem/files/unitotem-pwquality "${ROOTFS}/usr/share/pam-configs/unitotem-pwquality"

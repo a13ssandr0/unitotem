@@ -1,0 +1,476 @@
+#!/usr/bin/python3
+# Login MOTD of a UniTotem kiosk. Run by /etc/update-motd.d/20-unitotem as root.
+# Reads local files only: no network, no HTTP, one optional subprocess (vcgencmd).
+# Every source is read in its own try block; a missing source skips its row.
+
+import glob
+import os
+import re
+import socket
+import stat
+import struct
+import fcntl
+import subprocess
+import sys
+
+# Test tree prefix; empty on a real system.
+ROOT = os.environ.get("UNITOTEM_MOTD_ROOT", "")
+
+STATE_DIR = "/mnt/data/unitotem/update"
+UPLOAD_DIR = "/var/lib/unitotem/uploaded"
+SCREEN_STATE = "/var/lib/unitotem/screen_state.json"
+ASSIGNMENTS = "/etc/unitotem/viewer_assignments.json"
+PLAYLISTS = "/etc/unitotem/playlists.json"
+RELEASE_FILE = "/usr/share/unitotem/unitotem-release"
+RELEASE_VERSION = "/usr/share/unitotem/release-version"
+LABEL_WIDTH = 12
+GENERIC_MODELS = {"", "none", "default string", "not specified", "system product name",
+                  "to be filled by o.e.m.", "to be filled by oem"}
+ID_RE = r"[A-Za-z0-9_-]+"
+
+
+def p(path):
+    # Map a system path into the test tree.
+    return ROOT + path
+
+
+def read(path):
+    # Stripped text of a system file, None on any error.
+    try:
+        with open(p(path), encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
+def load_json(path):
+    # Parsed JSON of a system file, None when absent or invalid.
+    text = read(path)
+    if text is None:
+        return None
+    try:
+        import json
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def parse_release(text):
+    # os-release KEY=value lines; quotes removed.
+    out = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        out[key.strip()] = value.strip().strip('"').strip("'")
+    return out
+
+
+def _plural(n, word):
+    return "%d %s" % (n, word if n == 1 else word + "s")
+
+
+def fmt_size(nbytes):
+    if nbytes >= 1073741824:
+        return "%.1f GB" % (nbytes / 1073741824.0)
+    return "%d MB" % (nbytes // 1048576)
+
+
+def fmt_kb(kb):
+    return fmt_size(kb * 1024)
+
+
+def fmt_uptime(seconds):
+    s = int(seconds)
+    if s < 60:
+        return "less than a minute"
+    if s < 3600:
+        return _plural(s // 60, "minute")
+    if s < 86400:
+        hours, minutes = s // 3600, (s % 3600) // 60
+        text = _plural(hours, "hour")
+        if minutes:
+            text += " " + _plural(minutes, "minute")
+        return text
+    days, hours = s // 86400, (s % 86400) // 3600
+    text = _plural(days, "day")
+    if hours:
+        text += " " + _plural(hours, "hour")
+    return text
+
+
+def release_info():
+    return parse_release(read(RELEASE_FILE))
+
+
+def running_version():
+    version = release_info().get("VERSION_ID")
+    if not version:
+        first = (read(RELEASE_VERSION) or "").splitlines()
+        version = first[0].strip() if first else None
+    return version or None
+
+
+def header():
+    fields = []
+    rel = release_info()
+    pretty = rel.get("PRETTY_NAME")
+    if not pretty:
+        first = (read(RELEASE_VERSION) or "").splitlines()
+        if first:
+            pretty = "UniTotem " + first[0].strip()
+    if pretty:
+        fields.append(pretty)
+
+    model = read("/proc/device-tree/model")
+    if model:
+        model = model.replace("\x00", "").strip()
+    if not model:
+        name = read("/sys/class/dmi/id/product_name")
+        vendor = read("/sys/class/dmi/id/sys_vendor")
+        if name and name.lower() not in GENERIC_MODELS:
+            model = name
+            if vendor and vendor.lower() not in GENERIC_MODELS and vendor.lower() not in name.lower():
+                model = vendor + " " + name
+    if model:
+        fields.append(model)
+
+    base = rel.get("UNITOTEM_BASE")
+    if base:
+        fields.append(base)
+    return fields
+
+
+def version_key(version):
+    return tuple(int(x) for x in re.findall(r"\d+", version or ""))
+
+
+def slot_rows():
+    cmdline = read("/proc/cmdline") or ""
+    current = None
+    for token in cmdline.split():
+        if token.startswith("unitotem.slot="):
+            value = token[len("unitotem.slot="):]
+            if value in ("a", "b"):
+                current = value
+    slots = load_json(STATE_DIR + "/slots.json")
+    if not isinstance(slots, dict):
+        slots = None
+    if current is None and slots is None:
+        return []
+    if current is None:
+        parts = []
+        for name in ("a", "b"):
+            entry = (slots or {}).get(name)
+            if isinstance(entry, dict) and entry.get("version"):
+                parts.append("%s %s" % (name.upper(), entry["version"]))
+        return [("Slot", ["   ".join(parts)])] if parts else []
+    text = current.upper()
+    other = "b" if current == "a" else "a"
+    entry = (slots or {}).get(other)
+    if isinstance(entry, dict) and entry.get("version"):
+        text += "  (other slot %s %s)" % (other.upper(), entry["version"])
+    elif slots is not None and isinstance(entry, dict):
+        text += "  (other slot %s)" % other.upper()
+    return [("Slot", [text])]
+
+
+def updates_row(slots):
+    pending = p(STATE_DIR + "/pending.json")
+    if os.path.exists(pending):
+        data = load_json(STATE_DIR + "/pending.json")
+        if not isinstance(data, dict):
+            data = {}
+        version = str(data.get("version") or "unknown")
+        if data.get("staged") is True:
+            return ("Updates", ["%s staged, applies at reboot" % version])
+        return ("Updates", ["trial of %s pending" % version])
+
+    running = running_version()
+    if isinstance(slots, dict) and running:
+        current = slot_current()
+        if current:
+            other = slots.get("b" if current == "a" else "a")
+            if isinstance(other, dict) and other.get("valid") and other.get("prepared"):
+                ver = other.get("version")
+                if ver and ver != running and version_key(ver) > version_key(running):
+                    return ("Updates", ["%s downloaded, applies at reboot" % ver])
+
+    auto = load_json(STATE_DIR + "/auto-state.json")
+    if isinstance(auto, dict):
+        if auto.get("available") is True:
+            return ("Updates", ["%s available" % (auto.get("version") or "update")])
+        if auto.get("available") is False:
+            return ("Updates", ["none available"])
+    return None
+
+
+def slot_current():
+    for token in (read("/proc/cmdline") or "").split():
+        if token.startswith("unitotem.slot=") and token[len("unitotem.slot="):] in ("a", "b"):
+            return token[len("unitotem.slot="):]
+    return None
+
+
+def uptime_row():
+    text = read("/proc/uptime")
+    if not text:
+        return None
+    return ("Uptime", [fmt_uptime(float(text.split()[0]))])
+
+
+def load_row():
+    text = read("/proc/loadavg")
+    if not text:
+        return None
+    fields = [" ".join(text.split()[:3])]
+    for zone in sorted(glob.glob(p("/sys/class/thermal/thermal_zone*/temp"))):
+        try:
+            with open(zone) as f:
+                milli = int(f.read().strip())
+        except Exception:
+            continue
+        fields.append("CPU %d C" % int(round(milli / 1000.0)))
+        break
+    return ("Load", fields)
+
+
+def memory_row():
+    text = read("/proc/meminfo")
+    if not text:
+        return None
+    values = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in ("MemTotal:", "MemAvailable:"):
+            values[parts[0]] = int(parts[1])
+    if "MemTotal:" not in values or "MemAvailable:" not in values:
+        return None
+    total = values["MemTotal:"]
+    used = total - values["MemAvailable:"]
+    return ("Memory", ["%s of %s" % (fmt_kb(used), fmt_kb(total))])
+
+
+def disk_row():
+    # Returns (row, percent used) or (None, None).
+    st = os.statvfs(p("/mnt/data"))
+    frsize = st.f_frsize
+    total = st.f_blocks * frsize
+    used = (st.f_blocks - st.f_bfree) * frsize
+    if not total:
+        return None, None
+    pct = int(round(100.0 * used / total))
+    return ("Data disk", ["%s of %s (%d%%)" % (fmt_size(used), fmt_size(total), pct)]), pct
+
+
+def ipv4(ifname):
+    if ROOT:
+        return None
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            res = fcntl.ioctl(s.fileno(), 0x8915, struct.pack("256s", ifname[:15].encode("ascii")))
+        return socket.inet_ntoa(res[20:24])
+    except Exception:
+        return None
+
+
+def network_row():
+    names = sorted(n for n in os.listdir(p("/sys/class/net"))
+                   if n.startswith(("en", "eth", "wl")))
+    fields = []
+    for name in names:
+        state = read("/sys/class/net/%s/operstate" % name)
+        if state == "up":
+            addr = ipv4(name)
+            fields.append("%s %s" % (name, addr if addr else "no address"))
+        else:
+            fields.append("%s down" % name)
+    if not fields:
+        return None
+    return ("Network", ["    ".join(fields)])
+
+
+def screen_rows():
+    rows = []
+    state_doc = None
+    state_loaded = False
+    assignments = None
+    assignments_loaded = False
+    outputs = []
+    for name in sorted(os.listdir(p("/sys/class/drm"))):
+        if not name.startswith("card") or "-" not in name:
+            continue
+        if read("/sys/class/drm/%s/status" % name) != "connected":
+            continue
+        outputs.append((name, name.split("-", 1)[1]))
+    for index, (dirname, out) in enumerate(outputs):
+        if not state_loaded:
+            state_doc = load_json(SCREEN_STATE)
+            state_loaded = True
+        off = False
+        if isinstance(state_doc, dict) and out in (state_doc.get("commanded_off") or []):
+            off = True
+        if read("/sys/class/drm/%s/dpms" % dirname) == "Off":
+            off = True
+        if off:
+            on = "off"
+        else:
+            on = "on" if read("/sys/class/drm/%s/enabled" % dirname) == "enabled" else "off"
+        fields = ["%s %s" % (out, on)]
+
+        if not assignments_loaded:
+            assignments = load_json(ASSIGNMENTS)
+            assignments_loaded = True
+        pid = None
+        if isinstance(assignments, list):
+            for entry in assignments:
+                if isinstance(entry, dict) and entry.get("screen_name") == out:
+                    pid = entry.get("playlist_id")
+                    break
+        if pid is None:
+            index_doc = load_json(PLAYLISTS)
+            if isinstance(index_doc, dict):
+                pid = index_doc.get("default")
+        if isinstance(pid, str) and re.fullmatch(ID_RE, pid):
+            fields.extend(playlist_field(pid) or [])
+
+        rows.append(("Screen" if index == 0 else "", fields))
+    return rows
+
+
+def playlist_field(pid):
+    # Returns the fields "playlist NAME" and "N assets, SIZE", or None.
+    doc = load_json("/etc/unitotem/playlist_%s.json" % pid)
+    if not isinstance(doc, dict):
+        return None
+    name = doc.get("name") or pid
+    assets = doc.get("assets") or []
+    count = 0
+    size = 0
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        if asset.get("enabled") is not True:
+            continue
+        count += 1
+        url = asset.get("url")
+        if isinstance(url, str) and url.startswith("file:"):
+            fname = url[len("file:"):]
+            if fname and "/" not in fname and fname not in (".", ".."):
+                try:
+                    st = os.lstat(p(UPLOAD_DIR + "/" + fname))
+                    if stat.S_ISREG(st.st_mode):
+                        size += st.st_size
+                except Exception:
+                    pass
+    return ["playlist %s" % name, "%s, %s" % (_plural(count, "asset"), fmt_size(size))]
+
+
+def throttle_warnings(value):
+    out = []
+    if value & 0x1:
+        out.append("under-voltage now")
+    elif value & 0x10000:
+        out.append("under-voltage since boot")
+    if value & 0x4:
+        out.append("throttled now")
+    elif value & 0x40000:
+        out.append("throttled since boot")
+    return out
+
+
+def throttle_value():
+    tool = p("/usr/bin/vcgencmd")
+    if not os.path.exists(tool):
+        return None
+    try:
+        res = subprocess.run([tool, "get_throttled"], capture_output=True, text=True,
+                             timeout=1, check=False)
+        match = re.search(r"0x([0-9a-fA-F]+)", res.stdout or "")
+        return int(match.group(1), 16) if match else None
+    except Exception:
+        return None
+
+
+def warnings_row(disk_pct):
+    items = []
+    value = throttle_value()
+    if value is not None:
+        items.extend(throttle_warnings(value))
+    if disk_pct is not None and disk_pct > 85:
+        items.append("data disk above 85%")
+    if not items:
+        return None
+    return ("Warnings", ["; ".join(items)])
+
+
+def clean(text):
+    # Control characters of file-supplied names never reach the terminal.
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "?", str(text))
+
+
+def render(header_fields, rows):
+    header_fields = [clean(x) for x in header_fields]
+    rows = [(label, [clean(x) for x in fields]) for label, fields in rows]
+    lines = ["", "   ".join(header_fields), ""]
+    for label, fields in rows:
+        if not fields:
+            continue
+        lines.append((label.ljust(LABEL_WIDTH) + "    ".join(fields)).rstrip())
+    return "\n".join(lines) + "\n\n"
+
+
+def safe(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def build():
+    head = safe(header, [])
+    rows = []
+
+    slots = safe(lambda: load_json(STATE_DIR + "/slots.json"))
+    rows.extend(safe(slot_rows, []))
+    row = safe(lambda: updates_row(slots))
+    if row:
+        rows.append(row)
+
+    for fn in (uptime_row, load_row, memory_row):
+        row = safe(fn)
+        if row:
+            rows.append(row)
+
+    disk, disk_pct = safe(disk_row, (None, None)) or (None, None)
+    if disk:
+        rows.append(disk)
+
+    row = safe(network_row)
+    if row:
+        rows.append(row)
+
+    rows.extend(safe(screen_rows, []))
+
+    row = safe(lambda: warnings_row(disk_pct))
+    if row:
+        rows.append(row)
+    return head, rows
+
+
+def main():
+    try:
+        text = render(*build())
+    except Exception:
+        text = ""
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    except Exception:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
