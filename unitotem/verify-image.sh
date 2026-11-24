@@ -92,7 +92,7 @@ kernel_bpo13() { pkgmatch '^linux-image-[0-9].*-amd64$' | cut -d' ' -f2 | grep -
 fw_2026() { pkgver firmware-linux-nonfree | grep -qE '^([0-9]+:)?2026'; }
 fw_misc_2026() { pkgver firmware-misc-nonfree | grep -qE '^([0-9]+:)?2026'; }
 mesa_26() { pkgver mesa-libgallium | grep -qE '^([0-9]+:)?26\.'; }
-nvidia_open_620() { pkgver nvidia-kernel-open-dkms | grep -qE '^([0-9]+:)?620\.70\.06-'; }
+nvidia_open_620() { pkgver nvidia-kernel-open-dkms | grep -qE '^([0-9]+:)?620\.[0-9]+\.[0-9]+-'; }   # branch 620; the exact version is the one in the package lock (lock check above)
 # NVIDIA module $1 (nvidia, nvidia-drm, nvidia-modeset) built into the single kernel directory, any compression
 nvidia_mod() { local k f; one_kdir || return 1; k=$(kdirs); for f in "$k"updates/dkms/"$1".ko "$k"updates/dkms/"$1".ko.xz "$k"updates/dkms/"$1".ko.zst "$k"updates/dkms/"$1".ko.gz; do test -s "$f" && return 0; done; return 1; }
 pkg_bpo13() { pkgver "$1" | grep -q '~bpo13'; }
@@ -101,7 +101,7 @@ if [ "$ARCH" = amd64 ]; then
     chk "firmware-linux-nonfree Version starts with 2026" fw_2026
     if installed firmware-misc-nonfree; then chk "firmware-misc-nonfree Version starts with 2026" fw_misc_2026; else ok "firmware-misc-nonfree absent"; fi
     chk "mesa-libgallium Version starts with 26." mesa_26
-    chk "nvidia-kernel-open-dkms is installed at 620.70.06 (NVIDIA's repository)" nvidia_open_620
+    chk "nvidia-kernel-open-dkms is installed from the 620 branch (NVIDIA's repository)" nvidia_open_620
     chk "NVIDIA module nvidia.ko* present in lib/modules/<kver>/updates/dkms for the single kernel directory" nvidia_mod nvidia
     chk "NVIDIA module nvidia-drm.ko* present in lib/modules/<kver>/updates/dkms for the single kernel directory" nvidia_mod nvidia-drm
     chk "NVIDIA module nvidia-modeset.ko* present in lib/modules/<kver>/updates/dkms for the single kernel directory" nvidia_mod nvidia-modeset

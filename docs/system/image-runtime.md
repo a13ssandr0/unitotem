@@ -97,7 +97,7 @@ Prior art: masking a GPE is the usual workaround (kernel parameter `acpi_mask_gp
 
 ## NVIDIA (amd64)
 
-- Driver: NVIDIA 620.70.06 with the open kernel modules, for Turing and newer GPUs. Maxwell, Pascal and Volta run on nouveau (NVK, Mesa 26) with `firmware-nvidia-graphics` from stable (63 MiB installed; without it labwc dies at `nvc0_screen_create` and the kiosk never starts); NVIDIA's legacy branch for them is 580 and does not build on kernel 7.2. Build and package set: [build](build.md#stages).
+- Driver: NVIDIA 620 branch (exact version from the package lock; exercised on hardware at 620.70.06) with the open kernel modules, for Turing and newer GPUs. Maxwell, Pascal and Volta run on nouveau (NVK, Mesa 26) with `firmware-nvidia-graphics` from stable (63 MiB installed; without it labwc dies at `nvc0_screen_create` and the kiosk never starts); NVIDIA's legacy branch for them is 580 and does not build on kernel 7.2. Build and package set: [build](build.md#stages).
 - `nvidia-kernel-support` 620 ships `/etc/modprobe.d/nvidia.conf` with `blacklist nouveau` and `blacklist nova-core`, unconditionally. It ships no `modules-load.d` file and no `nvidia-drm` options, so the image adds:
   - `/etc/modules-load.d/unitotem-nvidia.conf`: `nvidia-drm`;
   - `/etc/modprobe.d/unitotem-nvidia-drm.conf`: `options nvidia-drm modeset=1 fbdev=1`.
