@@ -18,6 +18,7 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `tools/release/test_deploy_table_mbr.py` | Deploy MBR conversion (`load_image`, `image_table_dos`) and `restore-table` tail on MBR and GPT: 16 checks |
 | `tools/release/test_grow_data.sh` (+ `test_grow_data_inside.sh`) | `grow_root`, `layout_complete` and `grow_data` on GPT and DOS, images without ROOT_B and DATA, interruptions (`resize2fs` kill, `e2fsck -fy`, cut after the table write), premount dispatch; Docker `--privileged`: 279 checks |
 | `tools/release/test_overlay_status.sh` | Overlay hook under dash, mocked tools: 38 checks |
+| `tools/release/test_sshd_pam.sh` | Image sshd login rules with `UsePAM yes` against the old file, in Docker (first-access window, closed root, administrator, MOTD, `sshd -T` diff): 118 checks, exit 0 only if all hold for the committed config |
 | `tools/release/test_overlay_volatile.sh` | Volatile overlays without DATA (`volatile_overlays`), Docker `--privileged`: 47 checks |
 | `tools/release/test_deploy_blank_part.py` | `cmd_blank_part` (`ota-engine.sh`): ROOT_B first MiB zeroed and nothing else, refusals, no `format-part`: 11 checks |
 | `tools/release/test_win_install_server.py` | `tools/win-install-server.py` (Windows installer host server): 96 tests (bootstrap, payload ranges, inventory validation, one y/n question with yes/no in any case, `-y`, approval binding, per-PC and `--authorized-key` keys, state restart, pseudo-terminal prompt): [windows-installer.md](windows-installer.md#tests) |
