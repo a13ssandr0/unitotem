@@ -4,7 +4,7 @@ backend runs on a fake FAT directory, the server and the download are replaced b
 
   python3 tools/release/test_auto.py
 """
-import argparse, datetime, importlib.machinery, importlib.util, json, os, sys, tempfile
+import argparse, datetime, importlib.machinery, importlib.util, json, os, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -163,6 +163,72 @@ with tempfile.TemporaryDirectory() as td:
         armed_blank = e.code == "nothing-fetched"
     check("blank B: nothing is armed before a verified fetch", armed_blank)
     check("blank B: no pending update was written", not os.path.exists(os.path.join(state, "pending.json")))
+
+    # --- auto repair tick: starts the repair only for a blank or unprepared other slot, on a healthy running system
+    TK = {"cause": "first-boot", "health": True, "op": None, "repairs": [], "events": []}
+    saved_tk = {n: getattr(uu, n) for n in ("cur_slot", "op_running", "health_ok", "_repair_sound", "slots_state", "cmd_repair", "event")}
+    saved_tick = uu.auto_repair_tick
+    uu.cur_slot = lambda c: "a"
+    uu.op_running = lambda c: TK["op"]
+    uu.health_ok = lambda c: TK["health"]
+    uu._repair_sound = lambda c, st, s: (False, TK["cause"])
+    uu.slots_state = lambda c: {"a": {"version": "2026.10.30", "valid": True}, "b": {"version": None, "valid": False}}
+    uu.cmd_repair = lambda a, c: (TK["repairs"].append(a), (0, {"started": True}))[1]
+    uu.event = lambda c, text: TK["events"].append(text)
+
+    def tick(cause="first-boot", pending=False, op=None, health=True, autorepair="1", last=None):
+        for n in ("pending.json", "last-result.json"):
+            try: os.unlink(os.path.join(state, n))
+            except OSError: pass
+        if pending: uu.write_state(conf, "pending.json", {"slot": "b", "from": "a", "version": "x"})
+        if last is not None: uu.write_state(conf, "last-result.json", last)
+        TK.update(cause=cause, op=op, health=health, repairs=[], events=[])
+        uu.auto_repair_tick(dict(conf, UPDATE_AUTOREPAIR=autorepair))
+        return len(TK["repairs"]) == 1 and TK["repairs"][0].auto is True
+
+    def utc_ago(s):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - s))
+
+    failed_repair = lambda at: {"op": "repair", "result": "failed", "error_code": "write-failed", "at": at}
+    try:
+        check("tick: first-boot other slot starts the repair", tick("first-boot"))
+        check("tick: unprepared other slot starts the repair", tick("unprepared"))
+        check("tick: label cause does not start it", not tick("label"))
+        check("tick: fsck cause does not start it", not tick("fsck"))
+        check("tick: empty cause does not start it", not tick("empty"))
+        check("tick: a pending update does not start it", not tick(pending=True))
+        check("tick: a running operation does not start it", not tick(op=4242))
+        check("tick: a failed health check does not start it", not tick(health=False))
+        check("tick: UPDATE_AUTOREPAIR=0 does not start it", not tick(autorepair="0"))
+        check("tick: a repair failed 5 min ago is not retried", not tick(last=failed_repair(utc_ago(300))))
+        check("tick: a repair failed 2 h ago is retried", tick(last=failed_repair(utc_ago(7200))))
+        check("tick: a successful last repair does not block it", tick(last={"op": "repair", "result": "ok", "at": utc_ago(60)}))
+        check("tick: the start is logged", tick() and any("auto: repair of slot b" in t for t in TK["events"]), TK["events"])
+
+        # cmd_auto runs the tick before its policy, also with the policy off, and returns the policy's own result
+        calls_tk = []
+        uu.auto_repair_tick = lambda c: calls_tk.append(1)
+        pol("off")
+        rc, out = uu.cmd_auto(A, conf)
+        check("cmd_auto: policy off still calls the tick and returns its usual result",
+              calls_tk == [1] and rc == 0 and out["state"]["action"] == "off", (calls_tk, out))
+        uu.auto_repair_tick = saved_tick
+
+        # an error inside the tick is logged and does not stop cmd_auto
+        def boom(c): raise RuntimeError("boom")               # health_ok: reached by the tick only, not by cmd_auto in off mode
+        uu.health_ok = boom
+        TK["events"] = []
+        pol("off")
+        try:
+            rc, out = uu.cmd_auto(A, conf); survived = True
+        except Exception as e:
+            survived = False; out = repr(e)
+        uu.health_ok = lambda c: TK["health"]
+        check("cmd_auto: an exception in the tick does not break cmd_auto", survived and rc == 0 and out["state"]["action"] == "off", out)
+        check("cmd_auto: the tick error is logged", any("auto repair not started: boom" in t for t in TK["events"]), TK["events"])
+    finally:
+        for n, v in saved_tk.items(): setattr(uu, n, v)
+        uu.auto_repair_tick = saved_tick
 
 print(f"\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

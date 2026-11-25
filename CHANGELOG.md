@@ -5,11 +5,13 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Manager
+- Slot copies are shown on the Updates page with a progress bar (phase, percent, size), correct after a reload and for operations the node started itself, other controls disabled while it runs; the notification `update.progress` is persistent at the highest level (`error`), updated in place, not dismissible while running and replaced by a result; no more 2 s status poll.
 - Viewer: switching from an image to a web asset showed the previous web page, then black, then the new page; the new page now loads out of sight (10 s limit) and replaces the previous asset when loaded (`boot-screen.html`, `tools/viewer-swap-test.py`).
 - One date-based version for the image and the manager packages (`YYYY.MM`, `YYYY.MM.N`, `YYYY.MM~devN`); the manager reads `/usr/share/unitotem/unitotem-release` at runtime (`manager/utils/release.py`) instead of a hard-coded `3.0.0`, so the login, setup, scheduler, viewer idle pages, web UI, `--version` and `/health` show the full version. `tools/set-release-version.sh` bumps `debian/changelog`.
 - A playlist loaded at start was never bound to the clients' push: an edit (duration, name, enable) changed the playlist but the page kept the old value until a reload. `PlaylistsManager.set_binder` binds every playlist, loaded, created or restored.
 
 #### Image and build
+- Every copy into the other root (release fetch, manual and automatic repair, first-boot clone of ROOT_B) publishes a monotonic percent with bytes, total and ETA, and a `cause` on repairs (`unitotem-update`); a tick every 10 min after boot starts the first-boot or unprepared clone when the boot-time path did not, also with the update policy off.
 - Login summary (MOTD) on interactive ssh/console logins through `update-motd.d` and `pam_motd` (`unitotem-motd`: version, slot, updates, uptime, load, memory, data disk, network, screen, warnings); sshd `UsePAM yes`; Debian's `10-uname` and `/etc/motd` licence text off. `tools/release/test_sshd_pam.sh` (Docker) proves the first-access window, closed root, administrators and the MOTD rule with and without PAM.
 - `verify-image`: the NVIDIA check follows the 620 branch; the exact version is the one in the package lock.
 - Version scheme: `RELEASE_VERSION` is taken from (and must equal) the installed `unitotem` package; the image carries `/usr/share/unitotem/unitotem-release` (os-release format); stage 1 checks that all unitotem packages share one version; `verify-image` checks both files against the package. `unitotem-update` compares versions in dpkg order (`~` pre-releases); release tool, `fake-github` and tags use one module (`tools/release/version.py`, tag `v2026.12-rc1` for `2026.12~rc1`).

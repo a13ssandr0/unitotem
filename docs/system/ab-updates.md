@@ -46,9 +46,12 @@ Whole-image OTA on two ROOT slots: fetch, arm, one-shot trial boot, health-gated
 - **rollback [--reboot]**: needs `other` valid; default := other; pending removed; result `armed`; the next boot of the old slot turns it into `ok`.
 - <a id="repair"></a>**repair**: if `other` fails `slot_sound`, copy `cur` over it (`partclone.extfs -c -F` into `clone_into_slot`, [write order](#slot-devices-and-repair-writes)), new UUID and label, `e2fsck -fy`, version check, Pi boot files cloned, overlays prepared. Under the lock, `RuntimeMaxSec=3600`.
   - Causes (the `cause` of the event, `last-result` and the progress): `first-boot` (no label and no filesystem signature: a blank ROOT_B of the layout), `unprepared` (the slot passes `slot_sound` but `slots.json` has no `valid` and `prepared` entry for it), and the `slot_sound` causes `label`, `fsck`, `mount`, `empty` (no `release-version` or `systemd`; on GRUB also `vmlinuz` and `initrd.img`), `bootfile:<name>` (Pi boot files). Error codes are unchanged. `slot_sound` itself is unchanged: `fetch` and `status` read it as before; only the repair decision adds the state check.
-  - The ROOT_B that the first boot creates is blank (`storage-and-persistence.md#layout`). The first confirmed boot (`boot-ok` with no pending update) starts the repair detached: `cause` `first-boot`, event `repair: slot b (first-boot) <- copy of slot a (<version>)`. Clone and verify take minutes; `status` shows the progress as `op` (`repair`, phase `write`).
-  - Interrupted clone: the copy clears the old identity first and writes the superblock with the label last, so a cut before that write leaves a blank partition (cause `first-boot`). Nothing is marked valid before the copy has verified. The next confirmed boot starts the repair again, from the disk, until `slot_sound` passes. No marker file is kept.
-  - A cut after the superblock write and before `prepare_overlays` leaves a slot that passes `slot_sound` but has no `valid` and `prepared` entry in `slots.json`: cause `unprepared`, so the next confirmed boot clones again.
+  - The ROOT_B that the first boot creates is blank (`storage-and-persistence.md#layout`). The repair starts detached with cause `first-boot`, event `repair: slot b (first-boot) <- copy of slot a (<version>)`, from two triggers (both need `UPDATE_AUTOREPAIR=1`):
+    - `boot-ok` with no pending update, after the health gate. The gate waits up to `UPDATE_HEALTH_TIMEOUT` (180 s). A boot whose gate fails starts nothing: the repair waits for the next boot.
+    - `unitotem-update-auto.timer`, every 10 min (first 10 min after boot), through `auto_repair_tick`. The tick runs before the policy check, so it also works with the policy `off`. It starts only for the causes `first-boot` and `unprepared`, only while the running system answers the health check, with no pending update, no operation running and no failed repair in the last hour. Damaged or half-fetched slots are left to the boot path.
+    - Clone and verify take minutes; `status` shows the progress as `op` (`repair`, phase `write`, see [Progress](#progress)).
+  - Interrupted clone: the copy clears the old identity first and writes the superblock with the label last, so a cut before that write leaves a blank partition (cause `first-boot`). Nothing is marked valid before the copy has verified. The next repair trigger starts the repair again, from the disk, until `slot_sound` passes. No marker file is kept.
+  - A cut after the superblock write and before `prepare_overlays` leaves a slot that passes `slot_sound` but has no `valid` and `prepared` entry in `slots.json`: cause `unprepared`, so the next repair trigger clones again.
   - Update before the clone finishes (the same lock as the repair):
     - `fetch`, `apply` while the clone runs: `busy` (rc 12). `auto` reports `busy` and does nothing.
     - `rollback` before the clone: `no-rollback` (rc 13), since B holds no valid system yet.
@@ -113,6 +116,31 @@ Power cut and downgrade:
 - The normal slot never reads these files, so no normal boot is blocked (see [boot.md](boot.md#recovery-set)).
 - Downgrade and rollback: the level is compared with the running image only. An older image has an equal or lower level, so a rollback never lowers the boot partition's set.
 
+### Progress
+
+`/run/unitotem-update.progress` holds one JSON line, replaced by atomic rename at each step. `status` returns it as `op.progress` while the operation holds the lock.
+
+Keys:
+- `op`: `fetch` or `repair`.
+- `phase`: `check`, `write`, `verify`, `arm`, `done`. A fetch ends in phase `arm`, state `done`.
+- `state`: `running`, `done`, `failed`, `cancelled`.
+- `percent`: integer 0-100, never decreases within one operation.
+- `bytes`, `total`, `eta_s`: write phase only. `eta_s` is null until a rate exists.
+- `error`, `error_code`: `failed` only. `cancelled` carries neither.
+- `version`: final report.
+- `cause`: repair only, the repair cause ([Causes](#repair)). Absent in the check phase and in a failure before the cause is known.
+
+Operations that write a slot and publish progress: `fetch`; `repair` (manual `repair --force`, `repair --auto` from `boot-ok` and from the auto tick, the first-boot clone of ROOT_B). `apply`, `rollback` and `confirm` write no slot and publish no progress.
+
+Phases and percent:
+
+| op | check | write | verify | arm | done |
+|---|---|---|---|---|---|
+| fetch | 0 | 0-95: `bytes` = compressed asset bytes downloaded, `total` = asset size | 96 | 98 | 100 (`arm`, `done`) |
+| repair | 0 | 2-90: `bytes` = bytes of the target partition written, zero runs included, `total` = partition size | 92 | 97 | 100 (`done`, `done`) |
+
+A failure keeps the phase where it stopped, with `state` `failed`. When the lock is released the operation disappears from `status`; the progress file stays in `/run` as a hint and is gone after a reboot.
+
 ### Automatic policy (`auto`)
 
 - Modes: `off` (default), `download`, `stage`, `reboot`, `scheduled` (reboots once a day inside `AUTO_WINDOW_S` = 3600 s after `time`, default 04:00).
@@ -166,7 +194,7 @@ State files (`UPDATE_STATE_DIR`): `slots.json`, `pending.json` (`slot, from, fro
 
 Status JSON: `layout, ab, current_version, slot, other_slot, other_version, trial, pending_confirm, rollback_available, op{pid,progress}, last_result, armed, staged, auto{policy,state}, identity_merge, default_slot, base_url, boot_recovery, overlay, volatile, boot_attempts`. `overlay` is the first line of the overlay status file or null; `volatile` is true for `volatile:*`; `boot_attempts` is the boot counter (`null` without the file).
 
-Progress JSON: `op` (fetch|repair), `phase` (check|write|verify|arm), `state` (running|done|failed|cancelled), `percent`, `bytes`, `total`, `eta_s`, `error`, `error_code`.
+Progress JSON: keys and phases in [Progress](#progress).
 
 Error codes: `not-ab`, `backend-unsupported`, `busy`, `network`, `command-failed`, `channel-unsupported`, `no-root-key`, `bad-keys-signature`, `keys-rollback`, `bad-manifest-signature`, `updater-too-old`, `layout-mismatch`, `not-newer`, `no-root-part`, `no-slot-device`, `slot-mounted`, `write-failed`, `bad-checksum`, `version-mismatch`, `bad-image`, `slot-not-verified`, `nothing-fetched`, `needs-reboot`, `nothing-to-confirm`, `no-rollback`, `health-timeout`, `cancelled`, `bootfs-rw`, `bootfiles-failed`, `bad-bootfiles`, `no-bootfiles-part`, `no-cmdline`, `bad-copy`, `bad-mode`, `bad-time`. Auto states: `check-failed`, `fetch-failed`, `needs-manual`.
 
@@ -224,8 +252,8 @@ Boot interfaces:
 
 ## Tests
 
-Host (repo root, no device): `python3 tools/release/test_auto.py`, `test_repair.py`, `test_identity_merge.py`, `test_boot_orientation.py`, `test_io_friendly.py`, `test_release_build.py` (no root; sparse 5 GiB files), `test_rpi_backend.py` (needs mtools, e2fsprogs; served by `tools/release/fake-github.py`).
+Host (repo root, no device): `python3 -B tools/release/test_auto.py` (49 checks: automatic policy, repair tick), `python3 -B tools/release/test_repair.py` (99 checks: repair decision, causes, progress), `test_identity_merge.py`, `test_boot_orientation.py`, `test_io_friendly.py`, `test_release_build.py` (no root; sparse 5 GiB files), `test_rpi_backend.py` (needs mtools, e2fsprogs; served by `tools/release/fake-github.py`).
 
-Slot devices and repair writes: `python3 tools/release/test_repair.py` (78 checks, includes `clone_into_slot` on a file and `slot_dev` with fake sysfs), `bash tools/release/test_slot_pick.sh` (44 checks, engine `slot_pick`), `bash tools/release/test_slot_dup.sh` (privileged Docker, 548 checks: duplicate labels and interrupted writes, GPT and DOS, `metadata_csum` on and off). Details: [testing.md](testing.md).
+Slot devices and repair writes: `python3 -B tools/release/test_repair.py` (99 checks, includes `clone_into_slot` on a file and `slot_dev` with fake sysfs), `bash tools/release/test_slot_pick.sh` (44 checks, engine `slot_pick`), `bash tools/release/test_slot_dup.sh` (privileged Docker, 548 checks: duplicate labels and interrupted writes, GPT and DOS, `metadata_csum` on and off). Details: [testing.md](testing.md).
 
 Image: `unitotem/verify-image.sh` (boot-ok, auto timer, failover, grub.cfg). QEMU power-cut and loopback harnesses: `testing.md`.

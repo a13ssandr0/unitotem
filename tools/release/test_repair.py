@@ -348,7 +348,7 @@ def blank_case(name, devs, root, want_cause, want_dev):
                  UPDATE_CMDLINE=cmdline, UPDATE_VERSION_FILE=vf, UPDATE_DATA=os.path.join(td3, "data"), UPDATE_HEALTH_URL="")
     calls = []
 
-    def fake_clone(c, src, dev, new_label, serr):
+    def fake_clone(c, src, dev, new_label, serr, on_progress=None):
         calls.append((dev, new_label)); src.read()
 
     def fake_run(cmd, **kw):                              # findmnt -S: not mounted; e2fsck -fy on the copy: clean
@@ -401,7 +401,7 @@ calls5 = []
 saved5 = (uu.run_out, uu.subprocess.run, uu.subprocess.Popen, uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly, uu.slot_sound)
 old_env5 = os.environ.get("UNITOTEM_SYS_BLOCK"); os.environ["UNITOTEM_SYS_BLOCK"] = base_u
 FakePopen.rc, FakePopen.stream = 0, b""
-def clone5(c, src, dev, new_label, serr):
+def clone5(c, src, dev, new_label, serr, on_progress=None):
     calls5.append((dev, new_label)); src.read()
 def run5_fake(cmd, **kw):
     if cmd[0] == "umount":
@@ -456,6 +456,122 @@ except Exception as e:
 finally:
     uu.overlay_status = saved_ov
     shutil.rmtree(td4, ignore_errors=True)
+
+# --- clone progress: on_progress runs about once a second (fake clock: 1.5 s per call) and once at the end, with the stream length
+stream5 = bytes(head) + b"\x01" * MIB + b"\x02" * MIB + b"\x03" * MIB + b"\x04" * MIB
+clock = [0.0]
+
+
+def fake_monotonic():
+    clock[0] += 1.5
+    return clock[0]
+
+
+real_monotonic = uu.time.monotonic
+calls_p = []
+uu.time.monotonic = fake_monotonic
+uu.subprocess.Popen = FakePopen
+FakePopen.stream, FakePopen.rc = stream5, 0
+try:
+    with tempfile.TemporaryDirectory(prefix="slotcopy-clone-") as td6, tempfile.TemporaryFile() as serr6:
+        dev6 = os.path.join(td6, "part"); open(dev6, "wb").write(b"\xaa" * (6 * MIB))
+        uu.clone_into_slot(dict(uu.CONF_DEFAULTS), io.BytesIO(b""), dev6, "ROOT_B", serr6,
+                           on_progress=lambda pos, total: calls_p.append((pos, total)))
+finally:
+    uu.time.monotonic = real_monotonic
+    uu.subprocess.Popen = real_popen
+check("clone progress: reported more than once while writing", len(calls_p) >= 2, calls_p)
+check("clone progress: positions never decrease", all(a[0] <= b[0] for a, b in zip(calls_p, calls_p[1:])), calls_p)
+check("clone progress: last report at the full stream length", bool(calls_p) and calls_p[-1] == (len(stream5), 6 * MIB), calls_p[-1:])
+check("clone progress: total is the partition size", bool(calls_p) and all(t == 6 * MIB for _, t in calls_p), calls_p)
+
+# --- repair progress: write 2..90, verify 92, arm 97, done 100; a failed copy ends in "failed" and releases the lock
+PROG = []
+
+
+def run_repair_progress(clone_body):
+    """do_repair on blank ROOT_B with a fake copy (CLONE_BODY) and every progress payload recorded in PROG."""
+    del PROG[:]
+    FS.clear(); FS.update(blank_gpt); ROOT[0] = "/dev/mmcblk0p2"
+    base7 = make_sys({"mmcblk0": 3})
+    with tempfile.TemporaryDirectory(prefix="slotcopy-repair-") as td7:
+        run7 = os.path.join(td7, "run"); os.makedirs(run7)
+        cmd7 = os.path.join(td7, "cmdline"); open(cmd7, "w").write("root=LABEL=ROOT_A unitotem.slot=a\n")
+        vf7 = os.path.join(td7, "release-version"); open(vf7, "w").write(blank_version[0] + "\n")
+        conf7 = dict(uu.CONF_DEFAULTS, UPDATE_BACKEND="grub", UPDATE_STATE_DIR=os.path.join(td7, "state"), UPDATE_RUN_DIR=run7,
+                     UPDATE_CMDLINE=cmd7, UPDATE_VERSION_FILE=vf7, UPDATE_DATA=os.path.join(td7, "data"), UPDATE_HEALTH_URL="")
+
+        def fake_run(cmd, **kw):
+            if cmd[0] == "umount":
+                shutil.rmtree(os.path.join(cmd[-1], "usr"), ignore_errors=True)
+            return subprocess.CompletedProcess(cmd, 1 if cmd[0] == "findmnt" else 0, b"", b"")
+
+        saved7 = (uu.run_out, uu.subprocess.run, uu.subprocess.Popen, uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly,
+                  uu.progress, uu.overlay_status)
+        old_env7 = os.environ.get("UNITOTEM_SYS_BLOCK"); os.environ["UNITOTEM_SYS_BLOCK"] = base7
+        FakePopen.rc, FakePopen.stream = 0, b""
+        uu.run_out, uu.subprocess.run, uu.subprocess.Popen = blank_run_out, fake_run, FakePopen
+        uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly = clone_body, (lambda *a: 0), Quiet
+        uu.progress = lambda c, **kw: PROG.append(kw)
+        uu.overlay_status = lambda c: None                    # reads the live overlay state of this host
+        res = err = status = None
+        try:
+            try:
+                res = uu.do_repair(argparse.Namespace(auto=True, force=False, foreground=True), conf7)
+            except uu.Fail as e:
+                err = e
+            lock_free = uu.op_running(conf7) is None
+            uu.run_out = lambda *cmd, check=True: ""      # grub-editenv reads of the default slot: none on this host
+            _, status = uu.cmd_status(argparse.Namespace(), conf7)
+        finally:
+            (uu.run_out, uu.subprocess.run, uu.subprocess.Popen, uu.clone_into_slot, uu.prepare_overlays, uu.io_friendly,
+             uu.progress, uu.overlay_status) = saved7
+            if old_env7 is None: os.environ.pop("UNITOTEM_SYS_BLOCK", None)
+            else: os.environ["UNITOTEM_SYS_BLOCK"] = old_env7
+            shutil.rmtree(base7, ignore_errors=True)
+    return res, err, lock_free, status
+
+
+def copy_ok(c, src, dev, new_label, serr, on_progress=None):
+    src.read()
+    for pos in (0, MIB, 2 * MIB, 3 * MIB, 4 * MIB):
+        on_progress(pos, 4 * MIB)
+
+
+def copy_fail(c, src, dev, new_label, serr, on_progress=None):
+    src.read(); on_progress(MIB, 4 * MIB)
+    raise uu.Fail("write-failed", "fake write error")
+
+
+res, err, _, _ = run_repair_progress(copy_ok)
+check("repair progress: the copy succeeded", res is not None and res[1].get("repaired") is True, (res, err))
+check("repair progress: every report is op repair", {p.get("op") for p in PROG} == {"repair"}, PROG)
+pcts = [p.get("percent") for p in PROG]
+check("repair progress: percent is present and never decreases", all(isinstance(x, int) for x in pcts) and
+      all(a <= b for a, b in zip(pcts, pcts[1:])), pcts)
+check("repair progress: first report is the check phase at 0", PROG[0].get("phase") == "check" and PROG[0].get("percent") == 0, PROG[:1])
+wr = [p for p in PROG if p.get("phase") == "write"]
+check("repair progress: write percents lie in 2..90", bool(wr) and all(2 <= p["percent"] <= 90 for p in wr), [p.get("percent") for p in wr])
+sized = [p for p in wr if "bytes" in p]
+check("repair progress: write reports carry bytes and total", len(sized) == 5 and all(p["total"] == 4 * MIB for p in sized), sized)
+check("repair progress: verify at 92", any(p.get("phase") == "verify" and p.get("percent") == 92 for p in PROG), PROG)
+check("repair progress: arm at 97", any(p.get("phase") == "arm" and p.get("percent") == 97 for p in PROG), PROG)
+check("repair progress: last report is done at 100", PROG[-1].get("state") == "done" and PROG[-1].get("percent") == 100, PROG[-1:])
+CAUSE7 = res[1].get("cause")
+check("repair progress: the case cause is first-boot (blank ROOT_B)", CAUSE7 == "first-boot", res)
+after_check = [p for p in PROG if p.get("phase") != "check" and p.get("state") != "failed"]
+check("repair progress: every write/verify/arm/done report carries the cause",
+      bool(after_check) and all(p.get("cause") == CAUSE7 for p in after_check), after_check)
+check("repair progress: the check report keeps no cause (before the cause is known)", "cause" not in PROG[0], PROG[:1])
+
+res, err, lock_free, status = run_repair_progress(copy_fail)
+check("repair failed: the copy raises write-failed", err is not None and err.code == "write-failed", err)
+check("repair failed: last report is failed with error_code", PROG[-1].get("state") == "failed" and PROG[-1].get("error_code") == "write-failed", PROG[-1:])
+check("repair failed: the failed report carries the cause", PROG[-1].get("cause") == "first-boot", PROG[-1:])
+check("repair failed: the lock is released", lock_free)
+check("repair failed: status shows no operation", status is not None and status.get("op") is None, status)
+
+# do_fetch progress: no fake for the network, xz and partclone exists in any test file (grep do_fetch), so it is not tested here.
 
 print(f"\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

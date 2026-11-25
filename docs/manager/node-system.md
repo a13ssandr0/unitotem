@@ -26,7 +26,7 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 | `Psystem/dbus_system.py` | logind (power, suspend), hostnamed (hostname, `/etc/hosts`), timedated (time zone, NTP) |
 | `Psystem/audio.py` | PulseAudio sinks (pulsectl) |
 | `Psystem/updater.py` | client of `unitotem-update --json`, availability, notifications |
-| `Psystem/update_progress.py` | inotify on `/run`, pushes progress and the bell progress bar |
+| `Psystem/update_progress.py` | inotify on `/run`, pushes `Settings/Update/status` and the bell progress bar, raises the `update.*` results |
 | `Psystem/firmware.py` | client of `unitotem-firmware --json` (Raspberry Pi firmware card) |
 | `Psystem/firmware_progress.py` | inotify on `/run` (helpers shared with the updater), pushes `Settings/Firmware/status` and the bell progress bar |
 | `Psystem/acpi_storms.py` | parser and watch of `/var/lib/unitotem/acpi-storms` (written by `unitotem-acpi-storm-guard`), pushes `Settings/AcpiStorms/list`, raises `acpi.storm.*` |
@@ -55,8 +55,15 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - `connect_wifi` and `edit_connection` check the SSID (1-32 bytes) and passphrase (8-63 characters, or 64 hex digits as a raw key; an empty passphrase means open) and the BSSID (six hex octets). Any invalid value answers `{error: 'Invalid Wi-Fi settings', extra}` and nothing is written to NetworkManager.
 - Every mutating call answers with broadcasts of the state it changed (devices, active connections, connections, hostname).
 - Audio: a missing sound server gives `available: false` and an empty list, not an error. Volume is a 0.0-1.0 level: values outside are clamped; NaN, infinity and non-numbers are refused (`ValueError`) and nothing is sent to Pulse.
-- Updates: the manager never downloads or writes images. It runs `unitotem-update --json <cmd>` (timeout 180 s). `fetch`, `apply`, `repair` detach and return at once; `Settings/Update/status` is pushed every 2 s while `status.op` is set.
-- Update progress: inotify on `/run` for `unitotem-update.progress` (trailing throttle 1 s). Whether an operation runs is decided by `status.op`, not by the file: it stays after the end and a killed updater leaves a "running" one. Slot names in every text are capitals (A, B).
+- Updates: the manager never downloads or writes images. It runs `unitotem-update --json <cmd>` (timeout 180 s). `fetch`, `apply`, `repair` detach and return at once. `Settings/Update/status` is pushed by the progress watch and once after each command (`fetch`, `cancel`, `apply`, `confirm`, `rollback`, `copy_to_other`). No polling.
+- Update progress: inotify on `/run` for `unitotem-update.progress` (trailing throttle 1 s). Whether an operation runs is decided by `status.op`, not by the file: it stays after the end and a killed updater leaves a "running" one. The updater releases its lock after its last write, so a final state (`done`, `failed`, `cancelled`) is read once more 1 s later (late refresh). Slot names in every text are capitals (A, B).
+- Update notifications:
+  - `update.progress`: one per operation, level `error` (the highest level: a slot write must not go unnoticed), persistent (not dismissable while it runs), progress bar. It covers the download (`fetch`) and every slot copy: manual copy, self-healing rebuild, first-boot clone of ROOT_B. Raised again only when its title, level or operation changes; otherwise moved with `set_progress`.
+  - Title of a copy (`copy_from` set, or a repair whose cause is `first-boot`, `unprepared` or none): `Copying slot A to slot B`. Title of a rebuild: `Rebuilding slot B after damage` (cause `label`, `fsck`, `mount`, `bootfile:<name>`), `Rebuilding slot B (incomplete system)` (cause `empty`).
+  - Text: the phase (`Checking`, `Downloading`, `Verifying`, `Preparing the restart`, `Restarting`); `NN / NN MB` while writing when both sizes are sane; `about N s left`. A copy write shows no phase word.
+  - End of an operation: the bar is removed and the result is told once: `update.fetched` (info, `Update downloaded`), `update.repaired` (info, `Slot B copied` / `Slot B rebuilt`), `update.failed` (error, `Update failed`, `Copying the slot failed`, `Rebuilding the slot failed`; text is the updater's `error`). A successful result resolves `update.failed`.
+  - After a manager restart with a bar still up: the bar is removed and the result is taken from `status.last_result` only when its `op` is `fetch` or `repair` and its `at` (UTC) is not older than the bar. Without a bar nothing is told.
+  - `update.progress` and the `update.*` results are for admins only (`audience: admin`).
 - Firmware: `unitotem-firmware --json <cmd>` (`status`, `check`, `apply --files --eeprom`); the manager only starts it and reads its answers. Exit codes 0 ok, 10 nothing to do, 12 busy, 14 blocked (`blockers`), 2 failed, 127 absent (`supported: false`). `apply` returns at once; `Settings/Firmware/status` is pushed every 2 s while `status.op` is set, on each progress file change, and after each `check`. Progress: `/run/unitotem-firmware.progress`, same inotify watch as the updater.
 - Availability: a successful check stores `{available, version, checked_at}` and raises or resolves `update.available`. A failed check keeps the previous value.
 - Timers: the loop wakes at each minute boundary or on resume. Actions: `pwr` logind PowerOff, `reb` logind Reboot, `sus` suspend with wake, `scr_on` / `scr_off` screen power (`system/screens/control.set_power`).
@@ -123,8 +130,8 @@ Paths: relative to unitotem-manager/; `P` = `manager/plugins/unitotem_node/`.
 - `UNITOTEM_VNC_IDLE_TIMEOUT`: seconds, default 0 (never).
 - Read/written: `/sys/class/rtc/rtcN/wakealarm`, `/sys/class/rtc/rtcN/device/power/wakeup`, `/etc/adjtime` (line 3 `UTC`|`LOCAL`), `/etc/hosts`, `/run/unitotem-update.progress`, `/run/unitotem-firmware.progress`, `/run/unitotem-vnc/`, `/usr/sbin/unitotem-update`, `/usr/sbin/unitotem-firmware`, `/usr/bin/wayvnc`.
 - D-Bus (system bus): `org.freedesktop.NetworkManager`; `org.freedesktop.login1.Manager` (Reboot, PowerOff, Suspend, CanSuspend, PrepareForSleep); `org.freedesktop.hostname1`; `org.freedesktop.timedate1` (ListTimezones, SetTimezone, SetNTP; properties Timezone, NTP, CanNTP, NTPSynchronized).
-- Serves `org.freedesktop.Notifications` on the user bus and the system bus, each only if the name is free. Capabilities: `actions`, `body`, `persistence`.
-- Notification keys: `update.available` (info), `update.progress` (persistent bar), `update.failed` (error), `update.repaired` (info), `suspend.problem` (warning, link `/settings/timers`).
+- Serves `org.freedesktop.Notifications` on the user bus and the system bus, each only if the name is free. Capabilities: `actions`, `body`, `persistence`. This is the server for other applications: the manager's own notifications are not sent to D-Bus.
+- Notification keys: `update.available` (info), `update.progress` (error level, persistent bar), `update.fetched` (info), `update.repaired` (info), `update.failed` (error), `suspend.problem` (warning, link `/settings/timers`). Details: "Update notifications" under How it works.
 
 ### Permissions
 

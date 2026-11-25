@@ -11,7 +11,7 @@ Everything is JSON with --json; progress for long operations goes to /run/unitot
 line rewritten atomically. `fetch` runs detached (systemd-run) unless --foreground, so a manager restart
 does not interrupt it; poll `status`.
 """
-import argparse, datetime, fcntl, functools, glob, hashlib, json, os, re, shutil, signal, socket, ssl, struct, subprocess, sys, tempfile, time
+import argparse, calendar, datetime, fcntl, functools, glob, hashlib, json, os, re, shutil, signal, socket, ssl, struct, subprocess, sys, tempfile, time
 import urllib.parse, urllib.request, urllib.error
 sys.path.insert(0, "/usr/lib/unitotem")          # unitotem_identity (the account merge)
 
@@ -883,7 +883,7 @@ def do_fetch(a, conf):
                             last = time.monotonic()
                             rate = done / max(last - t0, 1e-3)
                             progress(conf, op="fetch", phase="write", state="running",
-                                     percent=int(done * 100 / total), bytes=done, total=total,
+                                     percent=min(95, int(done * 95 / total)), bytes=done, total=total,
                                      eta_s=int((total - done) / rate) if rate else None)
                 xz.stdin.close()
             except (urllib.error.URLError, OSError) as e:
@@ -893,7 +893,7 @@ def do_fetch(a, conf):
             if xz.returncode or pc.returncode:
                 raise Fail("write-failed", f"xz rc={xz.returncode} partclone rc={pc.returncode}: {err[-300:]}")
             crashpoint(conf, "fetch_after_write")
-            progress(conf, op="fetch", phase="verify", state="running", percent=100, bytes=done, total=total)
+            progress(conf, op="fetch", phase="verify", state="running", percent=96, bytes=done, total=total)
             if done != total or h.hexdigest() != part["sha256"]:
                 raise Fail("bad-checksum", "downloaded asset sha256/size does not match the manifest")
             run_out("e2fsck", "-fn", dev)
@@ -908,7 +908,7 @@ def do_fetch(a, conf):
                     raise Fail("version-mismatch", f"the written image reports {ver}, the manifest says {m['version']}")
                 if not os.path.exists(os.path.join(mnt, "usr/lib/systemd/systemd")):
                     raise Fail("bad-image", "systemd missing in the written slot")
-                progress(conf, op="fetch", phase="arm", state="running", percent=100)
+                progress(conf, op="fetch", phase="arm", state="running", percent=98)
                 if backend(conf) == "rpi":
                     with bootfs_rw(conf["UPDATE_BOOTFS"]):
                         rpi_install_bootfiles(conf, cur, new, m, base)
@@ -1334,11 +1334,12 @@ def _tail(*files):
     return out.decode(errors="replace")[-300:]
 
 
-def clone_into_slot(conf, src_stdout, dev, new_label, serr_file):
+def clone_into_slot(conf, src_stdout, dev, new_label, serr_file, on_progress=None):
     """Write the partclone image in src_stdout (the whole partition from block 0) to DEV, labelled NEW_LABEL. The first MiB is
     held back: the rest is written first, then the superblock with NEW_LABEL already in it. Until that last write DEV has no
     superblock, and afterwards it never carries the source's label, so a copy interrupted at any point is never mistaken for
-    the running slot. Raises Fail; the caller marks the slot invalid."""
+    the running slot. ON_PROGRESS(pos, devsize), when given, runs at most once a second while writing and once at the end of
+    the stream, before the superblock write. Raises Fail; the caller marks the slot invalid."""
     fd = os.open(dev, os.O_RDWR)
     try:
         devsize = os.lseek(fd, 0, os.SEEK_END)
@@ -1352,7 +1353,7 @@ def clone_into_slot(conf, src_stdout, dev, new_label, serr_file):
                               stdout=subprocess.PIPE, stderr=serr_file)
         src_stdout.close()
         out = pc.stdout
-        head = b""; pos = 0; half = False
+        head = b""; pos = 0; half = False; last_cb = time.monotonic()
         try:
             while True:
                 chunk = out.read(CLONE_CHUNK)
@@ -1374,6 +1375,8 @@ def clone_into_slot(conf, src_stdout, dev, new_label, serr_file):
                 pos += len(chunk)
                 if not half and pos * 2 >= devsize:
                     crashpoint(conf, "repair_mid_write"); half = True
+                if on_progress and time.monotonic() - last_cb >= 1:
+                    last_cb = time.monotonic(); on_progress(pos, devsize)
         except BaseException:
             pc.kill(); pc.wait(); raise
         out.close()
@@ -1382,6 +1385,7 @@ def clone_into_slot(conf, src_stdout, dev, new_label, serr_file):
             raise Fail("write-failed", f"partclone restore rc={rc}: {_tail(serr_file)}")
         if len(head) < CLONE_CHUNK:
             raise Fail("write-failed", "the image is shorter than 1 MiB")
+        if on_progress: on_progress(pos, devsize)
         try:
             os.fsync(fd)
             crashpoint(conf, "repair_before_head")
@@ -1419,6 +1423,7 @@ def do_repair(a, conf):
     if ok and not a.force:
         return 0, {"repaired": False, "reason": "other slot is sound"}
     iof = None
+    whyc = None                                                   # set under the lock; the failure path reports it only when set
     with Lock(conf):
         try:
             progress(conf, op="repair", phase="check", state="running", percent=0)
@@ -1435,13 +1440,21 @@ def do_repair(a, conf):
             iof = io_friendly(conf, ndev); iof.apply()
             st[new] = {"version": None, "valid": False}
             write_state(conf, "slots.json", st)
-            progress(conf, op="repair", phase="write", state="running", percent=10)
+            progress(conf, op="repair", phase="write", state="running", percent=2, cause=whyc)
+            wr = {"best": 2, "t0": time.monotonic()}     # running maximum of the write percent; start of the write for the ETA
+            def on_write(pos, total):
+                total = total or 1
+                best = max(wr["best"], min(90, max(2, 2 + int(88 * pos / total))))
+                wr["best"] = best
+                rate = pos / max(time.monotonic() - wr["t0"], 1e-3)
+                progress(conf, op="repair", phase="write", state="running", percent=best, bytes=pos, total=total,
+                         eta_s=int((total - pos) / rate) if rate else None, cause=whyc)
             # partclone copies only the used blocks. clone_into_slot writes the superblock last, with the new label: the copy never
             # carries the source's label, only its UUID, which is replaced below.
             with tempfile.TemporaryFile() as serr_f, tempfile.TemporaryFile() as derr_f:
                 src = subprocess.Popen(["partclone.extfs", "-c", "-F", "-s", cdev, "-o", "-"], stdout=subprocess.PIPE, stderr=serr_f)
                 try:
-                    clone_into_slot(conf, src.stdout, ndev, label(new), derr_f)
+                    clone_into_slot(conf, src.stdout, ndev, label(new), derr_f, on_progress=on_write)
                 except Exception as e:
                     if src.poll() is None: src.kill()
                     src.wait()
@@ -1451,7 +1464,7 @@ def do_repair(a, conf):
                 src.wait()
                 if src.returncode:
                     raise Fail("write-failed", f"partclone read rc={src.returncode}: {_tail(serr_f, derr_f)}")
-            progress(conf, op="repair", phase="verify", state="running", percent=80)
+            progress(conf, op="repair", phase="verify", state="running", percent=92, cause=whyc)
             # The copy is a snapshot of a filesystem that was mounted at some point (last mount time after last check): tune2fs refuses to
             # change the UUID of such a filesystem until it has been checked ("requires a freshly checked filesystem"; -f does not
             # bypass it), so the check comes first. It is OUR new copy, so a fsck that fixes it is exactly right (rc 0/1 = clean/fixed,
@@ -1468,6 +1481,7 @@ def do_repair(a, conf):
                 got = open(os.path.join(mnt, "usr/share/unitotem/release-version")).read().strip()
                 if got != ver:
                     raise Fail("version-mismatch", f"the copy reports {got}, the running system {ver}")
+                progress(conf, op="repair", phase="arm", state="running", percent=97, cause=whyc)
                 if backend(conf) == "rpi":
                     with bootfs_rw(conf["UPDATE_BOOTFS"]):
                         rpi_clone_bootfiles(conf, cur, new)
@@ -1478,11 +1492,12 @@ def do_repair(a, conf):
             st[new] = {"version": ver, "valid": True, "prepared": True, "confirmed": True}
             write_state(conf, "slots.json", st)
             set_last_result(conf, op="repair", result="ok", version=ver, slot=new, cause=whyc)
-            progress(conf, op="repair", phase="done", state="done", percent=100, version=ver)
+            progress(conf, op="repair", phase="done", state="done", percent=100, version=ver, cause=whyc)
             return 0, {"repaired": True, "slot": new, "version": ver, "cause": whyc}
         except Fail as e:
             set_last_result(conf, op="repair", result="failed", error_code=e.code, error=str(e))
-            progress(conf, op="repair", state="failed", error=str(e), error_code=e.code)
+            progress(conf, op="repair", state="failed", error=str(e), error_code=e.code,
+                     **({"cause": whyc} if whyc is not None else {}))
             raise
         finally:
             if iof: iof.restore()
@@ -1848,9 +1863,34 @@ def _in_window(now, hhmm):
     return 0 <= (now - start).total_seconds() < AUTO_WINDOW_S, start.date().isoformat()
 
 
+def auto_repair_tick(conf):
+    """Self-repair from the timer, not only from the boot path: a blank or unprepared other slot is rebuilt from the running
+    system when that system is healthy. Damaged or half-fetched slots are left to the boot path. A failed repair in the last
+    hour is not retried. Never changes the result of the tick; errors are logged only."""
+    try:
+        if conf.get("UPDATE_AUTOREPAIR", "1") != "1": return
+        cur = cur_slot(conf)
+        if cur is None: return
+        if os.path.exists(state_path(conf, "pending.json")): return
+        if op_running(conf) is not None: return
+        if not health_ok(conf): return
+        other = other_slot(cur)
+        ok, why = _repair_sound(conf, slots_state(conf), other)
+        if ok or why not in ("first-boot", "unprepared"): return
+        lr = read_state(conf, "last-result.json") or {}
+        try: age = time.time() - calendar.timegm(time.strptime(lr.get("at") or "", "%Y-%m-%dT%H:%M:%SZ"))
+        except (TypeError, ValueError): age = None
+        if lr.get("op") == "repair" and lr.get("result") == "failed" and age is not None and age < 3600: return
+        event(conf, f"auto: repair of slot {other} ({why}) started")
+        cmd_repair(argparse.Namespace(foreground=False, auto=True, force=False), conf)
+    except Exception as e:
+        event(conf, f"auto repair not started: {e}")
+
+
 def cmd_auto(a, conf):
     """One tick of the automatic update policy (run by unitotem-update-auto.timer, idempotent, never blocks for long)."""
     need_backend(conf)
+    auto_repair_tick(conf)
     pol = auto_policy(conf)
     ast = read_state(conf, "auto-state.json", {}) or {}
     def done(**kw):

@@ -105,6 +105,7 @@
 - [system/manager] The old apt repository (GitHub Pages) is retired in the decision of 2026-11-23, but `unitotem/stage1-packages.sh` still fetches its `KEY.gpg` and installs `unitotem-manager.list` in every image, `docs/system/build.md` and the manager README still describe it, `unitotem-manager/docs/` is the public site: removal needs the user.
 - [system] Manual update path for devices: a secure, simple way for the operator and the end user (replaces the apt line); design open.
 - [system] First version delivered to devices that still run the old updater (production nodes .2/.4/.6, 3.0.0~dev33 images) must have no `~` (`2026.12`): their `vkey()` raises `TypeError` on `~`; the new image is shipped to them by a normal release, then pre-releases work.
+- [system/manager] Slot-copy progress (Updates page bar, persistent top-level notification) and the 10-min first-boot clone tick are covered by unit tests only: real inotify on `/run`, partclone byte totals and ETA, the bell and page in a browser and the cause of the clone not starting on the fresh node 192.0.2.3 (inferred from the code: boot-ok gate) are still to check on a device.
 - [system] Identity merge at OTA (`migrate-etc-overlay`): accounts, root password and browser profile across a real A/B cycle.
 - [system] Mixed versions (old viewer + new manager and reverse) and rollback with a turned screen: reasoned, never run; GRUB fallback/recover on real amd64 end to end.
 - [system] Session bus for root, `unitotem-boot-orientation` on boards, new `rc.xml` (Alt+F4) on boards.
