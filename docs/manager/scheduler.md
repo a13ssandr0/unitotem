@@ -28,7 +28,8 @@ Paths: relative to unitotem-manager/
 - One `AssetsManager` per playlist. `PlaylistsManager` owns the set and the default playlist (target of calls without `playlist_id`).
 - Playback: `AssetsManager.iter_wait()` moves a cursor over enabled assets. Each step arms a timer for `asset.duration` (0 = wait forever). On expiry: next page of a multi-page PDF, else next enabled asset.
 - Each step calls `on_current_update` and wakes `PlaylistLoop._run`, which multicasts `Show` (`show_payload()`) to every `(viewer, window, pane)` assigned to that playlist.
-- No enabled asset: cursor -1, `idle_asset()`: `no_assets` when an admin exists, else `first_boot` (welcome page). Unassigned windows show the same idle asset.
+- No enabled asset: cursor -1, `idle_asset()`: `no_assets` when an admin exists, else `first_boot` (welcome page).
+- Pane playlist: a pane with no explicit playlist plays the default (`WebviewManager.default_playlist_id()`). An empty playlist shows nothing. The idle asset is shown when the playlist a pane plays has no enabled asset, or when no default playlist with a loop exists.
 - Every change (add, delete, move, edit, enable/disable) ends with `revalidate_current()` then `save()`; without it the playback loop, parked on `_waiting_evt`, does not wake.
 - `save()` writes `<file>.tmp`, fsyncs, renames. Broadcasts: `Scheduler/assets` (`playlist_id`, `items`, `current`) and `Scheduler/current`.
 - Duration: an asset whose `duration` is None takes the playlist `default_duration` (default 30 s). Uploads take the MediaInfo duration when present (video, audio); images and PDFs get None.
@@ -95,7 +96,8 @@ Files (beside `--assets_file`, default `/etc/unitotem/`; uploads in `/var/lib/un
 - An asset is never shared between playlists: copies get a new uuid (a shared uuid would share timers and the current marker).
 - The main pane's playlist is the window assignment, never stored in `window_layouts.json`.
 - Remote viewers have no audio outputs; only the local viewer reports them.
-- The idle page is the same for "playlist empty" and "window unassigned"; no separate path.
+- The idle page is the same for "playlist has no enabled asset" and "no default playlist"; no separate path.
+- `default_changed()`, `remove_playlist_loop`, `unassign` and restore re-sync every window (`_sync_every_window`): panes follow the default at once, no restart.
 - Timers are per asset; `Asset.__del__` cancels them. `Timer` creates its task only when it has a timeout and a callback (no task otherwise); create assets with a running event loop when they carry dates.
 - `edit_asset` treats `bg_color=None` as unchanged: the background colour cannot be cleared through it.
 - In `api/viewers.py` the method `list` shadows the builtin inside the class body: annotations after it use `typing.List` (`list[str]` fails).

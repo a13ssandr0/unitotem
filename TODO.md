@@ -106,6 +106,9 @@
 - [system] Manual update path for devices: a secure, simple way for the operator and the end user (replaces the apt line); design open.
 - [system] First version delivered to devices that still run the old updater (production nodes .2/.4/.6, 3.0.0~dev33 images) must have no `~` (`2026.12`): their `vkey()` raises `TypeError` on `~`; the new image is shipped to them by a normal release, then pre-releases work.
 - [system/manager] Slot-copy progress (Updates page bar, persistent top-level notification) and the 10-min first-boot clone tick are covered by unit tests only: real inotify on `/run`, partclone byte totals and ETA, the bell and page in a browser and the cause of the clone not starting on the fresh node 192.0.2.3 (inferred from the code: boot-ok gate) are still to check on a device.
+- [manager] Restoring `uploads` over existing files writes `_2`/`_3` copies and appends an asset per file to the default playlist (seen on node 192.0.2.3 twice, 29 assets after two restores): the restore must overwrite by name and create no assets.
+- [manager] `Scheduler.delete_playlist` left `playlist_<id>.json` on disk once (live, unexplained) and `_restore_playlists` leaves the files of replaced playlists: delete them with the playlist.
+- [manager] A restore archive with a non-empty `assignments` map is covered by unit tests only (the test archive from node .4 had none); the viewers matrix checkbox shows explicit assignments only, an unassigned window plays the default without a check.
 - [system] Identity merge at OTA (`migrate-etc-overlay`): accounts, root password and browser profile across a real A/B cycle.
 - [system] Mixed versions (old viewer + new manager and reverse) and rollback with a turned screen: reasoned, never run; GRUB fallback/recover on real amd64 end to end.
 - [system] Session bus for root, `unitotem-boot-orientation` on boards, new `rc.xml` (Alt+F4) on boards.

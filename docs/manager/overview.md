@@ -85,7 +85,7 @@ Asset properties:
 
 - Enabled assets play in order and repeat. The next asset starts when the duration ends.
 - Changes (add, edit, move, delete, enable) apply at once.
-- With no enabled asset, or with a window that has no playlist, the window shows the idle page: the welcome page until the first administrator exists, then the "no assets" page.
+- A window with no playlist of its own plays the default playlist. The idle page (the welcome page until the first administrator exists, then the "no assets" page) is shown when the playlist it plays has no enabled asset, or when there is no default playlist.
 
 ### Uploads
 
@@ -107,7 +107,7 @@ Asset properties:
 ## Viewers
 
 - One viewer window per connected screen. Windows are added and removed as screens are connected and disconnected.
-- A window of a newly connected screen has a unique identity and shows the idle page until a playlist is assigned.
+- A window of a newly connected screen has a unique identity and plays the default playlist until a playlist is assigned.
 - With zero screens the manager, scheduler and API keep working.
 - Window state changes reach the web UI as pushed events. Pages do not poll.
 - Per-window settings: playlist, sound output and volume, language, on-screen keyboard, interactive screen, refresh, screensaver, developer tools.

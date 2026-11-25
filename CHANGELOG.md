@@ -5,6 +5,7 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Manager
+- A screen or pane with no playlist assigned plays the default playlist (it stayed on the "no assets" page after a restore or on a new node); the default, a deleted playlist, an unassigned pane and a restore re-sync every window at once without a restart; the playlists backup carries the screen assignments by screen name (`assignments`, version 1; the local viewer only, never overriding an existing assignment); the layout select says "Default playlist" for no explicit assignment.
 - Slot copies are shown on the Updates page with a progress bar (phase, percent, size), correct after a reload and for operations the node started itself, other controls disabled while it runs; the notification `update.progress` is persistent at the highest level (`error`), updated in place, not dismissible while running and replaced by a result; no more 2 s status poll.
 - Viewer: switching from an image to a web asset showed the previous web page, then black, then the new page; the new page now loads out of sight (10 s limit) and replaces the previous asset when loaded (`boot-screen.html`, `tools/viewer-swap-test.py`).
 - One date-based version for the image and the manager packages (`YYYY.MM`, `YYYY.MM.N`, `YYYY.MM~devN`); the manager reads `/usr/share/unitotem/unitotem-release` at runtime (`manager/utils/release.py`) instead of a hard-coded `3.0.0`, so the login, setup, scheduler, viewer idle pages, web UI, `--version` and `/health` show the full version. `tools/set-release-version.sh` bumps `debian/changelog`.

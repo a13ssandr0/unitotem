@@ -32,7 +32,7 @@ UNITOTEM_URL=https://HOST UNITOTEM_USER=ADMIN UNITOTEM_PASSWORD_FILE=/path/pw \
 - Playlist (default name `Default`, option `--playlist`): found by name; else the only playlist when it is empty is renamed; else created. It becomes the default playlist (uploads go to the default playlist). Items keep the 2.x order, duration and enabled flag. Items are matched by url; an item of the playlist that is not in the 2.x list is removed; URL items are added as web pages (media type 0, no probe).
 - Default duration of the playlist.
 - Hostname (Settings > Network, effective at once, no reboot) and time zone (Settings > Date and time, timedated).
-- Assignment: the playlist is assigned to every window of every viewer (a window without a playlist shows the idle page).
+- Assignment: the playlist is assigned to every window of every viewer (a window without a playlist plays the default playlist).
 - Timers from `--crontab`, added when the device has no timer with the same action, schedule and output; the enabled state is set as in the crontab.
 - `--screen-schedule` (opt-in, never used by the deploy): `scr_on` at the first time and `scr_off` at the second on every output, days `--screen-days` (default `1-5`), mechanism `--screen-mechanism` (default `output`, the video output; `cec` switches the TV). The format is validated before the device is touched (exit 2).
 

@@ -121,7 +121,8 @@ Websocket protocol:
 Notifications:
 - API: `Notifications/list`, `mark_read(ids)`, `dismiss(ids)`, `dismiss_all()`, `invoke(id, action="default")`. `ids` at most 200.
 - Dedupe: `notify` with the same key and same content does nothing (a dismissed one stays dismissed); changed content updates it, unread again for everybody. Read and dismiss are per user (`read_by`, `dismissed_by`): one user's dismissal keeps it for the others; it is hidden for good, and its sender told, once every user who can see it has dismissed it. Legacy `read`/`dismissed` flags mean everybody.
-- Producer: `notifications.notify(key, level, title, text, *, source, audience, link, progress, persistent, timeout, actions, resident)` returns id or None; also `resolve(key)`, `set_progress`, `expire`, `listen_action`, `listen_closed`, `bind`.
+- Producer: `notifications.notify(key, level, title, text, *, source, audience, link, progress, persistent, timeout, actions, resident)` returns id or None; also `resolve(key)`, `set_progress`, `get(key)` (what is up for the key as `public()`, None if nothing; read-only), `expire`, `listen_action`, `listen_closed`, `bind`.
+- Progress notifications (`progress` set) show a progress icon, not the level icon. At level `error` they stay in the bell count but do not colour the badge.
 - Levels: `info`, `warning`, `error`. Audience: `scheduler`, `audio`, `power`, `admin`, or None (everyone).
 - Limits: 100 items; title 120, text 1000, key 120 characters; 6 actions. Pop-up timeouts 6000, 9000, 12000 ms by level.
 
@@ -132,6 +133,10 @@ Plugin contract (`utils/plugins.py`):
 Backup archive (zip):
 - `config.json`: `{"version", "parts": {key: data}}`; file parts under `uploaded/`.
 - Core parts: `playlists`, `layouts`, `users`, `security`, `remote`, `ticker`, `uploads` (optional, off by default). Plugin parts are listed in [node-system.md](node-system.md).
+- `playlists` part: `playlists`, `default`, and `assignments` = `{"version": 1, "screens": {screen name: playlist id}}`, the explicit assignments of the local viewer only (paired nodes travel in their own bundle). Only playlists in the archive are kept.
+- Restore of `playlists`: replaces the playlists; the default is the archived one or the first playlist when it is missing. Windows rebuild their loops; assignments and panes to missing playlists are dropped.
+- Restore of `assignments`: applied by screen name to screens with no explicit assignment (never overrides). Names must match `[A-Za-z0-9._:+-]{1,64}`, at most 64 entries, playlist ids must exist; anything else is ignored.
+- Archives without `assignments` restore as before. An unknown version or shape is ignored with a warning; the rest of the archive restores.
 - `GET /backup?parts=...`: default every non-optional part. `POST /backup` (multipart `backup_file`, form `parts`) restores only the listed parts; legacy archives (`CONFIG`) are converted. `DELETE /backup?parts=...`: reset to factory (default: parts that have a reset).
 
 Password rules: see [security.md](security.md).
@@ -169,5 +174,5 @@ Password rules: see [security.md](security.md).
 
 - `pytest` from the repository root (`pyproject.toml`: `testpaths = manager/tests`, `pythonpath = manager, manager/plugins`).
 - `manager/tests/conftest.py` clears `sys.argv` (the CLI parses on import) and sets an event loop.
-- Modules: `test_plugins.py`, `test_notifications.py`, `test_osusers.py`, `test_password_policy.py`, `test_security_api.py`, `test_security_model.py`, `test_first_admin_script.py`, `test_setup_first_access.py`, `test_backup_users.py`, `test_backup_node_parts.py`, `test_upload_manager.py`, `test_login_hardening.py`, `test_templates_escape.py`, `test_webui_entries.py`, `test_machine.py`. Password tests and the shared vectors: [testing.md](testing.md).
+- Modules: `test_default_playlist.py`, `test_plugins.py`, `test_notifications.py`, `test_osusers.py`, `test_password_policy.py`, `test_security_api.py`, `test_security_model.py`, `test_first_admin_script.py`, `test_setup_first_access.py`, `test_backup_users.py`, `test_backup_node_parts.py`, `test_upload_manager.py`, `test_login_hardening.py`, `test_templates_escape.py`, `test_webui_entries.py`, `test_machine.py`. Password tests and the shared vectors: [testing.md](testing.md).
 - Live checks against a running manager: `tools/ui-smoke.py`, `tools/ui-notifications.py`.

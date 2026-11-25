@@ -40,7 +40,7 @@ Layout:
 - `area` exists because under Wayland the compositor owns window geometry: the content rectangle is a page property set from the web UI (for example the middle third of a tall vertical panel).
 - Area, panes, screensaver overlay and keyboard live in content space, so a window turned by content orientation or by the compositor (`wlr-randr --transform`, orientation stays 0) lays out the same.
 - Page contract for panes: flat, absolutely positioned percent children of `#panes`; never nest them or move one to another parent (the iframe or video would reload). A surviving pane keeps playing through splits, closes and splitter drags; stages of closed panes are destroyed.
-- The page sanitises what the manager sends (areas clamped, invalid tree ignored and the old one kept). A `Show` for a pane the layout has not created yet is kept, latest per pane, until the next layout. A new pane starts blank and the manager parks it on the idle page.
+- The page sanitises what the manager sends (areas clamped, invalid tree ignored and the old one kept). A `Show` for a pane the layout has not created yet is kept, latest per pane, until the next layout. A new pane has no playlist of its own and plays the default playlist until it is given one (`layout_info` carries the effective playlist).
 - Sound output is per window for all panes; a video's volume is per asset.
 - Access: the area, split and close controls and the ticker settings are for administrators and hidden for the others. Pane playlists are changed with `assign_playlist` (scheduler permission).
 - Editor hint above 4 panes: on a Pi 4 videos are decoded by the CPU (about four 720p videos at once); still pictures and static web pages cost about 1 % of a core per pane. The editor cannot detect video.
