@@ -50,6 +50,8 @@ Who reads the version:
 
 Retired: the `3.0.0~devNN` numbering, the `2.x` numbering, the `YYYY.MM.DD` default of `RELEASE_VERSION`, and the old apt repository line (`unitotem-manager.list`). Builds named `2026.11.NN` use the pre-contract daily numbering; they sort below `2026.12`.
 
+- Devices running an updater from before this scheme (images up to 2026.11.x) cannot fetch a version with `~`: their `vkey()` compares an integer with a string and fails with `TypeError` before `--force` is read (observed on the test Pi 4, 2026-11-25). A normal release (`2026.12`, `2026.12.1`) compares fine. A pre-release reaches such a device only with the current `unitotem-update` run from `/run` (`fetch --foreground` with `UNITOTEM_UPDATE_BASE_URL`); after one update to a new image the device has it natively.
+
 ## Files
 
 | Path | Role |

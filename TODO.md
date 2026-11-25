@@ -104,6 +104,7 @@
 - [system] `build-ab` does not require `--channel beta` for a `~` version: a `~rc` build on the stable channel can become "latest".
 - [system/manager] The old apt repository (GitHub Pages) is retired in the decision of 2026-11-23, but `unitotem/stage1-packages.sh` still fetches its `KEY.gpg` and installs `unitotem-manager.list` in every image, `docs/system/build.md` and the manager README still describe it, `unitotem-manager/docs/` is the public site: removal needs the user.
 - [system] Manual update path for devices: a secure, simple way for the operator and the end user (replaces the apt line); design open.
+- [system] First version delivered to devices that still run the old updater (production nodes .2/.4/.6, 3.0.0~dev33 images) must have no `~` (`2026.12`): their `vkey()` raises `TypeError` on `~`; the new image is shipped to them by a normal release, then pre-releases work.
 - [system] Identity merge at OTA (`migrate-etc-overlay`): accounts, root password and browser profile across a real A/B cycle.
 - [system] Mixed versions (old viewer + new manager and reverse) and rollback with a turned screen: reasoned, never run; GRUB fallback/recover on real amd64 end to end.
 - [system] Session bus for root, `unitotem-boot-orientation` on boards, new `rc.xml` (Alt+F4) on boards.
