@@ -37,7 +37,7 @@ Utilities (`manager/utils/`)
 - `release.py`: product version and release info (`version()`, `pretty_name()`, `info()`) from `/usr/share/unitotem/unitotem-release`, see [packaging.md](packaging.md#how-it-works).
 - `models/command_line.py`: `cmdargs`. `environment.py`: `environ` (secrets). `migration/`: `advance()` steps run at every start (`v_3_0_0.py`).
 - `models/user.py`: `UserPerms`, `UserData`, `User`, `user_manager`. `osusers.py`: system accounts, PAM. `passwords.py`: username rule and password policy (shared spec `tests/password_vectors.json`). `sessions.py`: logged-in websockets. See [security.md](security.md).
-- `storage/uploadmanager.py`: uploads folder, watcher, `save`, `remove`. `storage/file_info.py`: duration, mime, pages, colour probe.
+- `storage/uploadmanager.py`: uploads folder, watcher, `save`, `remove`, `restore` (backup), `plain_filename`. `storage/file_info.py`: duration, mime, pages, colour probe.
 - `notifications.py`: notification center. `backup.py`: core backup parts, archive, legacy import. `changes.py`: content-change listeners. `ready.py`: `sd_notify READY=1`, once. `_logging.py`: Hypercorn log adapter for loguru.
 - `system/`: read-only machine facts: `ip.py` (reachable address, netlink changes), `sysinfo.py`, `machine.py`, `cpu.py`, `sensors.py`, `procfs.py`, `lsblk.py` (filesystem usage: a mounted filesystem by `statvfs`, an unmounted one from its superblock with `s_overhead_clusters` taken out so both count like `df`), `gpu.py` (Chromium switches for the viewer).
 - `browser.py` (User-Agent of the embedded browser), `labwc.py`, `outputs.py`, `units.py`, `extras.py`, `async_timer.py`.
@@ -55,7 +55,7 @@ Utilities (`manager/utils/`)
 - Plugins: `utils/plugins.load()` runs when `api/ws/endpoints.py` is imported, before routers are included. A plugin adds API classes, routers (factory), backup parts, hooks. A failing plugin is logged, raises admin notification `plugin.<name>` and is skipped.
 - Notifications: in memory under one lock, persisted to `/var/lib/unitotem/notifications.json`. Each change pushes `Notifications/list` to every open page, once per user.
 - Sysinfo: `Settings/info` is broadcast every 3 s, only while a websocket is connected.
-- Uploads: `UploadManager.save` creates the folder if missing, writes the file and appends it to the default playlist. Name collisions get `_N` suffixes. A failure while reading the stream removes the partial file and re-raises (no retry on a half-read stream).
+- Uploads: `UploadManager.save` creates the folder if missing, writes the file and appends it to the default playlist. Name collisions get `_N` suffixes. A failure while reading the stream removes the partial file and re-raises (no retry on a half-read stream). Backup restore uses `UploadManager.restore` instead: the archived name is kept, see the `uploads` part below.
 - First boot: no `users.json` runs plugin `on_first_boot`; `first_boot_context` hooks feed the welcome page, served to loopback only.
 
 ## Interfaces
@@ -133,6 +133,10 @@ Plugin contract (`utils/plugins.py`):
 Backup archive (zip):
 - `config.json`: `{"version", "parts": {key: data}}`; file parts under `uploaded/`.
 - Core parts: `playlists`, `layouts`, `users`, `security`, `remote`, `ticker`, `uploads` (optional, off by default). Plugin parts are listed in [node-system.md](node-system.md).
+- `uploads` restore: each `uploaded/<name>` is stored as `uploaded/<name>` under its plain name, replacing a file of the same name (written to `.restore-<hex>.tmp`, then renamed; a failure removes the temp and keeps the existing file). No `_N` copy, no asset. The folder is rescanned, so the file list and scan callback update at once. Independent of the order of `playlists` and `uploads`.
+  - `plain_filename` skips, with a log line, names with separators, `..`, control characters, absolute paths, over 255 characters, or not equal to `secure_filename`.
+  - Limits: at most 10000 files. The sum of declared sizes must fit the free space minus 5% of the disk, else the part is refused before anything is written (HTTP 422). A member larger than its declared size, or a stream larger than the free space, aborts the restore; files restored before the abort stay.
+  - The web UI upload (`save`) is unchanged: `_N` on collision, appends an asset to the default playlist.
 - `playlists` part: `playlists`, `default`, and `assignments` = `{"version": 1, "screens": {screen name: playlist id}}`, the explicit assignments of the local viewer only (paired nodes travel in their own bundle). Only playlists in the archive are kept.
 - Restore of `playlists`: replaces the playlists; the default is the archived one or the first playlist when it is missing. Windows rebuild their loops; assignments and panes to missing playlists are dropped.
 - Restore of `assignments`: applied by screen name to screens with no explicit assignment (never overrides). Names must match `[A-Za-z0-9._:+-]{1,64}`, at most 64 entries, playlist ids must exist; anything else is ignored.
