@@ -3,7 +3,7 @@ exec tail -n +3 "$0"
 # UniTotem A/B: two static entries, one per ROOT slot, found by filesystem label (set per slot by unitotem-update).
 # Installed at /etc/grub.d/10_unitotem_ab. 'saved_entry' in grubenv picks the default; grub-reboot sets a one-shot
 # trial entry that GRUB clears before booting, so a crash during a trial returns to the default slot.
-# unitotem-grub-level: 6   (raise when devices must pick up a change: unitotem-update copies the image's grub.cfg over
+# unitotem-grub-level: 7   (raise when devices must pick up a change: unitotem-update copies the image's grub.cfg over
 # the ESP's only when the shipped level is HIGHER, so a rollback never downgrades the bootloader config)
 # Low resolution for every OTA entry (readable from afar): GRUB sets the firmware framebuffer to the first existing
 # mode of gfxmode, gfxpayload=keep hands it to the kernel, nomodeset keeps DRM drivers from switching to native size.
@@ -89,7 +89,7 @@ menuentry "$unitotem_title_a" --id slot-a {
     search --no-floppy --set=root --label ROOT_A
     unitotem_boot_frame a
     set gfxpayload=keep
-    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false vt.global_cursor_default=0 unitotem.slot=a ${unitotem_video}
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false vt.global_cursor_default=0 fbcon=map:99 unitotem.slot=a ${unitotem_video}
     initrd /initrd.img
 }
 menuentry "$unitotem_title_b" --id slot-b {
@@ -98,7 +98,7 @@ menuentry "$unitotem_title_b" --id slot-b {
     search --no-floppy --set=root --label ROOT_B
     unitotem_boot_frame b
     set gfxpayload=keep
-    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false vt.global_cursor_default=0 unitotem.slot=b ${unitotem_video}
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false vt.global_cursor_default=0 fbcon=map:99 unitotem.slot=b ${unitotem_video}
     initrd /initrd.img
 }
 menuentry 'UniTotem (Slot A, OTA recovery)' --id slot-a-recover {
