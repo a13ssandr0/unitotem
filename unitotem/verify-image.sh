@@ -237,6 +237,9 @@ chk "PAM service of the manager is shipped (/etc/pam.d/unitotem-manager)" test -
 if [ "$ARCH" = amd64 ]; then
     chk "Intel graphics firmware is installed (i915 DMC/GuC/HuC; without it VA-API cannot initialise)" bash -c "ls '$R'/lib/firmware/i915/adlp_dmc* >/dev/null 2>&1 || ls '$R'/usr/lib/firmware/i915/adlp_dmc* >/dev/null 2>&1"
     chk "the NVIDIA units do not fail the boot on PCs without an NVIDIA GPU" bash -c "test -s '$R/etc/systemd/system/nvidia-persistenced.service.d/unitotem-only-with-nvidia.conf' && test -s '$R/etc/systemd/system/systemd-modules-load.service.d/unitotem-nvidia-optional.conf'"
+    if [ "$AB" = 1 ]; then
+        chk "the boot-picture kit is under /usr/share/unitotem/grub-boot-tool (generator, 8 theme pictures, font) and none of it under /etc/unitotem" bash -c "K='$R/usr/share/unitotem/grub-boot-tool'; test -s \"\$K/grub-boot-assets.py\" && test -s \"\$K/NotoSans.ttf\" && for t in 1280 1920 2560 3840; do for k in wordmark spinner; do test -s \"\$K/theme/\$k-\$t.png\" || exit 1; done; done && ! find '$R/etc/unitotem' \\( -name grub-boot-assets.py -o -name NotoSans.ttf -o -name 'wordmark-*.png' -o -name 'spinner-*.png' -o -path '*grub-boot-tool*' \\) 2>/dev/null | grep -q ."
+    fi
 fi
 chk "root lingers (session D-Bus /run/user/0/bus from boot) and dbus-user-session is installed" bash -c "test -e '$R/var/lib/systemd/linger/root' && test -e '$R/usr/lib/systemd/user/dbus.socket'"
 chk "the kernel command line silences systemd status text (it would be repainted on the console during the hand-over)" bash -c "for f in '$FAT/cmdline.txt' '$FAT/slota/cmdline.txt' '$R/etc/default/grub' '$R/etc/default/grub.d/'* '$R/boot/grub/grub.cfg'; do [ -f \"\$f\" ] && grep -q ' systemd.show_status=false' \"\$f\" && exit 0; done; exit 1"

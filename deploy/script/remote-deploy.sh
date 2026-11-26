@@ -287,6 +287,29 @@ if [ -n "$NETIF" ]; then
     fi
 fi
 
+# Display mode for the boot picture (grubenv unitotem_gfx), the same functions as drm_gfx in ota-engine.sh.
+# Empty when no valid mode is connected (headless, Raspberry Pi).
+gfx_valid() {
+    [[ "$1" =~ ^[1-9][0-9]{2,4}x[1-9][0-9]{2,4}$ ]] || return 1
+    local w="${1%x*}" h="${1#*x}"
+    [ "$w" -ge 320 ] && [ "$w" -le 7680 ] && [ "$h" -ge 200 ] && [ "$h" -le 7680 ]
+}
+drm_gfx() {
+    local dir="${1:-/sys/class/drm}" d sel="" m
+    local -a conn=()
+    mapfile -t conn < <(printf '%s\n' "$dir"/card*-* | LC_ALL=C sort)
+    for d in "${conn[@]}"; do
+        [ -d "$d" ] && [ "$(cat "$d/status" 2>/dev/null)" = connected ] || continue
+        case "${d##*/}" in card*-eDP*) sel="$d"; break ;; esac
+        [ -n "$sel" ] || sel="$d"
+    done
+    [ -n "$sel" ] || return 0
+    m=$(head -n1 "$sel/modes" 2>/dev/null) || m=""
+    if gfx_valid "$m"; then echo "$m"; fi
+    return 0
+}
+echo "GFX: $(drm_gfx)"
+
 while read -r name size type tran model; do
     [ "$type" = "disk" ] || continue
     case "$name" in /dev/loop*|/dev/sr*|/dev/ram*|/dev/zram*|/dev/fd*) continue ;; esac
@@ -891,7 +914,10 @@ run_ota_sequence() {
     if [ "$FIRMWARE" = rpi ]; then
         ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware rpi-tryboot --disk '${disk}' --bootfs-part '${bootfs_part}' --target /mnt/newroot --layout ab"
     else
-        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${FIRMWARE}' --target /mnt/newroot --layout ab"
+        # The mode came from the target: checked again here before it enters a remote command line (empty = unknown).
+        local gfx="${P[GFX]:-}"
+        [[ "$gfx" =~ ^[1-9][0-9]{2,4}x[1-9][0-9]{2,4}$ ]] || gfx=""
+        ota_ssh "$host" "unitotem-ota-engine set-trial-boot --firmware '${FIRMWARE}' --target /mnt/newroot --layout ab --gfx '${gfx}'"
     fi
 
     ota_ssh "$host" "unitotem-ota-engine umount-target" || true
@@ -1267,6 +1293,7 @@ deploy_from_fallback() {
     probe_out=$(ota_ssh "$host" "unitotem-ota-engine probe --disk '${disk}'")
     while IFS= read -r line; do [ -n "$line" ] && E["${line%%=*}"]="${line#*=}"; done <<< "$probe_out"
     [ -n "${E[UNITOTEM_DISK]:-}" ] || die "the target does not resolve the disk ${disk}"
+    P[GFX]="${E[UNITOTEM_GFX]:-}"
 
     case "${E[UNITOTEM_ARCH_HOST]:-}" in
         aarch64) ARCH=arm64; FIRMWARE=rpi; TRYBOOT_CAPABLE="${E[UNITOTEM_TRYBOOT]:-0}"

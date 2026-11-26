@@ -270,6 +270,10 @@ cmd_probe() {
         echo "UNITOTEM_TRYBOOT=0"
     fi
 
+    # Display mode for the boot picture (unitotem_gfx); absent when no valid mode is connected (fallback without DRM).
+    local gfx; gfx=$(drm_gfx)
+    if [ -n "$gfx" ]; then echo "UNITOTEM_GFX=$gfx"; fi
+
     if [ -n "$disk" ]; then
         local size
         size=$(blockdev --getsize64 "$disk" 2>/dev/null || echo 0)
@@ -489,6 +493,49 @@ grubenv_write() {
     mv -f "$file.new" "$file"
 }
 
+# gfx_valid MODE: 0 when MODE is WxH with 320..7680 x 200..7680, 1 otherwise (nothing else is ever written to grubenv).
+gfx_valid() {
+    [[ "$1" =~ ^[1-9][0-9]{2,4}x[1-9][0-9]{2,4}$ ]] || return 1
+    local w="${1%x*}" h="${1#*x}"
+    [ "$w" -ge 320 ] && [ "$w" -le 7680 ] && [ "$h" -ge 200 ] && [ "$h" -le 7680 ]
+}
+
+# drm_gfx [DIR]: WxH of the display GRUB uses (gfxmode=auto). The first connected card*-eDP* connector wins, else the
+# first connected connector in sorted order; its first mode is printed when valid, nothing otherwise.
+# The same text sits in remote-deploy.sh (do_probe): tools/release/test_deploy_gfx_record.py keeps the two equal.
+drm_gfx() {
+    local dir="${1:-/sys/class/drm}" d sel="" m
+    local -a conn=()
+    mapfile -t conn < <(printf '%s\n' "$dir"/card*-* | LC_ALL=C sort)
+    for d in "${conn[@]}"; do
+        [ -d "$d" ] && [ "$(cat "$d/status" 2>/dev/null)" = connected ] || continue
+        case "${d##*/}" in card*-eDP*) sel="$d"; break ;; esac
+        [ -n "$sel" ] || sel="$d"
+    done
+    [ -n "$sel" ] || return 0
+    m=$(head -n1 "$sel/modes" 2>/dev/null) || m=""
+    if gfx_valid "$m"; then echo "$m"; fi
+    return 0
+}
+
+# trial_grubenv_kv FILE [MODE]: the variables kept in the target's grubenv for the trial boot: every one except the two
+# that choose the boot, with unitotem_gfx=MODE when MODE is valid (an existing unitotem_gfx is kept when MODE is not).
+trial_grubenv_kv() {
+    local file="$1" gfx="${2:-}" kv have=0
+    gfx_valid "$gfx" && have=1
+    [ "$have" = 1 ] && echo "unitotem_gfx=$gfx"
+    [ -f "$file" ] || return 0
+    while IFS= read -r kv; do
+        case "$kv" in
+            \#*|"") continue ;;
+            saved_entry=*|next_entry=*) continue ;;
+            unitotem_gfx=*) [ "$have" = 1 ] && continue ;;
+        esac
+        echo "$kv"
+    done < "$file"
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # data-op: DATA partition handling - preserve (no-op) or fresh mkfs.
 # ---------------------------------------------------------------------------
@@ -701,7 +748,10 @@ cmd_set_trial_boot() {
                 # confirms. The same state unitotem-update writes for an in-place update, so the boot-ok
                 # path is identical for a first deploy and for every later one.
                 ab_write_pending "$t"
-                grubenv_write "$ge" "saved_entry=ota-recovery" "next_entry=slot-a"
+                # --gfx: the running system's display mode (unitotem_gfx), optional and validated by trial_grubenv_kv
+                local keep=()
+                mapfile -t keep < <(trial_grubenv_kv "$ge" "${ARG[gfx]:-}")
+                grubenv_write "$ge" "saved_entry=ota-recovery" "next_entry=slot-a" "${keep[@]}"
                 sync
                 ota_final_status
                 echo "UNITOTEM_TRIAL_ARMED=1"

@@ -24,6 +24,10 @@ CONF_DEFAULTS = {
     "UPDATE_GRUBENV": "/boot/efi/unitotem-grub/grub/grubenv",
     "UPDATE_ESP_MOUNT": "/boot/efi",                         # amd64: where the ESP (grubenv) is mounted
     "UPDATE_ESP_ASSETS": "/usr/share/unitotem/esp-grub-assets",  # the image's pictures for the ESP: logo/*.png
+    "UPDATE_BOOT_TOOL": "/usr/share/unitotem/grub-boot-tool",    # the image's picture generator, theme and font (runtime pictures)
+    "UPDATE_BOOT_TOOL_TIMEOUT": "60",                           # seconds allowed to one generator run
+    "UPDATE_SLOT_PICTURES": "/usr/share/unitotem/grub-boot",    # the image's slot pictures: boot-<a|b>-WxH.png
+    "UPDATE_MOUNTS": "/proc/mounts",                            # mount table: the mount holding a picture directory
     "UPDATE_DRM_DIR": "/sys/class/drm",                      # where the display modes are read
     "UPDATE_BOOTFS": "/boot/firmware",                       # Raspberry Pi: the FAT partition the firmware reads
     "UPDATE_RECOVERY_DIR": "/usr/share/unitotem/recovery",   # the image's recovery set: manifest, vmlinuz, initrd.img, dtb/*
@@ -1525,12 +1529,20 @@ def _grub_level(text):
 
 
 def drm_mode(conf):
-    """The preferred mode ("WxH") of the first connected display, the one GRUB's gfxmode=auto selects; None when none is connected."""
+    """The preferred mode ("WxH") of the display GRUB's gfxmode=auto selects: an eDP panel (laptop) when connected, otherwise
+    the first connected display in sorted order. None when none is connected."""
     import re
+    conns = []
     for d in sorted(glob.glob(os.path.join(conf["UPDATE_DRM_DIR"], "card*-*"))):
         try:
-            if open(os.path.join(d, "status")).read().strip() != "connected":
-                continue
+            if open(os.path.join(d, "status")).read().strip() == "connected":
+                conns.append(d)
+        except OSError:
+            continue
+    # the connector name is the part after "cardN-", e.g. eDP-1 for card0-eDP-1
+    conns.sort(key=lambda d: not os.path.basename(d).split("-", 1)[1].startswith("eDP"))   # stable: eDP first, sorted order kept
+    for d in conns:
+        try:
             m = open(os.path.join(d, "modes")).readline().strip()
         except OSError:
             continue
@@ -1580,15 +1592,252 @@ def sync_esp_assets(conf):
     return written
 
 
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+BOOT_MODE_RE = re.compile(r"[1-9][0-9]{2,4}x[1-9][0-9]{2,4}")
+BOOT_PICTURE_MAX = 4 << 20
+
+
+def boot_mode(text):
+    """(width, height) of a display mode, or None when it is malformed or outside the sizes a boot picture supports."""
+    if not isinstance(text, str) or not BOOT_MODE_RE.fullmatch(text):
+        return None
+    w, h = (int(v) for v in text.split("x"))
+    if not (320 <= w <= 7680 and 200 <= h <= 7680 and w * h <= 8192 * 4320):
+        return None
+    return w, h
+
+
+def png_ok(data, w, h):
+    """True when DATA is a complete PNG of WxH: signature, every chunk CRC, IHDR size, IEND last and nothing after it."""
+    import zlib
+    if len(data) > BOOT_PICTURE_MAX or not data.startswith(PNG_SIG):
+        return False
+    pos = 8
+    while pos + 12 <= len(data):
+        n = int.from_bytes(data[pos:pos + 4], "big")
+        kind = data[pos + 4:pos + 8]
+        body_end = pos + 8 + n                  # chunk: length, type, n data bytes, CRC over type and data
+        if body_end + 4 > len(data) or zlib.crc32(data[pos + 4:body_end]) != int.from_bytes(data[body_end:body_end + 4], "big"):
+            return False
+        if pos == 8 and (kind != b"IHDR" or n != 13 or int.from_bytes(data[16:20], "big") != w
+                         or int.from_bytes(data[20:24], "big") != h):
+            return False
+        pos = body_end + 4
+        if kind == b"IEND":
+            return pos == len(data)
+    return False
+
+
+def png_ok_file(path, w, h):
+    try:
+        if os.path.getsize(path) > BOOT_PICTURE_MAX:
+            return False
+        return png_ok(open(path, "rb").read(), w, h)
+    except OSError:
+        return False
+
+
+def mount_holding(conf, path):
+    """(mount point, read-only?) of the mount that holds PATH, from UPDATE_MOUNTS; None when the table cannot be read."""
+    path = os.path.realpath(path)
+    try:
+        lines = open(conf["UPDATE_MOUNTS"]).read().splitlines()
+    except OSError:
+        return None
+    best = None
+    for line in lines:
+        f = line.split()
+        if len(f) > 3 and (path == f[1] or path.startswith(f[1].rstrip("/") + "/")):
+            if best is None or len(f[1]) > len(best[0]):
+                best = (f[1], "ro" in f[3].split(","))
+    return best
+
+
+class mount_rw:
+    """Remounts the mount holding PATH read-write for the block when it is read-only, and back to read-only after.
+    Nothing is done when it is writable already or its mount point is unknown."""
+    def __init__(self, conf, path):
+        self.conf = conf; self.path = path; self.mnt = None
+
+    def __enter__(self):
+        m = mount_holding(self.conf, self.path)
+        if m and m[1]:
+            r = subprocess.run(["mount", "-o", "remount,rw", m[0]], capture_output=True, text=True)
+            if r.returncode:
+                raise Fail("bootfs-rw", f"cannot remount {m[0]} read-write: {r.stderr.strip()}")
+            self.mnt = m[0]
+        return self
+
+    def __exit__(self, *e):
+        if self.mnt:
+            subprocess.run(["sync"])
+            subprocess.run(["mount", "-o", "remount,ro", self.mnt], capture_output=True)
+
+
+def _generate_picture(conf, mode, w, h, kind, slot=None, version=None):
+    """Runs the image's generator (UPDATE_BOOT_TOOL) into a temporary directory and returns the picture after checks."""
+    tool = conf["UPDATE_BOOT_TOOL"]
+    script = os.path.join(tool, "grub-boot-assets.py")
+    theme = os.path.join(tool, "theme")
+    font = os.path.join(tool, "NotoSans.ttf")
+    if not os.path.isfile(script) or not os.path.isdir(theme):
+        raise Fail("boot-picture", f"generator kit missing in {tool}")
+    timeout = int(conf["UPDATE_BOOT_TOOL_TIMEOUT"])
+    os.makedirs(conf["UPDATE_RUN_DIR"], exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=conf["UPDATE_RUN_DIR"], prefix="boot-picture-") as out:
+        if kind == "logo":
+            args = ["logo", "--theme", theme, "--out", out, "--modes", mode]
+            name = f"{mode}.png"
+        else:
+            if not os.path.isfile(font):
+                raise Fail("boot-picture", f"font missing: {font}")
+            args = ["slot", "--theme", theme, "--font", font, "--version", version, "--out", out, "--modes", mode,
+                    "--slots", slot]
+            name = f"boot-{slot}-{mode}.png"
+        try:
+            r = subprocess.run([sys.executable, "-I", script] + args, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise Fail("boot-picture", f"generator timed out after {timeout} s")
+        if r.returncode:
+            last = (r.stderr.strip().splitlines() or ["no message"])[-1]
+            raise Fail("boot-picture", f"generator exit {r.returncode}: {last[:120]}")
+        path = os.path.join(out, name)
+        if not os.path.isfile(path) or os.path.getsize(path) > BOOT_PICTURE_MAX:
+            raise Fail("boot-picture", "generator wrote no usable picture")
+        data = open(path, "rb").read()
+    if not png_ok(data, w, h):
+        raise Fail("boot-picture", f"generator output is not a valid {mode} picture")
+    return data
+
+
+def _install_picture(path, data, rw):
+    """Writes DATA to PATH through PATH.new, verified before the rename, inside the RW context."""
+    tmp = path + ".new"
+    with rw:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data); f.flush(); os.fsync(f.fileno())
+            if open(tmp, "rb").read() != data:
+                raise OSError("picture did not verify")
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+
+def ensure_boot_pictures(conf):
+    """Makes sure the recorded display mode has its boot pictures: the ESP logo and the running slot's picture. The image
+    ships pictures for 17 modes; any other mode, or a damaged file, is generated here by the image's own generator kit.
+    Returns the list of files written. Never raises: a failure is logged as an event."""
+    written = []
+    try:
+        if backend(conf) != "grub":
+            return written
+        raw = grubenv_get(conf, "unitotem_gfx")
+        if not raw:
+            return written
+        size = boot_mode(raw)
+        if size is None:
+            event(conf, f"boot picture not generated: bad display mode {raw[:20]!r}")
+            return written
+        w, h = size
+        mode = f"{w}x{h}"
+        slot = cur_slot(conf)
+        esp_logo, slot_pic = _picture_paths(conf, mode, slot)
+        if not png_ok_file(esp_logo, w, h):
+            try:
+                data = _generate_picture(conf, mode, w, h, "logo")
+                _install_picture(esp_logo, data, bootfs_rw(conf["UPDATE_ESP_MOUNT"]))
+                written.append(esp_logo)
+                event(conf, f"boot picture generated: {esp_logo}")
+            except Exception as e:
+                event(conf, f"boot picture not generated: {esp_logo}: {e}")
+        if slot:
+            slot_dir = conf["UPDATE_SLOT_PICTURES"]
+            if not png_ok_file(slot_pic, w, h):
+                try:
+                    version = current_version(conf)
+                    data = _generate_picture(conf, mode, w, h, "slot", slot=slot, version=version)
+                    _install_picture(slot_pic, data, mount_rw(conf, slot_dir))
+                    written.append(slot_pic)
+                    event(conf, f"boot picture generated: {slot_pic}")
+                except Exception as e:
+                    event(conf, f"boot picture not generated: {slot_pic}: {e}")
+    except Exception as e:
+        event(conf, f"boot pictures not ensured: {e}")
+    return written
+
+
+def _picture_paths(conf, mode, slot):
+    """The ESP logo of MODE and the picture of the running SLOT (None without a slot)."""
+    esp_logo = os.path.join(conf["UPDATE_ESP_MOUNT"], "unitotem-grub", "grub", "logo", mode + ".png")
+    slot_pic = os.path.join(conf["UPDATE_SLOT_PICTURES"], f"boot-{slot}-{mode}.png") if slot else None
+    return esp_logo, slot_pic
+
+
+def boot_pictures_needed(conf):
+    """Cheap check, generates nothing: True when the recorded display mode is valid and its ESP logo or the running slot's
+    picture is missing or damaged."""
+    try:
+        if backend(conf) != "grub":
+            return False
+        size = boot_mode(grubenv_get(conf, "unitotem_gfx"))
+        if size is None:
+            return False
+        w, h = size
+        esp_logo, slot_pic = _picture_paths(conf, f"{w}x{h}", cur_slot(conf))
+        if not png_ok_file(esp_logo, w, h):
+            return True
+        return slot_pic is not None and not png_ok_file(slot_pic, w, h)
+    except Exception as e:
+        event(conf, f"boot pictures check failed: {e}")
+        return False
+
+
+def start_boot_pictures(conf):
+    """Starts ensure_boot_pictures in a detached unit (Nice 19, idle I/O, RuntimeMaxSec 90) when pictures are missing, so boot-ok
+    never waits for generation. Skipped while another operation holds the lock; the next boot retries. Returns True when started.
+    Never raises."""
+    try:
+        if not boot_pictures_needed(conf):
+            return False
+        if op_running(conf):
+            event(conf, "boot pictures not started: another operation is running")
+            return False
+        run_out("systemd-run", "--unit", "unitotem-boot-pictures", "--collect", "--quiet", "-p", "Nice=19",
+                "-p", "IOSchedulingClass=idle", "-p", "RuntimeMaxSec=90", sys.executable, os.path.abspath(__file__),
+                "--json", "boot-pictures")
+        return True
+    except Exception as e:
+        event(conf, f"boot pictures not started: {e}")
+        return False
+
+
+def cmd_boot_pictures(a, conf):
+    """Internal: run by the unitotem-boot-pictures unit (start_boot_pictures). Takes the operation lock; a busy lock skips."""
+    need_backend(conf)
+    try:
+        with Lock(conf):
+            written = ensure_boot_pictures(conf)
+    except Fail as e:
+        if e.code != "busy":
+            raise
+        return 0, {"generated": [], "skipped": "busy"}
+    return 0, {"generated": written}
+
+
 def sync_esp_grubcfg(conf):
     """The ESP (GRUB's grub.cfg) is outside both slots, so an update never refreshes it: a device installed with an older bootloader
     config would keep it forever. The image ships its own copy; once a system has booted and been confirmed, copy it over when its
     `unitotem-grub-level` is higher. Written beside and renamed, verified before the rename, never run on a trial boot.
-    It also records the display mode and refreshes the ESP boot pictures."""
+    It also records the display mode and starts the boot picture generation detached when pictures are missing."""
     if backend(conf) != "grub":
         return None
     try: record_boot_mode(conf)
     except Exception as e: event(conf, f"boot picture mode not recorded: {e}")
+    try: start_boot_pictures(conf)
+    except Exception as e: event(conf, f"boot pictures not started: {e}")
     src = conf.get("UPDATE_ESP_GRUBCFG", "/usr/share/unitotem/esp-grub.cfg")
     dst = os.path.join(conf["UPDATE_ESP_MOUNT"], "unitotem-grub", "grub", "grub.cfg")
     try:
@@ -2040,7 +2289,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json", action="store_true")
     sp = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("status", "check", "confirm", "boot-ok", "cancel"):
+    for n in ("status", "check", "confirm", "boot-ok", "cancel", "boot-pictures"):
         sp.add_parser(n)
     f = sp.add_parser("fetch"); f.add_argument("--foreground", action="store_true"); f.add_argument("--force", action="store_true")
     f.add_argument("--accept-changes", help="accepted and ignored: the current slot is never modified")
@@ -2054,7 +2303,8 @@ def main():
     a = ap.parse_args()
     conf = load_conf()
     table = {"status": cmd_status, "check": cmd_check, "fetch": cmd_fetch, "apply": cmd_apply, "confirm": cmd_confirm,
-             "boot-ok": cmd_boot_ok, "rollback": cmd_rollback, "cancel": cmd_cancel, "repair": cmd_repair, "policy": cmd_policy, "auto": cmd_auto, "reboot": cmd_reboot}
+             "boot-ok": cmd_boot_ok, "rollback": cmd_rollback, "cancel": cmd_cancel, "repair": cmd_repair, "policy": cmd_policy, "auto": cmd_auto, "reboot": cmd_reboot,
+             "boot-pictures": cmd_boot_pictures}
     try:
         rc, out = table[a.cmd](a, conf)
     except Fail as e:

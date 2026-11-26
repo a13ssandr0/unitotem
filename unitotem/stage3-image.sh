@@ -487,6 +487,17 @@ if [ "$ARCH" = "amd64" ] && [ "$AB_LAYOUT" = 1 ]; then
             [ -s "$SLOT_DIR/boot-$s-$name.png" ] || boot_assert_fail "$SLOT_DIR/boot-$s-$name.png missing"
         done
     done
+    # Runtime kit: unitotem-update draws the pictures of a display mode the image does not ship (ensure_boot_pictures).
+    KIT=${IMG_MNT}/usr/share/unitotem/grub-boot-tool
+    install -d -m 755 "$KIT/theme"
+    install -m 755 /unitotem/grub-boot-assets.py "$KIT/grub-boot-assets.py"
+    for t in 1280 1920 2560 3840; do
+        for k in wordmark spinner; do
+            [ -s "${IMG_MNT}/usr/share/plymouth/themes/unitotem/$k-$t.png" ] || boot_assert_fail "theme $k-$t.png missing"
+            install -m 644 "${IMG_MNT}/usr/share/plymouth/themes/unitotem/$k-$t.png" "$KIT/theme/$k-$t.png"
+        done
+    done
+    install -m 644 "$FONT_FILE" "$KIT/NotoSans.ttf"
 fi
 {
     echo 'NAME="UniTotem"'
