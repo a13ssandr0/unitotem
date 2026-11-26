@@ -140,7 +140,7 @@ if [ "$ARCH" = "arm64" ]; then
     # kernel/DTB source changes. Needs enable_uart=1 in config.txt (pins the core clock
     # the mini-UART baud derives from).
     AB_SLOT_ARG=""; [ "$AB_LAYOUT" = 1 ] && AB_SLOT_ARG=" unitotem.slot=a"
-    echo "console=tty1 console=ttyS0,115200 root=LABEL=${ROOT_LABEL} rootfstype=ext4 rootwait ro quiet splash loglevel=3 rd.systemd.show_status=false systemd.show_status=false plymouth.ignore-serial-consoles fbcon=map:99${AB_SLOT_ARG}" \
+    echo "console=tty1 console=ttyS0,115200 root=LABEL=${ROOT_LABEL} rootfstype=ext4 rootwait ro quiet splash loglevel=3 rd.systemd.show_status=false systemd.show_status=false plymouth.ignore-serial-consoles${AB_SLOT_ARG}" \
         > "${ROOTFS}/boot/firmware/cmdline.txt"
 
     cat > "${ROOTFS}/etc/modules-load.d/rpi-gpu.conf" << 'EOF'
@@ -200,11 +200,6 @@ install -m 755 /unitotem/files/unitotem-maintenance "${ROOTFS}/usr/local/bin/uni
 # The compositor is a systemd service of the unitotem-viewer deb (unitotem-compositor.service: Plymouth deactivate before, plymouthd
 # killed once the Wayland socket exists, VT1, Restart=always); this image only enables it. No login prompt may sit on VT1.
 ln -sf /dev/null "${ROOTFS}/etc/systemd/system/getty@tty1.service"
-# Plymouth stays on screen until the compositor unit deactivates it and kills it once the Wayland socket exists: Debian's plymouth-quit
-# would end it about a second after it starts (measured on the amd64 test PC: quit at +1.0 s, compositor at +2.0 s, black in between).
-for u in plymouth-quit.service plymouth-quit-wait.service; do
-    ln -sf /dev/null "${ROOTFS}/etc/systemd/system/${u}"
-done
 
 # Debian's wayvnc package enables its own VNC server (all addresses, PAM auth) and a control
 # service whose script does not exist (exit 127, system "degraded"). Remote viewing is the

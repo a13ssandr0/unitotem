@@ -79,7 +79,7 @@ def check_slot(lines, slot):
     kl = kernel(blk)
     for word in ("quiet", "splash"):
         if not has_word(word, kl): errs.append("kernel line lacks %s" % word)
-    for token in ("vt.global_cursor_default=0", "fbcon=map:99", "unitotem.slot=" + slot, "${unitotem_video}"):
+    for token in ("vt.global_cursor_default=0", "unitotem.slot=" + slot, "${unitotem_video}"):
         if token not in kl: errs.append("kernel line lacks %s" % token)
     idx_linux = next((i for i, l in enumerate(blk) if l.strip().startswith("linux ")), None)
     idx_gfx = next((i for i, l in enumerate(blk) if l.strip() == "set gfxpayload=keep"), None)
@@ -127,8 +127,8 @@ def main():
 
     # Level.
     m = re.search(r"^# unitotem-grub-level: (\d+)\b", src, re.M)
-    check("unitotem-grub-level line is present", "# unitotem-grub-level: 7" in src)
-    check("unitotem-grub-level is an integer >= 7", bool(m) and int(m.group(1)) >= 7, m and m.group(1))
+    check("unitotem-grub-level line is present", "# unitotem-grub-level: 8" in src)
+    check("unitotem-grub-level is an integer >= 8", bool(m) and int(m.group(1)) >= 8, m and m.group(1))
 
     # Menu entries and fallback numbers.
     ids = [eid for _, eid, _ in menu_ids(lines)]

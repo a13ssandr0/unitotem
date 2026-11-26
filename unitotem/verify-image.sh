@@ -243,7 +243,6 @@ if [ "$ARCH" = amd64 ]; then
 fi
 chk "root lingers (session D-Bus /run/user/0/bus from boot) and dbus-user-session is installed" bash -c "test -e '$R/var/lib/systemd/linger/root' && test -e '$R/usr/lib/systemd/user/dbus.socket'"
 chk "the kernel command line silences systemd status text (it would be repainted on the console during the hand-over)" bash -c "for f in '$FAT/cmdline.txt' '$FAT/slota/cmdline.txt' '$R/etc/default/grub' '$R/etc/default/grub.d/'* '$R/boot/grub/grub.cfg'; do [ -f \"\$f\" ] && grep -q ' systemd.show_status=false' \"\$f\" && exit 0; done; exit 1"
-chk "the slot kernel command line stops fbcon from binding the framebuffer (fbcon=map:99: fbcon repainted the console text when Plymouth deactivated; Pi cmdline.txt, or the GRUB slot entries)" bash -c "for f in '$FAT/cmdline.txt' '$FAT/slota/cmdline.txt' '$R/boot/grub/grub.cfg'; do [ -f \"\$f\" ] && grep -q ' fbcon=map:99' \"\$f\" && exit 0; done; exit 1"
 
 echo "== Wayland session (labwc): no X server on the image"
 CS="$R/usr/lib/systemd/system/unitotem-compositor.service"
@@ -253,7 +252,9 @@ chk "the compositor takes VT1 from a deactivated Plymouth (deactivate before, pl
 chk "the compositor shows 'Starting compositor' on the splash before plymouth deactivate (ExecStartPre order)" bash -c 'u=$(grep -n "^ExecStartPre=.*plymouth update --status=\"Starting compositor\"" "$1" | head -n 1 | cut -d: -f1); d=$(grep -n "^ExecStartPre=.*plymouth deactivate" "$1" | head -n 1 | cut -d: -f1); [ -n "$u" ] && [ -n "$d" ] && [ "$u" -lt "$d" ]' _ "$CS"
 chk "the compositor unit does not clear /dev/fb0 or tty1 (that blanked the splash; comment lines excluded)" bash -c '! grep -v "^[[:space:]]*#" "$1" | grep -q "/dev/fb0"' _ "$CS"
 chk "getty@tty1 is masked (nothing may share the compositor's VT)" bash -c "test \$(readlink '$R/etc/systemd/system/getty@tty1.service') = /dev/null"
-chk "plymouth-quit and plymouth-quit-wait are masked (Plymouth lives until the compositor unit deactivates and kills it)" bash -c "test \$(readlink '$R/etc/systemd/system/plymouth-quit.service') = /dev/null && test \$(readlink '$R/etc/systemd/system/plymouth-quit-wait.service') = /dev/null"
+chk "the compositor unit replaces plymouth-quit like gdm3 and lightdm do (Conflicts=plymouth-quit.service plymouth-quit-wait.service, OnFailure=plymouth-quit.service)" bash -c 'grep -q "^Conflicts=plymouth-quit.service plymouth-quit-wait.service" "$1" && grep -q "^OnFailure=plymouth-quit.service" "$1"' _ "$CS"
+chk "the compositor unit quits Plymouth with --retain-splash and does not kill it (comment lines excluded)" bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -q "plymouth quit --retain-splash" && ! grep -v "^[[:space:]]*#" "$1" | grep -q "pkill"' _ "$CS"
+chk "plymouth-quit.service and plymouth-quit-wait.service are not masked (the compositor unit conflicts with them: a mask would hide the OnFailure safety net)" bash -c "! test -L '$R/etc/systemd/system/plymouth-quit.service' && ! test -L '$R/etc/systemd/system/plymouth-quit-wait.service'"
 for t in labwc wlr-randr wlopm wayvnc; do chk "$t is installed" bash -c "test -x '$R/usr/bin/$t'"; done
 chk "xwayland is installed (labwc starts it lazily)" bash -c "test -x '$R/usr/bin/Xwayland'"
 chk "no X server on the image (Xorg, xinit, xset, the X config of the old session; xauth is only an openssh Recommends)" bash -c "! test -e '$R/usr/bin/Xorg' && ! test -e '$R/usr/bin/xinit' && ! test -e '$R/usr/bin/xset' && ! test -e '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf'"
