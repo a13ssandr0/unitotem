@@ -288,12 +288,13 @@ if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
     fi
     chk "the initramfs carries the unitotem theme and the script plugin (${INITRD##*/})" bash -c "l=\$(lsinitramfs '$INITRD' 2>/dev/null) && printf '%s\n' \"\$l\" | grep -q 'plymouth/themes/unitotem/unitotem.script' && printf '%s\n' \"\$l\" | grep -q 'plymouth/script.so'"
     # one file of the slot initramfs on stdout (unmkinitramfs unpacks both segments: cpio and zstd)
-    initrd_file() { local t rc; t=$(mktemp -d) || return 1
-        unmkinitramfs "$1" "$t" >/dev/null 2>&1 && cat "$t/$2" 2>/dev/null; rc=$?
+    # unmkinitramfs of the builder (initramfs-tools 0.142) puts the last segment in main/, a newer one at the top: look in both
+    initrd_file() { local t rc f; t=$(mktemp -d) || return 1
+        unmkinitramfs "$1" "$t" >/dev/null 2>&1; f="$t/main/$2"; [ -e "$f" ] || f="$t/$2"; cat "$f" 2>/dev/null; rc=$?
         rm -rf -- "$t"; return $rc; }
     # regular file (not a symlink) inside the initramfs: $2 is the path without leading slash
-    initrd_regular() { local t rc; t=$(mktemp -d) || return 1
-        unmkinitramfs "$1" "$t" >/dev/null 2>&1; test -f "$t/$2" && test ! -L "$t/$2"; rc=$?
+    initrd_regular() { local t rc f; t=$(mktemp -d) || return 1
+        unmkinitramfs "$1" "$t" >/dev/null 2>&1; f="$t/main/$2"; [ -e "$f" ] || f="$t/$2"; test -f "$f" && test ! -L "$f"; rc=$?
         rm -rf -- "$t"; return $rc; }
     initrd_version_ok() { local v; v=$(initrd_file "$1" usr/share/unitotem/boot-version) || return 1
         [ -n "$v" ] && [ "$v" = "$(cat "$R/usr/share/unitotem/release-version" 2>/dev/null)" ]; }
