@@ -1,0 +1,41 @@
+#!/bin/sh
+# initramfs-tools init-premount script: writes the slot and the image version on the Plymouth splash.
+# Runs after plymouth and before zz-unitotem-ota (name order, see the ORDER file of init-premount).
+# The version is the one baked into this initramfs (usr/share/unitotem/boot-version, from the unitotem package).
+PREREQ="plymouth"
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+
+# Kernel command line words as arguments: no glob expansion of their values.
+set -f
+set -- $(cat /proc/cmdline 2>/dev/null)
+set +f
+for w in "$@"; do
+    case "$w" in
+        nosplash|plymouth.enable=0) exit 0 ;;
+    esac
+done
+
+[ -x /usr/bin/plymouth ] || exit 0
+/usr/bin/plymouth --ping >/dev/null 2>&1 || exit 0
+
+slot=
+for w in "$@"; do
+    case "$w" in
+        unitotem.slot=a) slot=A ;;
+        unitotem.slot=b) slot=B ;;
+    esac
+done
+
+ver=$(head -n 1 /usr/share/unitotem/boot-version 2>/dev/null)
+case "$ver" in
+    ''|*[!0-9A-Za-z.+~:-]*) exit 0 ;;
+esac
+
+if [ -n "$slot" ]; then
+    label="Slot $slot: UniTotem $ver"
+else
+    label="UniTotem $ver"
+fi
+/usr/bin/plymouth message --text="$label" >/dev/null 2>&1 || true
+exit 0

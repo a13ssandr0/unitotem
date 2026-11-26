@@ -275,11 +275,25 @@ apt_install --no-install-recommends libpam-pwquality
 
 # ---------- Plymouth ----------
 
-# plymouth-label (pango/cairo/X11/harfbuzz/..., ~4 MB of initramfs) and plymouth-themes are NOT installed: the UniTotem theme is built
-# from pre-rendered PNGs and draws no text (plymouth-theme-unitotem depends on plymouth only). The firmware reads the initramfs
-# at ~5 MB/s, so every MB of it is ~0.2 s of black screen at boot.
+# plymouth-label provides Image.Text for the theme's text lines (the script plugin needs a label plugin). Its pango plugin
+# (pango, cairo, X11, ~11 MB of libraries) is diverted below, so no initramfs hook copies it; the freetype plugin (~1.2 MB
+# of libraries) is the one the initramfs carries (unitotem/files/ota-initrd.list). plymouth loads pango first and falls
+# back to freetype. plymouth-themes is NOT installed: the UniTotem theme is built from pre-rendered PNGs (plymouth-theme-unitotem
+# depends on plymouth only). The firmware reads the initramfs at ~5 MB/s, so every MB of it is ~0.2 s of black screen at boot.
 apt_install \
-    plymouth libplymouth5
+    plymouth libplymouth5 plymouth-label
+case "$ARCH" in
+    amd64) PLYMOUTH_TRIPLET=x86_64-linux-gnu ;;
+    arm64) PLYMOUTH_TRIPLET=aarch64-linux-gnu ;;
+    *) echo "ERROR: no multiarch triplet for ${ARCH}" >&2; exit 1 ;;
+esac
+if [ "$NATIVE_BUILD" = 1 ]; then
+    dpkg-divert --root="${ROOTFS}" --admindir="${ROOTFS}/var/lib/dpkg" --package unitotem --rename --add \
+        --divert "/usr/lib/${PLYMOUTH_TRIPLET}/plymouth/label-pango.so.disabled" "/usr/lib/${PLYMOUTH_TRIPLET}/plymouth/label-pango.so"
+else
+    chroot "${ROOTFS}" dpkg-divert --package unitotem --rename --add \
+        --divert "/usr/lib/${PLYMOUTH_TRIPLET}/plymouth/label-pango.so.disabled" "/usr/lib/${PLYMOUTH_TRIPLET}/plymouth/label-pango.so"
+fi
 
 # ---------- GPU libraries (common) ----------
 

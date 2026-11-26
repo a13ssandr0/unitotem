@@ -235,6 +235,8 @@ echo "FRAMEBUFFER=y" >> "${ROOTFS}/etc/initramfs-tools/initramfs.conf"
 mkdir -p "${ROOTFS}/etc/initramfs-tools/scripts/init-premount"
 install -m 755 /unitotem/files/ota-init-premount \
     "${ROOTFS}/etc/initramfs-tools/scripts/init-premount/zz-unitotem-ota"
+install -m 755 /unitotem/files/splash-label-premount \
+    "${ROOTFS}/etc/initramfs-tools/scripts/init-premount/unitotem-splash-label"
 
 mkdir -p "${ROOTFS}/etc/initramfs-tools/scripts/local-bottom"
 install -m 755 /unitotem/files/ota-local-bottom-verify \

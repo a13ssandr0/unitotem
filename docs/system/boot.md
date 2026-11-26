@@ -9,7 +9,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 | Path | Role |
 |---|---|
 | `unitotem/files/grub-default` | `/etc/default/grub`; `GRUB_DEFAULT=saved` in A/B |
-| `unitotem/files/grub-ab-entries` | `/etc/grub.d/10_unitotem_ab`: slot, recover and `ota-recovery` entries, `fallback` list |
+| `unitotem/files/grub-ab-entries` | `/etc/grub.d/10_unitotem_ab`: slot, recover and `ota-recovery` entries, boot picture drawing, `fallback` list |
 | `unitotem/files/grub-ota-entry` | `/etc/grub.d/45_unitotem_ota`: single-root recovery entry |
 | `unitotem/files/config.txt` | Pi firmware config (`[all]`, `[pi3]`, `[pi4]`, `[pi5]`) |
 | `unitotem/files/config-extra.txt` | dtoverlay/dtparam/framebuffer lines; `/etc/unitotem/config-extra.txt`, appended to Pi trial and fallback configs |
@@ -23,9 +23,10 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 | `unitotem/files/overlayfs-hook.sh` | local-premount `unitotem-layout` (grow ROOT_A, create ROOT_B and DATA before the root mount) and init-bottom `setup-overlays` (`storage-and-persistence.md`) |
 | `unitotem/files/unitotem-boot-ok` | Boot confirmation (`ab-updates.md`) |
 | `unitotem/files/unitotem-ota-arm` | Writes `unitotem-ota.request` on the boot FAT and reboots into OTA |
-| `unitotem/files/unitotem-update` | Slot switching, backends (grub/rpi), trial, confirm, rollback, ESP `grub.cfg` sync, boot recovery set sync (`sync_boot_recovery`, [Recovery set](#recovery-set)) |
+| `unitotem/files/unitotem-update` | Slot switching, backends (grub/rpi), trial, confirm, rollback, ESP `grub.cfg` sync and boot pictures (`sync_esp_assets`, `record_boot_mode`), boot recovery set sync (`sync_boot_recovery`, [Recovery set](#recovery-set)) |
+| `unitotem/grub-boot-assets.py` | Build-time generator of the GRUB boot pictures (`logo`, `slot`; [Boot picture](#boot-picture-amd64)) |
 | `deploy/script/ota-engine.sh` | All boot-partition writes, init-premount, serve-fallback, `ab_failover` |
-| `unitotem/stage3-image.sh` | A/B boot layout: `slota/`, `os_prefix`, `grub-install`, `saved_entry=slot-a`, Secure Boot staging, `esp-grub.cfg`, recovery set and its manifest |
+| `unitotem/stage3-image.sh` | A/B boot layout: `slota/`, `os_prefix`, `grub-install`, `saved_entry=slot-a`, Secure Boot staging, `esp-grub.cfg`, per-slot boot pictures, recovery set and its manifest |
 | `unitotem/slim-initramfs.py` | Pi initramfs reduction |
 | `unitotem/verify-image.sh` | Boot-file assertions |
 
@@ -47,12 +48,32 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 - ESP: `unitotem-grub/grub/grub.cfg`, `unitotem-grub/grub/grubenv`, `EFI/BOOT/` (the signed chain: `BOOTX64.EFI` = shim, `grubx64.efi`, `mmx64.efi`, stub `grub.cfg`), `EFI/debian/grub.cfg` (same stub), `unitotem/` (fallback kernel, initrd and `recovery.sha256`).
 - Slot kernel and initrd: `/vmlinuz`, `/initrd.img` in each ROOT slot, found by `search --label ROOT_A|ROOT_B`.
-- grubenv keys: `saved_entry`, `next_entry` (one-shot, cleared by GRUB), `unitotem_video`.
+- grubenv keys: `saved_entry`, `next_entry` (one-shot, cleared by GRUB), `unitotem_video`, `unitotem_gfx`.
 - Entries: 0 `slot-a`, 1 `slot-b`, 2 `slot-a-recover`, 3 `slot-b-recover`, 4 `ota-recovery`.
-- Titles: `UniTotem <version> (Slot A|B)` for the two slots, `UniTotem (Slot X, OTA recovery)` for the recover entries. The version comes from `/usr/share/unitotem/grub-version` (`set unitotem_ver="..."`, written by stage 3 beside `release-version`), sourced from each slot's filesystem by `unitotem_slot_title` while the config loads; an empty slot shows `UniTotem (Slot X)`. Ids are unchanged. `unitotem-grub-level` is 4.
+- Titles: `UniTotem <version> (Slot A|B)` for the two slots, `UniTotem (Slot X, OTA recovery)` for the recover entries. The version comes from `/usr/share/unitotem/grub-version` (`set unitotem_ver="..."`, written by stage 3 beside `release-version`), sourced from each slot's filesystem by `unitotem_slot_title` while the config loads; an empty slot shows `UniTotem (Slot X)`. Ids are unchanged. `unitotem-grub-level` is 6.
 - Firmware entry: `unitotem-boot-entry` (service, UEFI only, every boot) renames the `BootCurrent` entry to `UniTotem` when its file path is `\EFI\BOOT\BOOTX64.EFI` or `\EFI\debian\shimx64.efi`; only the description changes (one write after `chattr -i`), entries are never created, deleted or reordered, foreign entries are left alone. Test: `tools/release/test_boot_entry.py`.
 - Failover order: `slot-a` -> `fallback="1 4"`; `slot-b` -> `"0 4"`; else `"4"`.
-- Slot kernel line: `root=LABEL=ROOT_x ro quiet splash ... unitotem.slot=x ${unitotem_video}`.
+- Slot kernel line: `root=LABEL=ROOT_x ro quiet splash ... unitotem.slot=x ${unitotem_video} vt.global_cursor_default=0`.
+
+### Boot picture (amd64)
+
+- Menu hidden, 1 s timeout. GRUB draws the logo as soon as `grub.cfg` starts, before the slot-title search (about 1.6 s in QEMU/OVMF).
+- The slot entry draws the same picture plus the line `Booting slot X: UniTotem <version>`, centred below the wordmark. The picture stays while kernel and initrd load, until the kernel starts (about 3.6 s in QEMU/OVMF).
+- Slot entries set `gfxpayload=keep` before `linux` (Debian's GRUB disables it by default).
+- Display size: GRUB cannot read the screen size and `background_image -m stretch` fills the whole screen, so each picture has the exact display size WxH. `gfxmode` stays `auto` (EDID mode, no second mode switch).
+- Mode source: grubenv `unitotem_gfx` (WxH). `unitotem-update` `record_boot_mode` writes it on every confirmed boot and on `confirm`, only when it changes, from the first connected DRM connector's first mode (the preferred mode, which `auto` selects).
+- Logo pictures: ESP `unitotem-grub/grub/logo/<W>x<H>.png`, 17 modes, 634 KB in total. Generated at build, shipped in the image at `/usr/share/unitotem/esp-grub-assets/logo/`. `sync_esp_assets` copies them with `grub.cfg` when `unitotem-grub-level` rises, pictures first.
+- Slot pictures: `/usr/share/unitotem/grub-boot/boot-<a|b>-<W>x<H>.png`, generated by stage 3 with the slot's version (one set about 810 KB).
+- Generator `unitotem/grub-boot-assets.py` (`logo` and `slot` subcommands). Layout as in the Plymouth theme: wordmark width 0.601*W, centred; ring centre at 0.5179 of the wordmark width and 0.5734 of its height; text size 0.0225*W, top 0.04*W below the wordmark. Constants shared with the Plymouth theme and the Qt splash.
+- Degradation: no `unitotem_gfx`, a mode without a picture, BIOS boot, or a missing file gives no picture (console as before). A missing slot picture keeps the logo only.
+- First boot after a flash has no record: the picture starts with the second boot.
+- Empty slot: the search error is drawn black on black (`color_normal=black/black` while the titles are built).
+- Esc or Shift opens the menu over the picture.
+- OTA entries drop the picture (`terminal_output console`, `background_image`) before `unitotem_lowres`.
+- Cursor: `vt.global_cursor_default=0` hides the fbcon cursor.
+- Not added: `fbcon=nodefer` (takes the framebuffer at once, the opposite of keeping it); `consoleblank` (0 by default in this kernel); `video=` and `i915.fastboot` (no handover benefit; `i915.fastboot` does not exist in 6.12).
+- Slot titles: `unitotem_slot_title` clears `unitotem_ver` at each call and the titles are copied right after each call, so each slot shows its own version.
+- Measured in QEMU/OVMF with virtio-gpu EDID modes, image 2026.11.69: logo visible at about 1.6 s (before: nothing drawn), text frame at about 2.6 s after the hidden 1 s timeout, picture shown until the kernel starts (about 3.6 s). The kernel and initramfs phase then blanks the framebuffer for about 2 s until Plymouth fades in; this is the efifb/fbcon handover, not GRUB.
 
 ### Boot decision (initramfs, both backends)
 
@@ -77,7 +98,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 
 - `serve-fallback`: framebuffer progress UI, `fallback_auth_setup` (writes the login accounts and keys to the initramfs tmpfs; sources in [Fallback authentication](deploy-and-recovery.md#fallback-authentication), kernel token `unitotem.ota.authkey=`), dropbear `-p 2222` (`-T 3 -j -k`, `-B` in open mode only), idle watchdog (stands down on a successful dropbear login, see [Fallback authentication](deploy-and-recovery.md#fallback-authentication)).
 - Fallback network (`configure_networking_ota`): waits up to 30 s for a physical Ethernet device (a USB adapter on Raspberry Pi 3/3B+ can appear after the engine starts), then up to 12 s for carrier, then DHCP per interface with carrier first. Without an address dropbear still starts and a background loop repeats the whole procedure every 5 s for about 35 minutes, so an adapter that appears later is configured. Measured in QEMU raspi3b (NIC driver unbound at init-premount, bound again after N s, boot counter preset to 3): the engine of image 55 (5 s wait) with N = 25 s never gets an address; the 30 s wait gets one with N = 25 s (address 27 s after init-premount) and none with N = 60 s; with the retry loop N = 60 s gets an address 2 s after the adapter appears.
-- x86 recovery entry (`UniTotem OTA`): `linux /unitotem/recovery-vmlinuz nomodeset quiet loglevel=3 unitotem.ota=1 console=tty0 console=ttyS0,115200`.
+- x86 recovery entry (`UniTotem OTA`): `linux /unitotem/recovery-vmlinuz nomodeset loglevel=3 unitotem.ota=1 console=tty0 console=ttyS0,115200`. Stable id `ota-recovery`, always entry 4, last of `10_unitotem_ab`; `30_uefi-firmware` adds `uefi-firmware` after it inside an `if` (entry 5), so the numeric `fallback` lists stay valid.
 - Resolution and font: every OTA entry sets `gfxmode` 640x480 first (`unitotem_lowres` in `grub-ab-entries`, `grub-ota-entry`, `99_unitotem_flash` of `remote-deploy.sh`) with `gfxpayload=keep` and `nomodeset`. No `fbcon=` option is set on any entry: the kernel's default 8x16 font gives an 80x30 console. Pi fallback: `config.txt` `hdmi_group=2 hdmi_mode=4` (DMT 640x480), no font option. The Windows templates (`grub.cfg.template`, `menu.lst.template`) set no `gfxmode`.
 - Deploy: `set-default-recovery` makes the fallback default; `set-trial-boot` arms the real system; `promote-default` runs after confirmation (single-root path).
 
@@ -145,7 +166,22 @@ The amd64 recovery initrd must stay at or under 100 MiB (104857600 bytes). GRUB 
 ### Plymouth and orientation
 
 - Splash: plymouthd in the initramfs, `Theme=unitotem` (package `plymouth-theme-unitotem`, see [packaging](../manager/packaging.md)). Without `Theme=` plymouth uses `text`.
+- Splash text: two lines under the wordmark, Noto Sans Regular, drawn by Plymouth with `Image.Text` (plymouth-label, freetype plugin) and by the Qt splashes with PIL from the same font. Point size `PT = round(W/90)`, W the smallest screen width (1280 -> 14, 1920 -> 21, 2560 -> 28, 3840 -> 43). Pixels per em `PX = PT*96/72` (measured: label-freetype size N draws N*96/72 px per em). Line 1 (white, alpha 0.8) top = wordmark bottom + `round(1.2*PX)`. Line 2 (alpha 0.5) top = line 1 top + `round(2.0*PX)` in the theme; the Qt splash uses `1.82*PX` (calibrated: measured line-2 ink top 571 px in the Plymouth frame and 574 px in the Qt frame at 1280x800 with step 2.0; line 1 ink rows 537-550 identical in both). 48 characters maximum. Contents: see [Boot continuity](#boot-continuity-plymouth-to-viewer).
+- Initramfs font and plugin: only `label-freetype.so` and its four libraries (libfreetype, libbz2, libbrotlidec, libbrotlicommon, about 1.2 MB) are carried (`plymouth-plugin` directive of `ota-initrd.list`). `label-pango` (pango, cairo, X11 libraries, about 11.7 MB uncompressed) is diverted by stage 1 (`dpkg-divert` to `label-pango.so.disabled`), so no hook copies it. The font is `NotoSans-subset.ttf` (static Regular instance, U+0020-007E, 12.6 KB, written by `plymouth/generate-assets.py --font-only` with fontTools), installed as `/usr/share/fonts/Plymouth.ttf` (the path label-freetype loads) by the `replace` directive.
+- Initramfs size (zstd -19 of the main cpio, amd64 slot initramfs; baseline 159,791,298 bytes): freetype plugin with the subset font 160,387,271 (+0.6 MB, kept); pango plugin with the full variable NotoSans.ttf (2 MB) 165,224,347 (+5.4 MB, rejected). Pi (arm64), estimated from the packages, not from a built initramfs: pango variant +5.18 MB compressed; freetype variant with the full font +1.46 MB, with the 12.6 KB font about +0.5 MB. At about 5 MB/s firmware read: about +0.1 s (freetype) versus +1.0 s (pango). fontconfig needs no change.
+- DRM modules in the slot initramfs: 37 DRM modules (amdgpu, i915, xe, nouveau, radeon, bochs, virtio-gpu, qxl, vmwgfx, ast, mgag200, cirrus-qemu, hyperv_drm, drm_kms_helper, ttm and others), 13.4 MB as xz, are in the uncompressed early cpio segment of the amd64 slot initrd (shipped 2026-11-17; bytes 14,774,272 to 70,418,244, after the 14.7 MB microcode segment; the zstd main segment starts at 70,418,432). The stock plymouth hook copies `kernel/drivers/gpu/drm` when `MODULES=most`, and mkinitramfs stores `*.ko.xz` files in an uncompressed cpio. Listing only the zstd segment does not show them. Not verified: which driver Plymouth uses on real GPUs (udev loads the modules by modalias; Plymouth has frame-buffer and drm renderers).
 - Orientation: `video=<CONNECTOR>:panel_orientation=<value>`; `right_side_up` (right), `left_side_up` (left), `upside_down` (inverted); `normal` removes it. Pi: written to `slota/cmdline.txt` and `slotb/cmdline.txt`. PC: grubenv `unitotem_video`, appended to both slot entries.
+
+### Boot continuity (Plymouth to viewer)
+
+- Line 1 (slot and version): `unitotem-splash-label`, an initramfs init-premount script (`PREREQ plymouth`, listed before `zz-unitotem-ota`; source `unitotem/files/splash-label-premount`), runs `plymouth message` with `Slot A: UniTotem <version>` (`UniTotem <version>` without a slot). The slot comes from `unitotem.slot=` on `/proc/cmdline`, the version from `/usr/share/unitotem/boot-version`. That file is baked into the initramfs by the list directive `package-version unitotem /usr/share/unitotem/boot-version` (installed version of the `unitotem` package, the same source stage 3 uses for `release-version`); `verify-image.sh` compares them. The theme shows it through `Plymouth.SetDisplayMessageFunction`. Measured (VM, 250 ms sampling): the line appears in the same frame as the first wordmark frame.
+- Line 2 (unit status): systemd sends the unit id (`U\x02<id>`) to Plymouth when a service, mount or swap becomes active, whatever `systemd.show_status` says (the console stays silent). `Plymouth.SetUpdateStatusFunction` strips a trailing `.service` and shows one line, replaced by each update. A status beginning `Starting ` is final: later updates are ignored (unit ids never contain a space).
+- Compositor handover (`unitotem-compositor.service`): `ExecStartPre` runs `plymouth update --status="Starting compositor"`, waits 0.2 s (the theme paints on its next 50 Hz refresh), then `plymouth deactivate`. Measured in VM: the retained last frame shows "Starting compositor" (frames 22.9-23.1 s).
+- `ExecStartPost` writes nothing to `/dev/fb0` or tty1: it waits for the socket, runs `output_transform.py` and kills plymouthd. The retained frame stays until labwc and the Qt splash paint. Measured in VM with `fbcon=map:99` (see below): last Plymouth frame at 23.1 s, black 23.2-23.6 s (labwc takes DRM until the Qt splash's first paint, 0.4-0.5 s, bochs-drm; real GPUs not measured), Qt splash with "Starting viewer" from 23.7 s. Removing the `/dev/fb0` zero-fill and the tty1 clear did not change the black interval (0.25-0.75 s before and after).
+- Qt splash (`bootsplash.py`, then `splash.py` in the viewer): same logo and caption layout; line 1 from `/proc/cmdline` and `/usr/share/unitotem/release-version`, line 2 `Starting viewer`. Constants: `CAPTION_*` in `bootsplash.py`; font `static/NotoSans.ttf` of the viewer.
+- Text burst (measured in QEMU, direct kernel boot, bochs-drm, 1280x800): when `plymouth deactivate` releases the VT, the kernel framebuffer console (fbcon) paints the VT text buffer, which holds the systemd status lines written while Plymouth held the display ("[ OK ] Started ...", "Starting ..."). Seen with `systemd.show_status` false, 0, auto and true, with tty1 cleared before deactivate, and without `console=tty0`.
+- Measured recommendation, not applied: `fbcon=map:99` (fbcon never binds the framebuffer) removes the burst and the later VGA-text flash (SeaBIOS screen, 0.7 s, VM only). Frames 22.5-26.5 s every 100 ms show only the retained Plymouth frame, black, then the Qt splash. It belongs on the A/B slot entries and the Pi slot `cmdline.txt`, not on the OTA fallback entries (they draw whiptail on tty1 through fbcon). No entry sets it at 2026-11-26.
+- Plymouth Script: `String.SubString(start, end)` takes an exclusive end index, not a length (`SubString(14, 8)` returns null; measured).
 
 ### Secure Boot (amd64)
 
@@ -183,7 +219,7 @@ File `unitotem-ota.bootcount` on the boot FAT (FIRMWARE on Pi, EFI on amd64), co
 
 Kernel command line: `root=LABEL=ROOT_A|ROOT_B` (A/B) or `ROOT`, `rootfstype=ext4 rootwait ro`, `unitotem.slot=a|b`, `unitotem.ota=1|recover`, `video=...`, `plymouth.ignore-serial-consoles`.
 
-Early splash (amd64): the slot entries and `GRUB_CMDLINE_LINUX_DEFAULT` carry `plymouth.ignore-serial-consoles`. With `console=ttyS0` on the command line Plymouth otherwise forces the text (details) plugin and the unitotem theme is not drawn; measured in QEMU (bochs-drm, direct kernel boot, 16 GB disk): text on screen 3.9-6.2 s and wordmark at 7.3 s without the option, wordmark from 3.1 s with it. `console=ttyS0` stays last so the serial console keeps the kernel log. GRUB level 5 delivers the change to devices. Not verifiable without the hardware: the efifb to i915 handoff on a real panel. Initramfs size (firmware included, about 225 MB zstd) delays the first frame because GRUB reads it before the kernel starts. The slot initramfs is not reduced like the recovery one and may exceed what GRUB 2.06 loads on old PCs ([Recovery initrd size](#recovery-initrd-size-amd64)).
+Early splash (amd64): the slot entries and `GRUB_CMDLINE_LINUX_DEFAULT` carry `plymouth.ignore-serial-consoles`. With `console=ttyS0` on the command line Plymouth otherwise forces the text (details) plugin and the unitotem theme is not drawn; measured in QEMU (bochs-drm, direct kernel boot, 16 GB disk): text on screen 3.9-6.2 s and wordmark at 7.3 s without the option, wordmark from 3.1 s with it. `console=ttyS0` stays last so the serial console keeps the kernel log. GRUB level 5 delivers the change to devices. Not verifiable without the hardware: the efifb to i915 handoff on a real panel. Initramfs size (firmware included, about 225 MB zstd) delays the first frame because GRUB reads it before the kernel starts. The slot initramfs is not reduced like the recovery one and may exceed what GRUB 2.06 loads on old PCs ([Recovery initrd size](#recovery-initrd-size-amd64)). Splash text and the Plymouth-to-viewer handover: [Plymouth and orientation](#plymouth-and-orientation), [Boot continuity](#boot-continuity-plymouth-to-viewer). Recommended, not applied: `fbcon=map:99` on the slot entries and the Pi slot `cmdline.txt` (measured, see Boot continuity).
 
 Boot-partition files: `unitotem-ota.request` (`UNITOTEM_OTA_WIPE_DATA=0|1`, self-clearing), `unitotem-ota.authorized_keys` (one `ssh-ed25519` line, fallback login key written by `unitotem-ota-arm --authkey-file`; kept by `populate-bootfs`), `unitotem-ota.conf` (`OTA_HOST`, `OTA_CTRL_PORT`, whitelisted `UNITOTEM_*`/`OTA_*`), `unitotem-ota.failover` (guard), `unitotem-ota.bootcount` (`N\n`, see [Boot counter](#boot-counter)), `tryboot.txt`, `cmdline.txt`, `config.txt`, `slota/`, `slotb/`, recovery set (`recovery-vmlinuz`/`recovery8.img`, `recovery-initrd.img`, `recovery.sha256`, Pi `*.dtb`; see [Recovery set](#recovery-set)). `grubenv` is a 1024-byte block written by `grubenv_write`. ESP `esp-grub.cfg` carries `# unitotem-grub-level: N`.
 
@@ -217,6 +253,7 @@ Runtime: `/run/ota-serve.log`, `/run/ota-dropbear.log`, `/run/unitotem-ota-point
 - `plymouth-theme-unitotem` (manager repository) postinst: `update-alternatives` for `default.plymouth` (priority 100), `plymouth-set-default-theme unitotem`, `update-initramfs -u`, errors ignored. An image that pins another theme by hand puts the alternative in manual mode.
 - Stage 2 appends `FRAMEBUFFER=y` to `initramfs.conf`: the splash in the initramfs needs it.
 - Duplicate slot labels: `slot_pick` picks the device; `ROOT=` in `/conf/param.conf` pins it only when the label exists more than once. Normal boots write nothing.
+- Boot picture files are keyed by exact display size: a new size needs an entry in `MODES` of `grub-boot-assets.py` and a `unitotem-grub-level` bump, else its devices get no picture.
 - amd64 GRUB `search --label ROOT_A|ROOT_B` (`grub-ab-entries`) takes the first match and is not changed by `slot_pick`. A legacy duplicate ROOT_B, created while slot B ran under the old updater, can load the kernel from the stale copy. The current updater cannot create one.
 
 ## Tests

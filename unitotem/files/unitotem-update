@@ -23,6 +23,8 @@ CONF_DEFAULTS = {
     "UPDATE_VERSION_FILE": "/usr/share/unitotem/release-version",
     "UPDATE_GRUBENV": "/boot/efi/unitotem-grub/grub/grubenv",
     "UPDATE_ESP_MOUNT": "/boot/efi",                         # amd64: where the ESP (grubenv) is mounted
+    "UPDATE_ESP_ASSETS": "/usr/share/unitotem/esp-grub-assets",  # the image's pictures for the ESP: logo/*.png
+    "UPDATE_DRM_DIR": "/sys/class/drm",                      # where the display modes are read
     "UPDATE_BOOTFS": "/boot/firmware",                       # Raspberry Pi: the FAT partition the firmware reads
     "UPDATE_RECOVERY_DIR": "/usr/share/unitotem/recovery",   # the image's recovery set: manifest, vmlinuz, initrd.img, dtb/*
     "UPDATE_BACKEND": "",                                    # "grub" | "rpi"; empty = detect
@@ -1522,12 +1524,71 @@ def _grub_level(text):
     return int(m.group(1)) if m else 0
 
 
+def drm_mode(conf):
+    """The preferred mode ("WxH") of the first connected display, the one GRUB's gfxmode=auto selects; None when none is connected."""
+    import re
+    for d in sorted(glob.glob(os.path.join(conf["UPDATE_DRM_DIR"], "card*-*"))):
+        try:
+            if open(os.path.join(d, "status")).read().strip() != "connected":
+                continue
+            m = open(os.path.join(d, "modes")).readline().strip()
+        except OSError:
+            continue
+        return m if re.fullmatch(r"[1-9][0-9]{2,4}x[1-9][0-9]{2,4}", m) else None
+    return None
+
+
+def record_boot_mode(conf):
+    """Stores the display mode in grubenv as unitotem_gfx, the size of the boot picture on the ESP. GRUB only."""
+    if backend(conf) != "grub":
+        return None
+    m = drm_mode(conf)
+    if m is None or grubenv_get(conf, "unitotem_gfx") == m:
+        return None
+    grubenv(conf, "set", f"unitotem_gfx={m}")
+    event(conf, f"boot picture mode recorded: {m}")
+    return m
+
+
+def sync_esp_assets(conf):
+    """Copies the image's boot pictures (logo/WxH.png) to the ESP and removes the ones it no longer ships. Returns the number of changes."""
+    import re
+    pat = r"[1-9][0-9]{2,4}x[1-9][0-9]{2,4}\.png"
+    src = os.path.join(conf["UPDATE_ESP_ASSETS"], "logo")
+    dst = os.path.join(conf["UPDATE_ESP_MOUNT"], "unitotem-grub", "grub", "logo")
+    if not os.path.isdir(src):
+        return None
+    want = {n for n in os.listdir(src) if re.fullmatch(pat, n) and os.path.isfile(os.path.join(src, n))}
+    written = 0
+    with bootfs_rw(conf["UPDATE_ESP_MOUNT"]):
+        os.makedirs(dst, exist_ok=True)
+        for n in sorted(want):
+            data = open(os.path.join(src, n), "rb").read()
+            p = os.path.join(dst, n)
+            if os.path.exists(p) and open(p, "rb").read() == data:
+                continue
+            tmp = p + ".new"
+            with open(tmp, "wb") as f:
+                f.write(data); f.flush(); os.fsync(f.fileno())
+            if open(tmp, "rb").read() != data:
+                os.unlink(tmp)
+                raise OSError(f"{n} did not verify")
+            os.replace(tmp, p); written += 1
+        for n in os.listdir(dst):
+            if re.fullmatch(pat, n) and n not in want:
+                os.unlink(os.path.join(dst, n)); written += 1
+    return written
+
+
 def sync_esp_grubcfg(conf):
     """The ESP (GRUB's grub.cfg) is outside both slots, so an update never refreshes it: a device installed with an older bootloader
     config would keep it forever. The image ships its own copy; once a system has booted and been confirmed, copy it over when its
-    `unitotem-grub-level` is higher. Written beside and renamed, verified before the rename, never run on a trial boot."""
+    `unitotem-grub-level` is higher. Written beside and renamed, verified before the rename, never run on a trial boot.
+    It also records the display mode and refreshes the ESP boot pictures."""
     if backend(conf) != "grub":
         return None
+    try: record_boot_mode(conf)
+    except Exception as e: event(conf, f"boot picture mode not recorded: {e}")
     src = conf.get("UPDATE_ESP_GRUBCFG", "/usr/share/unitotem/esp-grub.cfg")
     dst = os.path.join(conf["UPDATE_ESP_MOUNT"], "unitotem-grub", "grub", "grub.cfg")
     try:
@@ -1541,6 +1602,8 @@ def sync_esp_grubcfg(conf):
         if need not in new:
             event(conf, f"grub.cfg sync refused: the image's copy lacks '{need}'")
             return None
+    try: sync_esp_assets(conf)              # the pictures exist before a grub.cfg that refers to them
+    except Exception as e: event(conf, f"boot pictures not synced: {e}")
     tmp = dst + ".new"
     with bootfs_rw(conf["UPDATE_ESP_MOUNT"]):
         with open(tmp, "w") as f:

@@ -8,9 +8,21 @@
 #   module NAME...       kernel module forced into the initrd
 #   module-opt NAME...   as module, only when the running kernel has it
 #   x86-bin, x86-module, x86-dir   only when the target is not arm64 or /usr/sbin/efibootmgr exists
+#   package-version PACKAGE DEST   installed version of the dpkg package, one line in DEST (nothing if not installed)
+#   plymouth-plugin NAME.so        plymouth plugin with its libraries (nothing if absent)
+#   replace SRC DEST              DEST (file or symlink) replaced by a copy of SRC, mode 644
 
 # Engine shell: ota-engine.sh needs bash (pipefail, /dev/tcp, process substitution).
 bin bash
+
+# Version of the installed image, read by the boot splash (unitotem/files/splash-label-premount).
+package-version unitotem /usr/share/unitotem/boot-version
+
+# Boot splash text: the freetype label plugin (Image.Text). The pango plugin is diverted in the image (stage 1), so
+# plymouth loads this one. The freetype plugin reads /usr/share/fonts/Plymouth.ttf, which the stock plymouth hook
+# links to DejaVu Sans: the theme font takes its place.
+plymouth-plugin label-freetype.so
+replace /usr/share/plymouth/themes/unitotem/NotoSans-subset.ttf /usr/share/fonts/Plymouth.ttf
 
 # /etc/group (getgrgid(0) during login) and ota-engine.sh.
 file /etc/group

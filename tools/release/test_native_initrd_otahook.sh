@@ -3,7 +3,8 @@
 # (stage.py) and a recording stub for Modules. ROOT is a tiny fixture tree: every target binary is a
 # plain file (no ELF, nothing is executed). Checks: the symlinks (/usr/sbin/unitotem-ota-engine, nc
 # alternatives, reboot -> systemctl), /root/.ssh mode 700, module and module-opt selection, the x86
-# section on and off by arch and efibootmgr, and unknown directives raising.
+# section on and off by arch and efibootmgr, unknown directives raising, package-version, plymouth-plugin
+# (copied per arch, absent plugin silent) and replace (a stock symlink becomes the file, mode 644).
 # Fixtures live in a mktemp directory removed by the script. Nothing outside it is written.
 #   bash tools/release/test_native_initrd_otahook.sh
 set -uo pipefail
@@ -40,6 +41,31 @@ module-opt present-mod absent_mod builtin-mod
 x86-bin x86tool
 x86-module x86mod
 x86-dir /usr/lib/x86dir
+package-version unitotem /usr/share/unitotem/boot-version
+package-version absentpkg /usr/share/unitotem/absent-version
+package-version rcpkg /usr/share/unitotem/rc-version
+package-version badver /usr/share/unitotem/bad-version
+plymouth-plugin label-freetype.so
+plymouth-plugin absent-plugin.so
+replace /usr/share/plymouth/themes/unitotem/NotoSans-subset.ttf /usr/share/fonts/Plymouth.ttf
+"""
+
+# fixture dpkg status: installed, absent, removed-with-config-files, and an installed package whose
+# version has a character outside the allowed set
+STATUS_TEXT = """\
+Package: unitotem
+Status: install ok installed
+Version: 2026.12~dev2
+Architecture: arm64
+
+Package: rcpkg
+Status: deinstall ok config-files
+Version: 1.0
+
+Package: badver
+Status: install ok installed
+Version: 1.0;rm
+
 """
 
 
@@ -80,9 +106,14 @@ def build_root(base, efi):
     write(os.path.join(root, "usr/bin/realtool"), "realtool fixture\n", 0o755)
     write(os.path.join(root, "usr/bin/x86tool"), "x86tool fixture\n", 0o755)
     write(os.path.join(root, "etc/group"), "root:x:0:\n")
+    write(os.path.join(root, "var/lib/dpkg/status"), STATUS_TEXT)
     write(os.path.join(root, "usr/lib/unitotem/ota-engine.sh"), "#!/bin/bash\n", 0o755)
     write(os.path.join(root, "usr/share/terminfo/l/linux"), "linux terminfo fixture\n")
     write(os.path.join(root, "usr/lib/x86dir/marker"), "x\n")
+    for triplet in ("aarch64-linux-gnu", "x86_64-linux-gnu"):
+        write(os.path.join(root, f"usr/lib/{triplet}/plymouth/label-freetype.so"), "freetype plugin fixture\n", 0o755)
+        write(os.path.join(root, f"usr/lib/{triplet}/plymouth/label-pango.so"), "pango plugin fixture\n", 0o755)
+    write(os.path.join(root, "usr/share/plymouth/themes/unitotem/NotoSans-subset.ttf"), "NotoSans fixture\n", 0o644)
     kdir = os.path.join(root, "usr/lib/modules", KVER)
     write(os.path.join(kdir, "modules.dep"),
           "kernel/drivers/x/present_mod.ko.xz:\nkernel/drivers/x/other.ko:\n")
@@ -108,12 +139,14 @@ def run_case(tag, arch, efi, list_path):
     base = os.path.join(TMP, tag)
     root = build_root(base, efi)
     dest = os.path.join(base, "dest")
-    for d in ("usr/bin", "usr/sbin", "usr/lib", "etc", "root"):
+    for d in ("usr/bin", "usr/sbin", "usr/lib", "usr/share/fonts", "etc", "root"):
         os.makedirs(os.path.join(dest, d))
     for d in ("bin", "sbin", "lib"):
         link("usr/" + d, os.path.join(dest, d))
     # BusyBox placeholder that the real directive must overwrite
     write(os.path.join(dest, "usr/bin/realtool"), "busybox placeholder\n", 0o755)
+    # the link the stock plymouth hook makes (DejaVu Sans); the replace directive must turn it into a file
+    link("/usr/share/fonts/DejaVuSans.ttf", os.path.join(dest, "usr/share/fonts/Plymouth.ttf"))
 
     warnings = []
     stage = Stage(root, dest, arch, KVER, warn=warnings.append)
@@ -176,6 +209,29 @@ for tag, arch, efi, x86_on in CASES:
     check(t + "bin directive copies found commands", os.path.isfile(p(dest, "usr/bin/mountpoint")))
     check(t + "terminfo directive copies the entry",
           os.path.isfile(p(dest, "usr/share/terminfo/l/linux")))
+    boot_version = p(dest, "usr/share/unitotem/boot-version")
+    check(t + "package-version writes the installed version, one line",
+          is_file_with(boot_version, "2026.12~dev2\n"), f"exists={os.path.exists(boot_version)}")
+    check(t + "package-version writes nothing for an absent package",
+          not os.path.lexists(p(dest, "usr/share/unitotem/absent-version")))
+    check(t + "package-version writes nothing for a removed (config-files) package",
+          not os.path.lexists(p(dest, "usr/share/unitotem/rc-version")))
+    check(t + "package-version writes nothing for a version outside [0-9A-Za-z.+~:-]",
+          not os.path.lexists(p(dest, "usr/share/unitotem/bad-version")))
+    triplet = "aarch64-linux-gnu" if arch == "arm64" else "x86_64-linux-gnu"
+    other = "x86_64-linux-gnu" if arch == "arm64" else "aarch64-linux-gnu"
+    check(t + "plymouth-plugin copies label-freetype.so from the arch's plugin directory",
+          is_file_with(p(dest, f"usr/lib/{triplet}/plymouth/label-freetype.so"), "freetype plugin fixture\n"))
+    check(t + "plymouth-plugin does not copy the other arch's plugin",
+          not os.path.lexists(p(dest, f"usr/lib/{other}/plymouth/label-freetype.so")))
+    check(t + "absent plymouth plugin is silent (no file, no warning)",
+          not os.path.lexists(p(dest, f"usr/lib/{triplet}/plymouth/absent-plugin.so"))
+          and not any("absent-plugin" in w for w in warnings), f"warnings={warnings}")
+    font = p(dest, "usr/share/fonts/Plymouth.ttf")
+    check(t + "replace turns the stock Plymouth.ttf symlink into a copy of the theme font",
+          not os.path.islink(font) and is_file_with(font, "NotoSans fixture\n"))
+    check(t + "replace leaves the copied font at mode 644",
+          os.path.isfile(font) and stat.S_IMODE(os.stat(font).st_mode) == 0o644)
     check(t + "missing bin is reported and skipped",
           any("nosuchtool" in w and "skipping" in w for w in warnings), f"warnings={warnings}")
 
@@ -204,6 +260,35 @@ except ValueError as exc:
     raised = str(exc)
 check("unknown directive raises ValueError", raised is not None and "unknown directive" in raised,
       f"raised={raised!r}")
+
+# package-version validation in lists.py: PACKAGE DEST with an absolute, dot-free DEST
+import lists  # noqa: E402
+for bad in ("package-version unitotem\n", "package-version unitotem relative/path\n",
+            "package-version unitotem /usr/../etc/x\n", "package-version UniTotem /usr/share/x\n",
+            "plymouth-plugin\n", "plymouth-plugin label-freetype\n", "plymouth-plugin Label.so\n",
+            "plymouth-plugin ../label.so\n", "plymouth-plugin label-freetype.so extra.so\n",
+            "replace /usr/share/a\n", "replace relative/src /usr/share/fonts/Plymouth.ttf\n",
+            "replace /usr/../etc/x /usr/share/fonts/Plymouth.ttf\n", "replace /a/b /c/../d\n"):
+    bad_list = os.path.join(TMP, "pv-bad.list")
+    write(bad_list, bad)
+    rejected = False
+    try:
+        lists.read_list(bad_list)
+    except lists.ListError:
+        rejected = True
+    check("lists.py rejects " + bad.strip(), rejected)
+pv_ok = os.path.join(TMP, "pv-ok.list")
+write(pv_ok, "package-version unitotem /usr/share/unitotem/boot-version\n")
+check("lists.py accepts package-version PACKAGE DEST",
+      lists.read_list(pv_ok) == [("package-version", ["unitotem", "/usr/share/unitotem/boot-version"])])
+
+pr_ok = os.path.join(TMP, "pr-ok.list")
+write(pr_ok, "plymouth-plugin label-freetype.so\nreplace /usr/share/plymouth/themes/unitotem/NotoSans-subset.ttf"
+      " /usr/share/fonts/Plymouth.ttf\n")
+check("lists.py accepts plymouth-plugin NAME.so and replace SRC DEST",
+      lists.read_list(pr_ok) == [("plymouth-plugin", ["label-freetype.so"]),
+                                 ("replace", ["/usr/share/plymouth/themes/unitotem/NotoSans-subset.ttf",
+                                              "/usr/share/fonts/Plymouth.ttf"])])
 
 print(f"SUMMARY: {len(PASSES)} passed, {len(FAILS)} failed")
 sys.exit(1 if FAILS else 0)

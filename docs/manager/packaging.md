@@ -16,7 +16,7 @@ Source of the version: the top entry of `debian/changelog`. All binary packages 
 | `unitotem-viewer` | all | `plugins/unitotem_viewer`, compositor and splash units, labwc base config, Plymouth PNGs | core, node, `python3-cefpython3`, PySide6 (QtCore, QtGui, QtWidgets), `labwc`, `qt6-wayland`, `python3-sdbus` |
 | `unitotem` | all | Metapackage: manager, node, viewer. Recommends `plymouth-theme-unitotem` | the three |
 | `python3-cefpython3` | any | CEF 147 with codecs and bindings, unpacked from a wheel | `python3 (>= 3.13), (<< 3.14)` |
-| `plymouth-theme-unitotem` | all | Theme `unitotem` (script module, four width tiers) | `plymouth` |
+| `plymouth-theme-unitotem` | all | Theme `unitotem` (script module, four width tiers, two caption lines drawn with `Image.Text`) | `plymouth` (the image adds `plymouth-label`, see [build](../system/build.md)) |
 
 Third-party packages built in `packaging/` (not in Debian): `python3-fastapi-login` (1.10.3), `python3-sdbus-networkmanager` (2.0.0), version suffix `-0unitotem1`. Each has `debian/` only; the sdist is downloaded from PyPI at build time.
 
@@ -43,6 +43,7 @@ Build (`debian/rules`):
 - `python3-cefpython3` (`dh_auto_install-arch`): unpacks `vendor/cefpython-wheels/cefpython3-*-cpXY-*-linux_<cpu>.whl` for `PYTAG` (`cp313`, pinned by `CEF_PYTHON` in `debian/rules`) and CPU; the build fails when there is none and never falls back to the stock `cefpython3` wheel (every UniTotem CEF build ships proprietary codecs), sets rpath of `cefpython3/subprocess` to `$ORIGIN`, deletes every locale pak except `en-US.pak`, `chmod 755` on `subprocess`. `dh_strip --no-automatic-dbgsym` (libcef.so 465 MB unstripped, 252 MB stripped), `dh_python3` skipped (it would rename `libcef.so` with an ABI tag), `dh_shlibdeps` with `-l` on the package directory.
 - `unitotem-node`: `01-unitotem-nm.yaml` chmod 600 (netplan refuses wider modes).
 - Plymouth spinner (`plymouth/unitotem/unitotem.script`): `Image.Rotate` pivots on integer division, so the script forces the ring size odd (`size += 1` when even) or the ring wobbles. The ring PNG is rendered at `SPINNER_OVERSAMPLE=2` times its displayed size and the script divides by the same factor, so `Scale()` averages pixels before every `Rotate()`; bilinear-only rotation facets the circle. A new rotating sprite needs the same 2x source.
+- Plymouth caption (two lines under the wordmark): `Image.Text` needs a label plugin; the package depends on `plymouth` only, the image installs `plymouth-label`. The font `plymouth/unitotem/NotoSans-subset.ttf` is not in the package install list: the image copies it into the initramfs as `/usr/share/fonts/Plymouth.ttf`. Layout and sizes: [boot.md](../system/boot.md#plymouth-and-orientation).
 
 Maintainer scripts:
 - `unitotem-manager.postinst` (configure): creates `/etc/ssl/unitotem.pem` (self-signed RSA 2048, 36500 days, kept across upgrades; paired nodes trust it) once. Creates no group: web access uses Debian's `users` group, administration `sudo`.

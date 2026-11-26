@@ -33,11 +33,12 @@ Paths: relative to `unitotem-manager/`
 
 ## How it works
 Boot (order set by the image build):
-- Plymouth shows the theme. Compositor `ExecStartPre`: `plymouth deactivate` (5 s max), `/run/unitotem/xdg/output-pending`, empty node fragment of `rc.xml`.
+- Plymouth shows the theme. Compositor `ExecStartPre`: `plymouth update --status="Starting compositor"`, 0.2 s pause (the theme paints on its next 50 Hz refresh), `plymouth deactivate` (5 s max), `/run/unitotem/xdg/output-pending`, empty node fragment of `rc.xml`. The retained last Plymouth frame shows "Starting compositor" (measured in VM).
 - `ExecStart`: `labwc --merge-config` on tty1, `LIBSEAT_BACKEND=builtin`, `LANG=C`.
-- `ExecStartPost`: waits up to 20 s for `wayland-0`, runs `output_transform.py`, clears tty1 and `/dev/fb0`, kills `plymouthd`.
+- `ExecStartPost`: waits up to 20 s for `wayland-0`, runs `output_transform.py`, kills `plymouthd`. It writes nothing to `/dev/fb0` or tty1: the retained frame stays until labwc and the Qt splash paint.
 - `unitotem-splash.service` starts in parallel: `bootsplash.py` waits for the socket and for `output-pending` to vanish (3 s max), draws one fullscreen window per output, sends `READY=1` 300 ms later. Ring: 1 s per turn, 60 steps.
 - The viewer stops `unitotem-splash.service` (`boot.stop_boot_splash()`, D-Bus `StopUnit`) only after its own Qt splash (`splash.py`, same look) is on screen, never earlier.
+- Splash text: line 1 `Slot A: UniTotem <version>` (set by the initramfs), line 2 the unit status, replaced by each update; the Qt splash shows `Starting viewer` on line 2. Details: [boot.md](../system/boot.md#boot-continuity-plymouth-to-viewer).
 - `unitotem-manager.service` starts after the compositor and `user@0.service`.
 
 Viewer start (`run_gui`):
@@ -148,7 +149,7 @@ Commands from the manager (`target`, `window_id`):
 - `multi_threaded_message_loop` stays False on Linux (Windows-only: a no-op here, nothing pumps CEF, blank page). `external_message_pump=True` made no measurable difference. CEF is pumped by a 10 ms QTimer with `cef.MessageLoopWork`; `QT_NO_GLIB=1` avoids a full-core spin.
 - Shutdown: CEF resets SIGINT to `SIG_DFL` and blocks it in its threads, so only SIGTERM reaches the Python handler; the unit must not set `KillSignal=SIGINT`. A 200 ms `QTimer` with a no-op slot forces CPython to re-enter bytecode so signal handlers run; without it SIGTERM shutdown hangs until systemd SIGKILL.
 - `bootsplash.py` exits with `os._exit(0)` on SIGTERM and SIGINT (Qt Wayland teardown segfaults); it runs as a `Type=notify` unit.
-- Boot picture is one picture in three places (Plymouth theme, `bootsplash.py`, Qt splash through `bootsplash.artwork()`): change artwork only in `plymouth/generate-assets.py`.
+- Boot picture is one picture in three places (Plymouth theme, `bootsplash.py`, Qt splash through `bootsplash.artwork()`): change artwork only in `plymouth/generate-assets.py`. The caption layout is set in two places: the theme (line 2 step `2.0*PX`) and `bootsplash.py` (`CAPTION_*` constants, step `1.82*PX`); change both. The Plymouth font is generated from the viewer's `static/NotoSans.ttf`.
 - labwc keeps its default keybinds and mousebinds only while the config has no entry of its own: `debian/labwc-rc.xml` carries an inert keybind `W-F24` and a Root Press mousebind on Left so the file is never empty. An empty `<name>` element is a labwc error.
 - Showing a Qt window is not painting it: the splash waits for the paint before the previous frame goes.
 - A window is a CEF Views top-level; CEF cannot be embedded in a Qt window on Wayland.

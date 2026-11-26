@@ -6,10 +6,12 @@ from pathlib import Path
 
 DIRECTIVES = frozenset({
     "bin", "real", "file", "terminfo", "module", "module-opt",
-    "x86-bin", "x86-module", "x86-dir",
+    "x86-bin", "x86-module", "x86-dir", "package-version", "plymouth-plugin", "replace",
 })
 NAME_RE = re.compile(r"[A-Za-z0-9._+/-]+")
 TERMINFO_RE = re.compile(r"[a-z0-9]/[A-Za-z0-9._+-]+")
+PACKAGE_RE = re.compile(r"[a-z0-9][a-z0-9+.-]+")
+PLUGIN_RE = re.compile(r"[a-z0-9-]+\.so")
 PATH_DIRECTIVES = frozenset({"file", "x86-dir"})
 
 
@@ -22,6 +24,19 @@ def _check_args(where, directive, args):
         raise ListError(f"{where}: '{directive}' needs at least one argument")
     if directive == "file" and len(args) > 2:
         raise ListError(f"{where}: 'file' takes SRC [DST]")
+    if directive == "package-version":
+        if len(args) != 2 or not PACKAGE_RE.fullmatch(args[0]) or not args[1].startswith("/") \
+                or not NAME_RE.fullmatch(args[1]) or ".." in args[1].split("/"):
+            raise ListError(f"{where}: 'package-version' takes PACKAGE DEST (absolute path)")
+        return
+    if directive == "plymouth-plugin":
+        if len(args) != 1 or not PLUGIN_RE.fullmatch(args[0]):
+            raise ListError(f"{where}: 'plymouth-plugin' takes NAME.so")
+        return
+    if directive == "replace":
+        if len(args) != 2 or any(not a.startswith("/") or not NAME_RE.fullmatch(a) or ".." in a.split("/") for a in args):
+            raise ListError(f"{where}: 'replace' takes SRC DEST (absolute paths)")
+        return
     for arg in args:
         if not NAME_RE.fullmatch(arg) or ".." in arg.split("/"):
             raise ListError(f"{where}: invalid name {arg!r}")

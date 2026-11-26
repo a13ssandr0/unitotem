@@ -11,6 +11,53 @@ bad() { n=$((n+1)); fail=$((fail+1)); echo "  FAIL: $1" >&2; }
 chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 installed() { awk -v p="$1" 'BEGIN{RS="";FS="\n"} $1=="Package: " p {for(i=1;i<=NF;i++) if($i=="Status: install ok installed") f=1} END{exit !f}' "$R/var/lib/dpkg/status"; }
 file_has() { grep -qE -- "$2" "$1" 2>/dev/null; }
+# PNG size from the IHDR chunk as WxH; nothing when the file is not a PNG.
+png_size() { python3 -I -c 'import struct,sys; d=open(sys.argv[1],"rb").read(24); assert d[:8]==b"\x89PNG\r\n\x1a\n"; print("%dx%d" % struct.unpack(">II", d[16:24]))' "$1" 2>/dev/null; }
+# One GRUB menuentry block by --id: from its menuentry line to the closing brace at line start.
+grub_entry() { awk -v id="$1" 'index($0,"menuentry ")==1 && index($0,"--id " id " {") {p=1} p {print} p && /^}/ {exit}' "$2"; }
+logo_names_ok() { # ESP logo dir: at least 10 PNGs, each named WxH after its real size
+    local f n=0
+    for f in "$1"/*.png; do
+        [ -f "$f" ] || return 1
+        [ "$(basename "$f" .png)" = "$(png_size "$f")" ] || return 1
+        n=$((n+1))
+    done
+    [ "$n" -ge 10 ]
+}
+logo_copy_ok() { # ESP logo dir, image copy: same file names and bytes
+    [ -d "$2" ] && diff -rq -- "$1" "$2" >/dev/null && [ "$(ls -A -- "$1" | wc -l)" -ge 10 ]
+}
+slot_pics_ok() { # ESP logo dir, image grub-boot dir: boot-a and boot-b of each mode, exact size
+    local f w s n=0
+    for f in "$1"/*.png; do
+        [ -f "$f" ] || return 1
+        w=$(basename "$f" .png)
+        for s in a b; do
+            [ "$(png_size "$2/boot-$s-$w.png")" = "$w" ] || return 1
+        done
+        n=$((n+1))
+    done
+    [ "$n" -ge 10 ]
+}
+ota_fallback_ok() { # grub.cfg: the OTA fallback's linux line has neither quiet nor splash, keeps nomodeset
+    local l
+    l=$(grub_entry ota-recovery "$1" | grep -E '^[[:space:]]*linux[[:space:]]') || return 1
+    [ -n "$l" ] || return 1
+    printf '%s\n' "$l" | grep -qwE 'quiet|splash' && return 1
+    printf '%s\n' "$l" | grep -qw nomodeset
+}
+slot_entry_ok() { # grub.cfg, slot id: quiet splash, the slot picture call, gfxpayload=keep before linux
+    local e
+    e=$(grub_entry "$2" "$1")
+    printf '%s\n' "$e" | grep -q 'quiet splash' || return 1
+    printf '%s\n' "$e" | grep -q 'unitotem_boot_frame' || return 1
+    printf '%s\n' "$e" | awk '/set gfxpayload=keep/ {g=NR} /^[[:space:]]*linux[[:space:]]/ {l=NR} END {exit !(g && l && g < l)}'
+}
+level_ok() { # grub.cfg: unitotem-grub-level is 6 or more
+    local v
+    v=$(sed -n 's/^# unitotem-grub-level: *\([0-9][0-9]*\).*/\1/p' "$1" | head -n 1)
+    [ -n "$v" ] && [ "$v" -ge 6 ]
+}
 chk "Wi-Fi profiles are retried without limit (NetworkManager [main] autoconnect-retries-default=0)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^autoconnect-retries-default=0$'
 chk "the NetworkManager Wi-Fi config has no key NetworkManager rejects as unknown (connection.autoconnect-retries)" bash -c "! grep -q '^connection\.autoconnect-retries' $R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf"
 chk "Wi-Fi radio power save is off (NetworkManager wifi.powersave=2)" file_has "$R/etc/NetworkManager/conf.d/60-unitotem-wifi-reconnect.conf" '^wifi\.powersave=2$'
@@ -199,6 +246,8 @@ CS="$R/usr/lib/systemd/system/unitotem-compositor.service"
 chk "unitotem-compositor.service is shipped by the viewer deb" test -s "$CS"
 chk "unitotem-compositor service enabled" test -L "$R/etc/systemd/system/multi-user.target.wants/unitotem-compositor.service"
 chk "the compositor takes VT1 from a deactivated Plymouth (deactivate before, plymouthd killed once the socket exists) and restarts" bash -c "grep -q 'plymouth deactivate' '$CS' && grep -q 'plymouthd' '$CS' && grep -q '^Restart=always' '$CS'"
+chk "the compositor shows 'Starting compositor' on the splash before plymouth deactivate (ExecStartPre order)" bash -c 'u=$(grep -n "^ExecStartPre=.*plymouth update --status=\"Starting compositor\"" "$1" | head -n 1 | cut -d: -f1); d=$(grep -n "^ExecStartPre=.*plymouth deactivate" "$1" | head -n 1 | cut -d: -f1); [ -n "$u" ] && [ -n "$d" ] && [ "$u" -lt "$d" ]' _ "$CS"
+chk "the compositor unit does not clear /dev/fb0 or tty1 (that blanked the splash; comment lines excluded)" bash -c '! grep -v "^[[:space:]]*#" "$1" | grep -q "/dev/fb0"' _ "$CS"
 chk "getty@tty1 is masked (nothing may share the compositor's VT)" bash -c "test \$(readlink '$R/etc/systemd/system/getty@tty1.service') = /dev/null"
 for t in labwc wlr-randr wlopm wayvnc; do chk "$t is installed" bash -c "test -x '$R/usr/bin/$t'"; done
 chk "xwayland is installed (labwc starts it lazily)" bash -c "test -x '$R/usr/bin/Xwayland'"
@@ -218,6 +267,9 @@ echo "== Boot splash (Plymouth): the unitotem theme must be the one in the initr
 if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
     chk "plymouthd.conf selects the unitotem theme (stage 2 once overwrote it and the initramfs fell back to 'text')" file_has "$R/etc/plymouth/plymouthd.conf" '^Theme=unitotem$'
     chk "the theme has its wordmark and spinner for every screen tier (the script loads wordmark-TIER.png / spinner-TIER.png; dev3 shipped no wordmark)" bash -c "for t in 1280 1920 2560 3840; do for k in wordmark spinner; do test -s '$R/usr/share/plymouth/themes/unitotem/'\$k-\$t.png || { echo missing \$k-\$t.png; exit 1; }; done; done"
+    chk "the theme carries NotoSans-subset.ttf (the splash status font)" test -s "$R/usr/share/plymouth/themes/unitotem/NotoSans-subset.ttf"
+    chk "the viewer's static dir carries NotoSans.ttf (the Qt splash font)" test -s "$R/usr/share/unitotem-manager/plugins/unitotem_viewer/static/NotoSans.ttf"
+    chk "label-pango.so is diverted in the rootfs (label-pango.so.disabled present, label-pango.so absent)" bash -c 'ls -d "$1"/usr/lib/*/plymouth/label-pango.so.disabled >/dev/null 2>&1 && ! ls -d "$1"/usr/lib/*/plymouth/label-pango.so >/dev/null 2>&1' _ "$R"
     INITRD=""
     if [ "$ARCH" = arm64 ]; then INITRD="$FAT/initramfs8"; [ "$AB" = 1 ] && INITRD="$FAT/slota/initramfs8"
     else INITRD=$(ls -t "$R"/boot/initrd.img-* 2>/dev/null | head -1)
@@ -227,9 +279,24 @@ if [ -f "$R/usr/share/plymouth/themes/unitotem/unitotem.plymouth" ]; then
         # the Pi firmware reads the initramfs at ~5 MB/s: 40 MB is 8 s of black screen; slimmed it is ~26 MB
         chk "the Pi initramfs is slim (< 32 MB, no hwdb.bin; unitotem/slim-initramfs.py)" bash -c "[ \$(stat -c %s '$INITRD') -lt 33554432 ] && ! lsinitramfs '$INITRD' | grep -q 'udev/hwdb.bin'"
         chk "the Pi initramfs carries the brcmfmac vendor module for the Pi's Wi-Fi chip (without brcmfmac-cyw the probe fails and there is no wlan0)" bash -c "lsinitramfs '$INITRD' | grep -q 'brcmfmac/cyw/brcmfmac-cyw.ko'"
-        chk "the Pi initramfs has no plymouth label plugin (pango/cairo/X11 ~4 MB)" bash -c "! lsinitramfs '$INITRD' | grep -q 'plymouth/label'"
     fi
     chk "the initramfs carries the unitotem theme and the script plugin (${INITRD##*/})" bash -c "l=\$(lsinitramfs '$INITRD' 2>/dev/null) && printf '%s\n' \"\$l\" | grep -q 'plymouth/themes/unitotem/unitotem.script' && printf '%s\n' \"\$l\" | grep -q 'plymouth/script.so'"
+    # one file of the slot initramfs on stdout (unmkinitramfs unpacks both segments: cpio and zstd)
+    initrd_file() { local t rc; t=$(mktemp -d) || return 1
+        unmkinitramfs "$1" "$t" >/dev/null 2>&1 && cat "$t/$2" 2>/dev/null; rc=$?
+        rm -rf -- "$t"; return $rc; }
+    # regular file (not a symlink) inside the initramfs: $2 is the path without leading slash
+    initrd_regular() { local t rc; t=$(mktemp -d) || return 1
+        unmkinitramfs "$1" "$t" >/dev/null 2>&1; test -f "$t/$2" && test ! -L "$t/$2"; rc=$?
+        rm -rf -- "$t"; return $rc; }
+    initrd_version_ok() { local v; v=$(initrd_file "$1" usr/share/unitotem/boot-version) || return 1
+        [ -n "$v" ] && [ "$v" = "$(cat "$R/usr/share/unitotem/release-version" 2>/dev/null)" ]; }
+    chk "the slot initramfs carries the splash label script (${INITRD##*/})" bash -c "lsinitramfs '$INITRD' 2>/dev/null | grep -qx 'scripts/init-premount/unitotem-splash-label'"
+    chk "the slot initramfs bakes the image version: usr/share/unitotem/boot-version equals release-version (${INITRD##*/})" initrd_version_ok "$INITRD"
+    chk "the slot initramfs carries the freetype label plugin (label-freetype.so draws the splash text) (${INITRD##*/})" bash -c 'lsinitramfs "$1" 2>/dev/null | grep -qE "usr/lib/.*/plymouth/label-freetype[.]so$"' _ "$INITRD"
+    chk "the slot initramfs has no pango label plugin (label-pango.so, diverted: it would add ~11 MB) (${INITRD##*/})" bash -c '! lsinitramfs "$1" 2>/dev/null | grep -qE "plymouth/label-pango[.]so$"' _ "$INITRD"
+    chk "the slot initramfs carries the theme font usr/share/plymouth/themes/unitotem/NotoSans-subset.ttf (${INITRD##*/})" bash -c 'lsinitramfs "$1" 2>/dev/null | grep -qE "usr/share/plymouth/themes/unitotem/NotoSans-subset[.]ttf$"' _ "$INITRD"
+    chk "the slot initramfs carries usr/share/fonts/Plymouth.ttf as a regular file (a symlink would point at DejaVu) (${INITRD##*/})" initrd_regular "$INITRD" usr/share/fonts/Plymouth.ttf
 fi
 
 echo "== Module-signing key"
@@ -412,6 +479,13 @@ echo "== amd64 boot"
     chk "the stubs hand over to the real grub.cfg on the ESP (EFI/BOOT and EFI/debian, the signed GRUB has a fixed prefix)" bash -c "grep -q 'unitotem-grub/grub/grub.cfg' $FAT/EFI/BOOT/grub.cfg && cmp -s $FAT/EFI/BOOT/grub.cfg $FAT/EFI/debian/grub.cfg"
     chk "the loader has no alternative version on the ESP (no staged copy, no plain GRUB): the .efi files of the build are the shim, the signed GRUB and MokManager" bash -c "[ \"\$(find $FAT -iname '*.efi' | sed 's|.*/||' | tr A-Z a-z | sort | tr '\\n' ' ')\" = 'bootx64.efi grubx64.efi mmx64.efi ' ] && ! test -e $FAT/EFI/unitotem-sb"
     chk "the OTA entries are low resolution (unitotem_lowres + nomodeset)" bash -c "grep -q 'unitotem_lowres' $FAT/unitotem-grub/grub/grub.cfg && grep -c nomodeset $FAT/unitotem-grub/grub/grub.cfg | grep -q '^4\$'"
+    chk "ESP logo pictures: at least 10 PNGs, each named WxH after its real size (unitotem-grub/grub/logo)" logo_names_ok "$FAT/unitotem-grub/grub/logo"
+    chk "the image carries the same ESP logo set (usr/share/unitotem/esp-grub-assets/logo: same names and bytes)" logo_copy_ok "$FAT/unitotem-grub/grub/logo" "$R/usr/share/unitotem/esp-grub-assets/logo"
+    chk "slot pictures boot-a-WxH.png and boot-b-WxH.png (exact size) exist for every logo mode (usr/share/unitotem/grub-boot)" slot_pics_ok "$FAT/unitotem-grub/grub/logo" "$R/usr/share/unitotem/grub-boot"
+    chk "the OTA fallback linux line has neither quiet nor splash, and keeps nomodeset" ota_fallback_ok "$FAT/unitotem-grub/grub/grub.cfg"
+    chk "the slot-a entry has quiet splash, unitotem_boot_frame and set gfxpayload=keep before its linux line" slot_entry_ok "$FAT/unitotem-grub/grub/grub.cfg" slot-a
+    chk "the slot-b entry has quiet splash, unitotem_boot_frame and set gfxpayload=keep before its linux line" slot_entry_ok "$FAT/unitotem-grub/grub/grub.cfg" slot-b
+    chk "the GRUB config level (unitotem-grub-level) is 6 or more" level_ok "$FAT/unitotem-grub/grub/grub.cfg"
 fi
 
 echo "== $n checks, $fail failed"

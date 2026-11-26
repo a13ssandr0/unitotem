@@ -54,6 +54,9 @@ def make_root(base, kvers=(KVER,)):
           'PREREQ=""\n', 0o644)
     write(os.path.join(root, "usr/share/initramfs-tools/scripts/init-top/.hidden"), "x\n", 0o755)
     write(os.path.join(root, "etc/initramfs-tools/scripts/local-top/mine"), "PREREQ=\"\"\n", 0o755)
+    # the real splash label script, installed by stage 2 under the name it has in the image
+    with open(os.path.join(REPO, "unitotem/files/splash-label-premount"), encoding="utf-8") as fh:
+        write(os.path.join(root, "etc/initramfs-tools/scripts/init-premount/unitotem-splash-label"), fh.read(), 0o755)
     write(os.path.join(root, "etc/modprobe.d/fixture.conf"), "blacklist fixture\n")
     write(os.path.join(root, "etc/ld.so.conf"), "include /etc/ld.so.conf.d/*.conf\n")
     write(os.path.join(root, "etc/ld.so.conf.d/libc.conf"), "# libc\n")
@@ -187,6 +190,15 @@ try:
         subprocess_run(["cpio", "--quiet", "-idm", "-H", "newc", "-D", ex], input=open(seg, "rb").read(), check=True)
     order_premount = open(os.path.join(ex, "scripts/init-premount/ORDER"), encoding="utf-8").read()
     check('/scripts/init-premount/zz-unitotem-ota "$@"' in order_premount, "premount ORDER lists zz-unitotem-ota")
+    check('/scripts/init-premount/unitotem-splash-label "$@"' in order_premount,
+          "premount ORDER lists unitotem-splash-label")
+    # the slot initramfs uses ota-init-premount (PREREQ plymouth): the label must sort before it
+    spec_a = importlib.util.spec_from_file_location("assemble", os.path.join(REPO, "unitotem/ninitrd/assemble.py"))
+    assemble = importlib.util.module_from_spec(spec_a)
+    spec_a.loader.exec_module(assemble)
+    slot_order = assemble._gnu_tsort([("plymouth", "unitotem-splash-label"), ("plymouth", "zz-unitotem-ota")])
+    check(slot_order.index("unitotem-splash-label") < slot_order.index("zz-unitotem-ota"),
+          "tsort of the slot prereqs runs unitotem-splash-label before zz-unitotem-ota")
     order_top = open(os.path.join(ex, "scripts/init-top/ORDER"), encoding="utf-8").read()
     check(order_top.index("/scripts/init-top/udev") < order_top.index("/scripts/init-top/keymap"),
           "tsort puts the PREREQ before its script")

@@ -62,6 +62,32 @@ while read -r directive rest <&3; do
                     if [ -f "${dir}/${_t}" ]; then copy_file file "${dir}/${_t}" "/usr/share/terminfo/${_t}"; break; fi
                 done
             done ;;
+        plymouth-plugin)
+            # NAME.so from the plymouth plugin directory of the target, with its libraries. Missing: nothing.
+            pp_triplet=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null) || pp_triplet=
+            for _p in "$@"; do
+                printf '%s' "$_p" | grep -qE '^[a-z0-9-]+\.so$' || { echo "unitotem-ota hook: bad plugin name '${_p}'" >&2; continue; }
+                [ -n "$pp_triplet" ] && [ -f "/usr/lib/${pp_triplet}/plymouth/${_p}" ] \
+                    && copy_exec "/usr/lib/${pp_triplet}/plymouth/${_p}"
+            done ;;
+        replace)
+            # SRC DEST: DEST (file or symlink, e.g. the stock Plymouth.ttf link) becomes a copy of SRC, mode 644.
+            # Runs after the stock plymouth hook, so the link already exists; it is removed first.
+            rp_src=$1; rp_dest=$2
+            if printf '%s' "$rp_src" | grep -qE '^(/[A-Za-z0-9._+-]+)+$' \
+                && printf '%s' "$rp_dest" | grep -qE '^(/[A-Za-z0-9._+-]+)+$' \
+                && ! printf '%s\n%s' "$rp_src" "$rp_dest" | grep -qE '(^|/)\.\.(/|$)'; then
+                if [ -f "$rp_src" ]; then
+                    rm -f "${DESTDIR}${rp_dest}"
+                    mkdir -p "$(dirname "${DESTDIR}${rp_dest}")"
+                    cp "$rp_src" "${DESTDIR}${rp_dest}"
+                    chmod 644 "${DESTDIR}${rp_dest}"
+                else
+                    echo "unitotem-ota hook: '${rp_src}' not found, skipping" >&2
+                fi
+            else
+                echo "unitotem-ota hook: bad paths in replace '${rp_src}' '${rp_dest}'" >&2
+            fi ;;
         module)
             manual_add_modules "$@" ;;
         module-opt)
@@ -82,6 +108,19 @@ while read -r directive rest <&3; do
                 for d in "$@"; do
                     [ -d "$d" ] && copy_file directory "$d" "$d"
                 done
+            fi ;;
+        package-version)
+            # PACKAGE DEST: installed version of PACKAGE, one line in DEST; nothing when the package is not installed.
+            pv_pkg=$1; pv_dest=$2; pv_ver=
+            if printf '%s' "$pv_pkg" | grep -qE '^[a-z0-9][a-z0-9+.-]+$' \
+                && printf '%s' "$pv_dest" | grep -qE '^(/[A-Za-z0-9._+-]+)+$' \
+                && ! printf '%s' "$pv_dest" | grep -qE '(^|/)\.\.(/|$)'; then
+                pv_status=$(dpkg-query -W -f='${db:Status-Abbrev}' "$pv_pkg" 2>/dev/null) || pv_status=
+                case "$pv_status" in "ii "*) pv_ver=$(dpkg-query -W -f='${Version}' "$pv_pkg" 2>/dev/null) || pv_ver= ;; esac
+                if printf '%s' "$pv_ver" | grep -qE '^[0-9A-Za-z.+~:-]+$'; then
+                    mkdir -p "$(dirname "${DESTDIR}${pv_dest}")"
+                    printf '%s\n' "$pv_ver" > "${DESTDIR}${pv_dest}"
+                fi
             fi ;;
         *)
             echo "unitotem-ota hook: unknown directive '${directive}' in ${LIST}" >&2

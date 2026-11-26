@@ -3,7 +3,7 @@ exec tail -n +3 "$0"
 # UniTotem A/B: two static entries, one per ROOT slot, found by filesystem label (set per slot by unitotem-update).
 # Installed at /etc/grub.d/10_unitotem_ab. 'saved_entry' in grubenv picks the default; grub-reboot sets a one-shot
 # trial entry that GRUB clears before booting, so a crash during a trial returns to the default slot.
-# unitotem-grub-level: 5   (raise when devices must pick up a change: unitotem-update copies the image's grub.cfg over
+# unitotem-grub-level: 6   (raise when devices must pick up a change: unitotem-update copies the image's grub.cfg over
 # the ESP's only when the shipped level is HIGHER, so a rollback never downgrades the bootloader config)
 # Low resolution for every OTA entry (readable from afar): GRUB sets the firmware framebuffer to the first existing
 # mode of gfxmode, gfxpayload=keep hands it to the kernel, nomodeset keeps DRM drivers from switching to native size.
@@ -19,7 +19,30 @@ elif [ "${default}" = slot-b ]; then
 else
     set fallback="4"
 fi
+# Boot screen (hidden menu, nothing but a picture): the logo is drawn as soon as the configuration starts, the slot entry
+# adds the line "Booting slot X: UniTotem <version>" below it, and the same picture stays while kernel and initrd load.
+# GRUB cannot read the screen size and `background_image` stretches to the whole screen, so every picture has the exact
+# size of the display: unitotem-update records the DRM mode of the connected display in grubenv (`unitotem_gfx`, WxH),
+# the ESP holds logo/WxH.png and each slot boot-X-WxH.png. gfxmode stays `auto` (the display's own mode, no second mode
+# switch). UEFI only (BIOS video modes follow other rules). No record or no picture for the mode: no picture, the console as before.
+function unitotem_draw {
+    if [ -f "$1" ]; then
+        background_image -m stretch "$1"
+        clear
+    fi
+}
+function unitotem_boot_frame {
+    if [ -n "$unitotem_splash" ]; then
+        unitotem_draw "($root)/usr/share/unitotem/grub-boot/boot-$1-${unitotem_gfx}.png"
+    fi
+}
+# Low resolution for the OTA entries; the boot picture is dropped first.
 function unitotem_lowres {
+    if [ -n "$unitotem_splash" ]; then
+        background_image
+        terminal_output console
+        set unitotem_splash=
+    fi
     insmod all_video
     insmod gfxterm
     set gfxmode=640x480x32,640x480,800x600x32,800x600,1024x768x32,1024x768,auto
@@ -43,22 +66,39 @@ function unitotem_slot_title {
         set unitotem_title="UniTotem (Slot $2)"
     fi
 }
+# The logo first: error lines of the slot search below (an empty slot) are drawn black on black.
+set unitotem_splash=
+if [ "$grub_platform" = efi -a -n "${unitotem_gfx}" -a -f "${prefix}/logo/${unitotem_gfx}.png" ]; then
+    insmod all_video
+    insmod gfxterm
+    insmod png
+    set color_normal=black/black
+    if terminal_output gfxterm; then
+        unitotem_draw "${prefix}/logo/${unitotem_gfx}.png"
+        set unitotem_splash=y
+    fi
+fi
 unitotem_slot_title ROOT_A A
 set unitotem_title_a="$unitotem_title"
 unitotem_slot_title ROOT_B B
 set unitotem_title_b="$unitotem_title"
+set color_normal=light-gray/black
 menuentry "$unitotem_title_a" --id slot-a {
     insmod part_gpt
     insmod ext2
     search --no-floppy --set=root --label ROOT_A
-    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=a ${unitotem_video}
+    unitotem_boot_frame a
+    set gfxpayload=keep
+    linux /vmlinuz root=LABEL=ROOT_A ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false vt.global_cursor_default=0 unitotem.slot=a ${unitotem_video}
     initrd /initrd.img
 }
 menuentry "$unitotem_title_b" --id slot-b {
     insmod part_gpt
     insmod ext2
     search --no-floppy --set=root --label ROOT_B
-    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false unitotem.slot=b ${unitotem_video}
+    unitotem_boot_frame b
+    set gfxpayload=keep
+    linux /vmlinuz root=LABEL=ROOT_B ro quiet splash plymouth.ignore-serial-consoles loglevel=3 console=tty0 console=ttyS0,115200n8 rd.systemd.show_status=false systemd.show_status=false vt.global_cursor_default=0 unitotem.slot=b ${unitotem_video}
     initrd /initrd.img
 }
 menuentry 'UniTotem (Slot A, OTA recovery)' --id slot-a-recover {
@@ -77,7 +117,8 @@ menuentry 'UniTotem (Slot B, OTA recovery)' --id slot-b-recover {
     linux /vmlinuz root=LABEL=ROOT_B ro quiet nomodeset unitotem.ota=recover unitotem.slot=b
     initrd /initrd.img
 }
-# The resident fallback on the ESP. Deliberately LAST: when grubenv is unreadable (a torn write) GRUB
+# The resident fallback on the ESP, a stable entry (id ota-recovery, number 4): neither quiet nor splash, so its console and
+# kernel messages are visible. Deliberately LAST: when grubenv is unreadable (a torn write) GRUB
 # falls back to entry 0, and a working slot is a far better outcome than a fallback that waits for a host.
 # Deploys select it explicitly through saved_entry=ota-recovery, so its position does not matter there. During a deploy saved_entry points here, and the system under test is
 # booted one-shot through next_entry, so any failure of that boot lands in the fallback by itself.
@@ -86,6 +127,6 @@ menuentry 'UniTotem OTA fallback' --id ota-recovery {
     insmod fat
     unitotem_lowres
     search --no-floppy --set=root --label EFI
-    linux /unitotem/recovery-vmlinuz nomodeset quiet loglevel=3 unitotem.ota=1 console=tty0 console=ttyS0,115200
+    linux /unitotem/recovery-vmlinuz nomodeset loglevel=3 unitotem.ota=1 console=tty0 console=ttyS0,115200
     initrd /unitotem/recovery-initrd.img
 }

@@ -344,6 +344,18 @@ SBEOF
         # update never rewrites it; unitotem-update refreshes it from this file after the new system
         # boots (see sync_esp_grubcfg).
         install -D -m 644 "${IMG_MNT}${GRUB_BOOTDIR}/grub/grub.cfg" "${IMG_MNT}/usr/share/unitotem/esp-grub.cfg"
+        # Logo pictures (one per display mode): generated inside the image onto the ESP, and the same set kept in the
+        # image, which unitotem-update copies to the ESP when unitotem-grub-level rises.
+        GRUB_LOGO_DIR=${IMG_MNT}${GRUB_BOOTDIR}/grub/logo
+        mkdir -p "$GRUB_LOGO_DIR"
+        install -m 644 /unitotem/grub-boot-assets.py "${IMG_MNT}/tmp/grub-boot-assets.py"
+        chroot ${IMG_MNT} python3 /tmp/grub-boot-assets.py logo --theme /usr/share/plymouth/themes/unitotem --out "${GRUB_BOOTDIR}/grub/logo"
+        rm -f -- "${IMG_MNT}/tmp/grub-boot-assets.py"
+        ls "$GRUB_LOGO_DIR"/*.png >/dev/null 2>&1 || boot_assert_fail "no logo picture produced in $GRUB_LOGO_DIR"
+        install -d -m 755 "${IMG_MNT}/usr/share/unitotem/esp-grub-assets/logo"
+        for f in "$GRUB_LOGO_DIR"/*.png; do
+            install -m 644 "$f" "${IMG_MNT}/usr/share/unitotem/esp-grub-assets/logo/"
+        done
     else
         chroot ${IMG_MNT} update-grub
     fi
@@ -458,6 +470,24 @@ BUILD_ID=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)
 mkdir -p ${IMG_MNT}/usr/share/unitotem
 printf '%s\n' "$REL_VER" > ${IMG_MNT}/usr/share/unitotem/release-version
 echo "set unitotem_ver=\"${REL_VER}\"" > ${IMG_MNT}/usr/share/unitotem/grub-version
+# Slot pictures (one per slot and display mode, see files/grub-ab-entries): drawn in the image with the release
+# version and the viewer's font; the logo set the ESP holds gives the modes.
+if [ "$ARCH" = "amd64" ] && [ "$AB_LAYOUT" = 1 ]; then
+    FONT_FILE=$(find "${IMG_MNT}/usr" -name NotoSans.ttf -print -quit)
+    [ -n "$FONT_FILE" ] || boot_assert_fail "NotoSans.ttf missing under ${IMG_MNT}/usr (the viewer package ships it)"
+    SLOT_DIR=${IMG_MNT}/usr/share/unitotem/grub-boot
+    mkdir -p "$SLOT_DIR"
+    install -m 644 /unitotem/grub-boot-assets.py "${IMG_MNT}/tmp/grub-boot-assets.py"
+    chroot ${IMG_MNT} python3 /tmp/grub-boot-assets.py slot --theme /usr/share/plymouth/themes/unitotem \
+        --font "${FONT_FILE#"${IMG_MNT}"}" --version "$REL_VER" --out /usr/share/unitotem/grub-boot --slots a b
+    rm -f -- "${IMG_MNT}/tmp/grub-boot-assets.py"
+    for logo in "${IMG_MNT}/usr/share/unitotem/esp-grub-assets/logo"/*.png; do
+        name=$(basename "$logo" .png)
+        for s in a b; do
+            [ -s "$SLOT_DIR/boot-$s-$name.png" ] || boot_assert_fail "$SLOT_DIR/boot-$s-$name.png missing"
+        done
+    done
+fi
 {
     echo 'NAME="UniTotem"'
     echo 'ID=unitotem'
