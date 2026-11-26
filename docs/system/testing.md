@@ -50,6 +50,7 @@ Host unit tests, image rule checks and QEMU/loopback/hardware harnesses for upda
 | `work/loopback-test/powercut-ab.sh` | QEMU power-cut scenarios and stress for A/B |
 | `work/loopback-test/test-ota-lowres-amd64.sh` | QEMU screendump: OTA entries at low resolution |
 | `work/loopback-test/whiptail-geometry.py` | Reports whiptail gauge geometry in a pty |
+| `tools/boot-timeline-vm.sh` | Boots an image in QEMU (UEFI, KVM, snapshot), takes QMP screendumps every 200 ms, reports black intervals and first paint: [usage](#boot-timeline-in-a-vm) |
 | `tools/pi-sd-guard.sh` | SD write-rate guard for a real device |
 
 ## How it works
@@ -119,7 +120,13 @@ Power-cut scenarios: `fetch_after_invalidate`, `fetch_mid_write`, `fetch_after_w
 | Frame layout | python3, PIL optional |
 | Windows installer server | python3 (stdlib), ssh-keygen; run with `python3 -I` |
 | Windows installer Pester | docker (`mcr.microsoft.com/powershell:lts-ubuntu-22.04`, Pester installed inside) |
+| Boot timeline | qemu-system-x86_64 with KVM, OVMF, python3-pil |
 | Installer ISO | qemu-system-x86_64 with KVM (user-mode networking, no root), OVMF (`/usr/share/OVMF`), sgdisk, mke2fs, ssh, socat, python3-pexpect, python3-pil, the ISO and its image |
+
+## Boot timeline in a VM
+
+`tools/boot-timeline-vm.sh IMAGE.img[.xz] OUTDIR [--seconds 90] [--fps 5] [--gpu std|virtio|qxl] [--name PREFIX]`: OUTDIR must be new or empty; the image is never written (`-snapshot`). Output: `timeline.csv` (t_ms, BLACK/LIT, diff), `summary.txt` (black intervals over 100 ms, first paint, resolution changes), `contact.png`, `contact-black.png`, `serial.log`, `frames/`. Needs qemu with KVM, OVMF, python3-pil.
+The VM has an emulated GPU, not the real driver hand-over, and no real monitor: it shows the order and the black gaps of GRUB, Plymouth, compositor and viewer, not their real duration. The real measurement is the HDMI capture of the device.
 
 ## Recovery set sync on the test Pi
 `work/agents/agent-M/pi-recovery-sync-test.sh before|after|recovery-entry` (host side, `deploy/script/lib.sh` helpers only).
