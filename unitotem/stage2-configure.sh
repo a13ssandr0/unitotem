@@ -454,10 +454,9 @@ mkdir -p "${ROOTFS}/var/lib/systemd/linger"
 
 # The initramfs carries a copy of the OTA engine and its deploy/recovery screen is that copy's.
 # The stage1 tarball can be older than deploy/script/ota-engine.sh, so it is refreshed here, right before
-# the initramfs is regenerated (with the hook and its list, which build the initramfs).
+# the initramfs is regenerated (with the hook that builds the initramfs).
 install -m 755 /unitotem/files/ota-engine.sh "${ROOTFS}/usr/lib/unitotem/ota-engine.sh"
 install -m 755 /unitotem/files/ota-hook "${ROOTFS}/etc/initramfs-tools/hooks/unitotem-ota"
-install -m 644 /unitotem/files/ota-initrd.list "${ROOTFS}/usr/share/unitotem-ota/ota-initrd.list"
 if [ "$NATIVE_BUILD" = 1 ]; then
     # the initramfs of the installed system, by the native builder (no target program runs)
     KVER_N=$(cd "${ROOTFS}/lib/modules" && ls -1 | head -1)
