@@ -365,7 +365,7 @@ fi
 apt_install ddcutil v4l-utils i2c-tools
 
 apt_install \
-    labwc wlr-randr wlopm wayvnc xwayland qt6-wayland kbd \
+    labwc wlr-randr wlopm wtype wayvnc xwayland qt6-wayland kbd \
     pipewire pipewire-audio pipewire-pulse pipewire-jack pipewire-alsa \
     wireplumber libpipewire-0.3-0 \
     libspa-0.2-bluetooth
