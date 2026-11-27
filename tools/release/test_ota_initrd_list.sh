@@ -93,6 +93,17 @@ grep -qx "unitotem-ota hook: 'fxmissing' not found, skipping" "$t/stderr.txt" &&
 [ "$(readlink "$t/dest/bin/nc")" = "$t/bin/nc" ] && ok "nc symlink" || bad "nc symlink missing"
 [ -d "$t/dest/root/.ssh" ] && [ "$(stat -c %a "$t/dest/root/.ssh")" = 700 ] && ok "root/.ssh mode 700" || bad "root/.ssh"
 
+# plymouth-plugin: the plugin directory comes from `plymouth --get-splash-plugin-path` (no dpkg-architecture in the image).
+mkdir -p "$t/plug"; : > "$t/plug/label-freetype.so"
+printf '#!/bin/sh\n[ "$1" = --get-splash-plugin-path ] && echo "%s/plug"\n' "$t" > "$t/bin/plymouth"; chmod 755 "$t/bin/plymouth"
+printf 'plymouth-plugin label-freetype.so absent-plugin.so\n' > "$t/ota-initrd.list"
+run_hook; rc=$?
+[ "$rc" = 0 ] && [ "$(grep -c "^copy_exec $t/plug/" "$CALLS")" = 1 ] && grep -qx "copy_exec $t/plug/label-freetype.so" "$CALLS" \
+    && ok "plymouth-plugin copies the plugin found through plymouth, skips a missing one" || bad "plymouth-plugin: rc $rc, calls: $(cat "$CALLS"), stderr: $(cat "$t/stderr.txt")"
+printf '#!/bin/sh\nexit 1\n' > "$t/bin/plymouth"
+run_hook; rc=$?
+[ "$rc" = 0 ] && ! grep -q "plug/" "$CALLS" && ok "plymouth-plugin copies nothing without plymouth" || bad "plymouth-plugin without plymouth: rc $rc, calls: $(cat "$CALLS"), stderr: $(cat "$t/stderr.txt")"
+
 # A directive the hook does not know stops the run with an error.
 printf 'frob x\nbin fxone\n' > "$t/ota-initrd.list"
 run_hook; rc=$?

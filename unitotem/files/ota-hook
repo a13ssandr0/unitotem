@@ -64,11 +64,11 @@ while read -r directive rest <&3; do
             done ;;
         plymouth-plugin)
             # NAME.so from the plymouth plugin directory of the target, with its libraries. Missing: nothing.
-            pp_triplet=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null) || pp_triplet=
+            # The directory comes from plymouth itself, as in Debian's own hook (dpkg-dev is not in the image).
+            pp_dir=$(plymouth --get-splash-plugin-path 2>/dev/null) || pp_dir=
             for _p in "$@"; do
                 printf '%s' "$_p" | grep -qE '^[a-z0-9-]+\.so$' || { echo "unitotem-ota hook: bad plugin name '${_p}'" >&2; continue; }
-                [ -n "$pp_triplet" ] && [ -f "/usr/lib/${pp_triplet}/plymouth/${_p}" ] \
-                    && copy_exec "/usr/lib/${pp_triplet}/plymouth/${_p}"
+                [ -n "$pp_dir" ] && [ -f "${pp_dir}/${_p}" ] && copy_exec "${pp_dir}/${_p}"
             done ;;
         replace)
             # SRC DEST: DEST (file or symlink, e.g. the stock Plymouth.ttf link) becomes a copy of SRC, mode 644.
