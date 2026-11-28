@@ -83,7 +83,7 @@ Native steps, inspired by rpi-eeprom (`rpi-eeprom-update`):
 4. Written in this order, each with `.new`, fsync and rename: `pieeprom.sig` (`<sha256>`, `ts:`, `target-soc:`), `pieeprom.upd`, `recovery.bin`.
 5. A marker `/run/systemd/sleep.conf.d/40-unitotem-firmware-pending.conf` (`AllowSuspend=no`) is written while the update waits. `/run` is cleared at reboot.
 
-Nothing is flashed by the helper. The bootloader flashes `pieeprom.upd` at the next reboot through `recovery.bin`, keeps the configuration embedded in the image, and `eeprom.installed` changes after that reboot. `eeprom.pending` is true only while `pieeprom.upd` and `recovery.bin` are on the FAT and the build timestamp inside `pieeprom.upd` is newer than the installed build. After a flash, `pieeprom.upd`, `pieeprom.sig` and `recovery.bin` may stay on the FAT (rpi-eeprom behaviour; on the Pi 4 measured below none stayed): `eeprom.pending` ignores them once the installed build is not older, and `cleanup` removes them. `reboot_required` is false when nothing is pending.
+Nothing is flashed by the helper. The bootloader flashes `pieeprom.upd` at the next reboot through `recovery.bin`, keeps the configuration embedded in the image, and `eeprom.installed` changes after that reboot. `eeprom.pending` is true only while `pieeprom.upd` and `recovery.bin` are on the FAT and the build timestamp inside `pieeprom.upd` is newer than the installed build. After a flash the bootloader leaves `pieeprom.upd`, `pieeprom.sig` and the renamed `RECOVERY.000` on the FAT (measured below). `eeprom.pending` ignores them once the installed build is not older, and `cleanup` removes them. `reboot_required` is false when nothing is pending.
 
 `cleanup` (CLI subcommand, ported from the removal of previous updates in `rpi-eeprom-update`) removes `pieeprom.upd`, `pieeprom.sig`, `recovery.bin`, `RECOVERY.NNN` and the suspend marker when the installed build is not older than the staged one or the staged image is unreadable; a pending update is left alone. It uses `bootfs_rw` and `fsync` of the directory, prints `{"cleaned": [...], "pending": bool}`. `status` never writes: the boot unit (`unitotem-eeprom-update run`) calls `cleanup` after `rpi-eeprom-update`.
 
@@ -144,6 +144,7 @@ Environment variables (defaults in brackets): `UNITOTEM_FW_BOOT` [/boot/firmware
 - `check`: files up to date (archive and package both `1:1.20260915-1`); EEPROM 2026-05-17 -> 2026-10-30 available. Wrote nothing outside `/run` (about 1.3 MB).
 - `apply --eeprom`: staged `pieeprom.upd` (524288 bytes), `pieeprom.sig`, `recovery.bin` (83842 bytes); `pending` and `reboot_required` true; FAT back to read-only. One restart: EEPROM 2026-10-30 (`vcgencmd bootloader_version`), no `pieeprom.*`, `recovery.bin` or `RECOVERY.*` left, `pending` and `reboot_required` false, `cleanup` removes nothing. SD writes about 1.2 MB.
 - Pair swap: `start4.elf` and `fixup4.dat` of the previous package replaced by hand (`.bak`, `.new`, verified, rename): the board boots (`vcgencmd version` shows the older build), `status` gives `custom` true with `package`. `check` then `apply --files` restores the package files in one run, writes the json with the hashes, `installed` = package version again, `custom` false; one restart boots on the restored files. SD writes about 5 MB per swap.
+- Leftovers after a flash, seen on a field Pi 4 (image without the drop-in, stock `rpi-eeprom-update.service`, which failed with exit 2 at that boot): `pieeprom.upd`, `pieeprom.sig`, `RECOVERY.000` stayed on the FAT, the EEPROM already was the staged build, and the former rule (`pieeprom.upd` present) kept `pending` and the card's "Restart to finish" chip on. On the test Pi 4 above, where the boot run of the unit succeeded, none stayed: the unit's `rpi-eeprom-update` removed them (inferred, its journal was empty).
 - After a successful boot run of `rpi-eeprom-update.service` the FAT stayed mounted read-write: the unit is a oneshot that stays active, so `ExecStopPost` never ran; fixed with `ExecStartPost`.
 
 ## Not covered
@@ -154,7 +155,7 @@ Environment variables (defaults in brackets): `UNITOTEM_FW_BOOT` [/boot/firmware
 - Replay of an old signed InRelease (no `Valid-Until`).
 - Power cut between the two files of a pair, on hardware.
 - The bootloader's flash on a real Pi 5.
-- Which component removes the staged files after a Pi 4 flash (bootloader or the boot run of `rpi-eeprom-update`): the journal of that boot was empty.
+- Why the stock `rpi-eeprom-update.service` exited 2 on the field Pi 4 (no journal output).
 - `cleanup` called by the boot helper on a device (the helper change needs an image).
 - An image built with the recorded firmware json, and a newer firmware than the package (the archive and the package carried the same version).
 
