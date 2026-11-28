@@ -645,7 +645,7 @@ class Importer:
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('--source', required=True, help='directory with unitotem.conf, uploaded/, hostname, timezone')
-    p.add_argument('--playlist', default='Imported', help='name of the playlist to fill')
+    p.add_argument('--playlist', default='Default', help='name of the playlist to fill')
     p.add_argument('--fingerprint', help='SHA-256 of the DER certificate (hex, colons allowed)')
     p.add_argument('--hostname', help='override the hostname file')
     p.add_argument('--timezone', help='override the timezone file')
