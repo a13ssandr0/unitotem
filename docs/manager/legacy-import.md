@@ -29,7 +29,7 @@ UNITOTEM_URL=https://HOST UNITOTEM_USER=ADMIN UNITOTEM_PASSWORD_FILE=/path/pw \
 ## What is migrated
 
 - Media: every file of `uploaded/` (also files no item uses). Matched by name and SHA-256; a device file of the same name with other content is replaced.
-- Playlist (default name `Default`, option `--playlist`): found by name; else the only playlist when it is empty is renamed; else created. It becomes the default playlist (uploads go to the default playlist). Items keep the 2.x order, duration and enabled flag. Items are matched by url; an item of the playlist that is not in the 2.x list is removed; URL items are added as web pages (media type 0, no probe).
+- Playlist (default name `Imported`, option `--playlist`): found by name; else the only playlist when it is empty is renamed; else created. It becomes the default playlist (uploads go to the default playlist). Items keep the 2.x order, duration and enabled flag. Items are matched by url; an item of the playlist that is not in the 2.x list is removed; URL items are added as web pages (media type 0, no probe).
 - Default duration of the playlist.
 - Hostname (Settings > Network, effective at once, no reboot) and time zone (Settings > Date and time, timedated).
 - Assignment: the playlist is assigned to every window of every viewer (a window without a playlist plays the default playlist).

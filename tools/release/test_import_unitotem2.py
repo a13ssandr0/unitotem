@@ -309,7 +309,7 @@ class ImportTest(unittest.TestCase):
         (self.src / 'uploaded' / 'b.jpg').write_bytes(b'BBBB')
         (self.src / 'uploaded' / 'unused.jpg').write_bytes(b'UUUU')
         (self.src / 'unitotem.conf').write_text(json.dumps(CONF))
-        (self.src / 'hostname').write_text('Default\n')
+        (self.src / 'hostname').write_text('Imported\n')
         (self.src / 'timezone').write_text('Europe/Rome\n')
         self.pwfile = Path(self.tmp, 'pw')
         self.pwfile.write_text(PASSWORD + '\n')
@@ -345,11 +345,11 @@ class ImportTest(unittest.TestCase):
         self.assertEqual([i['enabled'] for i in items], [False, False, True, True])
         self.assertEqual([i['duration'] for i in items], [10, 10, 15, 30])
         st = self.fake.state
-        self.assertEqual(st.playlists[st.default]['name'], 'Default')
+        self.assertEqual(st.playlists[st.default]['name'], 'Imported')
         self.assertEqual(len(st.playlists), 1)       # the empty default playlist was renamed
         self.assertEqual(st.playlists[st.default]['dd'], 15)
         self.assertEqual(sorted(st.files), ['a.png', 'b.jpg', 'unused.jpg'])
-        self.assertEqual((st.hostname, st.tz), ('Default', 'Europe/Rome'))
+        self.assertEqual((st.hostname, st.tz), ('Imported', 'Europe/Rome'))
 
     def test_rerun_changes_nothing(self):
         self.assertEqual(self.run_main(), 0)
@@ -426,7 +426,7 @@ class ImportTest(unittest.TestCase):
         st = self.fake.state
         self.assertEqual(len(st.playlists), 2)
         self.assertEqual(len(st.playlists['p1']['assets']), 1)     # untouched
-        self.assertEqual(st.playlists[st.default]['name'], 'Default')
+        self.assertEqual(st.playlists[st.default]['name'], 'Imported')
 
     def test_playlist_is_assigned_to_every_window(self):
         self.assertEqual(self.run_main(), 0)
