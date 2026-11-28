@@ -37,6 +37,7 @@ Developer machines, devices, credentials and procedures: `CLAUDE.local.md` (not 
 ## Code and docs
 - Everything written is English (code, comments, logs, UI, commits, docs); the user writes Italian and gets replies in Italian. Machine identifiers (error codes, JSON keys) never change.
 - Docs: precise, terse, straight to the point, no discursive phrases. The product is finished: no provisional wording ("not yet", "for now", "temporary", "TODO") in code, UI or docs.
+- Tracked files (docs, TODO, CHANGELOG, code, tests, fixtures, comments, commit messages) never name our own devices, nodes, nicknames, addresses, networks, SSIDs, MACs or account patterns. Say the hardware class ("a Pi 3", "an amd64 PC with Intel Iris Xe") and the measurement; fixtures use documentation addresses (192.0.2.0/24, 198.51.100.0/24) and neutral names. Device-specific notes and open items about our own systems go to `CLAUDE.local.md`.
 - Comments: short, say what the code does. A design taken from another project gets a short "Inspired by <project>" note next to that code; no other product names. Never delete the user's comments.
 - Third-party code, data and assets: listed in `THIRD-PARTY.md` and in `unitotem-manager/debian/copyright` (for what the debs ship); Apache/BSD/MIT notices kept. No proprietary data (it must come from an open-source source).
 - Values are data, never code: `fullmatch` validation, argument lists (no shell), `--` before positionals, serializers for XML/JSON, template autoescape.
