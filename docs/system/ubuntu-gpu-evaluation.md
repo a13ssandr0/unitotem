@@ -9,7 +9,7 @@ Paths: relative to the repository root. Scripts: `tools/ubuntu-proto/` (build-se
 - Verified on a GTX 1060 3GB (Pascal), passed through to a Secure Boot VM, driver 580.178.04 (proprietary modules): `nvidia-smi`, `nvidia-drm` modeset with `fb0`, labwc (headless backend, GLES2) rendering with `GL renderer: NVIDIA GeForce GTX 1060 3GB/PCIe/SSE2`.
 - Verified on an RTX 2060 SUPER (Turing), passed through to a Secure Boot VM, driver 595.99.02 (open modules from the 469 MB extension, signer Canonical): `nvidia-smi`, nvidia-drm modeset with fbdev, labwc DRM backend enabling the connected LG UltraFine on DP-1.
 - Verified: UniTotem image 2026.11.53 (kernel 7.2.12, NVIDIA 620 open DKMS, Secure Boot off) on the same GPU with three monitors: nvidia-drm modeset, viewer `compositing=enabled rasterization=enabled gl=egl-angle`, labwc outputs DP-1 and HDMI-A-1 at 3840x2160 60 Hz and DVI-D-1 at 1920x1080 60 Hz. The viewer logs a benign Vulkan error (`--ozone-platform=wayland` is not compatible with Vulkan).
-- Not verified: video decode; real firmware with Secure Boot (the amd64 test PC); Ubuntu loader on A/B with the OTA fallback; Radeon.
+- Not verified: video decode; real firmware with Secure Boot (amd64 test PC); Ubuntu loader on A/B with the OTA fallback; Radeon.
 
 ## Versions (archive indexes of the build host)
 | | Ubuntu 26.04 | image now |

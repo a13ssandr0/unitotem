@@ -30,7 +30,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Test password: policy-valid, no part of the user name. Written to a file only (never on a command line).
-printf '%s' 'Example.N2382' > "$PWFILE"; chmod 600 "$PWFILE"
+printf '%s' 'Test-Pw.2382' > "$PWFILE"; chmod 600 "$PWFILE"
 python3 -I -c 'import json,sys; print(json.dumps({"username": sys.argv[1], "password": open(sys.argv[2]).read()}))' "$ADMIN" "$PWFILE" > "$SETUPJSON"
 chmod 600 "$SETUPJSON"
 

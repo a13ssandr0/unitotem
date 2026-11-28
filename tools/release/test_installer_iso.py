@@ -316,7 +316,7 @@ def finish(work, name, mode, chosen, port, tm, ssh_port=None, probe=None):
 
 
 SB_EFIVAR = '/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c'
-ADMIN, ADMIN_PW = 'isowin', 'Example.7Test'      # throwaway administrator of the test disk, removed with it
+ADMIN, ADMIN_PW = 'isowin', 'Tester.7Disk'      # throwaway administrator of the test disk, removed with it
 
 
 def secure_boot_value(out):
