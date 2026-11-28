@@ -257,6 +257,7 @@ chk "the compositor unit replaces plymouth-quit like gdm3 and lightdm do (Confli
 chk "the compositor unit quits Plymouth with --retain-splash and does not kill it (comment lines excluded)" bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -q "plymouth quit --retain-splash" && ! grep -v "^[[:space:]]*#" "$1" | grep -q "pkill"' _ "$CS"
 chk "plymouth-quit.service and plymouth-quit-wait.service are not masked (the compositor unit conflicts with them: a mask would hide the OnFailure safety net)" bash -c "! test -L '$R/etc/systemd/system/plymouth-quit.service' && ! test -L '$R/etc/systemd/system/plymouth-quit-wait.service'"
 for t in labwc wlr-randr wlopm wtype wayvnc; do chk "$t is installed" bash -c "test -x '$R/usr/bin/$t'"; done
+chk "labwc has the HideCursor action (0.8.4 or newer)" bash -c "v=\$(awk '/^Package: labwc\$/{f=1} f&&/^Version:/{print \$2; exit}' '$R/var/lib/dpkg/status'); [ -n \"\$v\" ] && dpkg --compare-versions \"\$v\" ge 0.8.4"
 chk "xwayland is installed (labwc starts it lazily)" bash -c "test -x '$R/usr/bin/Xwayland'"
 chk "no X server on the image (Xorg, xinit, xset, the X config of the old session; xauth is only an openssh Recommends)" bash -c "! test -e '$R/usr/bin/Xorg' && ! test -e '$R/usr/bin/xinit' && ! test -e '$R/usr/bin/xset' && ! test -e '$R/etc/X11/xorg.conf.d/10-unitotem-noblank.conf'"
 chk "no start-xorg/xbackground left" bash -c "! test -e '$R/etc/systemd/system/start-xorg.service' && ! test -e '$R/usr/sbin/unitotem-xbackground' && ! test -e '$R/etc/systemd/system/unitotem-xbackground.service'"

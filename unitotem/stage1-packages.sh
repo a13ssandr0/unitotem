@@ -396,6 +396,10 @@ for pkg in unitotem_ unitotem-manager_ unitotem-node_ unitotem-viewer_ plymouth-
     ls "$LOCAL_DEB_DIR"/${pkg}*.deb >/dev/null 2>&1 \
         || { echo "ERROR: ${pkg}*.deb missing in build/extra-debs/${ARCH}/ (the complete manager set is required, see the comment above)" >&2; exit 1; }
 done
+# amd64: Debian 13 has labwc 0.8.3 without the HideCursor action the compositor needs (unitotem-manager/tools/build-debs.sh labwc builds 0.8.4)
+if [ "$ARCH" = amd64 ] && ! ls "$LOCAL_DEB_DIR"/labwc_0.8.4*unitotem*_amd64.deb >/dev/null 2>&1; then
+    echo "ERROR: labwc_0.8.4*unitotem*_amd64.deb is not in build/extra-debs/amd64/ (tools/build-debs.sh labwc): Debian's 0.8.3 has no HideCursor" >&2; exit 1
+fi
 ls "$LOCAL_DEB_DIR"/python3-cefpython3_*_${ARCH}.deb >/dev/null 2>&1 \
     || { echo "ERROR: python3-cefpython3 for ${ARCH} is not in build/extra-debs/${ARCH}/ (a .deb of another architecture cannot be installed)" >&2; exit 1; }
 # One product version for every UniTotem package (the image version is read from the installed unitotem package, stage3).

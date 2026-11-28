@@ -30,6 +30,16 @@ project maintainer for three years after the image was distributed. The amd64 im
 binaries signed by Microsoft/Debian to the ESP (`unitotem/stage3-image.sh`); NVIDIA packages (amd64, below) and Debian
 non-free firmware are installed as packages under their own licenses.
 
+### labwc 0.8.4 rebuilt for the amd64 images
+
+Debian 13 ships labwc 0.8.3, which has no `HideCursor` action. The amd64 images install `labwc 0.8.4-1~unitotem1`: the Debian source package
+0.8.3-1 (its packaging, no patches) with the upstream 0.8.4 tarball (sha256 pinned in `unitotem-manager/tools/build-debs.sh labwc`), built in a Debian 13
+container, nothing else changed (wlroots 0.18 as before). The arm64 images use the Raspberry Pi archive's 0.20.x.
+
+| Component | Used as | License | Copyright | Upstream |
+|---|---|---|---|---|
+| labwc 0.8.4 | Rebuilt Debian package `labwc` (amd64 images, `build/extra-debs/amd64/`) | GPL-2.0-only | labwc authors | https://github.com/labwc/labwc |
+
 ### NVIDIA packages in the amd64 images
 
 Installed from NVIDIA's CUDA repository (`developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/`), version 620.70.06,

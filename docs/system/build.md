@@ -257,7 +257,7 @@ Exit codes: `build-unitotem.sh` 1 if Docker is unavailable or any arch fails. St
 
 ## Rules and gotchas
 
-- Stage 1 needs the full manager set in `build/extra-debs/<arch>/`: `unitotem`, `unitotem-manager`, `unitotem-node`, `unitotem-viewer`, `plymouth-theme-unitotem`, `python3-cefpython3` (for the arch), `python3-fastapi-login`, `python3-sdbus-networkmanager`.
+- Stage 1 needs the full manager set in `build/extra-debs/<arch>/`: `unitotem`, `unitotem-manager`, `unitotem-node`, `unitotem-viewer`, `plymouth-theme-unitotem`, `python3-cefpython3` (for the arch), `python3-fastapi-login`, `python3-sdbus-networkmanager`; on amd64 also `labwc_0.8.4-1~unitotem1_amd64.deb` (`unitotem-manager/tools/build-debs.sh labwc`: Debian 13's 0.8.3 has no `HideCursor`; stage 1 stops without it, `verify-image` checks the version). The package lock records it as a local package.
 - Native arm64: device root is read-only; the build remounts `/` and `/var/lib/dpkg` rw and restores ro in an EXIT trap. Stale chroot mounts under the build tree are unmounted first.
 - Native arm64: `ROOTFS` and `IMG_MNT` live in the build tree (`/tmp` is nodev tmpfs, `/mnt` holds DATA). `qemu-aarch64-static` is copied by stage 0 unconditionally, so the package is required.
 - Builder is bookworm, target is trixie. The deploy streams are written by the host's partclone and restored by the target's (trixie): measured compatible between 0.3.44 and 0.3.36 (`deploy-and-recovery.md`).
