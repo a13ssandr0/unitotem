@@ -5,6 +5,7 @@
 ### unitotem-system (since 2022-11-01)
 
 #### Manager
+- Updates page: each slot is two lines on narrow screens (version and chips on one line; below 600 px the action is an icon); the Raspberry Pi card (was Firmware) has a row "Firmware" showing the installed, `Custom` or `Custom (from <version>)` firmware; the EEPROM chip reads "Restart pending"; `Settings/Firmware/apply` takes `restart` and the manager restarts the device itself after the update ("Update and restart?").
 - The Qt boot splash draws the same logo and the slot/version line as Plymouth and "Starting viewer" under it (`bootsplash.py`, `splash.py`).
 - Restoring the `uploads` backup part replaces files by name (`UploadManager.restore`, temp file then rename), creates no assets and no `_2` copies, refuses unsafe names, more than 10000 files and a size that does not fit the free space; the file list refreshes at once.
 - A screen or pane with no playlist assigned plays the default playlist (it stayed on the "no assets" page after a restore or on a new node); the default, a deleted playlist, an unassigned pane and a restore re-sync every window at once without a restart; the playlists backup carries the screen assignments by screen name (`assignments`, version 1; the local viewer only, never overriding an existing assignment); the layout select says "Default playlist" for no explicit assignment.
