@@ -19,7 +19,8 @@ DEFAULTS = {
     "UNITOTEM_FW_RUN": "/run",                             # progress, lock, check cache
     "UNITOTEM_FW_STATE": "/var/lib/unitotem-firmware",     # reserved for apply
     "UNITOTEM_FW_DT": "/proc/device-tree",
-    "UNITOTEM_FW_DPKG_STATUS": "/var/lib/dpkg/status",     # reserved for apply
+    "UNITOTEM_FW_DPKG_STATUS": "/var/lib/dpkg/status",     # raspi-firmware version of the running root
+    "UNITOTEM_FW_PKGDIR": "/usr/lib/raspi-firmware",       # firmware files of that package
     "UNITOTEM_FW_KEYRING": "",                             # empty = first existing of KEYRINGS
     "UNITOTEM_FW_VCGENCMD": "/usr/bin/vcgencmd",
     "UNITOTEM_FW_UPDATE": "/usr/sbin/unitotem-update",
@@ -190,10 +191,58 @@ def pairs_present(boot):
             if os.path.isfile(os.path.join(boot, a)) and os.path.isfile(os.path.join(boot, b))]
 
 
-def installed_version(c):
-    rec = read_json(os.path.join(c["UNITOTEM_FW_BOOT"], "unitotem-firmware.json"))
-    v = rec.get("version") if rec else None
-    return v if isinstance(v, str) else None
+def package_version(c):
+    """Version of the installed raspi-firmware package: its stanza in the dpkg status file, no dpkg process."""
+    try:
+        with open(c["UNITOTEM_FW_DPKG_STATUS"], encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    for stanza in text.split("\n\n"):
+        fields = {}
+        for line in stanza.splitlines():
+            k, sep, v = line.partition(": ")
+            if sep and not line.startswith((" ", "\t")):
+                fields[k] = v.strip()
+        if fields.get("Package") == "raspi-firmware":
+            if not fields.get("Status", "").endswith(" installed"):
+                return None
+            v = fields.get("Version", "")
+            return v if VERSION_RE.fullmatch(v) else None
+    return None
+
+
+def fat_hashes(boot):
+    """{name: sha256} of every firmware file the FAT carries (pair files and bootcode.bin)."""
+    out = {}
+    for n in FW_NAMES:
+        p = os.path.join(boot, n)
+        if os.path.isfile(p):
+            out[n] = sha256_file(p)
+    return out
+
+
+def installed_firmware(c):
+    """(installed, custom, package): the version of the firmware on the FAT, whether it is custom, and the
+    raspi-firmware package version of the running root. Order: the set recorded in unitotem-firmware.json,
+    then the package files; anything else is custom."""
+    boot = c["UNITOTEM_FW_BOOT"]
+    pkg = package_version(c)
+    have = fat_hashes(boot)
+    rec = read_json(os.path.join(boot, "unitotem-firmware.json"))
+    files = rec.get("files") if rec else None
+    ver = rec.get("version") if rec else None
+    if have and isinstance(files, dict) and isinstance(ver, str) and all(files.get(n) == h for n, h in have.items()):
+        return ver, False, pkg
+    if pkg and have:
+        pkgdir = c["UNITOTEM_FW_PKGDIR"]
+        try:
+            if all(os.path.isfile(os.path.join(pkgdir, n)) and sha256_file(os.path.join(pkgdir, n)) == h
+                   for n, h in have.items()):
+                return pkg, False, pkg
+        except OSError:
+            pass
+    return None, True, pkg
 
 
 def fs_writable(path):
@@ -315,11 +364,30 @@ def blockers_of(c, thr, locked):
 
 def files_block(c, fw):
     boot = c["UNITOTEM_FW_BOOT"]
-    return {"installed": installed_version(c),
+    inst, custom, pkg = installed_firmware(c)
+    return {"installed": inst, "custom": custom, "package": pkg,
             "available": fw.get("version") if fw else None,
             "update": fw.get("update") if fw else None,
             "pairs": pairs_present(boot),
             "bak": bool(glob.glob(os.path.join(glob.escape(boot), "*.bak")))}
+
+
+def staged_build(c):
+    """Build timestamp of the staged pieeprom.upd, or None when absent or unreadable."""
+    try:
+        return build_timestamp(os.path.join(c["UNITOTEM_FW_BOOT"], "pieeprom.upd"))
+    except (Fail, OSError):
+        return None
+
+
+def eeprom_pending(c, inst):
+    """An EEPROM update waits for the restart: pieeprom.upd and recovery.bin are on the FAT and the staged build is newer than the
+    running one. After the flash the bootloader renames recovery.bin to RECOVERY.000 and leaves pieeprom.upd (cleanup removes it)."""
+    boot = c["UNITOTEM_FW_BOOT"]
+    if not (os.path.isfile(os.path.join(boot, "pieeprom.upd")) and os.path.isfile(os.path.join(boot, "recovery.bin"))):
+        return False
+    staged = staged_build(c)
+    return staged is not None and inst is not None and staged > inst
 
 
 def eeprom_block(c, family, ee):
@@ -331,7 +399,7 @@ def eeprom_block(c, family, ee):
     return {"installed": iso_date(inst),
             "available": ee.get("version") if ee else None,
             "update": upd,
-            "pending": os.path.isfile(os.path.join(c["UNITOTEM_FW_BOOT"], "pieeprom.upd")),
+            "pending": eeprom_pending(c, inst),
             "channel": eeprom_channel(c)}
 
 
@@ -869,7 +937,8 @@ def swap_files(c, fw_row, fw_files):
             fsync_dir(boot)
         raise Fail("swap-failed", f"firmware swap failed: {e}", rolled_back=rolled)
     replace_file(os.path.join(boot, "unitotem-firmware.json"),
-                 json.dumps({"version": fw_row["version"], "installed_at": int(time.time())}).encode())
+                 json.dumps({"version": fw_row["version"], "installed_at": int(time.time()),
+                            "files": fat_hashes(boot)}).encode())
     cache = read_json(cache_path(c))
     if cache and isinstance(cache.get("firmware"), dict):
         cache["firmware"]["update"] = False
@@ -1066,6 +1135,36 @@ def cmd_apply(c, a):
     return 0, {"started": True, "op": "apply", "files": bool(files_need), "eeprom": bool(eeprom_need)}
 
 
+# ---------- cleanup ----------
+
+LEFTOVERS = ("pieeprom.upd", "pieeprom.sig", "recovery.bin")
+
+
+def cmd_cleanup(c):
+    """Removes the leftovers of a flashed EEPROM update (pieeprom.upd, pieeprom.sig, RECOVERY.*, a recovery.bin that was not run) and the suspend marker once the
+    running build is not older than the staged one, or the staged image cannot be read. Ported from the removal of previous
+    updates in rpi-eeprom-update. Nothing is touched while an update waits for the restart."""
+    boot = c["UNITOTEM_FW_BOOT"]
+    names = [n for n in LEFTOVERS if os.path.lexists(os.path.join(boot, n))]
+    names += sorted(n for n in os.listdir(boot) if re.fullmatch(r"RECOVERY\.[0-9]{3}", n)) if os.path.isdir(boot) else []
+    marker = os.path.join(c["UNITOTEM_FW_RUN"], "systemd", "sleep.conf.d", "40-unitotem-firmware-pending.conf")
+    staged = staged_build(c)
+    inst = eeprom_installed_ts(c)
+    if staged is not None and (inst is None or staged > inst):
+        return 0, {"cleaned": [], "pending": True}
+    removed = []
+    if names:
+        with bootfs_rw(boot):
+            for n in names:
+                os.unlink(os.path.join(boot, n))
+                removed.append(n)
+            fsync_dir(boot)
+    if os.path.lexists(marker):
+        os.unlink(marker)
+        removed.append(os.path.basename(marker))
+    return 0, {"cleaned": removed, "pending": False}
+
+
 # ---------- entry ----------
 
 def main(argv=None):
@@ -1074,13 +1173,14 @@ def main(argv=None):
     sp = ap.add_subparsers(dest="cmd", required=True)
     sp.add_parser("status")
     sp.add_parser("check")
+    sp.add_parser("cleanup")
     ap_apply = sp.add_parser("apply")
     ap_apply.add_argument("--files", action="store_true", help="swap the boot FAT firmware files")
     ap_apply.add_argument("--eeprom", action="store_true", help="stage the EEPROM update (Pi 4 and Pi 5)")
     ap_apply.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     c = conf()
-    handlers = {"status": lambda: cmd_status(c), "check": lambda: cmd_check(c), "apply": lambda: cmd_apply(c, a)}
+    handlers = {"status": lambda: cmd_status(c), "check": lambda: cmd_check(c), "cleanup": lambda: cmd_cleanup(c), "apply": lambda: cmd_apply(c, a)}
     try:
         rc, out = handlers[a.cmd]()
     except Fail as e:

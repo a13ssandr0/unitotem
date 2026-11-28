@@ -12,7 +12,18 @@
 | `/etc/default/rpi-eeprom-update` `FIRMWARE_RELEASE_STATUS` | EEPROM channel: `default` (or `critical`), `latest` (or `stable`); absent is `default` |
 | `unitotem-update --json status` | `pending_confirm`: a blocker while an A/B update waits for its confirm |
 | `/etc/os-release` `VERSION_CODENAME`, else `/etc/apt/sources.list.d/*raspi*` | Debian suite of the archive |
-| `/boot/firmware` | pairs present, `*.bak`, `unitotem-firmware.json` (installed version), writability |
+| `/boot/firmware` | pairs present, `bootcode.bin`, `*.bak`, `unitotem-firmware.json`, `pieeprom.upd`, `recovery.bin`, writability |
+| `/var/lib/dpkg/status` (`UNITOTEM_FW_DPKG_STATUS`) | `raspi-firmware` version of the running root: its stanza is parsed (`Status` installed, `Version` fullmatched), no `dpkg` process |
+| `/usr/lib/raspi-firmware` (`UNITOTEM_FW_PKGDIR`) | firmware files of that package, hashed against the FAT |
+
+## Installed firmware version
+
+`unitotem-firmware.json` on the FAT: `{"version": <raspi-firmware version, dpkg form>, "installed_at": <epoch>, "files": {<name>: <sha256>}}`. `files` covers every firmware file the FAT carries (`bootcode.bin`, `start*.elf`, `fixup*.dat`). The image build writes it; a swap rewrites it with the hashes of the FAT after the swap and the archive package version. A json without `files` (older tool) is ignored for matching.
+
+`status` hashes the FAT firmware files (1 MiB blocks) and decides, in this order:
+1. all equal the `files` recorded in the json: `installed` = json version, `custom` false (covers a running slot whose package is newer than the FAT, and a card swap from the archive).
+2. the package is installed and all equal its `PKGDIR` files: `installed` = package version, `custom` false.
+3. otherwise `installed` null, `custom` true. The UI shows `Custom (from <package>)` when `package` is set, `Custom` when it is null.
 
 ## Sources
 
@@ -46,7 +57,7 @@ Plan: a pair is swapped only when both its files exist on the FAT and one of the
 4. Power blockers are checked again (`blocked`).
 5. Each old file is copied to `<name>.bak` (`replace_file`, so a `.bak` exists before its name is changed).
 6. Each `<name>.new` is renamed over `<name>` with `os.replace`, directory fsync after each. A name is never absent.
-7. `unitotem-firmware.json` on the FAT is written (`version`, `installed_at`). The cached check gets `update: false`.
+7. `unitotem-firmware.json` on the FAT is written (`version`, `installed_at`, `files`). The cached check gets `update: false`.
 
 Failure in steps 5-6 (`swap-failed`): the replaced names are restored from their `.bak` in reverse order (`rolled_back` in the error). The `.bak` files created by this run are removed when every restore succeeded.
 
@@ -72,7 +83,9 @@ Native steps, inspired by rpi-eeprom (`rpi-eeprom-update`):
 4. Written in this order, each with `.new`, fsync and rename: `pieeprom.sig` (`<sha256>`, `ts:`, `target-soc:`), `pieeprom.upd`, `recovery.bin`.
 5. A marker `/run/systemd/sleep.conf.d/40-unitotem-firmware-pending.conf` (`AllowSuspend=no`) is written while the update waits. `/run` is cleared at reboot.
 
-Nothing is flashed by the helper. The bootloader flashes `pieeprom.upd` at the next reboot through `recovery.bin`, keeps the configuration embedded in the image, and `eeprom.installed` changes after that reboot. `eeprom.pending` is true while `pieeprom.upd` is on the FAT. Not verified on hardware: that the bootloader removes `pieeprom.upd` after a successful flash.
+Nothing is flashed by the helper. The bootloader flashes `pieeprom.upd` at the next reboot through `recovery.bin`, keeps the configuration embedded in the image, and `eeprom.installed` changes after that reboot. `eeprom.pending` is true only while `pieeprom.upd` and `recovery.bin` are on the FAT and the build timestamp inside `pieeprom.upd` is newer than the installed build. After a flash the bootloader renames `recovery.bin` to `RECOVERY.000` and leaves `pieeprom.upd` and `pieeprom.sig`; `rpi-eeprom-update` removes such leftovers later. `reboot_required` is false when nothing is pending. Not verified on hardware: the bootloader's rename and leftovers.
+
+`cleanup` (CLI subcommand, ported from the removal of previous updates in `rpi-eeprom-update`) removes `pieeprom.upd`, `pieeprom.sig`, `recovery.bin`, `RECOVERY.NNN` and the suspend marker when the installed build is not older than the staged one or the staged image is unreadable; a pending update is left alone. It uses `bootfs_rw` and `fsync` of the directory, prints `{"cleaned": [...], "pending": bool}`. `status` never writes: the boot unit (`unitotem-eeprom-update run`) calls `cleanup` after `rpi-eeprom-update`.
 
 Why `rpi-eeprom-update` is not called: as reported by the author of the helper's design (not re-checked here), it mounts, runs `blkid` and `rm` on its own boot directory, prompts on `/dev/tty`, and with `-d` would replace the configuration. The helper repeats the steps with every path redirectable and every check explicit. The package `rpi-eeprom` stays in the image for `rpi-eeprom-config`.
 
@@ -84,7 +97,7 @@ Every answer is one JSON object on the last line of stdout. Errors: `{"error": t
 
 Exit codes: `0` ok or update available; `10` nothing to do; `12` operation already running; `14` blocked (apply start); `2` failed; `127` absent (shell).
 
-`status` (no network): `kind` (`pi` or `none`), `supported`, `model`, `family` (`pi3|pi4|pi5`), `op` (`check|apply|null`), `phase`, `percent`, `error`, `throttled` (`0x..`), `under_voltage`, `files` (`installed`, `available`, `update`, `pairs`, `bak`), `eeprom` (`installed`, `available`, `update`, `pending`, `channel`; `null` on pi3 and on `kind: none`), `blockers`, `checked_at`, `reboot_required`. `kind: none` answers only `kind`, `supported: false`.
+`status` (no network): `kind` (`pi` or `none`), `supported`, `model`, `family` (`pi3|pi4|pi5`), `op` (`check|apply|null`), `phase`, `percent`, `error`, `throttled` (`0x..`), `under_voltage`, `files` (`installed`, `custom`, `package`, `available`, `update`, `pairs`, `bak`), `eeprom` (`installed`, `available`, `update`, `pending`, `channel`; `null` on pi3 and on `kind: none`), `blockers`, `checked_at`, `reboot_required`. `kind: none` answers only `kind`, `supported: false`.
 
 `check` (network, at most 120 s): `{"checked": true, "files": {...}, "eeprom": {...}|null, "checked_at": N}`, exit 0 when an update exists, 10 when none.
 
@@ -121,9 +134,9 @@ Permission section `Settings/Firmware` (admin, plugin `unitotem_node`, class `Fi
 
 ## Tests
 
-`python3 tools/release/test_firmware.py`: 149 passed, 0 failed (2026-11-15). A fake archive with a real gpg key, clearsigned InRelease, gzip and xz indexes and ar `.deb` files; `http_get` replaced by a fake. Every path redirected through the variables below; the test checks that `/etc/unitotem/users.json` and the real `/run` and `/boot` firmware files are unchanged.
+`python3 tools/release/test_firmware.py`: 171 passed, 0 failed (2026-11-28). A fake archive with a real gpg key, clearsigned InRelease, gzip and xz indexes and ar `.deb` files; `http_get` replaced by a fake. Every path redirected through the variables below; the test checks that `/etc/unitotem/users.json` and the real `/run` and `/boot` firmware files are unchanged.
 
-Environment variables (defaults in brackets): `UNITOTEM_FW_BOOT` [/boot/firmware], `UNITOTEM_FW_RUN` [/run], `UNITOTEM_FW_STATE` [/var/lib/unitotem-firmware, reserved, unused], `UNITOTEM_FW_DT` [/proc/device-tree], `UNITOTEM_FW_DPKG_STATUS` [/var/lib/dpkg/status, reserved, unused], `UNITOTEM_FW_KEYRING` [first existing keyring], `UNITOTEM_FW_VCGENCMD` [/usr/bin/vcgencmd], `UNITOTEM_FW_UPDATE` [/usr/sbin/unitotem-update], `UNITOTEM_FW_EEPROM_CONF` [/etc/default/rpi-eeprom-update], `UNITOTEM_FW_OS_RELEASE` [/etc/os-release], `UNITOTEM_FW_APT_SOURCES` [/etc/apt/sources.list.d], `UNITOTEM_FW_BASE_URL` [https://archive.raspberrypi.com/debian].
+Environment variables (defaults in brackets): `UNITOTEM_FW_BOOT` [/boot/firmware], `UNITOTEM_FW_RUN` [/run], `UNITOTEM_FW_STATE` [/var/lib/unitotem-firmware, reserved, unused], `UNITOTEM_FW_DT` [/proc/device-tree], `UNITOTEM_FW_DPKG_STATUS` [/var/lib/dpkg/status], `UNITOTEM_FW_PKGDIR` [/usr/lib/raspi-firmware], `UNITOTEM_FW_KEYRING` [first existing keyring], `UNITOTEM_FW_VCGENCMD` [/usr/bin/vcgencmd], `UNITOTEM_FW_UPDATE` [/usr/sbin/unitotem-update], `UNITOTEM_FW_EEPROM_CONF` [/etc/default/rpi-eeprom-update], `UNITOTEM_FW_OS_RELEASE` [/etc/os-release], `UNITOTEM_FW_APT_SOURCES` [/etc/apt/sources.list.d], `UNITOTEM_FW_BASE_URL` [https://archive.raspberrypi.com/debian].
 
 ## Not covered
 
@@ -142,9 +155,9 @@ Raspberry Pi OS's package `rpi-eeprom` ships `rpi-eeprom-update.service` (onesho
 - Order: `After=multi-user.target network-online.target time-sync.target` (after the target, so the unit never delays `unitotem-boot-ok`, which follows `multi-user.target`), `Wants=network-online.target`, no `Requires=`. Nothing pulls `time-sync.target` in (`systemd-time-wait-sync` is disabled and waits forever), so `check` itself waits at most 60 s for `timedatectl` `NTPSynchronized=yes` (poll every 2 s). `TimeoutStartSec=150`, `Nice=19`, idle IO.
 - `ConditionPathExists=/proc/device-tree/chosen/bootloader/build-timestamp`: boards without an EEPROM bootloader (Pi 3) skip the unit.
 - `ExecCondition=... check` (exit 1 = skip, not a failure, logged at notice): clock not synchronized, `get_throttled` bits 0-3 set now (under-voltage, frequency cap, throttled, soft temperature limit) or unreadable, `mount -o remount,rw /boot/firmware` failed, or the FAT not writable. A successful check leaves the FAT read-write.
-- `ExecStart=... run` calls `rpi-eeprom-update -s -a`, `sync`, maps exit 0 and 3 (version frozen) to success, and logs any other status at warning (the journal keeps warnings and above only; the tool's own stderr is info and would be lost). A staged `pieeprom.upd` or `recovery.bin` is logged at warning: `EEPROM update staged, applied at the next restart`.
-- `ExecStopPost=... ro` remounts the FAT read-only after a run, a skip or a failure.
+- `ExecStart=... run` calls `rpi-eeprom-update -s -a`, `sync`, maps exit 0 and 3 (version frozen) to success, and logs any other status at warning (the journal keeps warnings and above only; the tool's own stderr is info and would be lost). `run` first lets `rpi-eeprom-update` stage, then calls `/usr/sbin/unitotem-firmware --json cleanup` (`UNITOTEM_EEPROM_FWTOOL`; failure is a warning). A staged `pieeprom.upd` or `recovery.bin` is logged at warning: `EEPROM update staged, applied at the next restart`.
+- `ExecStartPost=... ro` remounts the FAT read-only when the run succeeds (the unit is a oneshot with `RemainAfterExit=yes`: it stays active, so `ExecStopPost` would not run until it stops); `ExecStopPost=... ro` does it after a skip or a failure. Observed on a Pi 4 test board: without `ExecStartPost` the FAT stayed mounted read-write after a successful boot run.
 - Why the stock unit failed (exit 2 = `EXIT_FAILED`, any `die`): the FAT is mounted read-only, and with a bootloader older than `BOOTLOADER_AUTO_UPDATE_MIN_VERSION` (May 2025 build) `-s` does not skip; `removePreviousUpdates` (`rm -f` of a staged `pieeprom.upd`/`recovery.bin`) or the `cp` to `${BOOTFS}` then fails. A bootloader at or above the minimum exits 0 after "Skipping automatic bootloader upgrade". Measured on a Pi 4 with the May 2026 bootloader: the unit ends `active (exited)`, status 0, package image Oct 30 2026 not staged.
-- Visibility: the staged `pieeprom.upd` is `eeprom.pending` and `reboot_required` in `unitotem-firmware status`, so the Updates page card shows the restart need ([node-system](../manager/node-system.md)).
+- Visibility: a staged `pieeprom.upd` with `recovery.bin` and a newer build is `eeprom.pending` and `reboot_required` in `unitotem-firmware status`, so the Updates page card shows the restart need ([node-system](../manager/node-system.md)).
 - The bootloader applies the image at the next restart. Risk: a power cut during that flash (SPI) can leave the board unbootable; the under-voltage guard reduces, not removes, this.
 - Test: `tools/release/test_eeprom_unit.sh`.

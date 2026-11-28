@@ -1,21 +1,24 @@
 #!/bin/bash
 # arm64 boot tree: the FIRMWARE content that the full image and the preboot card share, assembled once per build.
-#   make-boot-tree.sh --out DIR (--stage2 TAR | --firmware DIR) --recovery-vmlinuz FILE --recovery-initrd FILE
+#   make-boot-tree.sh --out DIR (--stage2 TAR | --firmware DIR --firmware-version V) --recovery-vmlinuz FILE --recovery-initrd FILE
 #                     (--recovery-manifest FILE | --level N) --engine FILE
 # Holds the Pi firmware (bootcode.bin, start*.elf, fixup*.dat, *.dtb, LICENCE.broadcom; the _x and _db variants left out),
 # recovery8.img (the recovery kernel), recovery-initrd.img (the recovery initrd with the repository's engine appended: a later
-# cpio entry replaces an earlier one; appended only when the stage-1b initrd lacks the identical engine), config.txt and cmdline.txt of the recovery boot, and boot-tree.sha256.
+# cpio entry replaces an earlier one; appended only when the stage-1b initrd lacks the identical engine), config.txt and cmdline.txt of the recovery boot,
+# unitotem-firmware.json (version: the raspi-firmware package version, from the stage-2 dpkg status or --firmware-version; installed_at: the
+# recovery level as epoch; files: sha256 of bootcode.bin, start*.elf, fixup*.dat), and boot-tree.sha256.
 # Stage 3 copies the files into the full image; make-preboot-image.sh --tree writes them to the card. Docs: docs/system/build.md.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-OUT="" STAGE2="" FW="" RVM="" RIN="" MAN="" LEVEL="" ENGINE=""
+OUT="" STAGE2="" FW="" FWV="" RVM="" RIN="" MAN="" LEVEL="" ENGINE=""
 die() { echo "make-boot-tree.sh: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) OUT=$2; shift 2 ;;
         --stage2) STAGE2=$2; shift 2 ;;
         --firmware) FW=$2; shift 2 ;;
+        --firmware-version) FWV=$2; shift 2 ;;
         --recovery-vmlinuz) RVM=$2; shift 2 ;;
         --recovery-initrd) RIN=$2; shift 2 ;;
         --recovery-manifest) MAN=$2; shift 2 ;;
@@ -28,6 +31,10 @@ done
 if { [ -n "$STAGE2" ] && [ -n "$FW" ]; } || { [ -z "$STAGE2" ] && [ -z "$FW" ]; }; then
     die "give exactly one of --stage2 and --firmware"
 fi
+# The firmware version: --firmware-version with --firmware (required there), the raspi-firmware record of the tarball with --stage2.
+if [ -n "$STAGE2" ] && [ -n "$FWV" ]; then die "--firmware-version is for --firmware DIR only"; fi
+if [ -z "$STAGE2" ] && [ -z "$FWV" ]; then die "--firmware DIR needs --firmware-version V"; fi
+if [ -n "$FWV" ] && ! [[ "$FWV" =~ ^[0-9A-Za-z.+~:-]+$ ]]; then die "firmware version is not valid ('$FWV')"; fi
 if [ -n "$MAN" ]; then
     [ -z "$LEVEL" ] || die "give --recovery-manifest or --level, not both"
     LEVEL=$(sed -n 's/^UNITOTEM_RECOVERY_BUILD_DATE=//p' "$MAN" | tr -cd '0-9')
@@ -45,6 +52,32 @@ if [ -n "$STAGE2" ]; then
     DECOMPRESS=$(command -v pigz || command -v gzip)
     "$DECOMPRESS" -dc -- "$STAGE2" | tar -C "$TMPROOT" -xf - --exclude='./boot/firmware/overlays' ./boot/firmware
     FW="$TMPROOT/boot/firmware"
+    # The package record of raspi-firmware: only its member is extracted, into its own file.
+    "$DECOMPRESS" -dc -- "$STAGE2" | tar -C "$TMPROOT" -xf - ./var/lib/dpkg/status \
+        || die "$STAGE2: no ./var/lib/dpkg/status"
+    FWV=$(python3 -I - "$TMPROOT/var/lib/dpkg/status" << 'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    stanzas = f.read().split("\n\n")
+for stanza in stanzas:
+    fields = {}
+    for line in stanza.splitlines():
+        if ":" in line and not line.startswith((" ", "\t")):
+            key, _, value = line.partition(":")
+            fields.setdefault(key, value.strip())
+    if fields.get("Package") == "raspi-firmware":
+        version = fields.get("Version", "")
+        if not version:
+            sys.exit("raspi-firmware has no Version in the dpkg status")
+        print(version)
+        break
+else:
+    sys.exit("no raspi-firmware package in the dpkg status")
+PY
+    ) || die "the dpkg status of $STAGE2 has no raspi-firmware version"
+    [[ "$FWV" =~ ^[0-9A-Za-z.+~:-]+$ ]] || die "raspi-firmware version is not valid ('$FWV')"
 fi
 [ -d "$FW" ] || die "no firmware directory $FW"
 
@@ -88,6 +121,29 @@ initramfs recovery-initrd.img followkernel
 EOF2
 # unitotem.ota=recover: wait for the host with NO idle timeout (unitotem.ota=1 reboots after 30 minutes without a host)
 echo "unitotem.ota=recover console=tty1 console=ttyS0,115200" > "$OUT/cmdline.txt"
+
+# Firmware record: the raspi-firmware version, the install time (the recovery level as UTC epoch) and the sha256 of the boot firmware.
+# Values go in as argv, the JSON is written by json.dumps with sorted keys. Written before the checksum list, so it is listed there.
+python3 -I - "$OUT" "$FWV" "$LEVEL" > "$OUT/unitotem-firmware.json" << 'PY'
+import datetime
+import fnmatch
+import hashlib
+import json
+import os
+import sys
+
+out, version, level = sys.argv[1], sys.argv[2], sys.argv[3]
+patterns = ("bootcode.bin", "start*.elf", "fixup*.dat")
+files = {}
+for name in sorted(os.listdir(out)):
+    if any(fnmatch.fnmatchcase(name, p) for p in patterns):
+        with open(os.path.join(out, name), "rb") as f:
+            files[name] = hashlib.sha256(f.read()).hexdigest()
+when = datetime.datetime.strptime(level, "%Y%m%d%H%M%S").replace(tzinfo=datetime.timezone.utc)
+record = {"version": version, "installed_at": int(when.timestamp()), "files": files}
+sys.stdout.write(json.dumps(record, sort_keys=True) + "\n")
+PY
+[ -s "$OUT/unitotem-firmware.json" ] || die "could not write unitotem-firmware.json"
 
 # Checksums of every file of the tree, the level line first (boot-tree.sha256 is not in its own list).
 NAMES=()

@@ -32,7 +32,7 @@ check "unit: wants network-online, no Requires" bash -c "grep -qx 'Wants=network
 check "unit: bounded start" grep -qE '^TimeoutStartSec=[0-9]+$' "$D"
 check "unit: skipped without an EEPROM bootloader" grep -q '^ConditionPathExists=/proc/device-tree/chosen/bootloader/build-timestamp$' "$D"
 check "unit: ExecStart reset then helper run" bash -c "grep -n '^ExecStart=' '$D' | head -1 | grep -q ':ExecStart=\$' && grep -qx 'ExecStart=/usr/lib/unitotem/eeprom-update run' '$D'"
-check "unit: ExecCondition check and ExecStopPost ro" bash -c "grep -qx 'ExecCondition=/usr/lib/unitotem/eeprom-update check' '$D' && grep -qx 'ExecStopPost=/usr/lib/unitotem/eeprom-update ro' '$D'"
+check "unit: ExecCondition check, ExecStartPost and ExecStopPost ro" bash -c "grep -qx 'ExecCondition=/usr/lib/unitotem/eeprom-update check' '$D' && grep -qx 'ExecStopPost=/usr/lib/unitotem/eeprom-update ro' '$D' && grep -qx 'ExecStartPost=/usr/lib/unitotem/eeprom-update ro' '$D'"
 check "unit: no stage2 hook for amd64" bash -c "grep -B1 -A3 'eeprom-update' '$DIR/unitotem/stage2-configure.sh' | grep -q 'ARCH\" = \"arm64\"'"
 
 # check: proceeds and leaves the FAT rw

@@ -274,7 +274,8 @@ class Lab:
     def env(self):
         return dict(BOOT=self.boot, RUN=self.run, STATE=self.state, DT=self.dt, KEYRING=self.keyring,
                     VCGENCMD=self.vc, UPDATE=self.upd, EEPROM_CONF=os.path.join(self.td, "no-eeprom-conf"),
-                    OS_RELEASE=self.osrel, APT_SOURCES=os.path.join(self.td, "no-sources"))
+                    OS_RELEASE=self.osrel, APT_SOURCES=os.path.join(self.td, "no-sources"),
+                    DPKG_STATUS=os.path.join(self.td, "dpkg-status"), PKGDIR=os.path.join(self.td, "raspi-firmware"))
 
     def fat(self, files):
         for name, data in files.items():
@@ -344,12 +345,14 @@ def test_status_device(lab_dir):
     check("Pi 3: blockers empty on a clean device", out["blockers"] == [], str(out["blockers"]))
     lab = Lab(os.path.join(lab_dir, "pi4"), model=MODEL_PI4, installed_ts=TS_OLD)
     with open(os.path.join(lab.boot, "pieeprom.upd"), "wb") as f:
-        f.write(b"x")
+        f.write(image(F.EE_SIZE["pi4"], TS_NEW))
+    with open(os.path.join(lab.boot, "recovery.bin"), "wb") as f:
+        f.write(b"R" * 100)
     with env(**lab.env()):
         _, out = F.cmd_status(F.conf())
     check("Pi 4: eeprom row present", isinstance(out["eeprom"], dict), str(out))
     check("Pi 4: installed date from device-tree", out["eeprom"]["installed"] == F.iso_date(TS_OLD), str(out["eeprom"]))
-    check("Pi 4: pending from pieeprom.upd", out["eeprom"]["pending"] is True and out["reboot_required"] is True)
+    check("Pi 4: pending from pieeprom.upd, recovery.bin and a newer staged build", out["eeprom"]["pending"] is True and out["reboot_required"] is True)
     check("Pi 4: channel default", out["eeprom"]["channel"] == "default")
     check("Pi 4: no check yet -> available/update null",
           out["files"]["available"] is None and out["files"]["update"] is None and out["checked_at"] is None)
@@ -992,6 +995,134 @@ def test_apply_eeprom(lab_dir, gh, fpr, keyring):
         os.path.join(lab.boot, "pieeprom.upd")) == F.EE_SIZE["pi5"] and sig[2] == "target-soc: 2712", str(out))
 
 
+def dpkg_status(lab, version=FW_VER, status="install ok installed"):
+    with open(os.path.join(lab.td, "dpkg-status"), "w") as f:
+        f.write("Package: other\nVersion: 9\nStatus: install ok installed\n\n"
+                f"Package: raspi-firmware\nStatus: {status}\nVersion: {version}\nDescription: x\n y\n\n")
+
+
+def pkg_dir(lab, content=None):
+    d = os.path.join(lab.td, "raspi-firmware")
+    os.makedirs(d, exist_ok=True)
+    for n, data in (content or FW_CONTENT).items():
+        with open(os.path.join(d, n), "wb") as f:
+            f.write(data)
+
+
+def fw_block(lab):
+    with env(**lab.env()):
+        return F.cmd_status(F.conf())[1]["files"]
+
+
+def test_fat_version(lab_dir):
+    sha = lambda b: hashlib.sha256(b).hexdigest()
+    rec = {"version": "1:9.9-1", "installed_at": 1, "files": {n: sha(FW_CONTENT[n]) for n in F.FW_NAMES}}
+    # json with files matching the FAT
+    lab = Lab(os.path.join(lab_dir, "fv-json"), installed_ts=TS_OLD)
+    lab.fat(fat_same())
+    lab.fat({"unitotem-firmware.json": json.dumps(rec).encode()})
+    dpkg_status(lab); pkg_dir(lab, {n: b"other" for n in F.FW_NAMES})
+    b = fw_block(lab)
+    check("fat version: json with matching files wins over the package",
+          b["installed"] == "1:9.9-1" and b["custom"] is False and b["package"] == FW_VER, str(b))
+    # json without files is ignored
+    lab.fat({"unitotem-firmware.json": json.dumps({"version": "1:9.9-1", "installed_at": 1}).encode()})
+    b = fw_block(lab)
+    check("fat version: json without files ignored (custom, package set)",
+          b["installed"] is None and b["custom"] is True and b["package"] == FW_VER, str(b))
+    # no json, FAT equals the package directory
+    lab = Lab(os.path.join(lab_dir, "fv-pkg"), installed_ts=TS_OLD)
+    lab.fat(fat_same()); dpkg_status(lab); pkg_dir(lab)
+    b = fw_block(lab)
+    check("fat version: no json, FAT equals package files -> package version",
+          b["installed"] == FW_VER and b["custom"] is False and b["package"] == FW_VER, str(b))
+    # FAT edited
+    lab.fat({"start4.elf": b"edited"})
+    b = fw_block(lab)
+    check("fat version: edited FAT -> custom with package",
+          b["installed"] is None and b["custom"] is True and b["package"] == FW_VER, str(b))
+    # json recorded files no longer match an edited file
+    lab.fat({"unitotem-firmware.json": json.dumps(rec).encode()})
+    b = fw_block(lab)
+    check("fat version: json files differ from the FAT -> custom", b["installed"] is None and b["custom"] is True, str(b))
+    # package absent
+    lab = Lab(os.path.join(lab_dir, "fv-nopkg"), installed_ts=TS_OLD)
+    lab.fat(fat_same())
+    b = fw_block(lab)
+    check("fat version: package absent, no json -> custom, package null",
+          b["installed"] is None and b["custom"] is True and b["package"] is None, str(b))
+    # package listed but not installed, or with an invalid version
+    dpkg_status(lab, status="deinstall ok config-files"); pkg_dir(lab)
+    check("fat version: removed package ignored", fw_block(lab)["package"] is None)
+    dpkg_status(lab, version="1 2;rm"); pkg_dir(lab)
+    check("fat version: invalid package version ignored", fw_block(lab)["package"] is None)
+
+
+def test_swap_json_files(lab_dir, gh, fpr, keyring):
+    repo = Repo(gh, fpr)
+    lab = Lab(os.path.join(lab_dir, "swap-json"), keyring=keyring, installed_ts=TS_NEW)
+    lab.fat(old_fat())
+    rc, out = run_main(["--json", "apply", "--foreground", "--files"], lab, repo.routes)
+    rec = json.loads(read_bytes_file(os.path.join(lab.boot, "unitotem-firmware.json")))
+    want = {n: hashlib.sha256(read_bytes_file(os.path.join(lab.boot, n))).hexdigest()
+            for n in F.FW_NAMES if os.path.isfile(os.path.join(lab.boot, n))}
+    check("swap: json carries the hashes of the files on the FAT", rc == 0 and rec["files"] == want and want, str(rec))
+    b = fw_block(lab)
+    check("swap: status shows the archive version, not custom", b["installed"] == FW_VER and b["custom"] is False, str(b))
+
+
+def eeprom_lab(lab_dir, name, installed, staged, recovery=True, renamed=False):
+    lab = Lab(os.path.join(lab_dir, name), installed_ts=installed)
+    lab.fat({"pieeprom.upd": image(F.EE_SIZE["pi4"], staged), "pieeprom.sig": b"sig\n"})
+    if recovery:
+        lab.fat({"recovery.bin": b"R" * 100})
+    if renamed:
+        lab.fat({"RECOVERY.000": b"R" * 100})
+    return lab
+
+
+def test_eeprom_cleanup(lab_dir):
+    lab = eeprom_lab(lab_dir, "ee-left", TS_NEW, TS_NEW, recovery=False, renamed=True)
+    marker = os.path.join(lab.run, "systemd", "sleep.conf.d", "40-unitotem-firmware-pending.conf")
+    os.makedirs(os.path.dirname(marker)); open(marker, "w").write("[Sleep]\nAllowSuspend=no\n")
+    with env(**lab.env()):
+        _, st = F.cmd_status(F.conf())
+    check("eeprom leftovers: not pending, no restart needed",
+          st["eeprom"]["pending"] is False and st["reboot_required"] is False, str(st["eeprom"]))
+    check("eeprom leftovers: status is read-only", os.path.isfile(os.path.join(lab.boot, "pieeprom.upd")))
+    rc, out = run_main(["--json", "cleanup"], lab)
+    left = sorted(os.listdir(lab.boot))
+    check("eeprom leftovers: cleanup removes upd, sig, RECOVERY.* and the marker",
+          rc == 0 and left == [] and not os.path.exists(marker)
+          and sorted(out["cleaned"]) == sorted(["pieeprom.upd", "pieeprom.sig", "RECOVERY.000", os.path.basename(marker)]),
+          f"{out} {left}")
+    rc, out = run_main(["--json", "cleanup"], lab)
+    check("eeprom leftovers: cleanup is idempotent", rc == 0 and out["cleaned"] == [], str(out))
+    # staged newer + recovery.bin: pending, cleanup keeps everything
+    lab = eeprom_lab(lab_dir, "ee-pend", TS_OLD, TS_NEW)
+    with env(**lab.env()):
+        _, st = F.cmd_status(F.conf())
+    check("eeprom staged newer + recovery.bin: pending and restart required",
+          st["eeprom"]["pending"] is True and st["reboot_required"] is True, str(st["eeprom"]))
+    rc, out = run_main(["--json", "cleanup"], lab)
+    check("eeprom staged newer: cleanup keeps the staged files",
+          out["pending"] is True and sorted(os.listdir(lab.boot)) == ["pieeprom.sig", "pieeprom.upd", "recovery.bin"], str(out))
+    # staged newer but no recovery.bin: not pending
+    lab = eeprom_lab(lab_dir, "ee-norec", TS_OLD, TS_NEW, recovery=False)
+    with env(**lab.env()):
+        _, st = F.cmd_status(F.conf())
+    check("eeprom upd without recovery.bin: not pending", st["eeprom"]["pending"] is False, str(st["eeprom"]))
+    # unreadable staged image: cleaned
+    lab = Lab(os.path.join(lab_dir, "ee-bad"), installed_ts=TS_OLD)
+    lab.fat({"pieeprom.upd": b"garbage", "RECOVERY.000": b"x"})
+    rc, out = run_main(["--json", "cleanup"], lab)
+    check("eeprom unreadable staged image: cleanup removes the leftovers", rc == 0 and os.listdir(lab.boot) == [], str(out))
+    # older staged (installed newer): cleaned
+    lab = eeprom_lab(lab_dir, "ee-old", TS_NEW, TS_OLD)
+    rc, out = run_main(["--json", "cleanup"], lab)
+    check("eeprom installed newer than staged: cleanup removes the leftovers", os.listdir(lab.boot) == [], str(out))
+
+
 def test_apply_pi3_no_eeprom(lab_dir, gh, fpr, keyring):
     repo = Repo(gh, fpr)
     lab = Lab(os.path.join(lab_dir, "pi3-apply"), model="Raspberry Pi 3 Model B Plus Rev 1.3", keyring=keyring,
@@ -1069,6 +1200,9 @@ def main():
             test_apply_failures(lab_dir, gh, fpr, keyring)
             test_apply_eeprom(lab_dir, gh, fpr, keyring)
             test_apply_pi3_no_eeprom(lab_dir, gh, fpr, keyring)
+            test_fat_version(lab_dir)
+            test_swap_json_files(lab_dir, gh, fpr, keyring)
+            test_eeprom_cleanup(lab_dir)
             test_bootfs_remount()
         finally:
             for home in (gh, os.path.join(td, "gh2")):

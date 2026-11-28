@@ -84,7 +84,7 @@ if [ "$ARCH" = arm64 ]; then
     chk "drop-in wants network-online.target and has no hard Requires=" bash -c "grep -qE '^Wants=network-online\.target\$' '$DI' && ! grep -q '^Requires=' '$DI'"
     chk "drop-in bounds the start (TimeoutStartSec)" file_has "$DI" '^TimeoutStartSec=[0-9]+$'
     chk "drop-in skips without an EEPROM bootloader (ConditionPathExists)" file_has "$DI" '^ConditionPathExists=/proc/device-tree/chosen/bootloader/build-timestamp$'
-    chk "drop-in has ExecCondition check, ExecStart run and ExecStopPost ro" bash -c "grep -q '^ExecCondition=/usr/lib/unitotem/eeprom-update check\$' '$DI' && grep -q '^ExecStart=/usr/lib/unitotem/eeprom-update run\$' '$DI' && grep -q '^ExecStopPost=/usr/lib/unitotem/eeprom-update ro\$' '$DI'"
+    chk "drop-in has ExecCondition check, ExecStart run, ExecStartPost and ExecStopPost ro" bash -c "grep -q '^ExecCondition=/usr/lib/unitotem/eeprom-update check\$' '$DI' && grep -q '^ExecStart=/usr/lib/unitotem/eeprom-update run\$' '$DI' && grep -q '^ExecStartPost=/usr/lib/unitotem/eeprom-update ro\$' '$DI' && grep -q '^ExecStopPost=/usr/lib/unitotem/eeprom-update ro\$' '$DI'"
     chk "the rpi-eeprom unit is shipped by the package" test -f "$R/usr/lib/systemd/system/rpi-eeprom-update.service"
 fi
 
@@ -475,6 +475,13 @@ echo "== Raspberry boot property (every file a config loads must exist under its
     chk "overlays at the top of the boot FAT" test -d "$FAT/overlays"
     chk "resident recovery kernel and initramfs on the FAT" bash -c "test -s $FAT/recovery8.img && test -s $FAT/recovery-initrd.img"
     chk "serial console is ttyS0 in the slot cmdline" bash -c "grep -q 'console=ttyS0' $FAT/*cmdline.txt $FAT/slot*/cmdline.txt 2>/dev/null"
+echo "== Raspberry firmware record (unitotem-firmware.json on the boot FAT; version from the image dpkg status)"
+    FWJ="$FAT/unitotem-firmware.json"; FWV=$(pkgver raspi-firmware)
+    chk "unitotem-firmware.json is at the top level of the boot FAT" test -s "$FWJ"
+    chk "unitotem-firmware.json parses as a JSON object" python3 -I -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1],encoding="utf-8")),dict) else 1)' "$FWJ"
+    chk "unitotem-firmware.json version equals the raspi-firmware Version in the image dpkg status" python3 -I -c 'import json,sys; v=sys.argv[2]; d=json.load(open(sys.argv[1],encoding="utf-8")); sys.exit(0 if v and isinstance(d,dict) and d.get("version")==v else 1)' "$FWJ" "$FWV"
+    chk "every sha256 in unitotem-firmware.json files equals the sha256 of the same-named file on the boot FAT" python3 -I -c 'import hashlib,json,os,sys; fat=sys.argv[2]; files=json.load(open(sys.argv[1],encoding="utf-8")).get("files"); ok=isinstance(files,dict) and bool(files) and all(os.path.basename(n)==n and isinstance(d,str) and os.path.isfile(os.path.join(fat,n)) and hashlib.sha256(open(os.path.join(fat,n),"rb").read()).hexdigest()==d for n,d in files.items()); sys.exit(0 if ok else 1)' "$FWJ" "$FAT"
+    chk "every bootcode.bin, start*.elf and fixup*.dat on the boot FAT is listed in unitotem-firmware.json files" python3 -I -c 'import glob,json,os,sys; fat=sys.argv[2]; files=json.load(open(sys.argv[1],encoding="utf-8")).get("files"); req=[os.path.basename(p) for pat in ("bootcode.bin","start*.elf","fixup*.dat") for p in glob.glob(os.path.join(fat,pat))]; ok=isinstance(files,dict) and bool(req) and all(n in files for n in req); sys.exit(0 if ok else 1)' "$FWJ" "$FAT"
 elif [ "$AB" = 1 ]; then
 echo "== amd64 boot"
     chk "GRUB entries for both slots" bash -c "grep -q 'slot-a' $FAT/unitotem-grub/grub/grub.cfg && grep -q 'slot-b' $FAT/unitotem-grub/grub/grub.cfg"

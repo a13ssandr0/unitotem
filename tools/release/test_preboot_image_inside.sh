@@ -7,6 +7,7 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null || { echo "cannot mount devtmpfs"; e
 mkdir -p /tmpfs /m /m2; mount -t tmpfs -o size=1g tmpfs /tmpfs; export UNITOTEM_TMPFS=/tmpfs
 rm -rf $W; mkdir -p $W
 LEVEL=20261115173059
+FWVER=1:1.20260915-1
 ENGINE_OLD=$W/old-engine.sh; ENGINE=$W/engine.sh
 echo "NEW ENGINE" > $ENGINE
 
@@ -23,15 +24,15 @@ mkdir -p $W/fwfix/overlays; echo ov > $W/fwfix/overlays/vc4-kms-v3d.dtbo
 
 # ---------- boot tree (unitotem/make-boot-tree.sh) ----------
 TREE=$W/tree
-check "make-boot-tree needs the recovery files and the engine" bash -c "! bash /repo/unitotem/make-boot-tree.sh --firmware $W/fwfix --recovery-vmlinuz $W/none --recovery-initrd $W/initrd --level $LEVEL --engine $ENGINE --out $W/none-tree 2>/dev/null"
-check "make-boot-tree refuses a level that is not 14 digits" bash -c "! bash /repo/unitotem/make-boot-tree.sh --firmware $W/fwfix --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --level 2026 --engine $ENGINE --out $W/bad-tree 2>/dev/null"
-check "make-boot-tree refuses a firmware directory without start4.elf" bash -c "mkdir -p $W/fwnoelf && cp $W/fwfix/start.elf $W/fwfix/fixup.dat $W/fwfix/bcm2710-rpi-3-b.dtb $W/fwfix/bcm2711-rpi-4-b.dtb $W/fwnoelf/ && ! bash /repo/unitotem/make-boot-tree.sh --firmware $W/fwnoelf --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --level $LEVEL --engine $ENGINE --out $W/bad-tree2 2>/dev/null"
+check "make-boot-tree needs the recovery files and the engine" bash -c "! bash /repo/unitotem/make-boot-tree.sh --firmware-version $FWVER --firmware $W/fwfix --recovery-vmlinuz $W/none --recovery-initrd $W/initrd --level $LEVEL --engine $ENGINE --out $W/none-tree 2>/dev/null"
+check "make-boot-tree refuses a level that is not 14 digits" bash -c "! bash /repo/unitotem/make-boot-tree.sh --firmware-version $FWVER --firmware $W/fwfix --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --level 2026 --engine $ENGINE --out $W/bad-tree 2>/dev/null"
+check "make-boot-tree refuses a firmware directory without start4.elf" bash -c "mkdir -p $W/fwnoelf && cp $W/fwfix/start.elf $W/fwfix/fixup.dat $W/fwfix/bcm2710-rpi-3-b.dtb $W/fwfix/bcm2711-rpi-4-b.dtb $W/fwnoelf/ && ! bash /repo/unitotem/make-boot-tree.sh --firmware-version $FWVER --firmware $W/fwnoelf --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --level $LEVEL --engine $ENGINE --out $W/bad-tree2 2>/dev/null"
 check "make-boot-tree needs exactly one of --stage2 and --firmware" bash -c "! bash /repo/unitotem/make-boot-tree.sh --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --level $LEVEL --engine $ENGINE --out $W/bad-tree3 2>/dev/null"
-bash /repo/unitotem/make-boot-tree.sh --firmware $W/fwfix --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --level $LEVEL --engine $ENGINE --out $TREE > $W/tree.log 2>&1
+bash /repo/unitotem/make-boot-tree.sh --firmware-version $FWVER --firmware $W/fwfix --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --level $LEVEL --engine $ENGINE --out $TREE > $W/tree.log 2>&1
 check "make-boot-tree from a firmware directory succeeds" test -s $TREE/boot-tree.sha256
-bash /repo/unitotem/make-boot-tree.sh --firmware $W/fwfix --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --level $LEVEL --engine $ENGINE --out $W/tree-again > $W/tree-again.log 2>&1
+bash /repo/unitotem/make-boot-tree.sh --firmware-version $FWVER --firmware $W/fwfix --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --level $LEVEL --engine $ENGINE --out $W/tree-again > $W/tree-again.log 2>&1
 check "boot tree is reproducible: a second build of the same inputs is byte-identical" diff -r $TREE $W/tree-again
-check "boot tree lists exactly the preboot set (no full-system files, no overlays, no _x variants)" bash -c "cd $TREE && [ \"\$(find . -maxdepth 1 -type f -printf '%f\\n' | LC_ALL=C sort | tr '\n' ' ')\" = 'LICENCE.broadcom bcm2710-rpi-3-b.dtb bcm2711-rpi-4-b.dtb boot-tree.sha256 bootcode.bin cmdline.txt config.txt fixup.dat fixup4.dat recovery-initrd.img recovery8.img start.elf start4.elf ' ]"
+check "boot tree lists exactly the preboot set (no full-system files, no overlays, no _x variants)" bash -c "cd $TREE && [ \"\$(find . -maxdepth 1 -type f -printf '%f\\n' | LC_ALL=C sort | tr '\n' ' ')\" = 'LICENCE.broadcom bcm2710-rpi-3-b.dtb bcm2711-rpi-4-b.dtb boot-tree.sha256 bootcode.bin cmdline.txt config.txt fixup.dat fixup4.dat recovery-initrd.img recovery8.img start.elf start4.elf unitotem-firmware.json ' ]"
 check "boot tree manifest verifies and carries the level line" bash -c "cd $TREE && sha256sum -c --quiet boot-tree.sha256 && head -1 boot-tree.sha256 | grep -qx '# unitotem-recovery-level: $LEVEL'"
 check "boot tree recovery kernel is the given one" cmp $TREE/recovery8.img $W/vmlinuz
 check "boot tree initrd starts with the original archive, byte for byte" bash -c "head -c $INITRD_SIZE $TREE/recovery-initrd.img | cmp - $W/initrd"
@@ -53,7 +54,7 @@ cat $W/plain-init.cpio $W/zs-old.zst > $W/initrd-old
 cat $W/plain-init.cpio > $W/initrd-absent
 # the engine entry of an initrd: the last one, as extraction gives it
 engine_of() { python3 -I /repo/unitotem/initrd-scan.py get "$1" usr/lib/unitotem/ota-engine.sh | cmp -s - "$2"; }
-make_tree() { bash /repo/unitotem/make-boot-tree.sh --firmware $W/fwfix --recovery-vmlinuz $W/vmlinuz --recovery-initrd "$1" --level $LEVEL --engine $ENGINE --out "$2" > "$2.log" 2>&1; }
+make_tree() { bash /repo/unitotem/make-boot-tree.sh --firmware-version $FWVER --firmware $W/fwfix --recovery-vmlinuz $W/vmlinuz --recovery-initrd "$1" --level $LEVEL --engine $ENGINE --out "$2" > "$2.log" 2>&1; }
 identical_kept() { make_tree $W/initrd-same $W/tree-same && cmp $W/tree-same/recovery-initrd.img $W/initrd-same; }
 stale_appended() { make_tree $W/initrd-old $W/tree-old && cmp -n $(stat -c %s $W/initrd-old) $W/tree-old/recovery-initrd.img $W/initrd-old && engine_of $W/tree-old/recovery-initrd.img $ENGINE; }
 absent_appended() { make_tree $W/initrd-absent $W/tree-absent && cmp -n $(stat -c %s $W/initrd-absent) $W/tree-absent/recovery-initrd.img $W/initrd-absent && engine_of $W/tree-absent/recovery-initrd.img $ENGINE; }
@@ -66,7 +67,7 @@ check "make-boot-tree reports that the engine is already in the initrd" bash -c 
 check "the stage-1b layout passes the engine check (initrd-scan.py get: current engine)" engine_of $W/tree-same/recovery-initrd.img $ENGINE
 
 # stage-2 input: a gzip tarball of a rootfs; only its boot/firmware top-level files go into the tree
-mkdir -p $W/s2/boot; cp -r $W/fwfix $W/s2/boot/firmware; echo etc > $W/s2/etc-marker
+mkdir -p $W/s2/boot $W/s2/var/lib/dpkg; cp -r $W/fwfix $W/s2/boot/firmware; printf "Package: raspi-firmware\nStatus: install ok installed\nVersion: $FWVER\n\n" > $W/s2/var/lib/dpkg/status; echo etc > $W/s2/etc-marker
 ( cd $W/s2 && tar -czf $W/stage2.tar.gz . )
 echo "UNITOTEM_RECOVERY_BUILD_DATE=2026-11-15T17:30:59Z" > $W/recovery.manifest
 bash /repo/unitotem/make-boot-tree.sh --stage2 $W/stage2.tar.gz --recovery-vmlinuz $W/vmlinuz --recovery-initrd $W/initrd --recovery-manifest $W/recovery.manifest --engine $ENGINE --out $W/tree-s2 > $W/tree-s2.log 2>&1
@@ -83,6 +84,7 @@ mount "${L}p1" /m
 for f in $FWFILES; do echo "fw-$f" > /m/$f; done
 echo "full system config" > /m/config.txt; echo "full system cmdline" > /m/cmdline.txt; echo kernel > /m/kernel8.img
 cp $W/vmlinuz /m/recovery8.img; cp $W/initrd /m/recovery-initrd.img; echo "# unitotem-recovery-level: $LEVEL" > /m/recovery.sha256
+echo "{\"version\": \"$FWVER\"}" > /m/unitotem-firmware.json
 mkdir -p /m/slota; echo kernel > /m/slota/kernel8.img; umount /m; losetup -d "$L"
 
 # ---------- make-preboot-image.sh ----------

@@ -74,7 +74,10 @@ if [ -n "$IMAGE" ]; then
     image_close
     [ -s "$WORK/fwsrc/recovery8.img" ] && [ -s "$WORK/fwsrc/recovery-initrd.img" ] \
         || die "the image has no recovery8.img and recovery-initrd.img on its boot partition"
-    bash "${HERE}/../../unitotem/make-boot-tree.sh" --firmware "$WORK/fwsrc" \
+    # the firmware version is the one the image recorded (unitotem-firmware.json)
+    FWVER=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$WORK/fwsrc/unitotem-firmware.json") \
+        || die "the image has no readable unitotem-firmware.json on its boot partition"
+    bash "${HERE}/../../unitotem/make-boot-tree.sh" --firmware "$WORK/fwsrc" --firmware-version "$FWVER" \
         --recovery-vmlinuz "$WORK/fwsrc/recovery8.img" --recovery-initrd "$WORK/fwsrc/recovery-initrd.img" \
         --level "$LEVEL" --engine "$ENGINE" --out "$WORK/tree"
     TREE="$WORK/tree"

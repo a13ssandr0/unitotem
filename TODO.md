@@ -21,6 +21,7 @@
 - [system] Firmware download (decision): the signed Raspberry Pi InRelease is verified, but it carries no `Valid-Until` or downgrade check, so a validly signed old index could be replayed and an older firmware offered. Keep as is, or refuse an index older than the installed version / than the last one seen?
 
 ## To build
+- [system/manager] Updates page, Raspberry Pi firmware card: row "Boot files" becomes "Firmware" showing the `raspi-firmware` package version (`Custom` / `Custom (from <version>)` when the package is missing or the FAT files differ; the build records the shipped version and file hashes in `unitotem-firmware.json`); EEPROM update needs one restart, done by the device, and the staged files are removed once flashed (the chip "Restart to finish" stayed after the restart); narrow slot rows split into two lines. Hardware: an older build on newer firmware files (restart on the older slot) on a Pi 3 and a Pi 4 test board.
 - [system] EEPROM staging unit (drop-in): real run on a Pi 4 (staging onto the FAT after the remount, the bootloader flashing it at the restart) is not verified; needs a build and a device run.
 - [system] Field nodes with small disks have little root space left (84% and 81% used).
 - [system] `.8` deploy with the 83 MB fallback initrd (old GRUB 2.06 boot not verified); `remote-deploy.sh` should warn when the amd64 recovery initrd exceeds 100 MiB before writing it; the slot initramfs is still about 225 MB (plymouth DRM firmware): decide whether to trim it.

@@ -35,7 +35,7 @@ Boot chain of UniTotem devices: bootloader (GRUB on PC, Raspberry Pi firmware on
 ### Raspberry Pi (arm64, `backend=rpi`)
 
 - Partition table: MBR (DOS) on every Raspberry Pi model, primaries only: FIRMWARE (type `c`) is partition 1, ROOT_A 2, ROOT_B 3, DATA 4 ([storage](storage-and-persistence.md#layout)).
-- FIRMWARE (FAT): `config.txt`, shared firmware, `slota/` and `slotb/` (`kernel8.img`, `initramfs8`, `cmdline.txt`, dtbs, overlays), resident fallback `recovery8.img`, `recovery-initrd.img`, top-level `*.dtb`, `recovery.sha256`, `unitotem-ota.*`. Built from the boot tree (`build/arm64/boot-tree/`, [Recovery set](#recovery-set)); the preboot card carries the same files.
+- FIRMWARE (FAT): `config.txt`, shared firmware, `slota/` and `slotb/` (`kernel8.img`, `initramfs8`, `cmdline.txt`, dtbs, overlays), resident fallback `recovery8.img`, `recovery-initrd.img`, top-level `*.dtb`, `recovery.sha256`, `unitotem-ota.*`, `unitotem-firmware.json` (version and file hashes of the firmware set). Built from the boot tree (`build/arm64/boot-tree/`, [Recovery set](#recovery-set)); the preboot card carries the same files.
 - Default: `config.txt` `os_prefix=slota/` (or `slotb/`).
 - Trial: `tryboot.txt` holds the other slot's `os_prefix`; read by the firmware only on a reboot with `systemctl reboot --reboot-argument="0 tryboot"`. A plain reboot or power cut returns to the `config.txt` slot.
 - Promotion: `config.txt` rewritten from `tryboot.txt` with the new `os_prefix`; `tryboot.txt` removed.
@@ -152,7 +152,7 @@ Ownership of boot partition files:
 | arm64 `start*.elf`, `fixup*.dat`, `bootcode.bin`, `overlays/` | image, via deploy | Never synced (see below) |
 | amd64 `EFI/`, ESP `unitotem-grub/` | image, via deploy | Not written by the recovery sync. ESP `grub.cfg` has its own sync (`ab-updates.md`) |
 
-Not synced, arm64 firmware: `start*.elf`, `fixup*.dat`, `bootcode.bin` and `overlays/` are read by every boot, including the normal slot, and `start4.elf` and `fixup4.dat` must match each other. A FAT cannot swap two files atomically, so a power cut between the renames could leave a Pi that does not start at all. Firmware reaches a device only through deploy. The Pi EEPROM is a separate update path and is not touched. The firmware card of the Updates page swaps them in place: [firmware.md](firmware.md).
+Not synced, arm64 firmware: `start*.elf`, `fixup*.dat`, `bootcode.bin` and `overlays/` are read by every boot, including the normal slot, and `start4.elf` and `fixup4.dat` must match each other. A FAT cannot swap two files atomically, so a power cut between the renames could leave a Pi that does not start at all. `unitotem-firmware.json` records the `raspi-firmware` version and the sha256 of those files; it is written at build time and then owned by the device firmware tool, never synced. Firmware reaches a device only through deploy. The Pi EEPROM is a separate update path and is not touched. The firmware card of the Updates page swaps them in place: [firmware.md](firmware.md).
 
 Not synced, `config.txt`: the runtime rewrites it whole (`set-default-recovery`, `set-trial-boot`, `promote-default`: `os_prefix`, trial state). A marked section edited by the sync would race those rewrites. Image changes to `config.txt` reach only the built `.img` and fresh deploys; device options go in `config-extra.txt` (`dtoverlay`, `dtparam`).
 
